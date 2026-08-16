@@ -1,0 +1,1690 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		03F4BB914198040E5590A90B /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A287448E84ACD6A8C56415B /* RootView.swift */; };
+		047A15CD57090ED21F384DA4 /* ScreenVoicePTTIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70C3729E5828F58D957F3EC5 /* ScreenVoicePTTIntent.swift */; };
+		07AD04BBD10E31E2D081C3CA /* LiveTalkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A301263A30EE57A7807848 /* LiveTalkTests.swift */; };
+		090B896C110C954C9CA9BB35 /* AgentCommandCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FED0299EB8F29F000CAB6B56 /* AgentCommandCatalogTests.swift */; };
+		0A317EAA718906B62BFAF413 /* CaptainAyerAvatarStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04FDE776990744B476BF9B2 /* CaptainAyerAvatarStage.swift */; };
+		0C62433EAA8F108A6D78C44C /* LiveTalkSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2153C9971249BF69F3F6A0E /* LiveTalkSessionController.swift */; };
+		0C7EC3F9A30ED73D16CA9FDC /* AIProviderSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC2A81A26CA89DBC6BBA2111 /* AIProviderSettings.swift */; };
+		0D0DFE40CDF1D09609CC06BA /* ScreenContextQuestionInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1CEE9EAB4A4137CC0396ED8 /* ScreenContextQuestionInbox.swift */; };
+		0E1F7870E7F63AFE6B462F0E /* ScreenVoicePTTCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E57590AA461FD13D602019C9 /* ScreenVoicePTTCoordinatorTests.swift */; };
+		0EBF6278A3D3737BDEE1A686 /* AgentCommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A68AA292C480BCE16D7FE2C /* AgentCommandCatalog.swift */; };
+		1085B41D84B73E3210BFE347 /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDF5045565CED771BE612DD /* ConversationView.swift */; };
+		1128296B8B7D7A5119B899A4 /* LocalAssistantServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45D1FD93733AB5A6ECE6E9E7 /* LocalAssistantServices.swift */; };
+		1182E9916F1A9EE5C9D74148 /* AskCodexCompanionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7791E9191702EBE7890BBFC0 /* AskCodexCompanionIntent.swift */; };
+		11900E8FAF46A096AAD37AFD /* ScreenContextFeatureModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8123C212D2C1C1E040810126 /* ScreenContextFeatureModel.swift */; };
+		132D8610AC77362C251111B4 /* AgentToolLocalDataParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C8ADEAC3CBF7AAF4D72B3CA /* AgentToolLocalDataParserTests.swift */; };
+		13AF6CD8550784689FC9001D /* ScreenVoicePTTMicrophone.swift in Sources */ = {isa = PBXBuildFile; fileRef = D55AF456FDE662E7CC5C9CA1 /* ScreenVoicePTTMicrophone.swift */; };
+		159A58047569DFFB8ED64FF9 /* AppAliasSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9430AE28E95E970B2EE12B5D /* AppAliasSettingsView.swift */; };
+		16939C3FF3CC5F3F4D059C82 /* PrepareScreenContextIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A849614AD3532D1F9283D4D5 /* PrepareScreenContextIntent.swift */; };
+		176CD78411141FA4FB3E863C /* ConversationAttachmentDescriptor+AgentAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B42DB8D9C2E097F7675C16BB /* ConversationAttachmentDescriptor+AgentAttachment.swift */; };
+		177D436AC89B09442D73AF5B /* OpenClamAvatarStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7EA90413EB570E0098B4467 /* OpenClamAvatarStoreTests.swift */; };
+		1AE3846DB4C7291D47C2DA99 /* ScreenContextIntakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C78B0B2E0DEB18AA5FA3663 /* ScreenContextIntakeTests.swift */; };
+		1F1E87A5E31968411C9B7769 /* ScreenPTTService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9243F96877E4D994612FDA3A /* ScreenPTTService.swift */; };
+		1FC78473D4AE45B205090CCB /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = A6638CF445F12D11761B1380 /* LiveKit */; };
+		222C8DE00F5B923188653EAE /* OpenClamLiveKitApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEAD505B1AE9590E13BE595B /* OpenClamLiveKitApp.swift */; };
+		23B2CC9B21BFC55AC6EF1BFE /* LiveTalkBrokerTokenSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A158ED3D3A3DFD8BAF1DEE03 /* LiveTalkBrokerTokenSource.swift */; };
+		28AEF61C9FDC4C1AB5940351 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 8025DE69359413496387B2EF /* PrivacyInfo.xcprivacy */; };
+		2930D3D2FC2054D60C46FCEF /* OpenClamKeyboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC85D1AE02F02FED6BE21805 /* OpenClamKeyboardTests.swift */; };
+		2BB0416300F719CE5FA2C1D4 /* ScreenCaptureKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DF0A4129CF4ECF3DDD8F483 /* ScreenCaptureKitManager.swift */; };
+		2FBBEE406D5698B04ED6DD73 /* AppHandoffSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = E468F72BFC872F2D4C64402B /* AppHandoffSession.swift */; };
+		2FE147F78966EC8C6B5C5B42 /* OpenClamAvatarCatalogModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02BD1E83198EE525E84F53D5 /* OpenClamAvatarCatalogModels.swift */; };
+		3017332D9659ADEFF9191C03 /* OpenClamAvatarCarouselLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F5F1B76EFAE817E1C062475 /* OpenClamAvatarCarouselLayoutTests.swift */; };
+		30B1FCCB53560E58CD9A45AC /* AgentAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B261EE1FE744979350AF427 /* AgentAttachment.swift */; };
+		337F4EC92058D1708AB2F1B5 /* ScreenVoicePTTActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B53FBD982C5947AD5E2BF74B /* ScreenVoicePTTActivityAttributes.swift */; };
+		339F746BF2A4D11A3408C42B /* AgentToolServicesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2F7B3417A34B7A0EE5FC8A2 /* AgentToolServicesTests.swift */; };
+		34DA8BAB1DDFF1892CDAF940 /* AgentCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BB46A6A067C722285F0D5DA /* AgentCredentialStore.swift */; };
+		35B7C636E5D877C76CA15C84 /* OpenClamKeyboardBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE8F1B7B53C7E0B02192D6E /* OpenClamKeyboardBridge.swift */; };
+		35F99E6E73A4370750DF622C /* OpenClamKeyboardBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE8F1B7B53C7E0B02192D6E /* OpenClamKeyboardBridge.swift */; };
+		36E3E3C92E23099706722653 /* ScreenVoicePTTRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97775F1DB95CF29E688971FF /* ScreenVoicePTTRuntime.swift */; };
+		380EE81523C09FB8AE8C3831 /* OpenClamAvatarCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E2E116113A9C52CB23BD57 /* OpenClamAvatarCatalog.swift */; };
+		394719A540385081B1808896 /* CloudVoiceServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F84B37DE1C6BB0AB1FC248C /* CloudVoiceServiceTests.swift */; };
+		3B9D0E1CB71447B5F9348CE8 /* ScreenVoicePTTModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9C4AD3022E2F0311264A57 /* ScreenVoicePTTModels.swift */; };
+		3DA10DA777DFAA2B0608F3FC /* EventKitAgentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2769F0779F8B5C693E59EE1 /* EventKitAgentCard.swift */; };
+		3DD74E4AD0A2B150FF83E43D /* ConversationHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7880C23692F20150994600A7 /* ConversationHistoryStore.swift */; };
+		3DF8A90EB7457463FC54E116 /* OpenClamAvatarCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244222D7DB45B858CE55F9AD /* OpenClamAvatarCarousel.swift */; };
+		3FA1809E607334447724D52D /* DeviceActionShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BBC3FC29D1197887EF291B0 /* DeviceActionShortcut.swift */; };
+		404D58B798FF9332218FE13D /* OpenAIResponsesClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA66D491F291D7F5D177966D /* OpenAIResponsesClient.swift */; };
+		42CC9ADC51450A34DFBB499A /* CaptainAyerFaceMirrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57CA68AED1FA94FE3DC50A64 /* CaptainAyerFaceMirrorTests.swift */; };
+		47BCF3F2873092A49D399A5D /* StageAssistantCommandIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3824B890EA25ABF2A7C9E8AE /* StageAssistantCommandIntent.swift */; };
+		4C949CD33F7D3BD786F64A33 /* CaptainAyerFaceMirrorModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F12F93E793FF5A134183C528 /* CaptainAyerFaceMirrorModels.swift */; };
+		4CA7A2D7A6DED6E7AD45E086 /* PendingCommandStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64550BD8D78006AE6A684C63 /* PendingCommandStore.swift */; };
+		4D94F514F8E1E63755276CB0 /* OpenClamSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E24F4F59C46C432748BEFB2 /* OpenClamSidebarView.swift */; };
+		4DE8528A739FA22D3B9C133D /* ScreenVoicePTTTranscription.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17655AC169B9269BC1A2302 /* ScreenVoicePTTTranscription.swift */; };
+		4EB5C2A6B0E8340BE92030A4 /* AssistantCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B31A720C1D340A69C755620 /* AssistantCommandTests.swift */; };
+		4EE5D88030ADF80CF0B3FBCA /* OpenClamLiveKitShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 02EAB241C5D0DF3FCD8913E8 /* OpenClamLiveKitShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		4F4BE74F03E7F03006F6E834 /* CaptainAyerFaceReactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C7A2546723B5A45015AF9E7 /* CaptainAyerFaceReactionTests.swift */; };
+		5027DFB2EF2E41C31B935A2E /* AISettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6507716ED8C464859956321A /* AISettingsView.swift */; };
+		51E2C45D738419303710FBDC /* GoogleMapsURLBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB89E50C32DD2BECE9342D08 /* GoogleMapsURLBuilder.swift */; };
+		51FBECAF370C511762563081 /* CaptainAyerFaceReactions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928586A0D5C3E8C89AF5EC3D /* CaptainAyerFaceReactions.swift */; };
+		5333FB49CA23E8A8A3C67754 /* EventKitAgentMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9100BE4F25B68FD044463A9 /* EventKitAgentMapper.swift */; };
+		5621E44D103983F3BCC6B362 /* GoogleMapsURLBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1763CCCA49D31B5F810279 /* GoogleMapsURLBuilderTests.swift */; };
+		5723EE6DC046422BEB7F908B /* MarkdownAndReplyDeliveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B7A3363D91B5B68239C3EE5 /* MarkdownAndReplyDeliveryTests.swift */; };
+		585216F8BCD6775553A05E2D /* ConversationHistoryIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2025AFD7B2B27503543384F1 /* ConversationHistoryIntegrationTests.swift */; };
+		58732C5E17F1512ED23E89D3 /* AppAliasRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEFC496CDA3A4D300800F02 /* AppAliasRegistry.swift */; };
+		5AFF888D9FDBD471BCF1B9DB /* AssistantModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E90A2A96A2C59CFBFAF31E9 /* AssistantModel.swift */; };
+		5BB751B3C1D615BBE0B29C53 /* EventKitAgentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AF14905D647429D47D4AA82 /* EventKitAgentService.swift */; };
+		5CCD94870F2BB52102DF68F4 /* ScreenVoicePTTActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B53FBD982C5947AD5E2BF74B /* ScreenVoicePTTActivityAttributes.swift */; };
+		5DBA0373F02623BF5C60ECA2 /* ProviderAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40CD059FB38A43FA0162C372 /* ProviderAPIClientTests.swift */; };
+		5E0DEB632BBC5CE90162768B /* AvatarAgentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EC2DB7B0F3AC71C99F05F7D /* AvatarAgentSettingsView.swift */; };
+		6009B7763B7EE280A4734DDC /* EventKitAgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AC1FBC855509F81EA638F06 /* EventKitAgentModels.swift */; };
+		609779AFBB764DC82CF01668 /* OpenClamConversationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBCC79F5B012AA08CDE90DE /* OpenClamConversationUITests.swift */; };
+		61B14A5EF1A619E59D40AF9C /* AIConfigurationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D4CB9DBE807DB1068E1002 /* AIConfigurationModel.swift */; };
+		64C297258A3E97398CE012FA /* ScreenVoicePTTProgressReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C3DC59E1C5FD604BD183C8B /* ScreenVoicePTTProgressReporter.swift */; };
+		6A1484EA13927361804BB3E1 /* GeminiInteractionsAgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 722CE0CA0FA3D88C22A18EA4 /* GeminiInteractionsAgentClient.swift */; };
+		6AEC1D4610AEEB6043AF67D0 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09D7C04EA36D718249FC1122 /* DashboardView.swift */; };
+		6E70D3751E0696961B42CDE5 /* AlarmService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76D00682FA6C816FA51079F4 /* AlarmService.swift */; };
+		6EF040AA0595CBE051D10CBF /* ContactAgentSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DC4D8AD6C6BCDE9E14BBEE4 /* ContactAgentSessionTests.swift */; };
+		6F8C213C028560139BC0B64B /* ScreenContextReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 418712F0FFB181B068F92B0F /* ScreenContextReviewView.swift */; };
+		7105F89915EDB2E6EB72E24C /* MarkdownMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DA11EB128FDBDEBB2B12E61 /* MarkdownMessageView.swift */; };
+		73F8DD2AAC9D8A098DC809FA /* ProviderWebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35D8B5C8BA0D5F692896B0A8 /* ProviderWebSearchService.swift */; };
+		76B71BEAF74E542DFE66EC67 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CEBBC32D61C85B7D0F4EB1C1 /* Assets.xcassets */; };
+		7748B618379DFE7E57966FEF /* AssistantIntentRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6080EA860E09ABA3E0E7E4B8 /* AssistantIntentRouter.swift */; };
+		7C1D225E818C47AFCE5919F9 /* ProviderCredentialVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 206E2122750A8CAEC6E037D6 /* ProviderCredentialVault.swift */; };
+		7D9253DC57818DB06578C9D1 /* OpenClamCatalogAvatarStageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C66052A28EFBE6BBEAA66E8A /* OpenClamCatalogAvatarStageTests.swift */; };
+		7DBCAD92A8B20E9125775BD9 /* ConversationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B795A6F2209C698C630C7CE6 /* ConversationModels.swift */; };
+		80C651AC40537A61CF0B4E5B /* MessageComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B6E102464D5A04C52DD4FE6 /* MessageComposer.swift */; };
+		847B07F5719B724AE2CF251D /* LocalContactsFoundation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F6D84F2EB6981AC0C5217B6 /* LocalContactsFoundation.swift */; };
+		854EC7F6090FCE4138480F95 /* ProviderAgentClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33DDC7CB83CC5DF26894CCB2 /* ProviderAgentClientTests.swift */; };
+		8739F2A07469F45FDAEF9501 /* CaptainAyerAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DE92840A8216A19696B4EDB /* CaptainAyerAvatarTests.swift */; };
+		886E808D004C82AA525416B8 /* ScreenVoicePTTLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 594F4D2C63FDCF31BC8E2863 /* ScreenVoicePTTLiveActivityWidget.swift */; };
+		88E536DC8C6F113841EC935B /* OpenClamAvatarPackage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D453FE069B2EEDD7F76D2B96 /* OpenClamAvatarPackage.swift */; };
+		8A84D45A2A516931A0CB5CAA /* LiveTalkConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59A68A3ADB8C776A669E793 /* LiveTalkConfiguration.swift */; };
+		8C484969107B94CF1F21DB15 /* AIProviderSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E235549721689AFF0399FD9 /* AIProviderSettingsTests.swift */; };
+		8C8B34A05E1FD28B1BB4AB34 /* CaptainAyerAvatarOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1842548A5FB5AA08340ABA12 /* CaptainAyerAvatarOverlay.swift */; };
+		8CCF08B8F23AE28A013FA3E4 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 7399B8347DA041B3A5A5ACD7 /* PrivacyInfo.xcprivacy */; };
+		923807CE2DFD94A4F3D066A0 /* ContactEmailToolService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD54C9DD4A4979F5A6147815 /* ContactEmailToolService.swift */; };
+		9334BE26DC5A3C75F17CF622 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C99834650A442D04A114CEF8 /* SetupView.swift */; };
+		99314BC4FFD545DEFBCDF169 /* OpenClamKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B65D850A0C1949485C0933F0 /* OpenClamKeyboardView.swift */; };
+		99E8361810AAEDDF81D9629E /* ConversationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1B54B484F743C5E97208CF /* ConversationModel.swift */; };
+		9E3FAEC40A44B7D98034C67A /* EventKitAgentFoundationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E29188508E6DDBA678D81BF /* EventKitAgentFoundationTests.swift */; };
+		9FB2B5EEAF5AB520AFE0CC1B /* ios-light-golden.avtr in Resources */ = {isa = PBXBuildFile; fileRef = 5AA180F1AEB9A7B076AC4D13 /* ios-light-golden.avtr */; };
+		A08012C3FAE229B07F0FAF0D /* ContactAgentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B594FF8B05E358FB39B710C /* ContactAgentCard.swift */; };
+		A08395BD036649EEF5AD3FE3 /* CaptainAyerLipSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AC8C791434A48EF275BC9C1 /* CaptainAyerLipSync.swift */; };
+		A2BD5B599D35767227936A9C /* CloudVoiceServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A9B779E8333D83A18C9F948 /* CloudVoiceServices.swift */; };
+		A4EAE6D5A2914A7A2682B275 /* ContextRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1335C17C1314ACF2879401F /* ContextRootView.swift */; };
+		A8BD814501DEDE46F1BF7434 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 1E17EA55ADED315B77947CDD /* ZIPFoundation */; };
+		AAC4B2DA7EB175BCB11C142C /* CompanionAgentToolCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B564409321FA82F37998F1 /* CompanionAgentToolCatalog.swift */; };
+		AB6956AEC85FC2E79FDFAE35 /* ActivityRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FC28AB4A5774A9C00E46718 /* ActivityRecord.swift */; };
+		AD50D2A2C2F1B90226DEDB07 /* OpenClamAvatarStoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6344279813D7A311A671526A /* OpenClamAvatarStoreView.swift */; };
+		AEC336CA5CD9AD3EA0697FAF /* ScreenVoicePTTActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD8627F755D0194756B81B5 /* ScreenVoicePTTActivityController.swift */; };
+		B10068B960C9722594E12F33 /* ConversationHistoryController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 771E89724142FF994674FA08 /* ConversationHistoryController.swift */; };
+		B182E687BB87FAE0F87832E1 /* OpenClamLiveKitKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 566FB21D029B2E574646E9AB /* OpenClamLiveKitKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B5A17B7BB425A9D6BD07CE81 /* CaptainAyerFaceMirrorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 328ECEC97FAB8877379A8A06 /* CaptainAyerFaceMirrorController.swift */; };
+		B78CE33BA127630416B58DC8 /* ProviderAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A6B6E08BB2DEDCA5B756740 /* ProviderAPIClient.swift */; };
+		B83336B08D7998BC94F668BD /* OpenAIResponsesTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF0D82C2F3EC33A8DFE1C8E /* OpenAIResponsesTypes.swift */; };
+		B99973C13702243CEFC19BE3 /* OpenAIResponsesClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21D15D1D6578DBD2A71F491F /* OpenAIResponsesClientTests.swift */; };
+		BA53B66CAC0751AA5C0843DB /* NearbyPlaceToolService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39A2B37BBB81C768D3705790 /* NearbyPlaceToolService.swift */; };
+		BCC04F78D9524DB2645A876A /* AppHandoffSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FF6ECD45A9C256C2F7A3A3C /* AppHandoffSessionTests.swift */; };
+		BE8289322DAD339F91498D9A /* OpenClamLiveKitScreenVoiceWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 852C01D4023AD4E851441E47 /* OpenClamLiveKitScreenVoiceWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		C1CAC24263198E07D435D055 /* ConversationHistoryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CA509152FDA5696D564CBB /* ConversationHistoryStoreTests.swift */; };
+		C578DAC87371E8776DD0058D /* ScreenContextInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */; };
+		C5DBCCF48B24D58064F725C3 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CADCC38BF0349487F5C67D45 /* KeyboardViewController.swift */; };
+		C667ECA0A5BEDA5641117E59 /* OpenClamAvatarAssetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BB08C2624C1E2C228E85FA0 /* OpenClamAvatarAssetStore.swift */; };
+		C6D50687AB2C649FFB086EE8 /* ScreenPTTIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA48E262CA3FB14525DBE15 /* ScreenPTTIntents.swift */; };
+		C84CCB7B6B51D6F767547BA6 /* ScreenVoicePTTVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6601B958F0E45D033058BAC /* ScreenVoicePTTVAD.swift */; };
+		CAC03FB525F7E3F306BA4232 /* OpenClamAvatarCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 607B13A865C3D8527BA492DA /* OpenClamAvatarCatalogTests.swift */; };
+		CACBA54A6A56DD4162676796 /* AvatarAgentProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6938EB6F48FCE169BACF27A /* AvatarAgentProfileTests.swift */; };
+		CBE366EFEF3D34E2B66FBC50 /* EventKitAgentSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96E9F2B04C41E10042D45C8A /* EventKitAgentSessionTests.swift */; };
+		CC14C4C7689134960D0203C5 /* AnthropicMessagesAgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEC54D5FACC436133FD615F3 /* AnthropicMessagesAgentClient.swift */; };
+		CC573FF57B855A4FFF145AD6 /* AssistantCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36888494E866DB0BE5884298 /* AssistantCommand.swift */; };
+		D06AB37E1F1CAA07D795C6F6 /* AvatarCatalogAssets.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 095D9EDF0B55A131EC40D28F /* AvatarCatalogAssets.bundle */; };
+		D201C001ECC8DC5FF32E7079 /* OpenClamAvatarCarouselLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178F26711C3AE985F5F3B1E5 /* OpenClamAvatarCarouselLayout.swift */; };
+		D221930FEAB3F4D1144D65BF /* ScreenContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0AC9D181F3A871AB81DA66B /* ScreenContextModels.swift */; };
+		D27ACDA474A63DA241096B59 /* OpenClamAvatarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EAAB33AAD7BE3F3FBC14557 /* OpenClamAvatarStore.swift */; };
+		D6F2763B5919C3C412AC781C /* CapabilitiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E8C3A7126F7FDF4796B888 /* CapabilitiesView.swift */; };
+		D75EABF4C76B91F53F350B49 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 537938234F1C1C22840F3CFA /* ZIPFoundation */; };
+		D7A0A2FB1AD3033B4478129E /* AttachmentPreparationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C017C2C540B23E8D12F1A71 /* AttachmentPreparationService.swift */; };
+		DA46080BAC607C92F38F81BC /* AgentToolDTOs.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFE95DFE5A6A749B8F7877E7 /* AgentToolDTOs.swift */; };
+		E100B0DD7F8D928B2B33463C /* OpenClamAvatarLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3054355C14179FA7475846AA /* OpenClamAvatarLibrary.swift */; };
+		E2E33456ABC9E3C2ECF8973A /* OpenClamCatalogAvatarStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58DD4CCEA8C8BBA467F90FA7 /* OpenClamCatalogAvatarStage.swift */; };
+		E3F6C57E50F6FB0D0CD6CD6F /* AvatarAgentProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FFD81C7CA9C44E1F50E3682 /* AvatarAgentProfile.swift */; };
+		E42990B657E6CDA70036DCF1 /* ScreenContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0AC9D181F3A871AB81DA66B /* ScreenContextModels.swift */; };
+		E4FEE83A1B95A03266C2F7E7 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F01385E52A0F212F0CE089D1 /* ShareViewController.swift */; };
+		E7377B6805539CCA51A35338 /* LLMAgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF82F64B65FEC2A014678CBE /* LLMAgentClient.swift */; };
+		E74F1C415B55EA95C7C7F7B8 /* ScreenContextReviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7038B3FFB3912A7B9DD440ED /* ScreenContextReviewSession.swift */; };
+		EBE6325C32564BD60B760AD2 /* OpenClamAvatarPackageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56771DF87CDA6E299F270B9A /* OpenClamAvatarPackageTests.swift */; };
+		EDED1BB22A8B258A3E506ED1 /* Capability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56C38FD1B3FD3E10C4089804 /* Capability.swift */; };
+		EF29297FB4A72B0B249DED52 /* ScreenCaptureSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6A8127BFA3BF490416A34C7 /* ScreenCaptureSessionView.swift */; };
+		F1145ECCB80C3A9D8D33056E /* ScreenContextCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD952703730A5E7AA4EA5554 /* ScreenContextCaptureSession.swift */; };
+		F2BEB30751A127B6BEF7AB87 /* ScreenVoicePTTAnswerSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A4D4F5B6E5208752D3B541 /* ScreenVoicePTTAnswerSpeaker.swift */; };
+		F36A18A2CEE1B1F0710DEA41 /* ScreenVoicePTTCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32BD90DF9FF7519393BF4A41 /* ScreenVoicePTTCoordinator.swift */; };
+		F370B6A50C541AA39AA48CCF /* ContactAgentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25EBB6E3936052DF20F1930 /* ContactAgentSession.swift */; };
+		F388C6464E6760A053F17D46 /* OpenClamKeyboardDictationHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74361CA754EBBB02CA5E1291 /* OpenClamKeyboardDictationHost.swift */; };
+		F3B2E22685E8FA4F77BD72F7 /* ScreenPTTServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6785DFB5385377F9DB65D0B5 /* ScreenPTTServiceTests.swift */; };
+		F5C6A2C1337DD425522FDB26 /* OpenClamSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D663B5E7DC24DE324579622 /* OpenClamSettingsView.swift */; };
+		F8987C234CD0492CA3AEED5D /* AgentToolLocalDataParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6D9FBA1E233281E1BC3F41 /* AgentToolLocalDataParser.swift */; };
+		FAA810FDC0314F33C181CBC1 /* MailComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DA90F40D3C0A945B22FBFB /* MailComposeView.swift */; };
+		FED5E9C3CB4613E05D0FA327 /* ScreenContextInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1C6C0FD70502EC8932820890 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5795758325F1E3FDC7E2F192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D808022F2960BDAE63B78749;
+			remoteInfo = OpenClamLiveKit;
+		};
+		4AC1A4CC12B77437B209378F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5795758325F1E3FDC7E2F192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D808022F2960BDAE63B78749;
+			remoteInfo = OpenClamLiveKit;
+		};
+		4B1FAA4D21F6D6F7D84C652E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5795758325F1E3FDC7E2F192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6B55251E2BFA022BF4A15549;
+			remoteInfo = OpenClamLiveKitKeyboard;
+		};
+		8CB7350EC528B7146D14F6E6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5795758325F1E3FDC7E2F192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C0C7016C36FD7391C038D461;
+			remoteInfo = OpenClamLiveKitShareExtension;
+		};
+		B6C7914CCA25709047A65D7C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5795758325F1E3FDC7E2F192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D5B62D8ED63DF3A254FC2D9E;
+			remoteInfo = OpenClamLiveKitScreenVoiceWidget;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A14850772F54D538F81C7601 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				4EE5D88030ADF80CF0B3FBCA /* OpenClamLiveKitShareExtension.appex in Embed Foundation Extensions */,
+				BE8289322DAD339F91498D9A /* OpenClamLiveKitScreenVoiceWidget.appex in Embed Foundation Extensions */,
+				B182E687BB87FAE0F87832E1 /* OpenClamLiveKitKeyboard.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		02BD1E83198EE525E84F53D5 /* OpenClamAvatarCatalogModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarCatalogModels.swift; sourceTree = "<group>"; };
+		02EAB241C5D0DF3FCD8913E8 /* OpenClamLiveKitShareExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OpenClamLiveKitShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		0393984BC904B58E2674C4AD /* OpenClamLiveKitTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OpenClamLiveKitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		095D9EDF0B55A131EC40D28F /* AvatarCatalogAssets.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = AvatarCatalogAssets.bundle; sourceTree = "<group>"; };
+		09D7C04EA36D718249FC1122 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		0AC8C791434A48EF275BC9C1 /* CaptainAyerLipSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerLipSync.swift; sourceTree = "<group>"; };
+		0BB46A6A067C722285F0D5DA /* AgentCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCredentialStore.swift; sourceTree = "<group>"; };
+		0BE8F1B7B53C7E0B02192D6E /* OpenClamKeyboardBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamKeyboardBridge.swift; sourceTree = "<group>"; };
+		0DC4D8AD6C6BCDE9E14BBEE4 /* ContactAgentSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactAgentSessionTests.swift; sourceTree = "<group>"; };
+		0E90A2A96A2C59CFBFAF31E9 /* AssistantModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantModel.swift; sourceTree = "<group>"; };
+		178F26711C3AE985F5F3B1E5 /* OpenClamAvatarCarouselLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarCarouselLayout.swift; sourceTree = "<group>"; };
+		1842548A5FB5AA08340ABA12 /* CaptainAyerAvatarOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerAvatarOverlay.swift; sourceTree = "<group>"; };
+		2025AFD7B2B27503543384F1 /* ConversationHistoryIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryIntegrationTests.swift; sourceTree = "<group>"; };
+		206E2122750A8CAEC6E037D6 /* ProviderCredentialVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderCredentialVault.swift; sourceTree = "<group>"; };
+		21D15D1D6578DBD2A71F491F /* OpenAIResponsesClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesClientTests.swift; sourceTree = "<group>"; };
+		244222D7DB45B858CE55F9AD /* OpenClamAvatarCarousel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarCarousel.swift; sourceTree = "<group>"; };
+		2E24F4F59C46C432748BEFB2 /* OpenClamSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamSidebarView.swift; sourceTree = "<group>"; };
+		2E29188508E6DDBA678D81BF /* EventKitAgentFoundationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentFoundationTests.swift; sourceTree = "<group>"; };
+		2EC2DB7B0F3AC71C99F05F7D /* AvatarAgentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAgentSettingsView.swift; sourceTree = "<group>"; };
+		3054355C14179FA7475846AA /* OpenClamAvatarLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarLibrary.swift; sourceTree = "<group>"; };
+		328ECEC97FAB8877379A8A06 /* CaptainAyerFaceMirrorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceMirrorController.swift; sourceTree = "<group>"; };
+		32BD90DF9FF7519393BF4A41 /* ScreenVoicePTTCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTCoordinator.swift; sourceTree = "<group>"; };
+		33DDC7CB83CC5DF26894CCB2 /* ProviderAgentClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAgentClientTests.swift; sourceTree = "<group>"; };
+		35D8B5C8BA0D5F692896B0A8 /* ProviderWebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderWebSearchService.swift; sourceTree = "<group>"; };
+		36888494E866DB0BE5884298 /* AssistantCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantCommand.swift; sourceTree = "<group>"; };
+		3824B890EA25ABF2A7C9E8AE /* StageAssistantCommandIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StageAssistantCommandIntent.swift; sourceTree = "<group>"; };
+		39A2B37BBB81C768D3705790 /* NearbyPlaceToolService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyPlaceToolService.swift; sourceTree = "<group>"; };
+		3A287448E84ACD6A8C56415B /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		3A6B6E08BB2DEDCA5B756740 /* ProviderAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAPIClient.swift; sourceTree = "<group>"; };
+		3C3DC59E1C5FD604BD183C8B /* ScreenVoicePTTProgressReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTProgressReporter.swift; sourceTree = "<group>"; };
+		3C8ADEAC3CBF7AAF4D72B3CA /* AgentToolLocalDataParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentToolLocalDataParserTests.swift; sourceTree = "<group>"; };
+		3DE92840A8216A19696B4EDB /* CaptainAyerAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerAvatarTests.swift; sourceTree = "<group>"; };
+		3F84B37DE1C6BB0AB1FC248C /* CloudVoiceServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVoiceServiceTests.swift; sourceTree = "<group>"; };
+		3FC28AB4A5774A9C00E46718 /* ActivityRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityRecord.swift; sourceTree = "<group>"; };
+		40CD059FB38A43FA0162C372 /* ProviderAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAPIClientTests.swift; sourceTree = "<group>"; };
+		418712F0FFB181B068F92B0F /* ScreenContextReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextReviewView.swift; sourceTree = "<group>"; };
+		44E30497D59C3CAC6878FDAF /* OpenClamLiveKit.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenClamLiveKit.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		45D1FD93733AB5A6ECE6E9E7 /* LocalAssistantServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAssistantServices.swift; sourceTree = "<group>"; };
+		49CA509152FDA5696D564CBB /* ConversationHistoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryStoreTests.swift; sourceTree = "<group>"; };
+		4B7A3363D91B5B68239C3EE5 /* MarkdownAndReplyDeliveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownAndReplyDeliveryTests.swift; sourceTree = "<group>"; };
+		4D6D9FBA1E233281E1BC3F41 /* AgentToolLocalDataParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentToolLocalDataParser.swift; sourceTree = "<group>"; };
+		51DA90F40D3C0A945B22FBFB /* MailComposeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailComposeView.swift; sourceTree = "<group>"; };
+		566FB21D029B2E574646E9AB /* OpenClamLiveKitKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OpenClamLiveKitKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		56771DF87CDA6E299F270B9A /* OpenClamAvatarPackageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarPackageTests.swift; sourceTree = "<group>"; };
+		56C38FD1B3FD3E10C4089804 /* Capability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Capability.swift; sourceTree = "<group>"; };
+		57CA68AED1FA94FE3DC50A64 /* CaptainAyerFaceMirrorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceMirrorTests.swift; sourceTree = "<group>"; };
+		58DD4CCEA8C8BBA467F90FA7 /* OpenClamCatalogAvatarStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamCatalogAvatarStage.swift; sourceTree = "<group>"; };
+		594F4D2C63FDCF31BC8E2863 /* ScreenVoicePTTLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTLiveActivityWidget.swift; sourceTree = "<group>"; };
+		5AA180F1AEB9A7B076AC4D13 /* ios-light-golden.avtr */ = {isa = PBXFileReference; path = "ios-light-golden.avtr"; sourceTree = "<group>"; };
+		5B261EE1FE744979350AF427 /* AgentAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAttachment.swift; sourceTree = "<group>"; };
+		5B594FF8B05E358FB39B710C /* ContactAgentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactAgentCard.swift; sourceTree = "<group>"; };
+		5BA48E262CA3FB14525DBE15 /* ScreenPTTIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPTTIntents.swift; sourceTree = "<group>"; };
+		5C78B0B2E0DEB18AA5FA3663 /* ScreenContextIntakeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextIntakeTests.swift; sourceTree = "<group>"; };
+		5DA11EB128FDBDEBB2B12E61 /* MarkdownMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMessageView.swift; sourceTree = "<group>"; };
+		5EDF5045565CED771BE612DD /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		607B13A865C3D8527BA492DA /* OpenClamAvatarCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarCatalogTests.swift; sourceTree = "<group>"; };
+		6080EA860E09ABA3E0E7E4B8 /* AssistantIntentRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantIntentRouter.swift; sourceTree = "<group>"; };
+		6344279813D7A311A671526A /* OpenClamAvatarStoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarStoreView.swift; sourceTree = "<group>"; };
+		64550BD8D78006AE6A684C63 /* PendingCommandStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingCommandStore.swift; sourceTree = "<group>"; };
+		6507716ED8C464859956321A /* AISettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsView.swift; sourceTree = "<group>"; };
+		6785DFB5385377F9DB65D0B5 /* ScreenPTTServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPTTServiceTests.swift; sourceTree = "<group>"; };
+		6A9B779E8333D83A18C9F948 /* CloudVoiceServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVoiceServices.swift; sourceTree = "<group>"; };
+		6B31A720C1D340A69C755620 /* AssistantCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantCommandTests.swift; sourceTree = "<group>"; };
+		6B6E102464D5A04C52DD4FE6 /* MessageComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageComposer.swift; sourceTree = "<group>"; };
+		6C017C2C540B23E8D12F1A71 /* AttachmentPreparationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreparationService.swift; sourceTree = "<group>"; };
+		6DF0A4129CF4ECF3DDD8F483 /* ScreenCaptureKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureKitManager.swift; sourceTree = "<group>"; };
+		6EAAB33AAD7BE3F3FBC14557 /* OpenClamAvatarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarStore.swift; sourceTree = "<group>"; };
+		6F6D84F2EB6981AC0C5217B6 /* LocalContactsFoundation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalContactsFoundation.swift; sourceTree = "<group>"; };
+		7038B3FFB3912A7B9DD440ED /* ScreenContextReviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextReviewSession.swift; sourceTree = "<group>"; };
+		70C3729E5828F58D957F3EC5 /* ScreenVoicePTTIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTIntent.swift; sourceTree = "<group>"; };
+		722CE0CA0FA3D88C22A18EA4 /* GeminiInteractionsAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiInteractionsAgentClient.swift; sourceTree = "<group>"; };
+		7399B8347DA041B3A5A5ACD7 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		74361CA754EBBB02CA5E1291 /* OpenClamKeyboardDictationHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamKeyboardDictationHost.swift; sourceTree = "<group>"; };
+		76D00682FA6C816FA51079F4 /* AlarmService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlarmService.swift; sourceTree = "<group>"; };
+		771E89724142FF994674FA08 /* ConversationHistoryController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryController.swift; sourceTree = "<group>"; };
+		7791E9191702EBE7890BBFC0 /* AskCodexCompanionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskCodexCompanionIntent.swift; sourceTree = "<group>"; };
+		7880C23692F20150994600A7 /* ConversationHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryStore.swift; sourceTree = "<group>"; };
+		7A68AA292C480BCE16D7FE2C /* AgentCommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCommandCatalog.swift; sourceTree = "<group>"; };
+		7AC1FBC855509F81EA638F06 /* EventKitAgentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentModels.swift; sourceTree = "<group>"; };
+		7AD8627F755D0194756B81B5 /* ScreenVoicePTTActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTActivityController.swift; sourceTree = "<group>"; };
+		7B1B54B484F743C5E97208CF /* ConversationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationModel.swift; sourceTree = "<group>"; };
+		7D663B5E7DC24DE324579622 /* OpenClamSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamSettingsView.swift; sourceTree = "<group>"; };
+		7F5F1B76EFAE817E1C062475 /* OpenClamAvatarCarouselLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarCarouselLayoutTests.swift; sourceTree = "<group>"; };
+		7FF6ECD45A9C256C2F7A3A3C /* AppHandoffSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppHandoffSessionTests.swift; sourceTree = "<group>"; };
+		7FFD81C7CA9C44E1F50E3682 /* AvatarAgentProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAgentProfile.swift; sourceTree = "<group>"; };
+		8025DE69359413496387B2EF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		8123C212D2C1C1E040810126 /* ScreenContextFeatureModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextFeatureModel.swift; sourceTree = "<group>"; };
+		852C01D4023AD4E851441E47 /* OpenClamLiveKitScreenVoiceWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OpenClamLiveKitScreenVoiceWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextInbox.swift; sourceTree = "<group>"; };
+		8A9C4AD3022E2F0311264A57 /* ScreenVoicePTTModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTModels.swift; sourceTree = "<group>"; };
+		8AF0D82C2F3EC33A8DFE1C8E /* OpenAIResponsesTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesTypes.swift; sourceTree = "<group>"; };
+		8BB08C2624C1E2C228E85FA0 /* OpenClamAvatarAssetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarAssetStore.swift; sourceTree = "<group>"; };
+		8BBC3FC29D1197887EF291B0 /* DeviceActionShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceActionShortcut.swift; sourceTree = "<group>"; };
+		8C7A2546723B5A45015AF9E7 /* CaptainAyerFaceReactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceReactionTests.swift; sourceTree = "<group>"; };
+		8E235549721689AFF0399FD9 /* AIProviderSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIProviderSettingsTests.swift; sourceTree = "<group>"; };
+		9243F96877E4D994612FDA3A /* ScreenPTTService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPTTService.swift; sourceTree = "<group>"; };
+		928586A0D5C3E8C89AF5EC3D /* CaptainAyerFaceReactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceReactions.swift; sourceTree = "<group>"; };
+		9430AE28E95E970B2EE12B5D /* AppAliasSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAliasSettingsView.swift; sourceTree = "<group>"; };
+		96E9F2B04C41E10042D45C8A /* EventKitAgentSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentSessionTests.swift; sourceTree = "<group>"; };
+		97775F1DB95CF29E688971FF /* ScreenVoicePTTRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTRuntime.swift; sourceTree = "<group>"; };
+		9AF14905D647429D47D4AA82 /* EventKitAgentService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentService.swift; sourceTree = "<group>"; };
+		9DEFC496CDA3A4D300800F02 /* AppAliasRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAliasRegistry.swift; sourceTree = "<group>"; };
+		A0D4CB9DBE807DB1068E1002 /* AIConfigurationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIConfigurationModel.swift; sourceTree = "<group>"; };
+		A1335C17C1314ACF2879401F /* ContextRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextRootView.swift; sourceTree = "<group>"; };
+		A158ED3D3A3DFD8BAF1DEE03 /* LiveTalkBrokerTokenSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTalkBrokerTokenSource.swift; sourceTree = "<group>"; };
+		A17655AC169B9269BC1A2302 /* ScreenVoicePTTTranscription.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTTranscription.swift; sourceTree = "<group>"; };
+		A25EBB6E3936052DF20F1930 /* ContactAgentSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactAgentSession.swift; sourceTree = "<group>"; };
+		A2F7B3417A34B7A0EE5FC8A2 /* AgentToolServicesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentToolServicesTests.swift; sourceTree = "<group>"; };
+		A83552D01263C9983C3E1402 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		A849614AD3532D1F9283D4D5 /* PrepareScreenContextIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrepareScreenContextIntent.swift; sourceTree = "<group>"; };
+		ABC0D65F8B5C9F548E41341A /* OpenClamLiveKit.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenClamLiveKit.entitlements; sourceTree = "<group>"; };
+		AD1763CCCA49D31B5F810279 /* GoogleMapsURLBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleMapsURLBuilderTests.swift; sourceTree = "<group>"; };
+		AEAD505B1AE9590E13BE595B /* OpenClamLiveKitApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamLiveKitApp.swift; sourceTree = "<group>"; };
+		AEC54D5FACC436133FD615F3 /* AnthropicMessagesAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnthropicMessagesAgentClient.swift; sourceTree = "<group>"; };
+		AF82F64B65FEC2A014678CBE /* LLMAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMAgentClient.swift; sourceTree = "<group>"; };
+		B1CEE9EAB4A4137CC0396ED8 /* ScreenContextQuestionInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextQuestionInbox.swift; sourceTree = "<group>"; };
+		B1E8C3A7126F7FDF4796B888 /* CapabilitiesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilitiesView.swift; sourceTree = "<group>"; };
+		B3E2E116113A9C52CB23BD57 /* OpenClamAvatarCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarCatalog.swift; sourceTree = "<group>"; };
+		B42DB8D9C2E097F7675C16BB /* ConversationAttachmentDescriptor+AgentAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ConversationAttachmentDescriptor+AgentAttachment.swift"; sourceTree = "<group>"; };
+		B53FBD982C5947AD5E2BF74B /* ScreenVoicePTTActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTActivityAttributes.swift; sourceTree = "<group>"; };
+		B65D850A0C1949485C0933F0 /* OpenClamKeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamKeyboardView.swift; sourceTree = "<group>"; };
+		B795A6F2209C698C630C7CE6 /* ConversationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationModels.swift; sourceTree = "<group>"; };
+		B7EA90413EB570E0098B4467 /* OpenClamAvatarStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarStoreTests.swift; sourceTree = "<group>"; };
+		B8B564409321FA82F37998F1 /* CompanionAgentToolCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionAgentToolCatalog.swift; sourceTree = "<group>"; };
+		BC2A81A26CA89DBC6BBA2111 /* AIProviderSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIProviderSettings.swift; sourceTree = "<group>"; };
+		BCBCC79F5B012AA08CDE90DE /* OpenClamConversationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamConversationUITests.swift; sourceTree = "<group>"; };
+		BD952703730A5E7AA4EA5554 /* ScreenContextCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextCaptureSession.swift; sourceTree = "<group>"; };
+		C31A9EFAD78420C66E9EBF51 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C5229190817CA005E6709A51 /* OpenClamLiveKitUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OpenClamLiveKitUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C66052A28EFBE6BBEAA66E8A /* OpenClamCatalogAvatarStageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamCatalogAvatarStageTests.swift; sourceTree = "<group>"; };
+		C6938EB6F48FCE169BACF27A /* AvatarAgentProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAgentProfileTests.swift; sourceTree = "<group>"; };
+		C99834650A442D04A114CEF8 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
+		C9A4D4F5B6E5208752D3B541 /* ScreenVoicePTTAnswerSpeaker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTAnswerSpeaker.swift; sourceTree = "<group>"; };
+		C9C732B82AEA5AE95B71F777 /* LiveTalk.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LiveTalk.xcconfig; sourceTree = "<group>"; };
+		CADCC38BF0349487F5C67D45 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
+		CB89E50C32DD2BECE9342D08 /* GoogleMapsURLBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleMapsURLBuilder.swift; sourceTree = "<group>"; };
+		CEBBC32D61C85B7D0F4EB1C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		D0AC9D181F3A871AB81DA66B /* ScreenContextModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextModels.swift; sourceTree = "<group>"; };
+		D3A301263A30EE57A7807848 /* LiveTalkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTalkTests.swift; sourceTree = "<group>"; };
+		D453FE069B2EEDD7F76D2B96 /* OpenClamAvatarPackage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarPackage.swift; sourceTree = "<group>"; };
+		D55AF456FDE662E7CC5C9CA1 /* ScreenVoicePTTMicrophone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTMicrophone.swift; sourceTree = "<group>"; };
+		D59A68A3ADB8C776A669E793 /* LiveTalkConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTalkConfiguration.swift; sourceTree = "<group>"; };
+		D6A8127BFA3BF490416A34C7 /* ScreenCaptureSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureSessionView.swift; sourceTree = "<group>"; };
+		DC85D1AE02F02FED6BE21805 /* OpenClamKeyboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamKeyboardTests.swift; sourceTree = "<group>"; };
+		DFE95DFE5A6A749B8F7877E7 /* AgentToolDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentToolDTOs.swift; sourceTree = "<group>"; };
+		E04FDE776990744B476BF9B2 /* CaptainAyerAvatarStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerAvatarStage.swift; sourceTree = "<group>"; };
+		E2153C9971249BF69F3F6A0E /* LiveTalkSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTalkSessionController.swift; sourceTree = "<group>"; };
+		E2769F0779F8B5C693E59EE1 /* EventKitAgentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentCard.swift; sourceTree = "<group>"; };
+		E468F72BFC872F2D4C64402B /* AppHandoffSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppHandoffSession.swift; sourceTree = "<group>"; };
+		E57590AA461FD13D602019C9 /* ScreenVoicePTTCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTCoordinatorTests.swift; sourceTree = "<group>"; };
+		E6601B958F0E45D033058BAC /* ScreenVoicePTTVAD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTVAD.swift; sourceTree = "<group>"; };
+		F01385E52A0F212F0CE089D1 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		F12F93E793FF5A134183C528 /* CaptainAyerFaceMirrorModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceMirrorModels.swift; sourceTree = "<group>"; };
+		F9100BE4F25B68FD044463A9 /* EventKitAgentMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentMapper.swift; sourceTree = "<group>"; };
+		FA66D491F291D7F5D177966D /* OpenAIResponsesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesClient.swift; sourceTree = "<group>"; };
+		FD54C9DD4A4979F5A6147815 /* ContactEmailToolService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactEmailToolService.swift; sourceTree = "<group>"; };
+		FED0299EB8F29F000CAB6B56 /* AgentCommandCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCommandCatalogTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		399F8B2617132526609A0E1E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A8BD814501DEDE46F1BF7434 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CF4F0FD1A9406FF641C4F31F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1FC78473D4AE45B205090CCB /* LiveKit in Frameworks */,
+				D75EABF4C76B91F53F350B49 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A7FD9216EE2145AC417335D /* openclam-livekit-suite */ = {
+			isa = PBXGroup;
+			children = (
+				B3B52AEDBECF7B20D0F4B80E /* shared */,
+			);
+			name = "openclam-livekit-suite";
+			path = ../..;
+			sourceTree = "<group>";
+		};
+		0F9240E85443BB37903CAC5A /* avatar-package-v2 */ = {
+			isa = PBXGroup;
+			children = (
+				5E70B06385E0859B229A7711 /* fixtures */,
+			);
+			path = "avatar-package-v2";
+			sourceTree = "<group>";
+		};
+		17F7E4E8BC20143576E31960 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				FED0299EB8F29F000CAB6B56 /* AgentCommandCatalogTests.swift */,
+				3C8ADEAC3CBF7AAF4D72B3CA /* AgentToolLocalDataParserTests.swift */,
+				A2F7B3417A34B7A0EE5FC8A2 /* AgentToolServicesTests.swift */,
+				8E235549721689AFF0399FD9 /* AIProviderSettingsTests.swift */,
+				7FF6ECD45A9C256C2F7A3A3C /* AppHandoffSessionTests.swift */,
+				6B31A720C1D340A69C755620 /* AssistantCommandTests.swift */,
+				C6938EB6F48FCE169BACF27A /* AvatarAgentProfileTests.swift */,
+				3DE92840A8216A19696B4EDB /* CaptainAyerAvatarTests.swift */,
+				57CA68AED1FA94FE3DC50A64 /* CaptainAyerFaceMirrorTests.swift */,
+				8C7A2546723B5A45015AF9E7 /* CaptainAyerFaceReactionTests.swift */,
+				3F84B37DE1C6BB0AB1FC248C /* CloudVoiceServiceTests.swift */,
+				0DC4D8AD6C6BCDE9E14BBEE4 /* ContactAgentSessionTests.swift */,
+				2025AFD7B2B27503543384F1 /* ConversationHistoryIntegrationTests.swift */,
+				49CA509152FDA5696D564CBB /* ConversationHistoryStoreTests.swift */,
+				2E29188508E6DDBA678D81BF /* EventKitAgentFoundationTests.swift */,
+				96E9F2B04C41E10042D45C8A /* EventKitAgentSessionTests.swift */,
+				AD1763CCCA49D31B5F810279 /* GoogleMapsURLBuilderTests.swift */,
+				D3A301263A30EE57A7807848 /* LiveTalkTests.swift */,
+				4B7A3363D91B5B68239C3EE5 /* MarkdownAndReplyDeliveryTests.swift */,
+				21D15D1D6578DBD2A71F491F /* OpenAIResponsesClientTests.swift */,
+				7F5F1B76EFAE817E1C062475 /* OpenClamAvatarCarouselLayoutTests.swift */,
+				607B13A865C3D8527BA492DA /* OpenClamAvatarCatalogTests.swift */,
+				56771DF87CDA6E299F270B9A /* OpenClamAvatarPackageTests.swift */,
+				B7EA90413EB570E0098B4467 /* OpenClamAvatarStoreTests.swift */,
+				C66052A28EFBE6BBEAA66E8A /* OpenClamCatalogAvatarStageTests.swift */,
+				DC85D1AE02F02FED6BE21805 /* OpenClamKeyboardTests.swift */,
+				33DDC7CB83CC5DF26894CCB2 /* ProviderAgentClientTests.swift */,
+				40CD059FB38A43FA0162C372 /* ProviderAPIClientTests.swift */,
+				5C78B0B2E0DEB18AA5FA3663 /* ScreenContextIntakeTests.swift */,
+				6785DFB5385377F9DB65D0B5 /* ScreenPTTServiceTests.swift */,
+				E57590AA461FD13D602019C9 /* ScreenVoicePTTCoordinatorTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		1B74A2C35C3B49573601CD2C /* Avatar */ = {
+			isa = PBXGroup;
+			children = (
+				1842548A5FB5AA08340ABA12 /* CaptainAyerAvatarOverlay.swift */,
+				E04FDE776990744B476BF9B2 /* CaptainAyerAvatarStage.swift */,
+				928586A0D5C3E8C89AF5EC3D /* CaptainAyerFaceReactions.swift */,
+				0AC8C791434A48EF275BC9C1 /* CaptainAyerLipSync.swift */,
+			);
+			path = Avatar;
+			sourceTree = "<group>";
+		};
+		24502083871C114CB72B19A8 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				CEBBC32D61C85B7D0F4EB1C1 /* Assets.xcassets */,
+				A83552D01263C9983C3E1402 /* Info.plist */,
+				ABC0D65F8B5C9F548E41341A /* OpenClamLiveKit.entitlements */,
+				AEAD505B1AE9590E13BE595B /* OpenClamLiveKitApp.swift */,
+				8025DE69359413496387B2EF /* PrivacyInfo.xcprivacy */,
+				51DDE7D04C4C109C48D6A3B1 /* Agents */,
+				685973B0DB18D09327CFC789 /* AppIntents */,
+				1B74A2C35C3B49573601CD2C /* Avatar */,
+				7FCB3A87161618D6198B7A92 /* AvatarCatalog */,
+				9D73758277B4F9A1CF00706D /* AvatarFaceMirror */,
+				CB2C558EC9FD0540BDC8C64B /* LiveTalk */,
+				6FD857802C5174A273CC19DD /* Models */,
+				D25A90BAFEC6BF5E6245B0F4 /* ScreenContext */,
+				5C853A9B4BE5DEB7E3ACCDDC /* ScreenVoicePTT */,
+				3153FBB96710E74926AF4901 /* Services */,
+				5E3B6A1546346C6F119AF269 /* Views */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		3153FBB96710E74926AF4901 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				0BB46A6A067C722285F0D5DA /* AgentCredentialStore.swift */,
+				DFE95DFE5A6A749B8F7877E7 /* AgentToolDTOs.swift */,
+				4D6D9FBA1E233281E1BC3F41 /* AgentToolLocalDataParser.swift */,
+				A0D4CB9DBE807DB1068E1002 /* AIConfigurationModel.swift */,
+				76D00682FA6C816FA51079F4 /* AlarmService.swift */,
+				AEC54D5FACC436133FD615F3 /* AnthropicMessagesAgentClient.swift */,
+				9DEFC496CDA3A4D300800F02 /* AppAliasRegistry.swift */,
+				E468F72BFC872F2D4C64402B /* AppHandoffSession.swift */,
+				6080EA860E09ABA3E0E7E4B8 /* AssistantIntentRouter.swift */,
+				0E90A2A96A2C59CFBFAF31E9 /* AssistantModel.swift */,
+				6C017C2C540B23E8D12F1A71 /* AttachmentPreparationService.swift */,
+				6A9B779E8333D83A18C9F948 /* CloudVoiceServices.swift */,
+				B8B564409321FA82F37998F1 /* CompanionAgentToolCatalog.swift */,
+				A25EBB6E3936052DF20F1930 /* ContactAgentSession.swift */,
+				FD54C9DD4A4979F5A6147815 /* ContactEmailToolService.swift */,
+				771E89724142FF994674FA08 /* ConversationHistoryController.swift */,
+				7880C23692F20150994600A7 /* ConversationHistoryStore.swift */,
+				7B1B54B484F743C5E97208CF /* ConversationModel.swift */,
+				F9100BE4F25B68FD044463A9 /* EventKitAgentMapper.swift */,
+				9AF14905D647429D47D4AA82 /* EventKitAgentService.swift */,
+				722CE0CA0FA3D88C22A18EA4 /* GeminiInteractionsAgentClient.swift */,
+				CB89E50C32DD2BECE9342D08 /* GoogleMapsURLBuilder.swift */,
+				AF82F64B65FEC2A014678CBE /* LLMAgentClient.swift */,
+				45D1FD93733AB5A6ECE6E9E7 /* LocalAssistantServices.swift */,
+				6F6D84F2EB6981AC0C5217B6 /* LocalContactsFoundation.swift */,
+				39A2B37BBB81C768D3705790 /* NearbyPlaceToolService.swift */,
+				FA66D491F291D7F5D177966D /* OpenAIResponsesClient.swift */,
+				8AF0D82C2F3EC33A8DFE1C8E /* OpenAIResponsesTypes.swift */,
+				64550BD8D78006AE6A684C63 /* PendingCommandStore.swift */,
+				3A6B6E08BB2DEDCA5B756740 /* ProviderAPIClient.swift */,
+				206E2122750A8CAEC6E037D6 /* ProviderCredentialVault.swift */,
+				35D8B5C8BA0D5F692896B0A8 /* ProviderWebSearchService.swift */,
+				9243F96877E4D994612FDA3A /* ScreenPTTService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		4124A32A3274A523DD5F386B /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				095D9EDF0B55A131EC40D28F /* AvatarCatalogAssets.bundle */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		4CCDB8A3AD45910A30DB6630 /* Extension */ = {
+			isa = PBXGroup;
+			children = (
+				CADCC38BF0349487F5C67D45 /* KeyboardViewController.swift */,
+				B65D850A0C1949485C0933F0 /* OpenClamKeyboardView.swift */,
+			);
+			path = Extension;
+			sourceTree = "<group>";
+		};
+		51DDE7D04C4C109C48D6A3B1 /* Agents */ = {
+			isa = PBXGroup;
+			children = (
+				7FFD81C7CA9C44E1F50E3682 /* AvatarAgentProfile.swift */,
+			);
+			path = Agents;
+			sourceTree = "<group>";
+		};
+		522B6813F2A8BAE738F2C5D4 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				0BE8F1B7B53C7E0B02192D6E /* OpenClamKeyboardBridge.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		5AC56A22C563DD96AADAF30B /* ScreenVoicePTTWidget */ = {
+			isa = PBXGroup;
+			children = (
+				C31A9EFAD78420C66E9EBF51 /* Info.plist */,
+				594F4D2C63FDCF31BC8E2863 /* ScreenVoicePTTLiveActivityWidget.swift */,
+			);
+			path = ScreenVoicePTTWidget;
+			sourceTree = "<group>";
+		};
+		5C853A9B4BE5DEB7E3ACCDDC /* ScreenVoicePTT */ = {
+			isa = PBXGroup;
+			children = (
+				B53FBD982C5947AD5E2BF74B /* ScreenVoicePTTActivityAttributes.swift */,
+				7AD8627F755D0194756B81B5 /* ScreenVoicePTTActivityController.swift */,
+				C9A4D4F5B6E5208752D3B541 /* ScreenVoicePTTAnswerSpeaker.swift */,
+				32BD90DF9FF7519393BF4A41 /* ScreenVoicePTTCoordinator.swift */,
+				70C3729E5828F58D957F3EC5 /* ScreenVoicePTTIntent.swift */,
+				D55AF456FDE662E7CC5C9CA1 /* ScreenVoicePTTMicrophone.swift */,
+				8A9C4AD3022E2F0311264A57 /* ScreenVoicePTTModels.swift */,
+				3C3DC59E1C5FD604BD183C8B /* ScreenVoicePTTProgressReporter.swift */,
+				97775F1DB95CF29E688971FF /* ScreenVoicePTTRuntime.swift */,
+				A17655AC169B9269BC1A2302 /* ScreenVoicePTTTranscription.swift */,
+				E6601B958F0E45D033058BAC /* ScreenVoicePTTVAD.swift */,
+			);
+			path = ScreenVoicePTT;
+			sourceTree = "<group>";
+		};
+		5E3B6A1546346C6F119AF269 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				6507716ED8C464859956321A /* AISettingsView.swift */,
+				9430AE28E95E970B2EE12B5D /* AppAliasSettingsView.swift */,
+				2EC2DB7B0F3AC71C99F05F7D /* AvatarAgentSettingsView.swift */,
+				B1E8C3A7126F7FDF4796B888 /* CapabilitiesView.swift */,
+				5B594FF8B05E358FB39B710C /* ContactAgentCard.swift */,
+				A1335C17C1314ACF2879401F /* ContextRootView.swift */,
+				5EDF5045565CED771BE612DD /* ConversationView.swift */,
+				09D7C04EA36D718249FC1122 /* DashboardView.swift */,
+				E2769F0779F8B5C693E59EE1 /* EventKitAgentCard.swift */,
+				51DA90F40D3C0A945B22FBFB /* MailComposeView.swift */,
+				5DA11EB128FDBDEBB2B12E61 /* MarkdownMessageView.swift */,
+				6B6E102464D5A04C52DD4FE6 /* MessageComposer.swift */,
+				6344279813D7A311A671526A /* OpenClamAvatarStoreView.swift */,
+				7D663B5E7DC24DE324579622 /* OpenClamSettingsView.swift */,
+				2E24F4F59C46C432748BEFB2 /* OpenClamSidebarView.swift */,
+				3A287448E84ACD6A8C56415B /* RootView.swift */,
+				D6A8127BFA3BF490416A34C7 /* ScreenCaptureSessionView.swift */,
+				418712F0FFB181B068F92B0F /* ScreenContextReviewView.swift */,
+				C99834650A442D04A114CEF8 /* SetupView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		5E70B06385E0859B229A7711 /* fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				5AA180F1AEB9A7B076AC4D13 /* ios-light-golden.avtr */,
+			);
+			path = fixtures;
+			sourceTree = "<group>";
+		};
+		66D722F32251E5E025C5E06C /* Host */ = {
+			isa = PBXGroup;
+			children = (
+				74361CA754EBBB02CA5E1291 /* OpenClamKeyboardDictationHost.swift */,
+			);
+			path = Host;
+			sourceTree = "<group>";
+		};
+		685973B0DB18D09327CFC789 /* AppIntents */ = {
+			isa = PBXGroup;
+			children = (
+				7791E9191702EBE7890BBFC0 /* AskCodexCompanionIntent.swift */,
+				A849614AD3532D1F9283D4D5 /* PrepareScreenContextIntent.swift */,
+				5BA48E262CA3FB14525DBE15 /* ScreenPTTIntents.swift */,
+				3824B890EA25ABF2A7C9E8AE /* StageAssistantCommandIntent.swift */,
+			);
+			path = AppIntents;
+			sourceTree = "<group>";
+		};
+		6FD857802C5174A273CC19DD /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				3FC28AB4A5774A9C00E46718 /* ActivityRecord.swift */,
+				5B261EE1FE744979350AF427 /* AgentAttachment.swift */,
+				7A68AA292C480BCE16D7FE2C /* AgentCommandCatalog.swift */,
+				BC2A81A26CA89DBC6BBA2111 /* AIProviderSettings.swift */,
+				36888494E866DB0BE5884298 /* AssistantCommand.swift */,
+				56C38FD1B3FD3E10C4089804 /* Capability.swift */,
+				B42DB8D9C2E097F7675C16BB /* ConversationAttachmentDescriptor+AgentAttachment.swift */,
+				B795A6F2209C698C630C7CE6 /* ConversationModels.swift */,
+				8BBC3FC29D1197887EF291B0 /* DeviceActionShortcut.swift */,
+				7AC1FBC855509F81EA638F06 /* EventKitAgentModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		7FCB3A87161618D6198B7A92 /* AvatarCatalog */ = {
+			isa = PBXGroup;
+			children = (
+				8BB08C2624C1E2C228E85FA0 /* OpenClamAvatarAssetStore.swift */,
+				244222D7DB45B858CE55F9AD /* OpenClamAvatarCarousel.swift */,
+				178F26711C3AE985F5F3B1E5 /* OpenClamAvatarCarouselLayout.swift */,
+				B3E2E116113A9C52CB23BD57 /* OpenClamAvatarCatalog.swift */,
+				02BD1E83198EE525E84F53D5 /* OpenClamAvatarCatalogModels.swift */,
+				3054355C14179FA7475846AA /* OpenClamAvatarLibrary.swift */,
+				D453FE069B2EEDD7F76D2B96 /* OpenClamAvatarPackage.swift */,
+				6EAAB33AAD7BE3F3FBC14557 /* OpenClamAvatarStore.swift */,
+				58DD4CCEA8C8BBA467F90FA7 /* OpenClamCatalogAvatarStage.swift */,
+				4124A32A3274A523DD5F386B /* Resources */,
+			);
+			path = AvatarCatalog;
+			sourceTree = "<group>";
+		};
+		822A655FC988141BB75D025B /* KeyboardExtension */ = {
+			isa = PBXGroup;
+			children = (
+				7399B8347DA041B3A5A5ACD7 /* PrivacyInfo.xcprivacy */,
+				4CCDB8A3AD45910A30DB6630 /* Extension */,
+				66D722F32251E5E025C5E06C /* Host */,
+				522B6813F2A8BAE738F2C5D4 /* Shared */,
+			);
+			path = KeyboardExtension;
+			sourceTree = "<group>";
+		};
+		9D73758277B4F9A1CF00706D /* AvatarFaceMirror */ = {
+			isa = PBXGroup;
+			children = (
+				328ECEC97FAB8877379A8A06 /* CaptainAyerFaceMirrorController.swift */,
+				F12F93E793FF5A134183C528 /* CaptainAyerFaceMirrorModels.swift */,
+			);
+			path = AvatarFaceMirror;
+			sourceTree = "<group>";
+		};
+		9EC4E014401A2EF1F8EF4B2E /* ShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				F01385E52A0F212F0CE089D1 /* ShareViewController.swift */,
+			);
+			path = ShareExtension;
+			sourceTree = "<group>";
+		};
+		AC3AD13964C44317B125D11B /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				BCBCC79F5B012AA08CDE90DE /* OpenClamConversationUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
+		B3B52AEDBECF7B20D0F4B80E /* shared */ = {
+			isa = PBXGroup;
+			children = (
+				0F9240E85443BB37903CAC5A /* avatar-package-v2 */,
+			);
+			path = shared;
+			sourceTree = "<group>";
+		};
+		BB28188EF5148AAFC70B6DEF /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				C9C732B82AEA5AE95B71F777 /* LiveTalk.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		CB2C558EC9FD0540BDC8C64B /* LiveTalk */ = {
+			isa = PBXGroup;
+			children = (
+				A158ED3D3A3DFD8BAF1DEE03 /* LiveTalkBrokerTokenSource.swift */,
+				D59A68A3ADB8C776A669E793 /* LiveTalkConfiguration.swift */,
+				E2153C9971249BF69F3F6A0E /* LiveTalkSessionController.swift */,
+			);
+			path = LiveTalk;
+			sourceTree = "<group>";
+		};
+		D25A90BAFEC6BF5E6245B0F4 /* ScreenContext */ = {
+			isa = PBXGroup;
+			children = (
+				6DF0A4129CF4ECF3DDD8F483 /* ScreenCaptureKitManager.swift */,
+				BD952703730A5E7AA4EA5554 /* ScreenContextCaptureSession.swift */,
+				8123C212D2C1C1E040810126 /* ScreenContextFeatureModel.swift */,
+				8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */,
+				D0AC9D181F3A871AB81DA66B /* ScreenContextModels.swift */,
+				B1CEE9EAB4A4137CC0396ED8 /* ScreenContextQuestionInbox.swift */,
+				7038B3FFB3912A7B9DD440ED /* ScreenContextReviewSession.swift */,
+			);
+			path = ScreenContext;
+			sourceTree = "<group>";
+		};
+		EE2A6B381AC9935E83AEA366 = {
+			isa = PBXGroup;
+			children = (
+				24502083871C114CB72B19A8 /* App */,
+				BB28188EF5148AAFC70B6DEF /* Config */,
+				822A655FC988141BB75D025B /* KeyboardExtension */,
+				0A7FD9216EE2145AC417335D /* openclam-livekit-suite */,
+				5AC56A22C563DD96AADAF30B /* ScreenVoicePTTWidget */,
+				9EC4E014401A2EF1F8EF4B2E /* ShareExtension */,
+				17F7E4E8BC20143576E31960 /* Tests */,
+				AC3AD13964C44317B125D11B /* UITests */,
+				FB52E08625E27AABA0D75E37 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FB52E08625E27AABA0D75E37 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				44E30497D59C3CAC6878FDAF /* OpenClamLiveKit.app */,
+				566FB21D029B2E574646E9AB /* OpenClamLiveKitKeyboard.appex */,
+				852C01D4023AD4E851441E47 /* OpenClamLiveKitScreenVoiceWidget.appex */,
+				02EAB241C5D0DF3FCD8913E8 /* OpenClamLiveKitShareExtension.appex */,
+				0393984BC904B58E2674C4AD /* OpenClamLiveKitTests.xctest */,
+				C5229190817CA005E6709A51 /* OpenClamLiveKitUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3F234229E581A27141A2D708 /* OpenClamLiveKitUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 67E748E122B9E5D2C08BD7A0 /* Build configuration list for PBXNativeTarget "OpenClamLiveKitUITests" */;
+			buildPhases = (
+				88A270C40BEC926DA40431CD /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3CCC18CC41582FDBAAD07EBE /* PBXTargetDependency */,
+			);
+			name = OpenClamLiveKitUITests;
+			packageProductDependencies = (
+			);
+			productName = OpenClamLiveKitUITests;
+			productReference = C5229190817CA005E6709A51 /* OpenClamLiveKitUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		5BC25B057FC510D17FD3ECDC /* OpenClamLiveKitTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5025DE9E1792849501DA2B2B /* Build configuration list for PBXNativeTarget "OpenClamLiveKitTests" */;
+			buildPhases = (
+				6639A1EFE970C411D6282DEB /* Sources */,
+				9FA65E01FF0DB907266E2634 /* Resources */,
+				399F8B2617132526609A0E1E /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				68E8728E373DA6AA74949192 /* PBXTargetDependency */,
+			);
+			name = OpenClamLiveKitTests;
+			packageProductDependencies = (
+				1E17EA55ADED315B77947CDD /* ZIPFoundation */,
+			);
+			productName = OpenClamLiveKitTests;
+			productReference = 0393984BC904B58E2674C4AD /* OpenClamLiveKitTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		6B55251E2BFA022BF4A15549 /* OpenClamLiveKitKeyboard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F962ACD1167AEE58ABA67397 /* Build configuration list for PBXNativeTarget "OpenClamLiveKitKeyboard" */;
+			buildPhases = (
+				0B8A3F2FA2C6BF38335391C0 /* Sources */,
+				8437A6305F41340EA3BAB797 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OpenClamLiveKitKeyboard;
+			packageProductDependencies = (
+			);
+			productName = OpenClamLiveKitKeyboard;
+			productReference = 566FB21D029B2E574646E9AB /* OpenClamLiveKitKeyboard.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		C0C7016C36FD7391C038D461 /* OpenClamLiveKitShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B637D2A6D2287990A69DCA8A /* Build configuration list for PBXNativeTarget "OpenClamLiveKitShareExtension" */;
+			buildPhases = (
+				73187130485CCA11E2FD297A /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OpenClamLiveKitShareExtension;
+			packageProductDependencies = (
+			);
+			productName = OpenClamLiveKitShareExtension;
+			productReference = 02EAB241C5D0DF3FCD8913E8 /* OpenClamLiveKitShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		D5B62D8ED63DF3A254FC2D9E /* OpenClamLiveKitScreenVoiceWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8B9BAF6AF4AEC5C13A7364C4 /* Build configuration list for PBXNativeTarget "OpenClamLiveKitScreenVoiceWidget" */;
+			buildPhases = (
+				A52A9119E576FC548AAFCDE9 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OpenClamLiveKitScreenVoiceWidget;
+			packageProductDependencies = (
+			);
+			productName = OpenClamLiveKitScreenVoiceWidget;
+			productReference = 852C01D4023AD4E851441E47 /* OpenClamLiveKitScreenVoiceWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		D808022F2960BDAE63B78749 /* OpenClamLiveKit */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 75FB51157C13B27D22EF7BFF /* Build configuration list for PBXNativeTarget "OpenClamLiveKit" */;
+			buildPhases = (
+				FC0BC0B1F1641B3E900B2B8F /* Sources */,
+				4A7090DC8D03E892EE462AD9 /* Resources */,
+				CF4F0FD1A9406FF641C4F31F /* Frameworks */,
+				A14850772F54D538F81C7601 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FC89BFF2117ABEAB881707B8 /* PBXTargetDependency */,
+				BFDC08783773E1A30BC3E73C /* PBXTargetDependency */,
+				C3EC7DDB08C23BA49693C754 /* PBXTargetDependency */,
+			);
+			name = OpenClamLiveKit;
+			packageProductDependencies = (
+				A6638CF445F12D11761B1380 /* LiveKit */,
+				537938234F1C1C22840F3CFA /* ZIPFoundation */,
+			);
+			productName = OpenClamLiveKit;
+			productReference = 44E30497D59C3CAC6878FDAF /* OpenClamLiveKit.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5795758325F1E3FDC7E2F192 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					3F234229E581A27141A2D708 = {
+						DevelopmentTeam = X7R8N6MMSU;
+						ProvisioningStyle = Automatic;
+						TestTargetID = D808022F2960BDAE63B78749;
+					};
+					5BC25B057FC510D17FD3ECDC = {
+						DevelopmentTeam = X7R8N6MMSU;
+						ProvisioningStyle = Automatic;
+					};
+					6B55251E2BFA022BF4A15549 = {
+						DevelopmentTeam = X7R8N6MMSU;
+					};
+					C0C7016C36FD7391C038D461 = {
+						DevelopmentTeam = X7R8N6MMSU;
+					};
+					D5B62D8ED63DF3A254FC2D9E = {
+						DevelopmentTeam = X7R8N6MMSU;
+					};
+					D808022F2960BDAE63B78749 = {
+						DevelopmentTeam = X7R8N6MMSU;
+					};
+				};
+			};
+			buildConfigurationList = BEDAD46A57B5323903D7ED2C /* Build configuration list for PBXProject "OpenClamLiveKit" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = EE2A6B381AC9935E83AEA366;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				F1088040590D52FF691D893F /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
+				D4FD3CB34F593C65378AF06E /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FB52E08625E27AABA0D75E37 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D808022F2960BDAE63B78749 /* OpenClamLiveKit */,
+				C0C7016C36FD7391C038D461 /* OpenClamLiveKitShareExtension */,
+				D5B62D8ED63DF3A254FC2D9E /* OpenClamLiveKitScreenVoiceWidget */,
+				6B55251E2BFA022BF4A15549 /* OpenClamLiveKitKeyboard */,
+				5BC25B057FC510D17FD3ECDC /* OpenClamLiveKitTests */,
+				3F234229E581A27141A2D708 /* OpenClamLiveKitUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4A7090DC8D03E892EE462AD9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				76B71BEAF74E542DFE66EC67 /* Assets.xcassets in Resources */,
+				D06AB37E1F1CAA07D795C6F6 /* AvatarCatalogAssets.bundle in Resources */,
+				28AEF61C9FDC4C1AB5940351 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8437A6305F41340EA3BAB797 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8CCF08B8F23AE28A013FA3E4 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9FA65E01FF0DB907266E2634 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9FB2B5EEAF5AB520AFE0CC1B /* ios-light-golden.avtr in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0B8A3F2FA2C6BF38335391C0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5DBCCF48B24D58064F725C3 /* KeyboardViewController.swift in Sources */,
+				35F99E6E73A4370750DF622C /* OpenClamKeyboardBridge.swift in Sources */,
+				99314BC4FFD545DEFBCDF169 /* OpenClamKeyboardView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6639A1EFE970C411D6282DEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8C484969107B94CF1F21DB15 /* AIProviderSettingsTests.swift in Sources */,
+				090B896C110C954C9CA9BB35 /* AgentCommandCatalogTests.swift in Sources */,
+				132D8610AC77362C251111B4 /* AgentToolLocalDataParserTests.swift in Sources */,
+				339F746BF2A4D11A3408C42B /* AgentToolServicesTests.swift in Sources */,
+				BCC04F78D9524DB2645A876A /* AppHandoffSessionTests.swift in Sources */,
+				4EB5C2A6B0E8340BE92030A4 /* AssistantCommandTests.swift in Sources */,
+				CACBA54A6A56DD4162676796 /* AvatarAgentProfileTests.swift in Sources */,
+				8739F2A07469F45FDAEF9501 /* CaptainAyerAvatarTests.swift in Sources */,
+				42CC9ADC51450A34DFBB499A /* CaptainAyerFaceMirrorTests.swift in Sources */,
+				4F4BE74F03E7F03006F6E834 /* CaptainAyerFaceReactionTests.swift in Sources */,
+				394719A540385081B1808896 /* CloudVoiceServiceTests.swift in Sources */,
+				6EF040AA0595CBE051D10CBF /* ContactAgentSessionTests.swift in Sources */,
+				585216F8BCD6775553A05E2D /* ConversationHistoryIntegrationTests.swift in Sources */,
+				C1CAC24263198E07D435D055 /* ConversationHistoryStoreTests.swift in Sources */,
+				9E3FAEC40A44B7D98034C67A /* EventKitAgentFoundationTests.swift in Sources */,
+				CBE366EFEF3D34E2B66FBC50 /* EventKitAgentSessionTests.swift in Sources */,
+				5621E44D103983F3BCC6B362 /* GoogleMapsURLBuilderTests.swift in Sources */,
+				07AD04BBD10E31E2D081C3CA /* LiveTalkTests.swift in Sources */,
+				5723EE6DC046422BEB7F908B /* MarkdownAndReplyDeliveryTests.swift in Sources */,
+				B99973C13702243CEFC19BE3 /* OpenAIResponsesClientTests.swift in Sources */,
+				3017332D9659ADEFF9191C03 /* OpenClamAvatarCarouselLayoutTests.swift in Sources */,
+				CAC03FB525F7E3F306BA4232 /* OpenClamAvatarCatalogTests.swift in Sources */,
+				EBE6325C32564BD60B760AD2 /* OpenClamAvatarPackageTests.swift in Sources */,
+				177D436AC89B09442D73AF5B /* OpenClamAvatarStoreTests.swift in Sources */,
+				7D9253DC57818DB06578C9D1 /* OpenClamCatalogAvatarStageTests.swift in Sources */,
+				2930D3D2FC2054D60C46FCEF /* OpenClamKeyboardTests.swift in Sources */,
+				5DBA0373F02623BF5C60ECA2 /* ProviderAPIClientTests.swift in Sources */,
+				854EC7F6090FCE4138480F95 /* ProviderAgentClientTests.swift in Sources */,
+				1AE3846DB4C7291D47C2DA99 /* ScreenContextIntakeTests.swift in Sources */,
+				F3B2E22685E8FA4F77BD72F7 /* ScreenPTTServiceTests.swift in Sources */,
+				0E1F7870E7F63AFE6B462F0E /* ScreenVoicePTTCoordinatorTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		73187130485CCA11E2FD297A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C578DAC87371E8776DD0058D /* ScreenContextInbox.swift in Sources */,
+				E42990B657E6CDA70036DCF1 /* ScreenContextModels.swift in Sources */,
+				E4FEE83A1B95A03266C2F7E7 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		88A270C40BEC926DA40431CD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				609779AFBB764DC82CF01668 /* OpenClamConversationUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A52A9119E576FC548AAFCDE9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5CCD94870F2BB52102DF68F4 /* ScreenVoicePTTActivityAttributes.swift in Sources */,
+				886E808D004C82AA525416B8 /* ScreenVoicePTTLiveActivityWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FC0BC0B1F1641B3E900B2B8F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				61B14A5EF1A619E59D40AF9C /* AIConfigurationModel.swift in Sources */,
+				0C7EC3F9A30ED73D16CA9FDC /* AIProviderSettings.swift in Sources */,
+				5027DFB2EF2E41C31B935A2E /* AISettingsView.swift in Sources */,
+				AB6956AEC85FC2E79FDFAE35 /* ActivityRecord.swift in Sources */,
+				30B1FCCB53560E58CD9A45AC /* AgentAttachment.swift in Sources */,
+				0EBF6278A3D3737BDEE1A686 /* AgentCommandCatalog.swift in Sources */,
+				34DA8BAB1DDFF1892CDAF940 /* AgentCredentialStore.swift in Sources */,
+				DA46080BAC607C92F38F81BC /* AgentToolDTOs.swift in Sources */,
+				F8987C234CD0492CA3AEED5D /* AgentToolLocalDataParser.swift in Sources */,
+				6E70D3751E0696961B42CDE5 /* AlarmService.swift in Sources */,
+				CC14C4C7689134960D0203C5 /* AnthropicMessagesAgentClient.swift in Sources */,
+				58732C5E17F1512ED23E89D3 /* AppAliasRegistry.swift in Sources */,
+				159A58047569DFFB8ED64FF9 /* AppAliasSettingsView.swift in Sources */,
+				2FBBEE406D5698B04ED6DD73 /* AppHandoffSession.swift in Sources */,
+				1182E9916F1A9EE5C9D74148 /* AskCodexCompanionIntent.swift in Sources */,
+				CC573FF57B855A4FFF145AD6 /* AssistantCommand.swift in Sources */,
+				7748B618379DFE7E57966FEF /* AssistantIntentRouter.swift in Sources */,
+				5AFF888D9FDBD471BCF1B9DB /* AssistantModel.swift in Sources */,
+				D7A0A2FB1AD3033B4478129E /* AttachmentPreparationService.swift in Sources */,
+				E3F6C57E50F6FB0D0CD6CD6F /* AvatarAgentProfile.swift in Sources */,
+				5E0DEB632BBC5CE90162768B /* AvatarAgentSettingsView.swift in Sources */,
+				D6F2763B5919C3C412AC781C /* CapabilitiesView.swift in Sources */,
+				EDED1BB22A8B258A3E506ED1 /* Capability.swift in Sources */,
+				8C8B34A05E1FD28B1BB4AB34 /* CaptainAyerAvatarOverlay.swift in Sources */,
+				0A317EAA718906B62BFAF413 /* CaptainAyerAvatarStage.swift in Sources */,
+				B5A17B7BB425A9D6BD07CE81 /* CaptainAyerFaceMirrorController.swift in Sources */,
+				4C949CD33F7D3BD786F64A33 /* CaptainAyerFaceMirrorModels.swift in Sources */,
+				51FBECAF370C511762563081 /* CaptainAyerFaceReactions.swift in Sources */,
+				A08395BD036649EEF5AD3FE3 /* CaptainAyerLipSync.swift in Sources */,
+				A2BD5B599D35767227936A9C /* CloudVoiceServices.swift in Sources */,
+				AAC4B2DA7EB175BCB11C142C /* CompanionAgentToolCatalog.swift in Sources */,
+				A08012C3FAE229B07F0FAF0D /* ContactAgentCard.swift in Sources */,
+				F370B6A50C541AA39AA48CCF /* ContactAgentSession.swift in Sources */,
+				923807CE2DFD94A4F3D066A0 /* ContactEmailToolService.swift in Sources */,
+				A4EAE6D5A2914A7A2682B275 /* ContextRootView.swift in Sources */,
+				176CD78411141FA4FB3E863C /* ConversationAttachmentDescriptor+AgentAttachment.swift in Sources */,
+				B10068B960C9722594E12F33 /* ConversationHistoryController.swift in Sources */,
+				3DD74E4AD0A2B150FF83E43D /* ConversationHistoryStore.swift in Sources */,
+				99E8361810AAEDDF81D9629E /* ConversationModel.swift in Sources */,
+				7DBCAD92A8B20E9125775BD9 /* ConversationModels.swift in Sources */,
+				1085B41D84B73E3210BFE347 /* ConversationView.swift in Sources */,
+				6AEC1D4610AEEB6043AF67D0 /* DashboardView.swift in Sources */,
+				3FA1809E607334447724D52D /* DeviceActionShortcut.swift in Sources */,
+				3DA10DA777DFAA2B0608F3FC /* EventKitAgentCard.swift in Sources */,
+				5333FB49CA23E8A8A3C67754 /* EventKitAgentMapper.swift in Sources */,
+				6009B7763B7EE280A4734DDC /* EventKitAgentModels.swift in Sources */,
+				5BB751B3C1D615BBE0B29C53 /* EventKitAgentService.swift in Sources */,
+				6A1484EA13927361804BB3E1 /* GeminiInteractionsAgentClient.swift in Sources */,
+				51E2C45D738419303710FBDC /* GoogleMapsURLBuilder.swift in Sources */,
+				E7377B6805539CCA51A35338 /* LLMAgentClient.swift in Sources */,
+				23B2CC9B21BFC55AC6EF1BFE /* LiveTalkBrokerTokenSource.swift in Sources */,
+				8A84D45A2A516931A0CB5CAA /* LiveTalkConfiguration.swift in Sources */,
+				0C62433EAA8F108A6D78C44C /* LiveTalkSessionController.swift in Sources */,
+				1128296B8B7D7A5119B899A4 /* LocalAssistantServices.swift in Sources */,
+				847B07F5719B724AE2CF251D /* LocalContactsFoundation.swift in Sources */,
+				FAA810FDC0314F33C181CBC1 /* MailComposeView.swift in Sources */,
+				7105F89915EDB2E6EB72E24C /* MarkdownMessageView.swift in Sources */,
+				80C651AC40537A61CF0B4E5B /* MessageComposer.swift in Sources */,
+				BA53B66CAC0751AA5C0843DB /* NearbyPlaceToolService.swift in Sources */,
+				404D58B798FF9332218FE13D /* OpenAIResponsesClient.swift in Sources */,
+				B83336B08D7998BC94F668BD /* OpenAIResponsesTypes.swift in Sources */,
+				C667ECA0A5BEDA5641117E59 /* OpenClamAvatarAssetStore.swift in Sources */,
+				3DF8A90EB7457463FC54E116 /* OpenClamAvatarCarousel.swift in Sources */,
+				D201C001ECC8DC5FF32E7079 /* OpenClamAvatarCarouselLayout.swift in Sources */,
+				380EE81523C09FB8AE8C3831 /* OpenClamAvatarCatalog.swift in Sources */,
+				2FE147F78966EC8C6B5C5B42 /* OpenClamAvatarCatalogModels.swift in Sources */,
+				E100B0DD7F8D928B2B33463C /* OpenClamAvatarLibrary.swift in Sources */,
+				88E536DC8C6F113841EC935B /* OpenClamAvatarPackage.swift in Sources */,
+				D27ACDA474A63DA241096B59 /* OpenClamAvatarStore.swift in Sources */,
+				AD50D2A2C2F1B90226DEDB07 /* OpenClamAvatarStoreView.swift in Sources */,
+				E2E33456ABC9E3C2ECF8973A /* OpenClamCatalogAvatarStage.swift in Sources */,
+				35B7C636E5D877C76CA15C84 /* OpenClamKeyboardBridge.swift in Sources */,
+				F388C6464E6760A053F17D46 /* OpenClamKeyboardDictationHost.swift in Sources */,
+				222C8DE00F5B923188653EAE /* OpenClamLiveKitApp.swift in Sources */,
+				F5C6A2C1337DD425522FDB26 /* OpenClamSettingsView.swift in Sources */,
+				4D94F514F8E1E63755276CB0 /* OpenClamSidebarView.swift in Sources */,
+				4CA7A2D7A6DED6E7AD45E086 /* PendingCommandStore.swift in Sources */,
+				16939C3FF3CC5F3F4D059C82 /* PrepareScreenContextIntent.swift in Sources */,
+				B78CE33BA127630416B58DC8 /* ProviderAPIClient.swift in Sources */,
+				7C1D225E818C47AFCE5919F9 /* ProviderCredentialVault.swift in Sources */,
+				73F8DD2AAC9D8A098DC809FA /* ProviderWebSearchService.swift in Sources */,
+				03F4BB914198040E5590A90B /* RootView.swift in Sources */,
+				2BB0416300F719CE5FA2C1D4 /* ScreenCaptureKitManager.swift in Sources */,
+				EF29297FB4A72B0B249DED52 /* ScreenCaptureSessionView.swift in Sources */,
+				F1145ECCB80C3A9D8D33056E /* ScreenContextCaptureSession.swift in Sources */,
+				11900E8FAF46A096AAD37AFD /* ScreenContextFeatureModel.swift in Sources */,
+				FED5E9C3CB4613E05D0FA327 /* ScreenContextInbox.swift in Sources */,
+				D221930FEAB3F4D1144D65BF /* ScreenContextModels.swift in Sources */,
+				0D0DFE40CDF1D09609CC06BA /* ScreenContextQuestionInbox.swift in Sources */,
+				E74F1C415B55EA95C7C7F7B8 /* ScreenContextReviewSession.swift in Sources */,
+				6F8C213C028560139BC0B64B /* ScreenContextReviewView.swift in Sources */,
+				C6D50687AB2C649FFB086EE8 /* ScreenPTTIntents.swift in Sources */,
+				1F1E87A5E31968411C9B7769 /* ScreenPTTService.swift in Sources */,
+				337F4EC92058D1708AB2F1B5 /* ScreenVoicePTTActivityAttributes.swift in Sources */,
+				AEC336CA5CD9AD3EA0697FAF /* ScreenVoicePTTActivityController.swift in Sources */,
+				F2BEB30751A127B6BEF7AB87 /* ScreenVoicePTTAnswerSpeaker.swift in Sources */,
+				F36A18A2CEE1B1F0710DEA41 /* ScreenVoicePTTCoordinator.swift in Sources */,
+				047A15CD57090ED21F384DA4 /* ScreenVoicePTTIntent.swift in Sources */,
+				13AF6CD8550784689FC9001D /* ScreenVoicePTTMicrophone.swift in Sources */,
+				3B9D0E1CB71447B5F9348CE8 /* ScreenVoicePTTModels.swift in Sources */,
+				64C297258A3E97398CE012FA /* ScreenVoicePTTProgressReporter.swift in Sources */,
+				36E3E3C92E23099706722653 /* ScreenVoicePTTRuntime.swift in Sources */,
+				4DE8528A739FA22D3B9C133D /* ScreenVoicePTTTranscription.swift in Sources */,
+				C84CCB7B6B51D6F767547BA6 /* ScreenVoicePTTVAD.swift in Sources */,
+				9334BE26DC5A3C75F17CF622 /* SetupView.swift in Sources */,
+				47BCF3F2873092A49D399A5D /* StageAssistantCommandIntent.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		3CCC18CC41582FDBAAD07EBE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D808022F2960BDAE63B78749 /* OpenClamLiveKit */;
+			targetProxy = 4AC1A4CC12B77437B209378F /* PBXContainerItemProxy */;
+		};
+		68E8728E373DA6AA74949192 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D808022F2960BDAE63B78749 /* OpenClamLiveKit */;
+			targetProxy = 1C6C0FD70502EC8932820890 /* PBXContainerItemProxy */;
+		};
+		BFDC08783773E1A30BC3E73C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D5B62D8ED63DF3A254FC2D9E /* OpenClamLiveKitScreenVoiceWidget */;
+			targetProxy = B6C7914CCA25709047A65D7C /* PBXContainerItemProxy */;
+		};
+		C3EC7DDB08C23BA49693C754 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6B55251E2BFA022BF4A15549 /* OpenClamLiveKitKeyboard */;
+			targetProxy = 4B1FAA4D21F6D6F7D84C652E /* PBXContainerItemProxy */;
+		};
+		FC89BFF2117ABEAB881707B8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C0C7016C36FD7391C038D461 /* OpenClamLiveKitShareExtension */;
+			targetProxy = 8CB7350EC528B7146D14F6E6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		072BF68DD73CBBD48CC5EE9A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-context-share";
+				PRODUCT_NAME = OpenClamLiveKitShareExtension;
+				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Share";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		213F3900C12BF09527C3A7AA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = X7R8N6MMSU;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		3EF3CFF57397F922E53F1EC2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = C9C732B82AEA5AE95B71F777 /* LiveTalk.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		45AA787452D3F1E8C2CB08A7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-context-share";
+				PRODUCT_NAME = OpenClamLiveKitShareExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		4E56400F75EDDEFD6E92F88F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OpenClamLiveKit;
+			};
+			name = Release;
+		};
+		7D0B87D6039FDC8DE09A752D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenClamLiveKit.app/OpenClamLiveKit";
+			};
+			name = Debug;
+		};
+		7E7A7338F9E6B2E2164DF7BB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenClamLiveKit.app/OpenClamLiveKit";
+			};
+			name = Release;
+		};
+		A5CC6072DA94B677E094E822 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget";
+				PRODUCT_NAME = OpenClamLiveKitScreenVoiceWidget;
+				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Widget";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AB9976931840DB006EE7E4D6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = KeyboardExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.keyboard;
+				PRODUCT_NAME = OpenClamLiveKitKeyboard;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C978267457C2919649168C08 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OpenClamLiveKit;
+			};
+			name = Debug;
+		};
+		CD5229A15F34E72CCAD11D66 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = KeyboardExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.keyboard;
+				PRODUCT_NAME = OpenClamLiveKitKeyboard;
+				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Keyboard";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		CDF3D68C7C918A25CCFF3FA1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = X7R8N6MMSU;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D1D2FE88527D4804BDA9C775 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget";
+				PRODUCT_NAME = OpenClamLiveKitScreenVoiceWidget;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E29AB20C90A4BE27F07B8B66 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = C9C732B82AEA5AE95B71F777 /* LiveTalk.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 20;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot;
+				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Main";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5025DE9E1792849501DA2B2B /* Build configuration list for PBXNativeTarget "OpenClamLiveKitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7D0B87D6039FDC8DE09A752D /* Debug */,
+				7E7A7338F9E6B2E2164DF7BB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		67E748E122B9E5D2C08BD7A0 /* Build configuration list for PBXNativeTarget "OpenClamLiveKitUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C978267457C2919649168C08 /* Debug */,
+				4E56400F75EDDEFD6E92F88F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		75FB51157C13B27D22EF7BFF /* Build configuration list for PBXNativeTarget "OpenClamLiveKit" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3EF3CFF57397F922E53F1EC2 /* Debug */,
+				E29AB20C90A4BE27F07B8B66 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8B9BAF6AF4AEC5C13A7364C4 /* Build configuration list for PBXNativeTarget "OpenClamLiveKitScreenVoiceWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D1D2FE88527D4804BDA9C775 /* Debug */,
+				A5CC6072DA94B677E094E822 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B637D2A6D2287990A69DCA8A /* Build configuration list for PBXNativeTarget "OpenClamLiveKitShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				45AA787452D3F1E8C2CB08A7 /* Debug */,
+				072BF68DD73CBBD48CC5EE9A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BEDAD46A57B5323903D7ED2C /* Build configuration list for PBXProject "OpenClamLiveKit" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CDF3D68C7C918A25CCFF3FA1 /* Debug */,
+				213F3900C12BF09527C3A7AA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F962ACD1167AEE58ABA67397 /* Build configuration list for PBXNativeTarget "OpenClamLiveKitKeyboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB9976931840DB006EE7E4D6 /* Debug */,
+				CD5229A15F34E72CCAD11D66 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D4FD3CB34F593C65378AF06E /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.20;
+			};
+		};
+		F1088040590D52FF691D893F /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift";
+			requirement = {
+				kind = exactVersion;
+				version = 2.16.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1E17EA55ADED315B77947CDD /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D4FD3CB34F593C65378AF06E /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+		537938234F1C1C22840F3CFA /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D4FD3CB34F593C65378AF06E /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+		A6638CF445F12D11761B1380 /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F1088040590D52FF691D893F /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 5795758325F1E3FDC7E2F192 /* Project object */;
+}

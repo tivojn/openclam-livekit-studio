@@ -1,0 +1,5 @@
+// Copy to LiveTalk.local.xcconfig. Never commit the real values.
+// The URL must be the exact session endpoint and must use HTTPS.
+OPENCLAM_LIVETALK_BROKER_URL = https:/$()/your-worker.example.workers.dev/v1/live-talk/sessions
+OPENCLAM_LIVETALK_APP_TOKEN = replace-with-the-internal-pilot-token
+OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST = your-project.livekit.cloud

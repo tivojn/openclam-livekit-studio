@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>OpenClam LiveKit Pilot</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>OpenClam LiveKit Pilot</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.lionheart.openclam.livekitpilot.command</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>openclam-livekit-pilot</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>OpenClam schedules alarms that you explicitly review and approve.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>OpenClam searches your calendars when you ask, and changes or deletes only events you review and approve.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>OpenClam adds calendar events only after you review and approve them.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>OpenClam uses the camera only when you explicitly take a photo, turn on avatar face mirroring, or ask it to control the flashlight. Face mirroring stays on this device; photos are sent to your configured AI service only after you tap Send.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>OpenClam searches contacts only when you approve it and shares only the exact fields you review and confirm.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>OpenClam uses your location only while open to find places you ask for nearby.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>OpenClam records during explicit tap-to-talk or Screen Voice requests, or for up to 90 seconds after you turn on Keyboard Ear. Live Talk starts the microphone only after you tap the phone button, streams audio through LiveKit to your selected speech service while the app is in the foreground, and stops when you tap hang up or the app enters the background. Keyboard Ear discards standby audio; Apple recognition stays with Apple, and a selected cloud speech provider receives bounded audio only after a keyboard voice request begins.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>OpenClam imports only photos and videos you choose; attachments go to your configured AI service only after you tap Send.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>OpenClam searches your reminders when you ask, and creates, changes, completes, or deletes only items you review and approve.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>OpenClam transcribes speech only during an explicit voice request. In Screen Voice, the recognized question is submitted automatically after you stop speaking; ordinary composer dictation remains editable before Send.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>OPENCLAM_LIVETALK_APP_TOKEN</key>
+	<string>$(OPENCLAM_LIVETALK_APP_TOKEN)</string>
+	<key>OPENCLAM_LIVETALK_BROKER_URL</key>
+	<string>$(OPENCLAM_LIVETALK_BROKER_URL)</string>
+	<key>OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST</key>
+	<string>$(OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST)</string>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.zip-archive</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>OpenClam Avatar Package</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.openclam.avatar-package</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>avtr</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.openclam.avatar+zip</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

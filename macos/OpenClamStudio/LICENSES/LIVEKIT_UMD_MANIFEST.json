@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "generated_from": "livekit-client@2.21.0 published UMD and source map",
+  "umd": {
+    "relative_path": "web/vendor/livekit-client.umd.js",
+    "sha256": "a77a2f4c363e93099d7c135721c9ec81d6c5bacc691796dad799222e33cbfb31"
+  },
+  "top_level_license": {
+    "relative_path": "LICENSES/LIVEKIT_CLIENT_APACHE-2.0.txt",
+    "sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+  },
+  "bundled_license_file": {
+    "relative_path": "LICENSES/LIVEKIT_UMD_BUNDLED_LICENSES.txt",
+    "sha256": "25fe4308f8569af013f3d3f047b822fac5d699f68fa6359c7911ca92a2555262"
+  },
+  "packages": [
+    {
+      "name": "@bufbuild/protobuf",
+      "bundled_version": "1.10.1",
+      "installed_license_source_version": "1.10.1",
+      "license_expression": "(Apache-2.0 AND BSD-3-Clause)",
+      "source_mapped": true,
+      "license_source": "LiveKit UMD source map plus checked Apache-2.0 text",
+      "license_text_sha256": "3aa2ec087dade52af00fa9af9180b944c13d339bfd21f95cd682582ecc96822c"
+    },
+    {
+      "name": "@livekit/mutex",
+      "bundled_version": "1.1.1",
+      "installed_license_source_version": "1.1.1",
+      "license_expression": "Apache-2.0",
+      "source_mapped": true,
+      "license_source": "node_modules/@livekit/mutex/LICENSE",
+      "license_text_sha256": "81932e77fef4cec306da54caf7d4d221dfd0f6fb6da214c712e36cb95ac47906"
+    },
+    {
+      "name": "@livekit/protocol",
+      "bundled_version": "1.50.4",
+      "installed_license_source_version": "1.50.4",
+      "license_expression": "Apache-2.0",
+      "source_mapped": false,
+      "license_source": "node_modules/@livekit/protocol/LICENSE",
+      "license_text_sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    },
+    {
+      "name": "events",
+      "bundled_version": "3.3.0",
+      "installed_license_source_version": "3.3.0",
+      "license_expression": "MIT",
+      "source_mapped": true,
+      "license_source": "node_modules/events/LICENSE",
+      "license_text_sha256": "631987b7616a325a5b97566c232418481ddf7dbb5ecadefb991e791876cc2599"
+    },
+    {
+      "name": "jose",
+      "bundled_version": "6.2.3",
+      "installed_license_source_version": "6.2.8",
+      "license_expression": "MIT",
+      "source_mapped": true,
+      "license_source": "node_modules/jose/LICENSE.md",
+      "license_text_sha256": "8078b0829d6c3e9ecde2f003e1966e4cad3efc6e7a640efbab0313cc166b1af1",
+      "note": "The published UMD was built with 6.2.3. Its MIT text is byte-identical to the checked 6.2.8 install used to source this notice."
+    },
+    {
+      "name": "loglevel",
+      "bundled_version": "1.9.2",
+      "installed_license_source_version": "1.9.2",
+      "license_expression": "MIT",
+      "source_mapped": true,
+      "license_source": "node_modules/loglevel/LICENSE-MIT",
+      "license_text_sha256": "a949c56bcded73fc63e5dc5b044c0170cd8f8667dee91d30ca0fd7eb31463e1d"
+    },
+    {
+      "name": "sdp",
+      "bundled_version": "3.2.2",
+      "installed_license_source_version": "3.2.2",
+      "license_expression": "MIT",
+      "source_mapped": true,
+      "license_source": "node_modules/sdp/LICENSE",
+      "license_text_sha256": "798e82590af6a84bfbde3d6bb0fb9162c519edf16122404fea00acefdc55cbd9"
+    },
+    {
+      "name": "sdp-transform",
+      "bundled_version": "2.15.0",
+      "installed_license_source_version": "2.15.0",
+      "license_expression": "MIT",
+      "source_mapped": true,
+      "license_source": "node_modules/sdp-transform/LICENSE",
+      "license_text_sha256": "653b7af11548d1bf4a73d0d9dcca68d709d2b78633088b75332c02d739559afa"
+    },
+    {
+      "name": "tslib",
+      "bundled_version": "2.8.1",
+      "installed_license_source_version": "2.8.1",
+      "license_expression": "0BSD",
+      "source_mapped": false,
+      "license_source": "node_modules/tslib/LICENSE.txt",
+      "license_text_sha256": "d013c4966dbea41607b4abf37517d6d72f66488bc97cdf309aaa5ffb59d35b9f"
+    },
+    {
+      "name": "typed-emitter",
+      "bundled_version": "2.1.0",
+      "installed_license_source_version": "2.1.0",
+      "license_expression": "MIT",
+      "source_mapped": false,
+      "license_source": "node_modules/typed-emitter/LICENSE",
+      "license_text_sha256": "dfab9450d2bf4112af202be012c098a06e91248156961c2d45fd1fd1894ae2ff"
+    },
+    {
+      "name": "webrtc-adapter",
+      "bundled_version": "9.0.6",
+      "installed_license_source_version": "9.0.6",
+      "license_expression": "BSD-3-Clause",
+      "source_mapped": true,
+      "license_source": "node_modules/webrtc-adapter/LICENSE.md",
+      "license_text_sha256": "00a46c6cfc219593b97586398b477e188391556e70487225d3ff9d60ccda6dce"
+    }
+  ]
+}

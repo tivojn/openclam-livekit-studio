@@ -1,0 +1,26 @@
+{
+  "name": "@openclam/livekit-credential-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@livekit/protocol": "1.50.4",
+    "jose": "6.2.8",
+    "livekit-server-sdk": "2.17.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.21.3",
+    "@cloudflare/workers-types": "5.20260813.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.123.0"
+  }
+}

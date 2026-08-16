@@ -1,0 +1,331 @@
+import CoreLocation
+import Foundation
+
+struct ConversationAttachmentDescriptor: Identifiable, Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case image
+        case file
+        case video
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+    }
+
+    let id: UUID
+    let kind: Kind
+    let displayName: String
+    let mimeType: String?
+    let sourceByteCount: Int?
+
+    init(
+        id: UUID = UUID(),
+        kind: Kind = .unknown,
+        displayName: String,
+        mimeType: String? = nil,
+        sourceByteCount: Int? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.displayName = displayName
+        self.mimeType = mimeType
+        self.sourceByteCount = sourceByteCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case displayName
+        case mimeType
+        case sourceByteCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .unknown
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+            ?? "Attachment"
+        mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+        sourceByteCount = try container.decodeIfPresent(Int.self, forKey: .sourceByteCount)
+    }
+
+}
+
+struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
+    enum Role: String, Codable, Sendable {
+        case assistant
+        case user
+
+        init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .assistant
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+    }
+
+    /// Ephemeral messages may be rendered in the active session, but never enter chat history.
+    /// Use this for private local results that should disappear when the app closes.
+    enum HistoryPersistence: String, Codable, Sendable {
+        case history
+        case ephemeral
+
+        init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            // A future privacy policy must opt into older on-disk history explicitly.
+            self = Self(rawValue: rawValue) ?? .ephemeral
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+    }
+
+    let id: UUID
+    let role: Role
+    let text: String
+    let attachments: [ConversationAttachmentDescriptor]
+    let date: Date
+    var isEligibleForAIContext: Bool
+    let historyPersistence: HistoryPersistence
+
+    var attachmentNames: [String] {
+        attachments.map(\.displayName)
+    }
+
+    init(
+        id: UUID = UUID(),
+        role: Role,
+        text: String,
+        attachmentNames: [String] = [],
+        attachments: [ConversationAttachmentDescriptor] = [],
+        date: Date = Date(),
+        isEligibleForAIContext: Bool = false,
+        historyPersistence: HistoryPersistence = .history
+    ) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.attachments = attachments.isEmpty
+            ? attachmentNames.map { ConversationAttachmentDescriptor(displayName: $0) }
+            : attachments
+        self.date = date
+        self.isEligibleForAIContext = isEligibleForAIContext
+        self.historyPersistence = historyPersistence
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case role
+        case text
+        case attachmentNames
+        case attachments
+        case date
+        case isEligibleForAIContext
+        case historyPersistence
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        role = try container.decodeIfPresent(Role.self, forKey: .role) ?? .assistant
+        text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+        if let descriptors = try container.decodeIfPresent(
+            [ConversationAttachmentDescriptor].self,
+            forKey: .attachments
+        ) {
+            attachments = descriptors
+        } else {
+            let legacyNames = try container.decodeIfPresent(
+                [String].self,
+                forKey: .attachmentNames
+            ) ?? []
+            attachments = legacyNames.map {
+                ConversationAttachmentDescriptor(displayName: $0)
+            }
+        }
+        date = try container.decodeIfPresent(Date.self, forKey: .date)
+            ?? Date(timeIntervalSince1970: 0)
+        isEligibleForAIContext = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .isEligibleForAIContext
+        ) ?? false
+        historyPersistence = try container.decodeIfPresent(
+            HistoryPersistence.self,
+            forKey: .historyPersistence
+        ) ?? .history
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(role, forKey: .role)
+        try container.encode(text, forKey: .text)
+        try container.encode(attachments, forKey: .attachments)
+        try container.encode(date, forKey: .date)
+        try container.encode(isEligibleForAIContext, forKey: .isEligibleForAIContext)
+        try container.encode(historyPersistence, forKey: .historyPersistence)
+    }
+}
+
+struct PronunciationResult: Equatable {
+    let text: String
+    let languageCode: String?
+    let languageName: String
+    let approximation: String
+}
+
+struct VenueCandidate: Identifiable, Equatable {
+    enum MatchKind: Equatable {
+        case nameMatch
+        case targetedUnverified
+        case relatedQueryUnverified
+        case nearbyFallback
+
+        var label: String {
+            switch self {
+            case .nameMatch: "Name matches the request"
+            case .targetedUnverified: "Maps candidate · cuisine unverified"
+            case .relatedQueryUnverified: "Broader-search candidate · cuisine unverified"
+            case .nearbyFallback: "Nearby fallback · cuisine unverified"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .nameMatch: "checkmark.seal"
+            case .targetedUnverified: "mappin.and.ellipse"
+            case .relatedQueryUnverified: "arrow.triangle.branch"
+            case .nearbyFallback: "arrow.triangle.branch"
+            }
+        }
+
+        var searchPriority: Int {
+            switch self {
+            case .nameMatch: 0
+            case .targetedUnverified: 1
+            case .relatedQueryUnverified: 2
+            case .nearbyFallback: 3
+            }
+        }
+    }
+
+    let id: String
+    let name: String
+    let address: String
+    let latitude: CLLocationDegrees
+    let longitude: CLLocationDegrees
+    let matchKind: MatchKind
+
+    var destinationLabel: String {
+        address.isEmpty ? name : "\(name), \(address)"
+    }
+}
+
+struct ContactPhoneCandidate: Identifiable, Equatable {
+    let id: String
+    let displayName: String
+    let label: String
+    let phoneNumber: String
+}
+
+struct ConversationSMSDraft: Identifiable, Equatable {
+    let id: UUID
+    var recipientQuery: String
+    var resolvedName: String?
+    var phoneNumber: String?
+    var choices: [ContactPhoneCandidate]
+    var body: String
+
+    init(
+        id: UUID = UUID(),
+        recipientQuery: String,
+        resolvedName: String? = nil,
+        phoneNumber: String? = nil,
+        choices: [ContactPhoneCandidate] = [],
+        body: String
+    ) {
+        self.id = id
+        self.recipientQuery = recipientQuery
+        self.resolvedName = resolvedName
+        self.phoneNumber = phoneNumber
+        self.choices = choices
+        self.body = body
+    }
+
+    var recipientDisplay: String {
+        resolvedName ?? recipientQuery
+    }
+}
+
+struct ConversationEmailDraft: Identifiable, Equatable {
+    let id: UUID
+    var recipientQuery: String
+    var resolvedName: String?
+    var emailAddress: String?
+    var choices: [ContactEmailCandidate]
+    var subject: String
+    var body: String
+
+    init(
+        id: UUID = UUID(),
+        recipientQuery: String,
+        resolvedName: String? = nil,
+        emailAddress: String? = nil,
+        choices: [ContactEmailCandidate] = [],
+        subject: String,
+        body: String
+    ) {
+        self.id = id
+        self.recipientQuery = recipientQuery
+        self.resolvedName = resolvedName
+        self.emailAddress = emailAddress
+        self.choices = choices
+        self.subject = subject
+        self.body = body
+    }
+
+    var recipientDisplay: String {
+        resolvedName ?? recipientQuery
+    }
+}
+
+struct ReplySuggestion: Identifiable, Equatable {
+    let id: UUID
+    let text: String
+
+    init(id: UUID = UUID(), text: String) {
+        self.id = id
+        self.text = text
+    }
+}
+
+struct RideDestination: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let address: String
+    let latitude: CLLocationDegrees
+    let longitude: CLLocationDegrees
+
+    var destinationLabel: String {
+        address.isEmpty ? name : "\(name), \(address)"
+    }
+}
+
+struct LiveResearchRequest: Identifiable, Equatable {
+    let id = UUID()
+    let subject: String
+    let prompt: String
+}

@@ -1,0 +1,7 @@
+// Safe, source-controlled defaults. Put the real HTTPS broker endpoint and
+// internal-pilot bearer token in LiveTalk.local.xcconfig, which is gitignored.
+OPENCLAM_LIVETALK_BROKER_URL =
+OPENCLAM_LIVETALK_APP_TOKEN =
+OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST =
+
+#include? "LiveTalk.local.xcconfig"

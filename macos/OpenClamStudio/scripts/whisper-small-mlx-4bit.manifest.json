@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "model_id": "mlx-community/whisper-small-mlx-4bit",
+  "revision": "f1da4c67f2ee8b6e763b974e149aa65d5b7658b7",
+  "license_source": {
+    "repository": "openai/whisper",
+    "revision": "e58f28804528831904c3b6f2c0e473f346223433",
+    "path": "LICENSE"
+  },
+  "files": {
+    "config.json": {
+      "size": 339,
+      "sha256": "d414b27f911c1c416a90525a0f856e0dc1c9e38632a833ca8dd05c58b3d8a01a"
+    },
+    "weights.npz": {
+      "size": 196537352,
+      "sha256": "ca6659298fe7550468ff0fc49dea7442615d9a53d1ce087aaded1b7627451998"
+    },
+    "LICENSE.openai-whisper-MIT.txt": {
+      "size": 1063,
+      "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+    }
+  }
+}

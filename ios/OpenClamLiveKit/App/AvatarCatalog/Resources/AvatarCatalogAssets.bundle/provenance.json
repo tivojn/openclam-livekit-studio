@@ -1,0 +1,16 @@
+{
+  "format": 2,
+  "license": "MIT",
+  "contains_human_likeness": false,
+  "source": "shared/avatar-package-v2/fixtures/ios-light-golden.avtr",
+  "source_sha256": "20f46ca9f3160a0d5934202ef5908085f6246e492f8298582e0e12f7411d78cb",
+  "avatars": [
+    {
+      "id": "captain-ayer",
+      "display_name": "OpenClam Guide",
+      "asset_directory": "public-guide",
+      "included_bytes": 58246,
+      "description": "Deterministic synthetic test geometry; no photograph or human likeness."
+    }
+  ]
+}

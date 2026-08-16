@@ -1,0 +1,2699 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>OpenClam Studio</title>
+  <script src="/livekit-client.js"></script>
+  <style>
+    :root {
+      --ink: #f7f4ef;
+      --muted: #a9a5a0;
+      --glass: rgba(18, 20, 25, .84);
+      --glass-strong: rgba(12, 14, 18, .94);
+      --line: rgba(255, 255, 255, .13);
+      --line-strong: rgba(255, 255, 255, .24);
+      --accent: #f45d62;
+      --accent-soft: rgba(244, 93, 98, .18);
+      --good: #66d69a;
+      --warning: #f4bd62;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .35);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: #0c0e12;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    html.is-electron body { background: transparent; }
+    button, textarea, input { font: inherit; }
+    button { -webkit-tap-highlight-color: transparent; }
+
+    #stage {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: default;
+    }
+
+    html.dragging #stage { cursor: grabbing; }
+
+    #topline {
+      position: fixed;
+      z-index: 20;
+      top: 14px;
+      left: 16px;
+      max-width: calc(100vw - 118px);
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 32px;
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(15, 17, 21, .68);
+      backdrop-filter: blur(18px) saturate(1.15);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .16);
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: .015em;
+      pointer-events: none;
+      transition: opacity .2s ease, transform .2s ease;
+    }
+
+    #statusDot {
+      width: 7px;
+      height: 7px;
+      flex: none;
+      border-radius: 50%;
+      background: #717782;
+    }
+
+    #topline[data-tone="good"] #statusDot { background: var(--good); box-shadow: 0 0 11px rgba(102, 214, 154, .65); }
+    #topline[data-tone="busy"] #statusDot { background: var(--warning); box-shadow: 0 0 11px rgba(244, 189, 98, .5); }
+    #topline[data-tone="live"] #statusDot { background: var(--accent); box-shadow: 0 0 12px rgba(244, 93, 98, .7); animation: callPulse 1.2s ease-in-out infinite; }
+    #statusText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    #rail {
+      position: fixed;
+      z-index: 30;
+      top: 14px;
+      right: 14px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .round-button {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(15, 17, 21, .74);
+      backdrop-filter: blur(18px) saturate(1.12);
+      color: #d5d1cb;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .14);
+      cursor: pointer;
+      transition: transform .15s ease, background .2s ease, color .2s ease, border-color .2s ease;
+    }
+
+    .round-button:hover { transform: translateY(-1px); color: #fff; border-color: var(--line-strong); background: rgba(29, 32, 39, .9); }
+    .round-button:active { transform: scale(.95); }
+    .round-button svg { width: 19px; height: 19px; fill: currentColor; }
+    .round-button[disabled] { opacity: .36; cursor: default; transform: none; }
+
+    #liveTalkButton[data-state="connecting"] { color: var(--warning); border-color: rgba(244, 189, 98, .4); animation: callPulse 1.15s ease-in-out infinite; }
+    #liveTalkButton[data-state="connected"] { color: white; background: rgba(190, 42, 55, .88); border-color: rgba(255, 150, 150, .55); }
+    #walkButton[aria-pressed="true"], #movesButton.showing { color: var(--good); border-color: rgba(102, 214, 154, .4); }
+
+    @keyframes callPulse { 50% { opacity: .52; } }
+
+    #chatDock {
+      position: fixed;
+      z-index: 35;
+      left: 50%;
+      bottom: 14px;
+      width: min(680px, calc(100vw - 28px));
+      transform: translate(-50%, 12px);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity .22s ease, transform .28s cubic-bezier(.2, .8, .2, 1), visibility .22s;
+    }
+
+    html.chat-open #chatDock {
+      transform: translate(-50%, 0);
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    #conversation {
+      max-height: min(42vh, 350px);
+      overflow: auto;
+      margin: 0 0 8px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--glass);
+      backdrop-filter: blur(24px) saturate(1.12);
+      box-shadow: var(--shadow);
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,.25) transparent;
+      overscroll-behavior: contain;
+    }
+
+    #conversation:empty { display: none; }
+    .message { display: flex; align-items: flex-end; gap: 7px; margin: 4px 0; }
+    .message.user { justify-content: flex-end; }
+    .bubble {
+      max-width: min(82%, 530px);
+      padding: 9px 12px;
+      border-radius: 14px;
+      color: #f4f1ec;
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      user-select: text;
+    }
+
+    .message.assistant .bubble { background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.08); border-bottom-left-radius: 5px; }
+    .message.user .bubble { background: #ef625f; color: #180c0c; border-bottom-right-radius: 5px; }
+    .message.working .bubble { color: var(--muted); letter-spacing: .12em; }
+
+    .read-button {
+      width: 28px;
+      height: 28px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: #aaa6a0;
+      cursor: pointer;
+    }
+
+    .read-button:hover { color: white; background: rgba(255,255,255,.08); }
+    .read-button svg { width: 15px; height: 15px; fill: currentColor; }
+
+    .media-card { margin: 8px 0 4px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #080a0d; }
+    .media-card img, .media-card video { width: 100%; max-height: 260px; display: block; object-fit: contain; }
+    .media-card .media-name { padding: 7px 9px; color: var(--muted); font-size: 11px; }
+
+    #composerRow {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 19px;
+      background: var(--glass-strong);
+      backdrop-filter: blur(24px) saturate(1.14);
+      box-shadow: var(--shadow);
+    }
+
+    #composer {
+      flex: 1;
+      min-width: 0;
+      height: 40px;
+      min-height: 40px;
+      max-height: 112px;
+      resize: none;
+      overflow-y: auto;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--ink);
+      padding: 9px 7px;
+      line-height: 1.42;
+      user-select: text;
+    }
+
+    #composer::placeholder { color: #817e7a; }
+    .composer-button {
+      width: 40px;
+      height: 40px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 13px;
+      background: rgba(255,255,255,.08);
+      color: #d8d4ce;
+      cursor: pointer;
+      transition: transform .13s ease, background .2s ease, color .2s ease;
+    }
+
+    .composer-button:hover { background: rgba(255,255,255,.14); color: white; }
+    .composer-button:active { transform: scale(.95); }
+    .composer-button svg { width: 19px; height: 19px; fill: currentColor; }
+    #sendButton { background: var(--accent); color: #1e090b; }
+    #sendButton[disabled] { opacity: .35; cursor: default; }
+    #pttButton.recording { color: white; background: #bd2b3a; animation: callPulse .9s ease-in-out infinite; }
+    #closeChatButton { background: transparent; }
+
+    #recordingChip {
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 10px);
+      display: none;
+      align-items: center;
+      gap: 8px;
+      transform: translateX(-50%);
+      padding: 7px 11px;
+      border: 1px solid rgba(244, 93, 98, .34);
+      border-radius: 11px;
+      background: rgba(22, 12, 16, .92);
+      color: #ffd9d9;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    html.recording #recordingChip { display: flex; }
+    #recordingLevel { display: flex; align-items: center; gap: 2px; height: 16px; }
+    #recordingLevel i { width: 2px; height: 3px; border-radius: 2px; background: currentColor; transition: height 70ms ease; }
+
+    #toast {
+      position: fixed;
+      z-index: 80;
+      left: 50%;
+      top: 60px;
+      max-width: min(440px, calc(100vw - 36px));
+      transform: translate(-50%, -8px);
+      opacity: 0;
+      pointer-events: none;
+      padding: 9px 13px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(16, 18, 22, .92);
+      color: #e9e5df;
+      box-shadow: 0 14px 40px rgba(0,0,0,.28);
+      font-size: 12px;
+      line-height: 1.4;
+      text-align: center;
+      transition: opacity .2s ease, transform .2s ease;
+    }
+
+    #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    #emptyState {
+      position: fixed;
+      z-index: 25;
+      inset: 0;
+      display: none;
+      place-items: end center;
+      /* The always-available right rail occupies the last 52px. Keep the
+         onboarding card in the remaining canvas so Settings never sits on
+         its border in a compact pet window. */
+      padding: 30px 68px 24px 24px;
+      background: radial-gradient(circle at 50% 35%, rgba(244, 93, 98, .14), transparent 45%), #0c0e12;
+    }
+
+    #emptyState.show { display: grid; }
+    #emptyCard {
+      width: min(430px, 100%);
+      padding: 31px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: rgba(18, 20, 25, .95);
+      text-align: center;
+      box-shadow: var(--shadow);
+      transition: opacity .2s ease, transform .2s ease;
+    }
+
+    #emptyCard h1 { margin: 0 0 9px; font-size: 25px; letter-spacing: -.035em; }
+    #emptyCard p { margin: 0 0 18px; color: var(--muted); line-height: 1.6; }
+    .empty-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 9px; }
+    .empty-actions button {
+      height: 43px;
+      padding: 0 18px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(255,255,255,.08);
+      color: var(--ink);
+      font-weight: 650;
+      cursor: pointer;
+    }
+    #emptySettings { border-color: transparent; background: var(--accent); color: #220a0c; }
+    html.chat-open #emptyCard { opacity: 0; transform: translateY(8px); pointer-events: none; }
+
+    .email-review {
+      position: fixed;
+      z-index: 70;
+      left: 50%;
+      top: 50%;
+      width: min(500px, calc(100vw - 28px));
+      max-height: calc(100vh - 36px);
+      overflow: auto;
+      transform: translate(-50%, -50%);
+      padding: 20px;
+      border: 1px solid var(--line-strong);
+      border-radius: 21px;
+      background: #15171c;
+      box-shadow: 0 34px 100px rgba(0,0,0,.55);
+      user-select: text;
+    }
+
+    .email-review h2 { margin: 0 0 5px; font-size: 20px; letter-spacing: -.025em; }
+    .email-review .unsent { margin-bottom: 16px; color: var(--warning); font-size: 12px; line-height: 1.45; }
+    .email-review label { display: grid; gap: 5px; margin: 11px 0; color: var(--muted); font-size: 12px; }
+    .email-review input, .email-review textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      outline: 0;
+      background: #0e1014;
+      color: var(--ink);
+      padding: 9px 11px;
+      user-select: text;
+    }
+
+    .email-review textarea { min-height: 150px; resize: vertical; line-height: 1.5; }
+    .email-review input:focus, .email-review textarea:focus { border-color: rgba(244, 93, 98, .62); }
+    .email-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
+    .email-actions button { height: 38px; padding: 0 13px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.07); color: var(--ink); cursor: pointer; }
+    .email-actions button:last-child { background: var(--accent); color: #21090b; border-color: transparent; }
+
+    :focus-visible { outline: 2px solid rgba(255, 151, 154, .9); outline-offset: 2px; }
+
+    html.pet-mode #topline { opacity: .72; }
+    html.pet-mode:not(.chat-open) #topline { transform: translateY(-5px); opacity: 0; }
+    html.pet-mode #rail .secondary { opacity: 0; transform: translateX(5px); pointer-events: none; }
+    html.pet-mode.avatar-hover #rail .secondary,
+    html.pet-mode.chat-open #rail .secondary,
+    html.pet-mode #rail:focus-within .secondary { opacity: 1; transform: none; pointer-events: auto; }
+    html.pet-mode #rail .secondary { transition: opacity .2s ease, transform .2s ease; }
+    @media (max-width: 520px) {
+      #topline { max-width: calc(100vw - 78px); }
+      #rail { right: 9px; }
+      .round-button { width: 39px; height: 39px; border-radius: 13px; }
+      #conversation { max-height: 34vh; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+
+    /* Codex macOS visual contract. These values mirror the installed Codex
+       app's graphite surfaces, text opacities, separators, focus blue, and
+       radius scale while leaving OpenClam's avatar runtime fully independent. */
+    :root {
+      color-scheme: dark;
+      --codex-surface: #181818;
+      --codex-editor: #212121;
+      --codex-elevated: #282828;
+      --codex-control: #303030;
+      --codex-under: #0d0d0d;
+      --codex-text: #ffffff;
+      --codex-text-secondary: rgba(255, 255, 255, .70);
+      --codex-text-tertiary: rgba(255, 255, 255, .50);
+      --codex-border: rgba(255, 255, 255, .08);
+      --codex-border-heavy: rgba(255, 255, 255, .16);
+      --codex-border-light: rgba(255, 255, 255, .04);
+      --codex-focus: #339cff;
+      --ink: var(--codex-text);
+      --muted: var(--codex-text-secondary);
+      --glass: rgba(33, 33, 33, .96);
+      --glass-strong: rgba(40, 40, 40, .96);
+      --line: var(--codex-border);
+      --line-strong: var(--codex-border-heavy);
+      --accent: var(--codex-text);
+      --accent-soft: rgba(255, 255, 255, .07);
+      --good: #40c977;
+      --warning: #ff8549;
+      --shadow: 0 16px 48px rgba(0, 0, 0, .32);
+      --pet-edge: 12px;
+      --pet-rail-size: 40px;
+      --pet-rail-gap: 10px;
+      --pet-rail-reserve: calc(var(--pet-edge) + var(--pet-rail-size) + var(--pet-rail-gap));
+      --pet-surface-radius: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+
+    body { background: var(--codex-surface); }
+    html.is-electron, html.is-electron body { background: transparent; }
+
+    #topline {
+      top: 12px;
+      left: 12px;
+      min-height: 30px;
+      padding: 6px 10px;
+      border-color: var(--codex-border);
+      border-radius: 10px;
+      background: rgba(33, 33, 33, .96);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .20);
+      color: var(--codex-text-secondary);
+      font-size: 12px;
+      font-weight: 430;
+      letter-spacing: 0;
+    }
+
+    #topline[data-tone="good"] #statusDot { box-shadow: none; }
+    #topline[data-tone="busy"] #statusDot { box-shadow: none; }
+    #topline[data-tone="live"] #statusDot { background: #ff6764; box-shadow: none; }
+
+    #rail {
+      z-index: 40;
+      top: var(--pet-edge);
+      right: var(--pet-edge);
+      gap: 6px;
+    }
+    .round-button {
+      width: 40px;
+      height: 40px;
+      border-color: var(--codex-border);
+      border-radius: 10px;
+      background: rgba(33, 33, 33, .96);
+      backdrop-filter: blur(16px);
+      color: var(--codex-text-secondary);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+    }
+    .round-button:hover {
+      transform: none;
+      color: var(--codex-text);
+      border-color: var(--codex-border-heavy);
+      background: rgba(255, 255, 255, .08);
+    }
+    .round-button:active { transform: scale(.96); background: rgba(255, 255, 255, .12); }
+    .round-button svg { width: 18px; height: 18px; }
+    #liveTalkButton[data-state="connecting"] { color: var(--warning); border-color: rgba(255, 133, 73, .4); }
+    #liveTalkButton[data-state="connected"] { color: var(--codex-under); background: #ff6764; border-color: #ff6764; }
+
+    #chatDock {
+      left: var(--pet-edge);
+      right: var(--pet-rail-reserve);
+      bottom: var(--pet-edge);
+      width: auto;
+      max-width: 720px;
+      margin-inline: auto;
+      padding: 7px;
+      border: 1px solid var(--codex-border);
+      border-radius: var(--pet-surface-radius);
+      background: rgba(24, 24, 24, .97);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, .34);
+      transform: translateY(12px);
+    }
+    html.chat-open #chatDock { transform: translateY(0); }
+    #conversation {
+      max-height: min(31dvh, 280px, calc(100dvh - 152px));
+      margin: 0 2px 4px;
+      padding: 8px 8px 7px;
+      border: 0;
+      border-radius: 15px;
+      background: transparent;
+      backdrop-filter: none;
+      box-shadow: none;
+      scrollbar-color: rgba(255, 255, 255, .16) transparent;
+    }
+    .message { gap: 6px; margin: 5px 0; }
+    .bubble {
+      color: var(--codex-text);
+      font-size: 14px;
+      font-weight: 430;
+      line-height: 1.5;
+    }
+    .message.assistant .bubble {
+      max-width: 100%;
+      padding: 8px 4px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+    .message.user .bubble {
+      padding: 9px 12px;
+      border: 1px solid var(--codex-border-light);
+      border-radius: 14px;
+      border-bottom-right-radius: 6px;
+      background: var(--codex-control);
+      color: var(--codex-text);
+    }
+    .read-button { color: var(--codex-text-tertiary); border-radius: 8px; }
+    .read-button:hover { color: var(--codex-text); background: rgba(255, 255, 255, .08); }
+    .media-card { border-color: var(--codex-border); border-radius: 12px; background: var(--codex-under); }
+
+    #composerRow {
+      gap: 5px;
+      padding: 6px;
+      border-color: var(--codex-border);
+      border-radius: 22px;
+      background: rgba(40, 40, 40, .98);
+      backdrop-filter: blur(16px);
+      box-shadow: none;
+    }
+    #composer {
+      height: 40px;
+      min-height: 40px;
+      padding: 9px 8px;
+      color: var(--codex-text);
+      font-size: 14px;
+      font-weight: 430;
+    }
+    #composer::placeholder { color: var(--codex-text-tertiary); }
+    .composer-button {
+      width: 38px;
+      height: 38px;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--codex-text-secondary);
+    }
+    .composer-button:hover { background: rgba(255, 255, 255, .08); color: var(--codex-text); }
+    .composer-button:active { transform: scale(.96); background: rgba(255, 255, 255, .12); }
+    .composer-button svg { width: 18px; height: 18px; }
+    #sendButton { background: var(--codex-text); color: var(--codex-under); }
+    #sendButton:hover { background: rgba(255, 255, 255, .88); color: var(--codex-under); }
+    #pttButton.recording { color: var(--codex-under); background: #ff6764; }
+
+    #recordingChip {
+      border-color: rgba(255, 103, 100, .32);
+      border-radius: 10px;
+      background: rgba(33, 33, 33, .98);
+      color: #ffd9d9;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .24);
+    }
+    #toast {
+      border-color: var(--codex-border);
+      border-radius: 10px;
+      background: rgba(40, 40, 40, .98);
+      color: var(--codex-text);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+    }
+
+    #emptyState {
+      inset: 8px;
+      padding: 22px calc(var(--pet-rail-reserve) - 8px) 16px 16px;
+      overflow: hidden;
+      border: 1px solid var(--codex-border);
+      border-radius: var(--pet-surface-radius);
+      background: radial-gradient(circle at 50% 38%, rgba(255, 255, 255, .035), transparent 42%), var(--codex-surface);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, .24);
+    }
+    #emptyCard {
+      width: min(440px, 100%);
+      padding: 24px;
+      border-color: var(--codex-border);
+      border-radius: 16px;
+      background: rgba(33, 33, 33, .98);
+      text-align: left;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, .28);
+    }
+    #emptyCard h1 { margin-bottom: 7px; font-size: 21px; font-weight: 600; letter-spacing: -.025em; }
+    #emptyCard p { margin-bottom: 20px; color: var(--codex-text-secondary); font-size: 13px; line-height: 1.55; }
+    .empty-actions { justify-content: flex-start; gap: 8px; }
+    .empty-actions button {
+      height: 36px;
+      padding: 0 13px;
+      border-color: var(--codex-border-heavy);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .05);
+      color: var(--codex-text);
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .empty-actions button:hover { background: rgba(255, 255, 255, .08); }
+    #emptySettings { border-color: var(--codex-text); background: var(--codex-text); color: var(--codex-under); }
+
+    .email-review {
+      padding: 20px;
+      border-color: var(--codex-border-heavy);
+      border-radius: 16px;
+      background: var(--codex-editor);
+      box-shadow: 0 24px 72px rgba(0, 0, 0, .52);
+    }
+    .email-review h2 { font-size: 19px; font-weight: 600; }
+    .email-review .unsent { color: var(--warning); }
+    .email-review input, .email-review textarea {
+      border-color: var(--codex-border-heavy);
+      border-radius: 8px;
+      background: var(--codex-control);
+      color: var(--codex-text);
+    }
+    .email-review input:focus, .email-review textarea:focus { border-color: var(--codex-focus); }
+    .email-actions button { border-color: var(--codex-border-heavy); border-radius: 8px; background: rgba(255, 255, 255, .05); }
+    .email-actions button:last-child { background: var(--codex-text); color: var(--codex-under); }
+
+    :focus-visible { outline-color: var(--codex-focus); }
+
+    @media (max-width: 520px) {
+      :root {
+        --pet-edge: 10px;
+        --pet-rail-gap: 8px;
+      }
+      #composerRow { border-radius: 20px; }
+      #emptyState {
+        inset: 6px;
+        padding: 14px calc(var(--pet-rail-reserve) - 6px) 12px 12px;
+        border-radius: 22px;
+      }
+      #emptyCard { padding: 20px; }
+    }
+
+    /* Horizon Walk and Edge Idle are presentation states: the avatar remains
+       interactive, while every piece of window chrome yields to the desktop.
+       Opacity and transform keep the handoff paint-only; JS owns inertness so
+       hidden controls never keep receiving focus or hit rectangles. */
+    #topline,
+    #rail,
+    #emptyState,
+    #toast,
+    .email-review {
+      transition-property: opacity, transform;
+      transition-duration: 160ms;
+      transition-timing-function: cubic-bezier(.65, 0, .35, 1);
+    }
+    #chatDock {
+      transition: opacity 160ms cubic-bezier(.65, 0, .35, 1),
+        transform 160ms cubic-bezier(.65, 0, .35, 1),
+        visibility 0s linear 160ms;
+    }
+    html.chat-open #chatDock { transition-delay: 0s, 0s, 0s; }
+    html.avatar-only-motion #topline {
+      opacity: 0;
+      transform: translateY(-4px);
+      pointer-events: none;
+    }
+    html.avatar-only-motion #rail {
+      opacity: 0;
+      transform: translateX(5px);
+      pointer-events: none;
+    }
+    html.avatar-only-motion #chatDock,
+    html.avatar-only-motion.chat-open #chatDock {
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+    }
+    html.avatar-only-motion #emptyState {
+      opacity: 0;
+      transform: scale(.995);
+      pointer-events: none;
+    }
+    html.avatar-only-motion #toast {
+      opacity: 0;
+      transform: translate(-50%, -4px);
+      pointer-events: none;
+    }
+    html.avatar-only-motion .email-review {
+      opacity: 0;
+      transform: translate(-50%, calc(-50% + 4px));
+      pointer-events: none;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html.avatar-only-motion #topline,
+      html.avatar-only-motion #rail,
+      html.avatar-only-motion #chatDock,
+      html.avatar-only-motion #emptyState,
+      html.avatar-only-motion #toast,
+      html.avatar-only-motion .email-review { transform: none; }
+      html.avatar-only-motion #toast { transform: translateX(-50%); }
+      html.avatar-only-motion .email-review { transform: translate(-50%, -50%); }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="stage" aria-label="Active OpenClam avatar"></canvas>
+
+  <div id="topline" role="status" aria-live="polite" data-tone="busy">
+    <span id="statusDot" aria-hidden="true"></span>
+    <span id="statusText">Preparing your avatar…</span>
+  </div>
+
+  <nav id="rail" aria-label="Avatar controls">
+    <button id="liveTalkButton" class="round-button" type="button" data-state="idle" aria-label="Start Live Talk" title="Start Live Talk">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.7 10.8a15.7 15.7 0 0 0 6.5 6.5l2.2-2.2c.3-.3.7-.4 1.1-.2 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.7 21 3 13.3 3 3.8c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.2 1.1l-2.2 2.1z"/></svg>
+    </button>
+    <button id="chatButton" class="round-button" type="button" aria-label="Open Chat and Push to Talk" title="Open Chat and Push to Talk">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H8l-5 4V5c0-1.1.9-2 2-2Zm1 3v11.8L7.3 16H20V5H5v1Zm3 2h9v2H8V8Zm0 4h6v2H8v-2Z"/></svg>
+    </button>
+    <button id="movesButton" class="round-button secondary" type="button" aria-label="Show avatar move" title="Show avatar move">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 1.45 4.55L18 8l-4.55 1.45L12 14l-1.45-4.55L6 8l4.55-1.45L12 2zm6 10 .9 2.8L22 16l-3.1 1.2L18 20l-.9-2.8L14 16l3.1-1.2L18 12zM6 14l1.15 3.35L10.5 18.5l-3.35 1.15L6 23l-1.15-3.35L1.5 18.5l3.35-1.15L6 14z"/></svg>
+    </button>
+    <button id="walkButton" class="round-button secondary" type="button" aria-pressed="false" aria-label="Start walking" title="Start walking">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 4.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4zm-1.2 4.4 2.2 2.1v4.1h2v-5l-2-2 1.1-2.3c1.2 1.4 2.9 2.3 4.9 2.3v-2c-1.7 0-3.1-.9-3.9-2.2l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.2L8 3.4v5.2h2V4.7l1.8-.7-3.2 6.5-5.1-1-.4 1.9 6.5 1.3 1-2.1-1.6 4.9-4.7 4.2L5.6 21l5.2-4.7 1.5-4.5 1.2 1.2v5h2v-5.8l-3.2-3.6z"/></svg>
+    </button>
+    <button id="settingsButton" class="round-button" type="button" aria-label="Open Character Studio" title="Open Character Studio">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.5 7.5 0 0 0 .05-1 7.5 7.5 0 0 0-.05-1l2.1-1.64-2-3.46-2.53 1a7.7 7.7 0 0 0-1.72-1L14.86 3h-4l-.4 2.9a7.7 7.7 0 0 0-1.72 1l-2.53-1-2 3.46L6.3 11a7.5 7.5 0 0 0-.05 1 7.5 7.5 0 0 0 .05 1l-2.1 1.64 2 3.46 2.53-1a7.7 7.7 0 0 0 1.72 1l.4 2.9h4l.4-2.9a7.7 7.7 0 0 0 1.72-1l2.53 1 2-3.46L19.4 13zM12.85 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>
+    </button>
+  </nav>
+
+  <section id="chatDock" aria-label="Conversation">
+    <div id="recordingChip" role="status" aria-live="polite">
+      <span>Listening</span>
+      <span id="recordingLevel" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <span id="recordingClock">0:00.0</span>
+    </div>
+    <div id="conversation" role="log" aria-live="polite" aria-relevant="additions"></div>
+    <div id="composerRow">
+      <button id="pttButton" class="composer-button" type="button" aria-label="Hold to talk" title="Hold to talk · Space">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+      </button>
+      <textarea id="composer" rows="1" maxlength="12000" autocomplete="off" aria-label="Message" placeholder="Ask anything…"></textarea>
+      <button id="sendButton" class="composer-button" type="button" aria-label="Send message" title="Send" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-7 8-1-8-1-3-7z"/></svg>
+      </button>
+      <button id="closeChatButton" class="composer-button" type="button" aria-label="Close conversation" title="Close conversation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5z"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <section id="emptyState" aria-labelledby="emptyTitle">
+    <div id="emptyCard">
+      <h1 id="emptyTitle">Build your first avatar</h1>
+      <p>Chat, push to talk, and Live Talk work now. Add a portrait whenever you want a full-body desktop avatar.</p>
+      <div class="empty-actions">
+        <button id="emptyChat" type="button">Chat &amp; Push to Talk</button>
+        <button id="emptySettings" type="button">Open Character Studio</button>
+      </div>
+    </div>
+  </section>
+
+  <script>
+  (() => {
+    'use strict';
+
+    const root = document.documentElement;
+    const shell = window.openclam && window.openclam.isElectron ? window.openclam : null;
+    const query = new URLSearchParams(location.search);
+    const side = query.get('side') === 'left' ? 'left' : 'right';
+    const isCompanion = query.get('companion') === '1';
+    if (shell) root.classList.add('is-electron');
+
+    const canvas = document.getElementById('stage');
+    const context = canvas.getContext('2d', { alpha: true, desynchronized: true });
+    const statusLine = document.getElementById('topline');
+    const statusText = document.getElementById('statusText');
+    const rail = document.getElementById('rail');
+    const liveButton = document.getElementById('liveTalkButton');
+    const chatButton = document.getElementById('chatButton');
+    const movesButton = document.getElementById('movesButton');
+    const walkButton = document.getElementById('walkButton');
+    const settingsButton = document.getElementById('settingsButton');
+    const chatDock = document.getElementById('chatDock');
+    const conversation = document.getElementById('conversation');
+    const composer = document.getElementById('composer');
+    const sendButton = document.getElementById('sendButton');
+    const closeChatButton = document.getElementById('closeChatButton');
+    const pttButton = document.getElementById('pttButton');
+    const emptyState = document.getElementById('emptyState');
+    const toast = document.getElementById('toast');
+    const recordingClock = document.getElementById('recordingClock');
+    const recordingBars = [...document.querySelectorAll('#recordingLevel i')];
+
+    let manifest = null;
+    let ready = false;
+    let portraitWidth = 1;
+    let portraitHeight = 1;
+    let bodyImage = null;
+    let headMask = null;
+    let cutoutImage = null;
+    const visemeImages = new Map();
+    const layers = { eyes: {}, gaze: {}, brow: {}, cheek: {}, eyebag: {} };
+    const motion = {};
+    let assetRevision = Date.now();
+    let pixelRatio = 1;
+    let shellState = { onBattery: false, pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
+    let roamState = { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
+    let moveUntil = 0;
+    let idleDocked = false;
+    let avatarOnlyMotion = false;
+    let composerFocusBeforeMotion = null;
+    let lastActivity = performance.now();
+    let lastFrame = 0;
+    let lastControlReport = 0;
+    let pointer = { x: -1, y: -1, inside: false };
+    let avatarHit = false;
+    let petHit = false;
+    let lastHitSent = 0;
+    let petEngaged = false;
+    let dragging = false;
+    let canvasGesture = null;
+    let toastTimer = 0;
+    let turnController = null;
+    let thinkingNode = null;
+    let ptt = null;
+    let live = null;
+    let audioContext = null;
+    let audioAnalyser = null;
+    let audioMonitorGain = null;
+    let audioSignal = { rms: 0, relative: 0, low: 0, mid: 0, high: 0, centroid: 0, zcr: 0 };
+    let audioPeak = .018;
+    let audioTimeData = null;
+    let audioFrequencyData = null;
+    let speechSource = null;
+    let speechTrack = [];
+    let speechStart = 0;
+    let speechTrackIndex = 0;
+    let agentSpeaking = false;
+    const history = [];
+
+    const faceCanvas = document.createElement('canvas');
+    const faceContext = faceCanvas.getContext('2d', { alpha: true });
+    const headCanvas = document.createElement('canvas');
+    const headContext = headCanvas.getContext('2d', { alpha: true });
+    let lastBodyGeometry = null;
+
+    let currentViseme = 'sil';
+    let previousViseme = 'sil';
+    let visemeChangedAt = 0;
+    let nextBlinkAt = performance.now() + 1800 + Math.random() * 2200;
+    let blinkStartedAt = 0;
+    let nextMicroExpression = performance.now() + 2800;
+    let microExpression = { value: 0, started: 0, duration: 1 };
+
+    const setStatus = (text, tone = '') => {
+      statusText.textContent = text;
+      statusLine.dataset.tone = tone;
+    };
+
+    const notify = (text, duration = 4200) => {
+      clearTimeout(toastTimer);
+      toast.textContent = String(text || '');
+      toast.classList.add('show');
+      toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
+    };
+
+    const markActivity = () => {
+      lastActivity = performance.now();
+      if (idleDocked) {
+        idleDocked = false;
+        if (shell && typeof shell.undockPet === 'function') shell.undockPet();
+      }
+    };
+
+    const motionChrome = [statusLine, rail, chatDock, emptyState, toast];
+    const setAvatarOnlyMotion = active => {
+      const next = Boolean(active);
+      if (next === avatarOnlyMotion) return;
+      if (next && !composerFocusBeforeMotion && document.activeElement === composer) {
+        composerFocusBeforeMotion = {
+          start: composer.selectionStart,
+          end: composer.selectionEnd,
+          direction: composer.selectionDirection,
+        };
+      }
+      avatarOnlyMotion = next;
+      root.classList.toggle('avatar-only-motion', next);
+      for (const element of [...motionChrome, ...document.querySelectorAll('.email-review')]) element.inert = next;
+      if (next) {
+        if (ptt) stopRecording(true);
+        if (document.activeElement === composer) composer.blur();
+      } else if (composerFocusBeforeMotion) {
+        requestAnimationFrame(() => {
+          if (avatarOnlyMotion) return;
+          const focus = composerFocusBeforeMotion;
+          composerFocusBeforeMotion = null;
+          if (!focus || !root.classList.contains('chat-open')) return;
+          composer.focus({ preventScroll: true });
+          composer.setSelectionRange(focus.start, focus.end, focus.direction);
+        });
+      }
+      reportControlRects(true);
+    };
+
+    const openChat = (focus = false) => {
+      root.classList.add('chat-open');
+      chatButton.setAttribute('aria-label', 'Close Chat and Push to Talk');
+      chatButton.title = 'Close Chat and Push to Talk';
+      markActivity();
+      if (focus && !avatarOnlyMotion) {
+        if (shell && typeof shell.focusPetWindow === 'function') shell.focusPetWindow();
+        requestAnimationFrame(() => composer.focus());
+      }
+      reportControlRects(true);
+    };
+
+    const closeChat = () => {
+      if (ptt) return;
+      root.classList.remove('chat-open');
+      chatButton.setAttribute('aria-label', 'Open Chat and Push to Talk');
+      chatButton.title = 'Open Chat and Push to Talk';
+      composer.blur();
+      reportControlRects(true);
+    };
+
+    const safeJSON = async response => {
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) {
+        let detail = `Request failed (${response.status})`;
+        try {
+          detail = contentType.includes('json')
+            ? String((await response.json()).detail || detail)
+            : String((await response.text()).slice(0, 180) || detail);
+        } catch (_) { /* the status is still useful */ }
+        throw new Error(detail);
+      }
+      return response.json();
+    };
+
+    const liveTalkConnectionError = error => {
+      const detail = String(error && error.message || error || '');
+      if (detail.includes('livekit_selection_not_allowed')) {
+        return 'This saved Live Talk combination is no longer supported. Choose one approved option for each stage, then save Live Talk.';
+      }
+      if (detail.includes('livekit_pilot_token_missing')) {
+        return 'Live Talk access is not set up on this Mac. Add the pilot access token in Settings.';
+      }
+      if (detail.includes('livekit_not_configured')) {
+        return 'Live Talk is not configured in this build.';
+      }
+      if (/\blivekit_[a-z0-9_]+\b/i.test(detail)) {
+        return 'Live Talk could not connect. Check the Live Talk choices and credentials in Settings, then try again.';
+      }
+      return `Live Talk could not connect: ${detail.slice(0, 110) || 'Try again.'}`;
+    };
+
+    const postJSON = (path, body, signal) => fetch(path, {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify(body),
+      signal,
+    }).then(safeJSON);
+
+    const loadImage = src => new Promise(resolve => {
+      if (!src) { resolve(null); return; }
+      const image = new Image();
+      image.decoding = 'async';
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      const joiner = String(src).includes('?') ? '&' : '?';
+      image.src = `${src}${joiner}v=${assetRevision}`;
+    });
+
+    const nearestIndex = (values, target) => {
+      if (!Array.isArray(values) || !values.length) return 0;
+      let best = 0;
+      let distance = Infinity;
+      values.forEach((value, index) => {
+        const next = Math.abs(Number(value) - target);
+        if (next < distance) { distance = next; best = index; }
+      });
+      return best;
+    };
+
+    const loadMotion = async kind => {
+      const clip = manifest && manifest.motion && manifest.motion[kind];
+      if (!clip) return;
+      const loaded = { ...clip, sheets: [] };
+      if (kind !== 'walk' && clip.alpha_stream) {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.loop = true;
+        video.playsInline = true;
+        video.preload = 'auto';
+        video.src = `${clip.alpha_stream}?v=${assetRevision}`;
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, 3500);
+          video.oncanplay = () => { clearTimeout(timer); resolve(); };
+          video.onerror = () => { clearTimeout(timer); resolve(); };
+          video.load();
+        });
+        if (video.videoWidth) loaded.video = video;
+      }
+      if (!loaded.video || kind === 'walk') {
+        for (const sheet of clip.sheets || []) {
+          const image = await loadImage(sheet.image);
+          if (image) loaded.sheets.push({ ...sheet, image });
+        }
+      }
+      if (loaded.video || loaded.sheets.length) motion[kind] = loaded;
+    };
+
+    const motionPlaybackProfile = () => {
+      const clip = motion.walk;
+      if (!clip) return { ready: false };
+      const bounds = clip.bounds || [0, 0, clip.frame_width || 256, clip.frame_height || 384];
+      const zoom = Math.max(.5, Math.min(3, Number(shellState.pet && shellState.pet.roamZoom) || .6));
+      const scale = Math.min(250 * zoom / Math.max(1, bounds[2]), 340 * zoom / Math.max(1, bounds[3])) * .985;
+      const cycleSeconds = Number(clip.cycle_seconds) || Math.max(.1, Number(clip.frames || 1) / Math.max(1, Number(clip.fps || 1)));
+      const sourceSpeed = Number(clip.ground_speed) || 64 / scale;
+      const cycleDistance = (Number(clip.cycle_distance) || sourceSpeed * cycleSeconds) * scale;
+      const travelOffsets = Array.isArray(clip.travel_offsets)
+        ? clip.travel_offsets.map(value => Number(value) * scale).filter(Number.isFinite)
+        : [];
+      return { ready: true, walkSpeed: sourceSpeed * scale, cycleSeconds, cycleDistance, travelOffsets };
+    };
+
+    const publishMotionReadiness = () => {
+      if (!shell || typeof shell.setPetMotionReady !== 'function') return;
+      shell.setPetMotionReady(motion.walk ? motionPlaybackProfile() : { ready: false });
+    };
+
+    async function loadAvatar() {
+      setStatus('Loading avatar…', 'busy');
+      try {
+        const response = await fetch(`assets/manifest.json?v=${assetRevision}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('missing avatar');
+        manifest = await response.json();
+        if (!manifest || !Array.isArray(manifest.visemes) || !manifest.frames) throw new Error('invalid avatar');
+
+        const firstFrame = manifest.frames.sil || manifest.frames[manifest.visemes[0]];
+        const first = await loadImage(firstFrame && (firstFrame.open || firstFrame.shut));
+        if (!first) throw new Error('avatar image failed to load');
+        portraitWidth = Number(manifest.w) || first.naturalWidth || first.width;
+        portraitHeight = Number(manifest.h) || first.naturalHeight || first.height;
+        faceCanvas.width = portraitWidth;
+        faceCanvas.height = portraitHeight;
+        headCanvas.width = portraitWidth;
+        headCanvas.height = portraitHeight;
+
+        await Promise.all((manifest.visemes || []).map(async name => {
+          const frame = manifest.frames[name] || {};
+          const image = name === 'sil' && first ? first : await loadImage(frame.open || frame.shut);
+          if (image) visemeImages.set(name, image);
+        }));
+
+        const layerJobs = [];
+        for (const kind of ['eyes', 'gaze', 'brow', 'cheek', 'eyebag']) {
+          const spec = manifest[kind];
+          if (!spec) continue;
+          for (const key of ['l', 'r']) {
+            if (spec[key] && spec[key].src) {
+              layerJobs.push(loadImage(spec[key].src).then(image => { layers[kind][key] = image; }));
+            }
+          }
+        }
+        if (manifest.body) {
+          layerJobs.push(loadImage(manifest.body.image).then(image => { bodyImage = image; }));
+          layerJobs.push(loadImage(manifest.body.head_mask).then(image => { headMask = image; }));
+        }
+        if (manifest.cutout && manifest.cutout.src) {
+          layerJobs.push(loadImage(manifest.cutout.src).then(image => { cutoutImage = image; }));
+        }
+        await Promise.all(layerJobs);
+        await Promise.all(['walk', 'idle', 'move'].map(loadMotion));
+        publishMotionReadiness();
+        ready = true;
+        emptyState.classList.remove('show');
+        setStatus(`${manifest.avatar && manifest.avatar.name ? manifest.avatar.name : 'OpenClam'} · ready`, 'good');
+        requestAnimationFrame(renderLoop);
+      } catch (_) {
+        manifest = null;
+        ready = false;
+        setAvatarOnlyMotion(false);
+        emptyState.classList.add('show');
+        setStatus('No active avatar', '');
+        if (shell && typeof shell.setPetHit === 'function') shell.setPetHit(true);
+        reportControlRects(true);
+      }
+    }
+
+    const resizeCanvas = () => {
+      pixelRatio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const width = Math.max(1, Math.round(innerWidth * pixelRatio));
+      const height = Math.max(1, Math.round(innerHeight * pixelRatio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+    };
+
+    const viewCrop = (meta, width, height, forcedView = null) => {
+      const bounds = Array.isArray(meta && meta.bounds) && meta.bounds.length >= 4
+        ? meta.bounds.map(Number) : [0, 0, width, height];
+      const full = { x: bounds[0], y: bounds[1], w: Math.max(1, bounds[2]), h: Math.max(1, bounds[3]) };
+      const view = forcedView || (shellState.pet && shellState.pet.view) || 'full';
+      if (view === 'full') return full;
+      if (view === 'face' || view === 'head' || view === 'bust') {
+        const face = meta && meta.alignment && meta.alignment.face_bounds;
+        if (Array.isArray(face) && face.length >= 4) {
+          const marginX = face[2] * .7;
+          const top = face[1] - face[3] * .65;
+          const bottom = view === 'bust' ? face[1] + face[3] * 2.15 : face[1] + face[3] * 1.25;
+          return {
+            x: Math.max(0, face[0] - marginX),
+            y: Math.max(0, top),
+            w: Math.min(width, face[2] + marginX * 2),
+            h: Math.min(height, bottom - Math.max(0, top)),
+          };
+        }
+      }
+      const portion = view === 'half' ? .66 : .82;
+      return { x: full.x, y: full.y, w: full.w, h: Math.max(1, full.h * portion) };
+    };
+
+    const cameraFor = (meta, width, height, forcedView = null) => {
+      const crop = viewCrop(meta, width, height, forcedView);
+      const chatReserve = root.classList.contains('chat-open') && !(shellState.pet && shellState.pet.roam)
+        ? Math.min(innerHeight * .38, chatDock.getBoundingClientRect().height + 24) : 0;
+      const availableHeight = Math.max(160, innerHeight - chatReserve);
+      const margin = shellState.pet && shellState.pet.roam ? .995 : .94;
+      const scale = Math.min(innerWidth / crop.w, availableHeight / crop.h) * margin;
+      return {
+        scale,
+        x: innerWidth * .5 - (crop.x + crop.w * .5) * scale,
+        y: shellState.pet && shellState.pet.roam
+          ? availableHeight - (crop.y + crop.h) * scale
+          : availableHeight * .5 - (crop.y + crop.h * .5) * scale,
+        crop,
+      };
+    };
+
+    /* track-stabiliser:start */
+    const XFADE = .070;
+    const MIN_POSE = .020;
+    const VISUAL_LEAD = XFADE * .5;
+    const LOCKED_POSES = new Set(['sil', 'PP']);
+    const VIS_ALT = {
+      aa: ['aa', 'E'], E: ['E', 'aa', 'ih'], ih: ['ih', 'E'],
+      oh: ['oh', 'ou'], ou: ['ou', 'oh'], oo: ['ou', 'oh'],
+      PP: ['PP', 'FF', 'nn', 'sil'], FF: ['FF', 'PP', 'TH'],
+      TH: ['TH', 'nn'], DD: ['nn', 'TH'], nn: ['nn', 'RR'],
+      kk: ['nn', 'ih', 'E'], CH: ['ih', 'TH'], SS: ['ih', 'TH', 'E'],
+      RR: ['RR', 'nn', 'ou'], sil: ['sil'], closed: ['sil'],
+    };
+    const nearestViseme = (name, valid) => {
+      const value = String(name || '');
+      if (valid.has(value)) return value;
+      for (const alternative of VIS_ALT[value] || []) {
+        if (valid.has(alternative)) return alternative;
+      }
+      return null;
+    };
+    const stabiliseTrack = (raw, duration, validNames = []) => {
+      const fallback = (Array.isArray(raw) ? raw : []).map(event => String(
+        Array.isArray(event) ? event[1] || '' : '')).filter(Boolean);
+      const valid = new Set((Array.isArray(validNames) && validNames.length)
+        ? validNames.map(String) : fallback);
+      const compact = events => {
+        const output = [];
+        for (const event of events) {
+          if (output.length && Math.abs(event[0] - output[output.length - 1][0]) < .0001) {
+            output[output.length - 1] = event;
+          } else if (!output.length || output[output.length - 1][1] !== event[1]) {
+            output.push(event);
+          }
+        }
+        return output;
+      };
+      let events = (Array.isArray(raw) ? raw : [])
+        .filter(event => Array.isArray(event) && Number.isFinite(Number(event[0])))
+        .map(event => {
+          const viseme = nearestViseme(event[1], valid);
+          return viseme ? [Math.max(0, Number(event[0])), viseme] : null;
+        })
+        .filter(Boolean)
+        .sort((left, right) => left[0] - right[0]);
+      events = compact(events);
+      for (let pass = 0; pass < 5; pass += 1) {
+        let changed = false;
+        for (let index = 0; index + 1 < events.length; index += 1) {
+          const dwell = events[index + 1][0] - events[index][0];
+          const viseme = events[index][1];
+          if (dwell >= MIN_POSE || LOCKED_POSES.has(viseme)) continue;
+          const before = index ? events[index - 1][1] : null;
+          const after = events[index + 1][1];
+          const replacement = after && after !== 'sil' ? after : before;
+          if (replacement && replacement !== viseme) {
+            events[index][1] = replacement;
+            changed = true;
+          }
+        }
+        events = compact(events);
+        if (!changed) break;
+      }
+      if (events.length && duration > 0 && events[events.length - 1][0] > duration) {
+        events[events.length - 1][0] = duration;
+      }
+      return events;
+    };
+    /* track-stabiliser:end */
+
+    /* live-mouth-sync:start */
+    const LIVE_MOUTH_OPEN_RMS = .0065;
+    const LIVE_MOUTH_CLOSE_RMS = .0035;
+    const LIVE_MOUTH_RELEASE_MS = 48;
+    const LIVE_MOUTH_DWELL_MS = 72;
+    const LIVE_TALK_STATUS_RELEASE_MS = 520;
+    const makeReactiveMouthState = () => ({ viseme: 'sil', changedAt: 0, audibleUntil: 0 });
+    const makeLiveTalkAudioState = () => ({ speaking: false, audibleUntil: 0 });
+    const reactiveMouthState = makeReactiveMouthState();
+
+    const liveTalkAudioTransition = (state, signal, now) => {
+      const rms = Math.max(0, Number(signal && signal.rms) || 0);
+      const threshold = state.speaking ? LIVE_MOUTH_CLOSE_RMS : LIVE_MOUTH_OPEN_RMS;
+      if (rms >= threshold) {
+        state.speaking = true;
+        state.audibleUntil = now + LIVE_TALK_STATUS_RELEASE_MS;
+        return 'speaking';
+      }
+      if (!state.speaking) return null;
+      if (now < state.audibleUntil) return 'speaking';
+      state.speaking = false;
+      state.audibleUntil = 0;
+      return 'connected';
+    };
+
+    const measureAudioSignal = (timeData, frequencyData, sampleRate) => {
+      const samples = timeData && timeData.length ? timeData : [];
+      let squareSum = 0;
+      let crossings = 0;
+      let previous = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const value = (Number(samples[index]) - 128) / 128;
+        squareSum += value * value;
+        if (index && ((value >= 0) !== (previous >= 0))) crossings += 1;
+        previous = value;
+      }
+      const rms = samples.length ? Math.sqrt(squareSum / samples.length) : 0;
+      const bands = { low: [80, 520], mid: [520, 2200], high: [2200, 7200] };
+      const totals = { low: 0, mid: 0, high: 0 };
+      const counts = { low: 0, mid: 0, high: 0 };
+      let weightedFrequency = 0;
+      let spectralEnergy = 0;
+      const spectrum = frequencyData && frequencyData.length ? frequencyData : [];
+      const nyquist = Math.max(1, Number(sampleRate) || 48000) * .5;
+      for (let index = 1; index < spectrum.length; index += 1) {
+        const frequency = index / spectrum.length * nyquist;
+        if (frequency > bands.high[1]) break;
+        const magnitude = Math.max(0, Number(spectrum[index]) || 0) / 255;
+        const energy = magnitude * magnitude;
+        spectralEnergy += energy;
+        weightedFrequency += frequency * energy;
+        for (const name of ['low', 'mid', 'high']) {
+          if (frequency >= bands[name][0] && frequency < bands[name][1]) {
+            totals[name] += energy;
+            counts[name] += 1;
+            break;
+          }
+        }
+      }
+      return {
+        rms,
+        relative: 0,
+        low: Math.sqrt(totals.low / Math.max(1, counts.low)),
+        mid: Math.sqrt(totals.mid / Math.max(1, counts.mid)),
+        high: Math.sqrt(totals.high / Math.max(1, counts.high)),
+        centroid: spectralEnergy ? Math.min(1, weightedFrequency / spectralEnergy / bands.high[1]) : 0,
+        zcr: samples.length > 1 ? crossings / (samples.length - 1) : 0,
+      };
+    };
+
+    const firstAvailableViseme = (valid, names) => {
+      for (const name of names) if (valid.has(name)) return name;
+      return valid.has('sil') ? 'sil' : [...valid][0] || 'sil';
+    };
+
+    const classifyAudioViseme = (signal, validNames) => {
+      const valid = new Set((Array.isArray(validNames) ? validNames : []).map(String));
+      const intensity = Math.max(0, Math.min(1, Number(signal.relative) || 0));
+      const low = Number(signal.low) || 0;
+      const mid = Number(signal.mid) || 0;
+      const high = Number(signal.high) || 0;
+      const centroid = Number(signal.centroid) || 0;
+      const zcr = Number(signal.zcr) || 0;
+      if ((zcr > .145 && high > low * .82) || high > Math.max(low, mid) * 1.22) {
+        return firstAvailableViseme(valid, ['SS', 'FF', 'TH', 'ih']);
+      }
+      if (centroid < .31 && low > high * 1.12) {
+        return firstAvailableViseme(valid, intensity > .72 ? ['oh', 'aa', 'ou'] : ['ou', 'RR', 'oh']);
+      }
+      if (intensity > .78) return firstAvailableViseme(valid, ['aa', 'oh', 'E']);
+      if (centroid > .55) return firstAvailableViseme(valid, intensity > .46 ? ['E', 'ih', 'SS'] : ['ih', 'nn']);
+      if (intensity > .48) return firstAvailableViseme(valid, ['E', 'oh', 'aa']);
+      return firstAvailableViseme(valid, ['ih', 'nn', 'RR']);
+    };
+
+    const reactiveAudioViseme = (state, signal, now, validNames) => {
+      const rms = Math.max(0, Number(signal && signal.rms) || 0);
+      const threshold = state.viseme === 'sil' ? LIVE_MOUTH_OPEN_RMS : LIVE_MOUTH_CLOSE_RMS;
+      const audible = rms >= threshold;
+      if (audible) state.audibleUntil = now + LIVE_MOUTH_RELEASE_MS;
+      if (!audible) {
+        if (now >= state.audibleUntil) {
+          state.viseme = 'sil';
+          state.changedAt = now;
+        }
+        return state.viseme;
+      }
+      const candidate = classifyAudioViseme(signal, validNames);
+      if (state.viseme === 'sil' || (candidate !== state.viseme && now - state.changedAt >= LIVE_MOUTH_DWELL_MS)) {
+        state.viseme = candidate;
+        state.changedAt = now;
+      }
+      return state.viseme;
+    };
+    /* live-mouth-sync:end */
+
+    const speechTime = () => audioContext ? audioContext.currentTime - speechStart : 0;
+
+    const hasAttachedAgentAudio = () => Boolean(live && live.audioAttachments && live.audioAttachments.size);
+
+    const syncLiveTalkAudioStatus = (session, now) => {
+      if (live !== session || session.ending || !session.agentReady || !session.audioAttachments.size) return;
+      const state = session.remoteAudioState || (session.remoteAudioState = makeLiveTalkAudioState());
+      const status = liveTalkAudioTransition(state, audioSignal, now);
+      if (status === 'speaking') setStatus('Live Talk · speaking', 'live');
+      else if (status === 'connected') setStatus('Live Talk · connected', 'live');
+    };
+
+    const desiredViseme = now => {
+      if (speechSource && speechTrack.length) {
+        const time = speechTime() + VISUAL_LEAD;
+        while (speechTrackIndex + 1 < speechTrack.length && Number(speechTrack[speechTrackIndex + 1][0]) <= time) speechTrackIndex += 1;
+        return String((speechTrack[speechTrackIndex] && speechTrack[speechTrackIndex][1]) || 'sil');
+      }
+      if (speechSource || hasAttachedAgentAudio()) {
+        const available = manifest && manifest.visemes ? manifest.visemes : ['sil'];
+        return reactiveAudioViseme(reactiveMouthState, audioSignal, now, available);
+      }
+      reactiveMouthState.viseme = 'sil';
+      reactiveMouthState.audibleUntil = 0;
+      return 'sil';
+    };
+
+    const blinkAmount = now => {
+      if (!blinkStartedAt && now >= nextBlinkAt) blinkStartedAt = now;
+      if (!blinkStartedAt) return 0;
+      const elapsed = now - blinkStartedAt;
+      if (elapsed < 90) return elapsed / 90;
+      if (elapsed < 135) return 1;
+      if (elapsed < 250) return 1 - (elapsed - 135) / 115;
+      blinkStartedAt = 0;
+      nextBlinkAt = now + 1900 + Math.random() * 4300;
+      return 0;
+    };
+
+    const microBrow = now => {
+      if (now >= nextMicroExpression) {
+        microExpression = { value: Math.random() * 2 - 1, started: now, duration: 900 + Math.random() * 900 };
+        nextMicroExpression = now + 2800 + Math.random() * 4300;
+      }
+      const phase = (now - microExpression.started) / microExpression.duration;
+      return phase > 0 && phase < 1 ? microExpression.value * Math.sin(Math.PI * phase) : 0;
+    };
+
+    const drawStripState = (target, image, geometry, values, value, row = 0) => {
+      if (!target || !image || !geometry || !Array.isArray(geometry.box)) return;
+      const box = geometry.box.map(Number);
+      const width = box[2];
+      const height = box[3];
+      if (!(width > 0 && height > 0)) return;
+      const index = nearestIndex(values, value);
+      const states = Math.max(1, values.length);
+      const sourceY = (index + row * states) * height;
+      target.drawImage(image, 0, sourceY, width, height, box[0], box[1], width, height);
+    };
+
+    const composeHead = now => {
+      const wanted = desiredViseme(now);
+      if (wanted !== currentViseme && visemeImages.has(wanted)) {
+        previousViseme = currentViseme;
+        currentViseme = wanted;
+        // A timed local track can lead its sound to centre the blend. Live Talk
+        // sees the exact samples being played, so begin halfway through the
+        // crossfade instead of adding another full texture-frame of latency.
+        visemeChangedAt = hasAttachedAgentAudio() && !speechTrack.length
+          ? now - XFADE * 500 : now;
+      }
+      const oldImage = visemeImages.get(previousViseme) || visemeImages.get('sil') || [...visemeImages.values()][0];
+      const newImage = visemeImages.get(currentViseme) || oldImage;
+      const blend = Math.max(0, Math.min(1, (now - visemeChangedAt) / (XFADE * 1000)));
+      faceContext.setTransform(1, 0, 0, 1, 0, 0);
+      faceContext.globalCompositeOperation = 'source-over';
+      faceContext.globalAlpha = 1;
+      faceContext.clearRect(0, 0, portraitWidth, portraitHeight);
+      if (oldImage) faceContext.drawImage(oldImage, 0, 0, portraitWidth, portraitHeight);
+      if (newImage && newImage !== oldImage) {
+        faceContext.globalAlpha = blend;
+        faceContext.drawImage(newImage, 0, 0, portraitWidth, portraitHeight);
+        faceContext.globalAlpha = 1;
+      }
+
+      const blink = blinkAmount(now);
+      const pointerX = pointer.inside ? pointer.x : innerWidth * .5;
+      const pointerY = pointer.inside ? pointer.y : innerHeight * .42;
+      const gazeXValues = manifest.gaze && manifest.gaze.dxs || [0];
+      const gazeYValues = manifest.gaze && manifest.gaze.dys || [0];
+      const gazeX = (pointerX / Math.max(1, innerWidth) - .5) * 2 * Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0);
+      const gazeY = (pointerY / Math.max(1, innerHeight) - .45) * 2 * Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0);
+      const browValues = manifest.brow && manifest.brow.dys || [0];
+      const browTop = Math.max(...browValues.map(value => Math.abs(Number(value))), 0);
+      const browValue = (agentSpeaking ? -.58 : -.18 * microBrow(now)) * browTop;
+
+      if (manifest.brow) {
+        const squeeze = manifest.brow.sqs || [0];
+        const row = nearestIndex(squeeze, agentSpeaking ? .25 : 0);
+        for (const key of ['l', 'r']) drawStripState(faceContext, layers.brow[key], manifest.brow[key], browValues, browValue, row);
+      }
+      if (manifest.cheek) {
+        const values = manifest.cheek.ups || [0];
+        const value = (agentSpeaking || speechSource) ? Number(values[values.length - 1] || 0) * .35 : 0;
+        for (const key of ['l', 'r']) drawStripState(faceContext, layers.cheek[key], manifest.cheek[key], values, value);
+      }
+      if (manifest.eyebag) {
+        const values = manifest.eyebag.ups || [0];
+        const value = blink * Number(values[values.length - 1] || 0) * .3;
+        for (const key of ['l', 'r']) drawStripState(faceContext, layers.eyebag[key], manifest.eyebag[key], values, value);
+      }
+      if (manifest.gaze) {
+        const row = nearestIndex(gazeYValues, gazeY);
+        for (const key of ['l', 'r']) drawStripState(faceContext, layers.gaze[key], manifest.gaze[key], gazeXValues, gazeX, row);
+      }
+      if (manifest.eyes && Array.isArray(manifest.eyes.states)) {
+        const states = manifest.eyes.states;
+        for (const key of ['l', 'r']) {
+          const image = layers.eyes[key];
+          const geometry = manifest.eyes[key];
+          if (!image || !geometry || !Array.isArray(geometry.box) || blink <= .004) continue;
+          const box = geometry.box.map(Number);
+          let high = 0;
+          while (high < states.length - 1 && Number(states[high]) < blink) high += 1;
+          const low = high - 1;
+          const lowValue = low >= 0 ? Number(states[low]) : 0;
+          const highValue = Number(states[high]) || 1;
+          const blendValue = Math.max(0, Math.min(1, (blink - lowValue) / Math.max(.0001, highValue - lowValue)));
+          if (low >= 0) faceContext.drawImage(image, 0, low * box[3], box[2], box[3], box[0], box[1], box[2], box[3]);
+          faceContext.globalAlpha = blendValue;
+          faceContext.drawImage(image, 0, high * box[3], box[2], box[3], box[0], box[1], box[2], box[3]);
+          faceContext.globalAlpha = 1;
+        }
+      }
+
+      if (cutoutImage) {
+        faceContext.globalCompositeOperation = 'destination-in';
+        faceContext.drawImage(cutoutImage, 0, 0, portraitWidth, portraitHeight);
+        faceContext.globalCompositeOperation = 'source-over';
+      }
+
+      headContext.setTransform(1, 0, 0, 1, 0, 0);
+      headContext.globalCompositeOperation = 'source-over';
+      headContext.globalAlpha = 1;
+      headContext.clearRect(0, 0, portraitWidth, portraitHeight);
+      headContext.drawImage(faceCanvas, 0, 0);
+      if (headMask) {
+        headContext.globalCompositeOperation = 'destination-in';
+        headContext.drawImage(headMask, 0, 0, portraitWidth, portraitHeight);
+        headContext.globalCompositeOperation = 'source-over';
+      }
+    };
+
+    const motionFrame = (clip, now, phase = null) => {
+      if (!clip || !clip.frames || !clip.sheets || !clip.sheets.length) return null;
+      const raw = phase === null
+        ? Math.floor(now / 1000 * (Number(clip.fps) || 12)) % clip.frames
+        : Math.min(clip.frames - 1, Math.floor((((phase % 1) + 1) % 1) * clip.frames));
+      const sheet = clip.sheets.find(value => raw >= value.first && raw < value.first + value.count);
+      if (!sheet) return null;
+      const local = raw - sheet.first;
+      return {
+        sheet,
+        index: raw,
+        sx: (local % sheet.columns) * clip.frame_width,
+        sy: Math.floor(local / sheet.columns) * clip.frame_height,
+      };
+    };
+
+    const drawMotion = (kind, now, edge = null) => {
+      const clip = motion[kind];
+      if (!clip) return false;
+      for (const [otherKind, otherClip] of Object.entries(motion)) {
+        if (otherKind !== kind && otherClip.video && !otherClip.video.paused) otherClip.video.pause();
+      }
+      const width = Number(clip.frame_width) || 720;
+      const height = Number(clip.frame_height) || 1088;
+      const fit = cameraFor({ bounds: clip.bounds || [0, 0, width, height] }, width, height, 'full');
+      const direction = Number(roamState.direction) || 1;
+      const freeIdle = kind === 'idle' && clip.anchor_mode === 'free';
+      const mirror = kind === 'walk' ? direction < 0 : edge === 'right' && !freeIdle;
+      const frame = clip.video ? null : motionFrame(clip, now, kind === 'walk' && roamState.enabled ? roamState.phase : null);
+      let x = fit.x;
+      if (kind === 'idle' && edge && !freeIdle) {
+        const anchors = clip.edge_anchors || {};
+        const frameAnchors = Array.isArray(anchors.left_frames) ? anchors.left_frames : [];
+        const support = Number(frameAnchors[frame ? frame.index : 0]);
+        const leftSupport = Number.isFinite(support) ? support : Number(anchors.left) || 0;
+        x = edge === 'left' ? 3 - leftSupport * fit.scale : innerWidth - 3 - (width - leftSupport) * fit.scale;
+      }
+
+      context.save();
+      context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * x, pixelRatio * fit.y);
+      if (mirror) { context.translate(width, 0); context.scale(-1, 1); }
+      if (clip.video && clip.video.readyState >= 2) {
+        if (clip.video.paused) clip.video.play().catch(() => {});
+        context.drawImage(clip.video, 0, 0, width, height);
+      } else if (frame) {
+        context.drawImage(frame.sheet.image, frame.sx, frame.sy, width, height, 0, 0, width, height);
+      } else {
+        context.restore();
+        return false;
+      }
+      context.restore();
+      return true;
+    };
+
+    const drawAvatar = now => {
+      composeHead(now);
+      const hasBody = Boolean(bodyImage && manifest.body);
+      const image = hasBody ? bodyImage : faceCanvas;
+      const width = image.naturalWidth || image.width || portraitWidth;
+      const height = image.naturalHeight || image.height || portraitHeight;
+      const metadata = hasBody ? manifest.body : {
+        bounds: manifest.cutout && manifest.cutout.bounds || [0, 0, width, height],
+        alignment: { face_bounds: [width * .2, height * .08, width * .6, height * .64] },
+      };
+      const fit = cameraFor(metadata, width, height);
+      const bounds = metadata.bounds || [0, 0, width, height];
+      const pivotX = bounds[0] + bounds[2] * .5;
+      const pivotY = bounds[1] + bounds[3];
+      const sway = agentSpeaking || speechSource ? Math.sin(now / 360) * .004 : Math.sin(now / 2200) * .006;
+      const breathe = 1 + Math.sin(now / 1250) * .0025;
+
+      context.save();
+      context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * fit.x, pixelRatio * fit.y);
+      context.translate(pivotX, pivotY);
+      context.rotate(sway);
+      context.scale(breathe, 1);
+      context.translate(-pivotX, -pivotY);
+      context.drawImage(image, 0, 0, width, height);
+      if (hasBody && headMask && Array.isArray(manifest.body.face_transform) && manifest.body.face_transform.length === 2) {
+        const matrix = manifest.body.face_transform;
+        context.save();
+        context.transform(matrix[0][0], matrix[1][0], matrix[0][1], matrix[1][1], matrix[0][2], matrix[1][2]);
+        context.drawImage(headCanvas, 0, 0, portraitWidth, portraitHeight);
+        context.restore();
+      }
+      context.restore();
+
+      lastBodyGeometry = { fit, width, height, metadata, pivotX, pivotY, sway, breathe, hasBody };
+    };
+
+    const edgeIdleActive = now => Boolean(motion.idle && !roamState.enabled && !root.classList.contains('chat-open') && !speechSource && !agentSpeaking && now - lastActivity > 12000);
+
+    const roamMotionKind = (mode, presentationMode = null) => {
+      const presented = mode === 'stand' ? String(presentationMode || 'walk') : String(mode || '');
+      return presented === 'walk' ? 'walk' : presented.startsWith('ledge-') ? 'idle' : null;
+    };
+
+    const drawPresentedMotion = (kind, now, edge = null) => {
+      const rendered = drawMotion(kind, now, edge);
+      setAvatarOnlyMotion(rendered && (kind === 'walk' || kind === 'idle'));
+      return rendered;
+    };
+
+    const paintFrame = now => {
+      resizeCanvas();
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      if (!ready) { setAvatarOnlyMotion(false); return; }
+
+      if (roamState.enabled) {
+        // Intentional hover pauses the roam engine in `stand`. Keep the held
+        // Walk atlas frame and pure-alpha presentation instead of replacing
+        // it with the static avatar and restoring the hidden chrome.
+        const kind = roamMotionKind(roamState.mode, roamState.presentationMode);
+        if (kind && drawPresentedMotion(kind, now, roamState.edge || side)) return;
+      }
+      if (now < moveUntil && drawPresentedMotion('move', now)) return;
+      if (moveUntil && now >= moveUntil) {
+        moveUntil = 0;
+        movesButton.classList.remove('showing');
+      }
+      if (edgeIdleActive(now)) {
+        if (!idleDocked) {
+          idleDocked = true;
+          if (shell && typeof shell.dockPet === 'function') shell.dockPet();
+        }
+        if (drawPresentedMotion('idle', now, side)) return;
+      } else if (idleDocked) {
+        idleDocked = false;
+        if (shell && typeof shell.undockPet === 'function') shell.undockPet();
+      }
+      for (const clip of Object.values(motion)) {
+        if (clip.video && !clip.video.paused) clip.video.pause();
+      }
+      setAvatarOnlyMotion(false);
+      drawAvatar(now);
+    };
+
+    const frameDelay = now => {
+      const active = speechSource || hasAttachedAgentAudio() || agentSpeaking || ptt || dragging || roamState.enabled || now < moveUntil;
+      if (active) return shellState.onBattery ? 32 : 16;
+      return shellState.onBattery ? 50 : 33;
+    };
+
+    function renderLoop(now) {
+      requestAnimationFrame(renderLoop);
+      if (!ready || now - lastFrame < frameDelay(now)) return;
+      lastFrame = now;
+      if (audioAnalyser) {
+        if (!audioTimeData || audioTimeData.length !== audioAnalyser.fftSize) audioTimeData = new Uint8Array(audioAnalyser.fftSize);
+        if (!audioFrequencyData || audioFrequencyData.length !== audioAnalyser.frequencyBinCount) audioFrequencyData = new Uint8Array(audioAnalyser.frequencyBinCount);
+        audioAnalyser.getByteTimeDomainData(audioTimeData);
+        audioAnalyser.getByteFrequencyData(audioFrequencyData);
+        const measured = measureAudioSignal(audioTimeData, audioFrequencyData, audioContext && audioContext.sampleRate);
+        audioPeak = Math.max(.018, measured.rms, audioPeak * .994);
+        audioSignal = { ...measured, relative: Math.min(1, measured.rms / audioPeak) };
+      } else {
+        audioSignal = { rms: 0, relative: 0, low: 0, mid: 0, high: 0, centroid: 0, zcr: 0 };
+      }
+      if (live) syncLiveTalkAudioStatus(live, now);
+      paintFrame(now);
+      updateHit(false);
+      syncPetEngagement();
+      if (now - lastControlReport > 200) { lastControlReport = now; reportControlRects(); }
+    }
+
+    const pointInsideRect = (point, rectangle) => point.x >= rectangle.left && point.x <= rectangle.right && point.y >= rectangle.top && point.y <= rectangle.bottom;
+
+    const controlElements = () => {
+      if (avatarOnlyMotion) return [];
+      const values = [liveButton, chatButton, settingsButton];
+      for (const button of [movesButton, walkButton]) {
+        const style = getComputedStyle(button);
+        if (style.pointerEvents !== 'none' && Number(style.opacity) > .08) values.push(button);
+      }
+      if (root.classList.contains('chat-open')) values.push(chatDock);
+      const draft = document.querySelector('.email-review');
+      if (draft) values.push(draft);
+      if (emptyState.classList.contains('show')) values.push(emptyState);
+      return values;
+    };
+
+    const overControls = point => controlElements().some(element => {
+      if (!element) return false;
+      const box = element.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && pointInsideRect(point, box);
+    });
+
+    function updateHit(force) {
+      if (!shell || typeof shell.setPetHit !== 'function') return;
+      const chromeHit = overControls(pointer);
+      let figureHit = false;
+      if (!chromeHit && ready && pointer.inside && pointer.x >= 0 && pointer.y >= 0 && pointer.x < innerWidth && pointer.y < innerHeight) {
+        try {
+          const alpha = context.getImageData(Math.floor(pointer.x * pixelRatio), Math.floor(pointer.y * pixelRatio), 1, 1).data[3];
+          figureHit = alpha > 18;
+        } catch (_) { figureHit = false; }
+      }
+      const hit = dragging || Boolean(ptt) || chromeHit || figureHit;
+      avatarHit = figureHit;
+      root.classList.toggle('avatar-hover', figureHit);
+      if (hit) markActivity();
+      const now = performance.now();
+      if (hit !== petHit || force || now - lastHitSent > 550) {
+        petHit = hit;
+        lastHitSent = now;
+        shell.setPetHit(hit);
+      }
+    }
+
+    function syncPetEngagement() {
+      if (!shell || typeof shell.setPetEngaged !== 'function') return;
+      // The chat may have been open when Horizon Walk was selected. It is
+      // inert and invisible during the presentation, so it must not pin the
+      // roam engine in its stationary interaction state. Likewise, hovering
+      // a now-hidden rail control is window interactivity, not avatar hover.
+      const engaged = Boolean(shellState.pet && shellState.pet.roam
+        && (avatarHit || ptt || speechSource || agentSpeaking));
+      if (engaged === petEngaged) return;
+      petEngaged = engaged;
+      shell.setPetEngaged(engaged);
+    }
+
+    let lastControlPacket = '';
+    function reportControlRects(force = false) {
+      if (!shell || typeof shell.setPetControlRects !== 'function') return;
+      const rects = [];
+      for (const element of controlElements()) {
+        if (!element) continue;
+        const box = element.getBoundingClientRect();
+        if (box.width > 0 && box.height > 0) rects.push({ x: Math.floor(box.left), y: Math.floor(box.top), w: Math.ceil(box.width), h: Math.ceil(box.height) });
+      }
+      const packet = JSON.stringify(rects);
+      if (force || packet !== lastControlPacket) {
+        lastControlPacket = packet;
+        shell.setPetControlRects(rects);
+      }
+    }
+
+    const pointOnHead = point => {
+      if (!lastBodyGeometry) return true;
+      const geometry = lastBodyGeometry;
+      let x = (point.x - geometry.fit.x) / geometry.fit.scale;
+      let y = (point.y - geometry.fit.y) / geometry.fit.scale;
+      const dx = x - geometry.pivotX;
+      const dy = y - geometry.pivotY;
+      const cosine = Math.cos(-geometry.sway);
+      const sine = Math.sin(-geometry.sway);
+      x = (dx * cosine - dy * sine) / geometry.breathe + geometry.pivotX;
+      y = dx * sine + dy * cosine + geometry.pivotY;
+      const face = geometry.metadata && geometry.metadata.alignment && geometry.metadata.alignment.face_bounds;
+      if (!Array.isArray(face)) return !geometry.hasBody;
+      const margin = face[2] * .45;
+      return x >= face[0] - margin && x <= face[0] + face[2] + margin && y >= face[1] - face[3] * .7 && y <= face[1] + face[3] * 1.3;
+    };
+
+    const addMessage = (role, text, options = {}) => {
+      const row = document.createElement('div');
+      row.className = `message ${role}`;
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = String(text || '');
+      row.appendChild(bubble);
+      if (role === 'assistant' && text && options.readable !== false) {
+        const read = document.createElement('button');
+        read.type = 'button';
+        read.className = 'read-button';
+        read.setAttribute('aria-label', 'Read this response aloud');
+        read.title = 'Read aloud';
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.setAttribute('viewBox', '0 0 24 24');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', 'M3 9v6h4l5 4V5L7 9H3zm12.5 3a3.5 3.5 0 0 0-1.5-2.9v5.8a3.5 3.5 0 0 0 1.5-2.9zm0-7.1v2.2a6 6 0 0 1 0 9.8v2.2a8 8 0 0 0 0-14.2z');
+        icon.appendChild(path);
+        read.appendChild(icon);
+        read.addEventListener('click', () => readAloud(String(text)));
+        row.appendChild(read);
+      }
+      conversation.appendChild(row);
+      conversation.scrollTop = conversation.scrollHeight;
+      return { row, bubble };
+    };
+
+    const addWorking = () => {
+      const item = addMessage('assistant', '•••', { readable: false });
+      item.row.classList.add('working');
+      thinkingNode = item.row;
+    };
+
+    const removeWorking = () => {
+      if (thinkingNode && thinkingNode.isConnected) thinkingNode.remove();
+      thinkingNode = null;
+    };
+
+    const appendMedia = async cards => {
+      for (const card of Array.isArray(cards) ? cards : []) {
+        if (!card || typeof card.url !== 'string' || !card.url.startsWith('api/generated/')) continue;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'media-card';
+        const label = document.createElement('div');
+        label.className = 'media-name';
+        label.textContent = String(card.name || 'Generated media');
+        try {
+          const response = await fetch(card.url, { cache: 'no-store' });
+          if (!response.ok) throw new Error('media unavailable');
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const element = blob.type.startsWith('video/') ? document.createElement('video') : document.createElement('img');
+          if (element instanceof HTMLVideoElement) { element.controls = true; element.playsInline = true; }
+          element.src = url;
+          element.addEventListener(element instanceof HTMLVideoElement ? 'loadeddata' : 'load',
+            () => URL.revokeObjectURL(url), { once: true });
+          wrapper.append(element, label);
+        } catch (_) {
+          label.textContent = `${label.textContent} · unavailable`;
+          wrapper.append(label);
+        }
+        conversation.appendChild(wrapper);
+      }
+      conversation.scrollTop = conversation.scrollHeight;
+    };
+
+    const ensureAudioGraph = () => {
+      audioContext = audioContext || new AudioContext();
+      if (!audioAnalyser) {
+        audioAnalyser = audioContext.createAnalyser();
+        audioAnalyser.fftSize = 1024;
+        audioAnalyser.smoothingTimeConstant = .38;
+        // Keep the metering graph renderable without letting its second branch
+        // reach the speakers. Speech and LiveKit each retain exactly one audible
+        // output path below.
+        audioMonitorGain = audioContext.createGain();
+        audioMonitorGain.gain.value = 0;
+        audioAnalyser.connect(audioMonitorGain);
+        audioMonitorGain.connect(audioContext.destination);
+      }
+      if (audioContext.state !== 'running') audioContext.resume().catch(() => {});
+      return audioContext;
+    };
+
+    const stopSpeech = () => {
+      if (speechSource) { try { speechSource.stop(); } catch (_) { /* already ended */ } }
+      speechSource = null;
+      speechTrack = [];
+      speechTrackIndex = 0;
+      currentViseme = 'sil';
+      reactiveMouthState.viseme = 'sil';
+      reactiveMouthState.audibleUntil = 0;
+    };
+
+    const playSpeech = async (base64, track = []) => {
+      if (!base64) return;
+      stopSpeech();
+      const graph = ensureAudioGraph();
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const buffer = await graph.decodeAudioData(bytes.buffer.slice(0));
+      const source = graph.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioAnalyser);
+      source.connect(graph.destination);
+      speechSource = source;
+      speechTrack = stabiliseTrack(
+        track,
+        buffer.duration,
+        manifest && Array.isArray(manifest.visemes) ? manifest.visemes : [],
+      );
+      speechTrackIndex = 0;
+      speechStart = graph.currentTime;
+      source.onended = () => {
+        if (speechSource === source) {
+          speechSource = null;
+          speechTrack = [];
+          currentViseme = 'sil';
+          setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
+        }
+      };
+      source.start();
+      setStatus('Speaking', 'good');
+    };
+
+    async function readAloud(text) {
+      if (live) {
+        notify('Hang up Live Talk before playing a separate read-aloud voice.');
+        return;
+      }
+      try {
+        setStatus('Preparing voice…', 'busy');
+        const result = await postJSON('/say', { text });
+        if (result.audio) await playSpeech(result.audio, result.track || []);
+        else throw new Error(result.error || 'No audio was returned');
+      } catch (error) {
+        notify(`Could not read aloud: ${String(error.message || error).slice(0, 120)}`);
+        setStatus('Ready', 'good');
+      }
+    }
+
+    async function submitTurn(text) {
+      const value = String(text || '').trim();
+      if (!value || turnController || avatarOnlyMotion) return;
+      if (live) {
+        notify('Hang up Live Talk before sending a regular chat message.');
+        return;
+      }
+      stopSpeech();
+      openChat(false);
+      addMessage('user', value, { readable: false });
+      history.push({ role: 'user', content: value });
+      addWorking();
+      turnController = new AbortController();
+      sendButton.disabled = true;
+      pttButton.disabled = true;
+      setStatus('Thinking…', 'busy');
+      try {
+        const result = await postJSON('/reply', { history }, turnController.signal);
+        removeWorking();
+        const answer = String(result.text || 'I lost that thought. Please try again.');
+        addMessage('assistant', answer);
+        history.push({ role: 'assistant', content: answer });
+        if (history.length > 24) history.splice(0, history.length - 24);
+        await appendMedia(result.media);
+        if (result.audio) await playSpeech(result.audio, result.track || []);
+        else setStatus('Ready', 'good');
+      } catch (error) {
+        removeWorking();
+        if (error.name !== 'AbortError') {
+          const message = `I could not answer: ${String(error.message || error).slice(0, 150)}`;
+          addMessage('assistant', message, { readable: false });
+          setStatus('Check model settings', '');
+        }
+      } finally {
+        turnController = null;
+        pttButton.disabled = Boolean(live);
+        sendButton.disabled = !composer.value.trim();
+      }
+    }
+
+    const submitComposer = () => {
+      if (avatarOnlyMotion) return;
+      const value = composer.value.trim();
+      if (!value) return;
+      if (live) {
+        notify('Hang up Live Talk before sending a regular chat message.');
+        return;
+      }
+      composer.value = '';
+      resizeComposer();
+      submitTurn(value);
+    };
+
+    const resizeComposer = () => {
+      composer.style.height = '40px';
+      composer.style.height = `${Math.min(112, Math.max(40, composer.scrollHeight))}px`;
+      sendButton.disabled = !composer.value.trim() || Boolean(turnController) || Boolean(live);
+      reportControlRects(true);
+    };
+
+    const recordingMime = () => ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported(type)) || '';
+
+    async function startRecording() {
+      if (avatarOnlyMotion || ptt || live || turnController) return;
+      stopSpeech();
+      openChat(false);
+      markActivity();
+      const session = { released: false, chunks: [], started: performance.now(), stream: null, recorder: null, meterContext: null, analyser: null };
+      ptt = session;
+      root.classList.add('recording');
+      pttButton.classList.add('recording');
+      pttButton.setAttribute('aria-label', 'Release to transcribe');
+      setStatus('Listening…', 'live');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+        if (ptt !== session || session.released) { stream.getTracks().forEach(track => track.stop()); finishRecordingUI(); return; }
+        session.stream = stream;
+        session.meterContext = new AudioContext();
+        session.analyser = session.meterContext.createAnalyser();
+        session.analyser.fftSize = 512;
+        session.meterContext.createMediaStreamSource(stream).connect(session.analyser);
+        const type = recordingMime();
+        session.recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+        session.recorder.ondataavailable = event => { if (event.data && event.data.size) session.chunks.push(event.data); };
+        session.recorder.onstop = () => transcribeRecording(session);
+        session.recorder.start(180);
+      } catch (error) {
+        if (ptt === session) ptt = null;
+        finishRecordingUI();
+        notify(`Microphone unavailable: ${String(error.message || error).slice(0, 110)}`);
+        setStatus('Ready', 'good');
+      }
+    }
+
+    function stopRecording(cancel = false) {
+      const session = ptt;
+      if (!session) return;
+      session.released = true;
+      session.cancelled = cancel;
+      if (session.recorder && session.recorder.state !== 'inactive') session.recorder.stop();
+      else if (!session.stream) {
+        ptt = null;
+        finishRecordingUI();
+      }
+    }
+
+    const finishRecordingUI = () => {
+      root.classList.remove('recording');
+      pttButton.classList.remove('recording');
+      pttButton.setAttribute('aria-label', 'Hold to talk');
+      recordingClock.textContent = '0:00.0';
+      recordingBars.forEach(bar => { bar.style.height = '3px'; });
+      reportControlRects(true);
+    };
+
+    async function transcribeRecording(session) {
+      if (ptt === session) ptt = null;
+      finishRecordingUI();
+      if (session.stream) session.stream.getTracks().forEach(track => track.stop());
+      if (session.meterContext) session.meterContext.close().catch(() => {});
+      if (session.cancelled || performance.now() - session.started < 220 || !session.chunks.length) {
+        setStatus('Ready', 'good');
+        return;
+      }
+      setStatus('Transcribing…', 'busy');
+      try {
+        const blob = new Blob(session.chunks, { type: session.recorder && session.recorder.mimeType || 'audio/webm' });
+        const form = new FormData();
+        form.append('audio', blob, blob.type.includes('mp4') ? 'take.m4a' : 'take.webm');
+        const result = await fetch('/stt', { method: 'POST', body: form }).then(safeJSON);
+        const heard = String(result.text || '').trim();
+        if (!heard) throw new Error(result.error || 'I did not catch that');
+        await submitTurn(heard);
+      } catch (error) {
+        notify(`Could not transcribe: ${String(error.message || error).slice(0, 120)}`);
+        setStatus('Ready', 'good');
+      }
+    }
+
+    const updateRecordingMeter = now => {
+      if (!ptt) return;
+      const elapsed = Math.max(0, (now - ptt.started) / 1000);
+      recordingClock.textContent = `${Math.floor(elapsed / 60)}:${(elapsed % 60).toFixed(1).padStart(4, '0')}`;
+      let level = 0;
+      if (ptt.analyser) {
+        const samples = new Uint8Array(ptt.analyser.fftSize);
+        ptt.analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (const sample of samples) { const value = (sample - 128) / 128; sum += value * value; }
+        level = Math.min(1, Math.sqrt(sum / samples.length) * 7);
+      }
+      recordingBars.forEach((bar, index) => {
+        const shape = .38 + .62 * Math.sin(Math.PI * (index + .5) / recordingBars.length);
+        bar.style.height = `${Math.round(3 + level * 13 * shape)}px`;
+      });
+    };
+    (function recordingAnimation(now) { updateRecordingMeter(now); requestAnimationFrame(recordingAnimation); })(performance.now());
+
+    const EMAIL_RPC = 'openclam.prepareEmailDraft.v1';
+    const MAX_RPC_BYTES = 12000;
+    const utf8Size = value => new TextEncoder().encode(String(value || '')).length;
+    const canonicalWords = value => String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ');
+    const containsWord = (value, term) => (` ${value} `).includes(` ${term} `);
+    const looksQuoted = value => {
+      const text = String(value || '').trim();
+      if (!text) return false;
+      const edgeQuotes = new Set(['"', "'", '`', '>', '«', '»', '‘', '’', '“', '”']);
+      if (edgeQuotes.has(text[0]) || edgeQuotes.has(text[text.length - 1])) return true;
+      return (text.match(/"/g) || []).length >= 2 || (text.match(/`/g) || []).length >= 2;
+    };
+
+    const explicitEmailRequest = (value, recipientName) => {
+      let request = canonicalWords(value);
+      const recipient = canonicalWords(recipientName);
+      if (!request || !recipient || looksQuoted(value)) return false;
+      const followups = new Set(['approve', 'approve it', 'confirm', 'confirm it', 'do it', 'go ahead', 'ok send it', 'okay send it', 'send', 'send it', 'yes', 'yes send it']);
+      if (followups.has(request)) return false;
+      const blocked = [
+        'can t', 'cannot', 'do not', 'don t', 'dont', 'must not', 'mustn t',
+        'never', 'should not', 'shouldn t', 'won t', 'asked', 'avoid', 'cancel',
+        'check', 'drafted', 'emailed', 'find', 'forwarded', 'mentioned', 'no',
+        'not', 'open', 'pasted', 'prepared', 'quoted', 'read', 'received',
+        'reported', 'said', 'says', 'search', 'sent', 'show', 'stop',
+        'summarise', 'summarize', 'told', 'wrote',
+      ];
+      if (blocked.some(term => containsWord(request, term))) return false;
+      for (const prefix of ['please would you', 'please could you', 'please can you', 'would you', 'could you', 'i want to', 'i need to', 'i d like to', 'will you', 'help me', 'please', 'let s', 'can you', 'lets']) {
+        if (request.startsWith(`${prefix} `)) { request = request.slice(prefix.length + 1); break; }
+      }
+      const candidates = [`email ${recipient}`, `email to ${recipient}`];
+      for (const action of ['compose', 'create', 'draft', 'prepare', 'send', 'write']) {
+        candidates.push(`${action} an email to ${recipient}`, `${action} a email to ${recipient}`, `${action} email to ${recipient}`, `${action} an email for ${recipient}`, `${action} a email for ${recipient}`, `${action} email for ${recipient}`, `${action} ${recipient} an email`, `${action} ${recipient} a email`, `${action} ${recipient} email`);
+      }
+      return candidates.some(candidate => request === candidate || request.startsWith(`${candidate} `));
+    };
+
+    const exactObject = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).sort().join('|') === keys.slice().sort().join('|');
+
+    const parseEmailRequest = payload => {
+      if (typeof payload !== 'string' || utf8Size(payload) > MAX_RPC_BYTES) return null;
+      let rootValue;
+      try { rootValue = JSON.parse(payload); } catch (_) { return null; }
+      if (!exactObject(rootValue, ['schema_version', 'request_id', 'spoken_request', 'tool'])
+          || !exactObject(rootValue.tool, ['name', 'arguments'])
+          || !exactObject(rootValue.tool.arguments, ['recipient_name', 'subject', 'body'])) return null;
+      const values = rootValue.tool.arguments;
+      if (rootValue.schema_version !== 1 || rootValue.tool.name !== 'prepare_email_draft'
+          || !/^[0-9a-f]{64}$/.test(rootValue.request_id)
+          || ![rootValue.spoken_request, values.recipient_name, values.subject, values.body].every(item => typeof item === 'string')
+          || !rootValue.spoken_request.trim() || utf8Size(rootValue.spoken_request) > 8000
+          || !values.recipient_name.trim() || [...values.recipient_name].length > 320
+          || [...values.subject].length > 240 || utf8Size(values.body) > 6000
+          || !explicitEmailRequest(rootValue.spoken_request, values.recipient_name)) return null;
+      return { request_id: rootValue.request_id, spoken_request: rootValue.spoken_request, recipient_name: values.recipient_name, subject: values.subject, body: values.body };
+    };
+
+    const closeEmailReview = () => {
+      const panel = document.querySelector('.email-review');
+      if (panel) panel.remove();
+      if (live) live.pendingDraft = null;
+      reportControlRects(true);
+    };
+
+    const presentEmailReview = request => {
+      if (document.querySelector('.email-review')) return 'busy';
+      openChat(false);
+      const panel = document.createElement('section');
+      panel.className = 'email-review';
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-modal', 'true');
+      panel.setAttribute('aria-label', 'Unsent email draft');
+      panel.inert = avatarOnlyMotion;
+      const title = document.createElement('h2');
+      title.textContent = 'Review email draft';
+      const warning = document.createElement('div');
+      warning.className = 'unsent';
+      warning.textContent = 'Unsent · this draft stays on screen until you copy it or keep it in the conversation.';
+      panel.append(title, warning);
+      const makeField = (labelText, value, multiline) => {
+        const label = document.createElement('label');
+        label.append(document.createTextNode(labelText));
+        const input = document.createElement(multiline ? 'textarea' : 'input');
+        input.value = value;
+        label.append(input);
+        panel.append(label);
+        return input;
+      };
+      const recipient = makeField('Recipient', request.recipient_name, false);
+      const subject = makeField('Subject', request.subject, false);
+      const body = makeField('Message', request.body, true);
+      const actions = document.createElement('div');
+      actions.className = 'email-actions';
+      const keep = document.createElement('button');
+      keep.type = 'button';
+      keep.textContent = 'Keep in chat';
+      keep.addEventListener('click', closeEmailReview);
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = 'Copy draft';
+      copy.addEventListener('click', async () => {
+        const text = [`To: ${recipient.value}`, `Subject: ${subject.value}`, '', body.value].join('\n');
+        try {
+          await navigator.clipboard.writeText(text);
+          copy.textContent = 'Copied';
+        } catch (_) { copy.textContent = 'Copy failed'; }
+        setTimeout(() => { if (copy.isConnected) copy.textContent = 'Copy draft'; }, 1500);
+      });
+      actions.append(keep, copy);
+      panel.append(actions);
+      document.body.append(panel);
+      if (live) live.pendingDraft = panel;
+      reportControlRects(true);
+      if (!avatarOnlyMotion) recipient.focus();
+      return 'presented_for_review';
+    };
+
+    const trustedAgents = room => [...room.remoteParticipants.values()].filter(participant => participant.isAgent);
+
+    const trustedEmailInvocation = (session, invocation, timeout) => {
+      const agents = trustedAgents(session.room);
+      return live === session && session.agentReady && document.visibilityState === 'visible'
+        && agents.length === 1 && agents[0].identity === invocation.callerIdentity
+        && Number.isFinite(timeout) && timeout >= 1000 && timeout <= 20000;
+    };
+
+    const waitForMatchingFinalUserTurn = async (session, spokenRequest, timeout) => {
+      const expected = canonicalWords(spokenRequest);
+      if (!expected) return false;
+      const deadline = performance.now() + Math.min(5000, Math.max(0, timeout - 1500));
+      do {
+        if (live !== session) return false;
+        if (canonicalWords(session.latestFinalUserTranscript) === expected) return true;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (performance.now() < deadline);
+      return canonicalWords(session.latestFinalUserTranscript) === expected;
+    };
+
+    const appendFinalUserTurnSegment = (session, text) => {
+      if (!session.userTurnOpen) {
+        session.finalUserTurnSegments = [];
+        session.userTurnOpen = true;
+      }
+      session.finalUserTurnSegments.push(text);
+      session.latestFinalUserTranscript = session.finalUserTurnSegments.join(' ');
+      return session.latestFinalUserTranscript;
+    };
+
+    const handleEmailRPC = async (session, invocation) => {
+      const answer = status => JSON.stringify({ schema_version: 1, status });
+      const timeout = Number(invocation.responseTimeout);
+      if (!trustedEmailInvocation(session, invocation, timeout)) return answer('rejected');
+      const request = parseEmailRequest(invocation.payload);
+      if (!request || !await waitForMatchingFinalUserTurn(session, request.spoken_request, timeout)
+          || !trustedEmailInvocation(session, invocation, timeout)) return answer('rejected');
+      if (session.replayedEmailRequests.has(request.request_id)) return answer('rejected');
+      session.replayedEmailRequests.add(request.request_id);
+      while (session.replayedEmailRequests.size > 64) {
+        session.replayedEmailRequests.delete(session.replayedEmailRequests.values().next().value);
+      }
+      return answer(presentEmailReview(request));
+    };
+
+    const setLiveButton = state => {
+      liveButton.dataset.state = state;
+      const label = state === 'connected' ? 'Hang up Live Talk' : state === 'connecting' ? 'Cancel Live Talk call' : 'Start Live Talk';
+      liveButton.setAttribute('aria-label', label);
+      liveButton.title = label;
+    };
+
+    const startConnectionSound = session => {
+      if (session.ringtone) return;
+      const ringtone = new Audio('/live-talk-connection.wav');
+      ringtone.loop = true;
+      ringtone.volume = .5;
+      session.ringtone = ringtone;
+      ringtone.play().catch(() => {});
+    };
+
+    const stopConnectionSound = session => {
+      if (!session || !session.ringtone) return;
+      session.ringtone.pause();
+      session.ringtone.currentTime = 0;
+      session.ringtone = null;
+    };
+
+    function waitForSoleAgent(session, status = 'Live Talk · waiting for agent…') {
+      if (live !== session) return;
+      session.agentReady = false;
+      session.remoteAudioState = makeLiveTalkAudioState();
+      agentSpeaking = false;
+      currentViseme = 'sil';
+      clearTimeout(session.guard);
+      setLiveButton('connecting');
+      startConnectionSound(session);
+      setStatus(status, 'busy');
+      session.guard = setTimeout(() => {
+        if (live === session) {
+          notify('The Live Talk agent did not return. Try again.');
+          stopLiveTalk('timeout');
+        }
+      }, 30000);
+    }
+
+    function markAgentReady(session) {
+      if (live !== session) return;
+      const agents = trustedAgents(session.room);
+      if (agents.length > 1) {
+        notify('Live Talk ended because more than one agent joined the call.');
+        stopLiveTalk('error');
+        return;
+      }
+      if (agents.length === 0) {
+        waitForSoleAgent(session);
+        return;
+      }
+      session.agentReady = true;
+      session.remoteAudioState = makeLiveTalkAudioState();
+      clearTimeout(session.guard);
+      stopConnectionSound(session);
+      setLiveButton('connected');
+      pttButton.disabled = true;
+      sendButton.disabled = true;
+      setStatus('Live Talk · connected', 'live');
+      openChat(false);
+      if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(true);
+    }
+
+    const handleTranscript = (session, segments, participant) => {
+      if (live !== session || !participant) return;
+      const role = participant.isAgent ? 'assistant' : 'user';
+      for (const segment of segments || []) {
+        const text = String(segment.text || '').trim();
+        if (!text) continue;
+        if (segment.final) {
+          const key = `${role}:${String(segment.id || text)}`;
+          if (session.finalTranscriptIDs.has(key)) continue;
+          session.finalTranscriptIDs.add(key);
+          if (role === 'user') {
+            appendFinalUserTurnSegment(session, text);
+          } else {
+            session.userTurnOpen = false;
+          }
+          addMessage(role, text, { readable: role === 'assistant' });
+          openChat(false);
+        } else if (role === 'user') {
+          setStatus(`Hearing “${text.slice(0, 54)}”`, 'live');
+        }
+      }
+    };
+
+    const releaseAgentAudioAttachment = attachment => {
+      if (!attachment) return;
+      try { attachment.track.detach(attachment.element); } catch (_) { /* already detached */ }
+      try { attachment.source.disconnect(); } catch (_) { /* already disconnected */ }
+      try { attachment.element.pause(); } catch (_) { /* already paused */ }
+      attachment.element.srcObject = null;
+      attachment.element.remove();
+    };
+
+    const attachAgentAudio = (session, track, participant) => {
+      if (live !== session || !participant || !participant.isAgent || !track.mediaStreamTrack) return;
+      const graph = ensureAudioGraph();
+      const key = track.sid || track.mediaStreamTrack.id;
+      const previous = session.audioAttachments.get(key);
+      if (previous) {
+        releaseAgentAudioAttachment(previous);
+        session.audioAttachments.delete(key);
+      }
+      const element = document.createElement('audio');
+      element.autoplay = true;
+      element.hidden = true;
+      element.setAttribute('aria-hidden', 'true');
+      let source = null;
+      try {
+        // LiveKit owns the attached element, autoplay recovery, and the sole
+        // audible output. Meter the remote WebRTC track through the Web Audio
+        // primitive intended for MediaStreams; a MediaElement source created
+        // before LiveKit assigns srcObject can remain silent in Chromium.
+        document.body.append(element);
+        track.attach(element);
+        const stream = new MediaStream([track.mediaStreamTrack]);
+        source = graph.createMediaStreamSource(stream);
+        source.connect(audioAnalyser);
+        session.audioAttachments.set(key, { track, element, source, stream });
+        void roomAudioReady(session);
+      } catch (_) {
+        releaseAgentAudioAttachment({ track, element, source });
+        notify('Live Talk audio could not start. End the call and try again.');
+        if (live === session && !session.ending) stopLiveTalk('error');
+      }
+    };
+
+    const roomAudioReady = session => {
+      if (live !== session || session.ending) return Promise.resolve(false);
+      if (session.audioStartPromise) return session.audioStartPromise;
+      session.audioStartPromise = (async () => {
+        try {
+          const graph = ensureAudioGraph();
+          if (graph.state !== 'running') await graph.resume();
+          await session.room.startAudio();
+          if (graph.state !== 'running') throw new Error('audio_context_suspended');
+          return true;
+        } catch (_) {
+          if (live === session && !session.ending) {
+            notify('Live Talk speaker playback was blocked. Start the call again to enable audio.');
+            stopLiveTalk('error');
+          }
+          return false;
+        } finally {
+          session.audioStartPromise = null;
+        }
+      })();
+      return session.audioStartPromise;
+    };
+
+    async function startLiveTalk() {
+      if (live) { stopLiveTalk('ended'); return; }
+      if (ptt || turnController) { notify('Finish the current voice or chat turn before starting Live Talk.'); return; }
+      const library = window.LivekitClient;
+      if (!library || !library.Room) { notify('Live Talk is unavailable in this build.'); return; }
+      stopSpeech();
+      const session = {
+        room: new library.Room({ adaptiveStream: true, dynacast: true }),
+        agentReady: false,
+        finalTranscriptIDs: new Set(),
+        finalUserTurnSegments: [],
+        userTurnOpen: false,
+        latestFinalUserTranscript: '',
+        replayedEmailRequests: new Set(),
+        audioAttachments: new Map(),
+        remoteAudioState: makeLiveTalkAudioState(),
+        audioStartPromise: null,
+        pendingDraft: null,
+        ending: false,
+        ringtone: null,
+      };
+      live = session;
+      ensureAudioGraph();
+      setLiveButton('connecting');
+      pttButton.disabled = true;
+      sendButton.disabled = true;
+      setStatus('Calling Live Talk…', 'busy');
+      startConnectionSound(session);
+      openChat(false);
+      if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(true);
+      session.guard = setTimeout(() => {
+        if (live === session) {
+          notify('The Live Talk agent did not answer. Try again.');
+          stopLiveTalk('timeout');
+        }
+      }, 30000);
+
+      const room = session.room;
+      room.registerRpcMethod(EMAIL_RPC, invocation => handleEmailRPC(session, invocation));
+      room.on(library.RoomEvent.ParticipantConnected, participant => {
+        if (participant.isAgent) markAgentReady(session);
+      });
+      room.on(library.RoomEvent.ParticipantDisconnected, participant => {
+        if (participant.isAgent) markAgentReady(session);
+      });
+      room.on(library.RoomEvent.TrackSubscribed, (track, _publication, participant) => {
+        if (track.kind === library.Track.Kind.Audio) attachAgentAudio(session, track, participant);
+      });
+      room.on(library.RoomEvent.TrackUnsubscribed, track => {
+        const key = track.sid || (track.mediaStreamTrack && track.mediaStreamTrack.id);
+        const attachment = session.audioAttachments.get(key);
+        if (attachment) {
+          releaseAgentAudioAttachment(attachment);
+          session.audioAttachments.delete(key);
+          if (!session.audioAttachments.size) {
+            session.remoteAudioState = makeLiveTalkAudioState();
+            if (live === session && session.agentReady && !session.ending) setStatus('Live Talk · connected', 'live');
+          }
+        }
+      });
+      room.on(library.RoomEvent.AudioPlaybackStatusChanged, canPlay => {
+        if (live === session && !session.ending && !canPlay) roomAudioReady(session);
+      });
+      room.on(library.RoomEvent.TranscriptionReceived, (segments, participant) => handleTranscript(session, segments, participant));
+      room.on(library.RoomEvent.ActiveSpeakersChanged, participants => {
+        if (live !== session) return;
+        agentSpeaking = participants.some(participant => participant.isAgent);
+      });
+      room.on(library.RoomEvent.Reconnecting, () => {
+        if (live !== session) return;
+        session.agentReady = false;
+        session.remoteAudioState = makeLiveTalkAudioState();
+        setLiveButton('connecting');
+        startConnectionSound(session);
+        setStatus('Live Talk · reconnecting…', 'busy');
+        clearTimeout(session.guard);
+        session.guard = setTimeout(() => {
+          if (live === session) {
+            notify('Live Talk could not restore the connection.');
+            stopLiveTalk('timeout');
+          }
+        }, 30000);
+      });
+      room.on(library.RoomEvent.Reconnected, () => {
+        if (live !== session) return;
+        markAgentReady(session);
+      });
+      room.on(library.RoomEvent.Disconnected, () => { if (live === session && !session.ending) stopLiveTalk('ended'); });
+
+      try {
+        const connection = await fetch('/api/livekit/session', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Cache-Control': 'no-store' },
+        }).then(safeJSON);
+        if (live !== session) return;
+        await room.connect(connection.server_url, connection.participant_token);
+        if (live !== session) { room.disconnect().catch(() => {}); return; }
+        if (!await roomAudioReady(session) || live !== session) return;
+        await room.localParticipant.setMicrophoneEnabled(true);
+        markAgentReady(session);
+      } catch (error) {
+        if (live === session) {
+          notify(liveTalkConnectionError(error));
+          stopLiveTalk('error');
+        }
+      }
+    }
+
+    function stopLiveTalk(reason) {
+      const session = live;
+      live = null;
+      if (!session) return;
+      session.ending = true;
+      clearTimeout(session.guard);
+      stopConnectionSound(session);
+      agentSpeaking = false;
+      currentViseme = 'sil';
+      reactiveMouthState.viseme = 'sil';
+      reactiveMouthState.audibleUntil = 0;
+      for (const attachment of session.audioAttachments.values()) releaseAgentAudioAttachment(attachment);
+      session.audioAttachments.clear();
+      try { session.room.unregisterRpcMethod(EMAIL_RPC); } catch (_) { /* no registration */ }
+      session.room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+      session.room.disconnect().catch(() => {});
+      // An unsent draft is useful after the call ends; keep its visible review
+      // card until the user explicitly copies or dismisses it.
+      setLiveButton('idle');
+      pttButton.disabled = Boolean(turnController);
+      if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(false);
+      setStatus(reason === 'timeout' ? 'Live Talk did not answer' : reason === 'error' ? 'Live Talk unavailable' : 'Ready', reason === 'error' || reason === 'timeout' ? '' : 'good');
+      resizeComposer();
+      reportControlRects(true);
+    }
+
+    const toggleMove = () => {
+      if (!motion.move) { notify('Build a Moves clip in Character Studio first.'); return; }
+      if (moveUntil > performance.now()) {
+        moveUntil = 0;
+        movesButton.classList.remove('showing');
+      } else {
+        const clip = motion.move;
+        if (clip.video) clip.video.currentTime = 0;
+        const duration = Math.max(1, Number(clip.frames || 1) / Math.max(1, Number(clip.fps || 1)));
+        moveUntil = performance.now() + Math.min(12000, duration * 1000);
+        movesButton.classList.add('showing');
+        markActivity();
+      }
+    };
+
+    const toggleWalk = async () => {
+      if (!shell || typeof shell.setPetRoam !== 'function') return;
+      if (!motion.walk) { notify('Build a Walk clip in Character Studio first.'); return; }
+      await shell.setPetRoam(!(shellState.pet && shellState.pet.roam));
+    };
+
+    const applyShellState = value => {
+      if (!value || typeof value !== 'object') return;
+      shellState = value;
+      const pet = value.pet || {};
+      root.classList.toggle('pet-mode', Boolean(pet.enabled));
+      root.classList.toggle('roaming', Boolean(pet.roam));
+      walkButton.setAttribute('aria-pressed', String(Boolean(pet.roam)));
+      walkButton.setAttribute('aria-label', pet.roam ? 'Stop walking' : 'Start walking');
+      walkButton.title = pet.roam ? 'Stop walking' : 'Start walking';
+      if (motion.walk) publishMotionReadiness();
+    };
+
+    const handleGlobalPointer = point => {
+      if (!point) return;
+      if (!dragging) {
+        pointer = { x: Number(point.x), y: Number(point.y), inside: Boolean(point.inside) };
+        updateHit(false);
+      }
+    };
+
+    const endCanvasGesture = event => {
+      const gesture = canvasGesture;
+      canvasGesture = null;
+      clearTimeout(gesture && gesture.holdTimer);
+      if (!gesture) return;
+      if (dragging) {
+        dragging = false;
+        root.classList.remove('dragging');
+        if (shell && typeof shell.endPetDrag === 'function') shell.endPetDrag();
+        updateHit(true);
+        return;
+      }
+      if (gesture.talking) {
+        stopRecording(false);
+        return;
+      }
+      if (event && event.button === 0 && performance.now() - gesture.at < 420) {
+        if (root.classList.contains('chat-open')) closeChat(); else openChat(false);
+      }
+    };
+
+    canvas.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !avatarHit) return;
+      markActivity();
+      canvas.setPointerCapture(event.pointerId);
+      const gesture = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+        at: performance.now(),
+        talking: false,
+        holdTimer: 0,
+      };
+      canvasGesture = gesture;
+      if (pointOnHead({ x: event.clientX, y: event.clientY })) {
+        gesture.holdTimer = setTimeout(() => {
+          if (canvasGesture !== gesture || dragging || live) return;
+          gesture.talking = true;
+          startRecording();
+        }, 230);
+      }
+    });
+
+    canvas.addEventListener('pointermove', event => {
+      if (!shell || !canvasGesture || canvasGesture.id !== event.pointerId || canvasGesture.talking) return;
+      if (!dragging && Math.hypot(event.clientX - canvasGesture.x, event.clientY - canvasGesture.y) > 5) {
+        clearTimeout(canvasGesture.holdTimer);
+        dragging = true;
+        root.classList.add('dragging');
+        if (typeof shell.beginPetDrag === 'function') shell.beginPetDrag({ screenX: canvasGesture.screenX, screenY: canvasGesture.screenY });
+      }
+      if (dragging && typeof shell.movePetDrag === 'function') shell.movePetDrag({ screenX: event.screenX, screenY: event.screenY });
+    });
+    canvas.addEventListener('pointerup', endCanvasGesture);
+    canvas.addEventListener('pointercancel', endCanvasGesture);
+    canvas.addEventListener('dblclick', event => {
+      markActivity();
+      if (pointOnHead({ x: event.clientX, y: event.clientY })) toggleMove();
+      else toggleWalk();
+    });
+    canvas.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      if (shell && typeof shell.showPetMenu === 'function') shell.showPetMenu();
+    });
+
+    liveButton.addEventListener('click', () => { markActivity(); if (live) stopLiveTalk('ended'); else startLiveTalk(); });
+    chatButton.addEventListener('click', () => {
+      if (root.classList.contains('chat-open')) closeChat(); else openChat(true);
+    });
+    movesButton.addEventListener('click', toggleMove);
+    walkButton.addEventListener('click', toggleWalk);
+    settingsButton.addEventListener('click', () => shell && shell.openSettings());
+    document.getElementById('emptyChat').addEventListener('click', () => openChat(true));
+    document.getElementById('emptySettings').addEventListener('click', () => shell && shell.openSettings());
+    closeChatButton.addEventListener('click', closeChat);
+    sendButton.addEventListener('click', submitComposer);
+    composer.addEventListener('input', () => { resizeComposer(); markActivity(); });
+    composer.addEventListener('pointerdown', () => {
+      markActivity();
+      if (shell && typeof shell.focusPetWindow === 'function') shell.focusPetWindow();
+    });
+    composer.addEventListener('keydown', event => {
+      if (avatarOnlyMotion) { event.preventDefault(); return; }
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitComposer(); }
+    });
+
+    pttButton.addEventListener('pointerdown', event => {
+      event.preventDefault();
+      if (avatarOnlyMotion) return;
+      pttButton.setPointerCapture(event.pointerId);
+      startRecording();
+    });
+    pttButton.addEventListener('pointerup', () => stopRecording(false));
+    pttButton.addEventListener('pointercancel', () => stopRecording(true));
+
+    addEventListener('keydown', event => {
+      if (avatarOnlyMotion) return;
+      const typing = document.activeElement === composer || document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+      if ((event.metaKey || event.ctrlKey) && event.key === ',') {
+        event.preventDefault();
+        if (shell) shell.openSettings();
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (document.querySelector('.email-review')) closeEmailReview();
+        else if (live) stopLiveTalk('ended');
+        else if (turnController) { turnController.abort(); turnController = null; removeWorking(); setStatus('Ready', 'good'); }
+        else closeChat();
+        return;
+      }
+      if (event.code === 'Space' && !typing && !event.repeat && !live) {
+        event.preventDefault();
+        startRecording();
+      }
+    });
+    addEventListener('keyup', event => {
+      if (avatarOnlyMotion) return;
+      const typing = document.activeElement === composer || document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+      if (event.code === 'Space' && !typing && ptt) { event.preventDefault(); stopRecording(false); }
+    });
+    addEventListener('resize', () => { resizeCanvas(); reportControlRects(true); });
+    addEventListener('blur', () => { if (ptt) stopRecording(true); });
+    addEventListener('beforeunload', () => {
+      if (live) stopLiveTalk('ended');
+      if (ptt && ptt.stream) ptt.stream.getTracks().forEach(track => track.stop());
+      stopSpeech();
+      if (shell && typeof shell.setPetControlRects === 'function') shell.setPetControlRects([]);
+    });
+
+    if (shell) {
+      shell.getState().then(applyShellState).catch(() => {});
+      if (typeof shell.onState === 'function') shell.onState(applyShellState);
+      if (typeof shell.onPetPointer === 'function') shell.onPetPointer(handleGlobalPointer);
+      if (typeof shell.onPetRoamMotion === 'function') shell.onPetRoamMotion(value => {
+        roamState = value && typeof value === 'object' ? value : { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
+      });
+      if (typeof shell.onPetMoves === 'function') shell.onPetMoves(toggleMove);
+      if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
+      if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(() => { if (live) stopLiveTalk('ended'); else startLiveTalk(); });
+    } else {
+      root.classList.add('chat-open');
+    }
+
+    const healthPoll = async () => {
+      if (live || speechSource || turnController || ptt) return;
+      try {
+        const health = await fetch('/health', { cache: 'no-store' }).then(safeJSON);
+        if (health.provider_ok || health.llm_ok) setStatus(`${manifest && manifest.avatar && manifest.avatar.name || 'OpenClam'} · ready`, 'good');
+        else setStatus('Choose a language model in Character Studio', '');
+      } catch (_) { setStatus('Voice engine unavailable', ''); }
+    };
+    setInterval(healthPoll, 12000);
+
+    resizeCanvas();
+    resizeComposer();
+    reportControlRects(true);
+    loadAvatar();
+    setTimeout(healthPoll, 1600);
+  })();
+  </script>
+</body>
+</html>

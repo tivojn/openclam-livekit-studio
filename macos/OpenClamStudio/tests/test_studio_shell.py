@@ -1,0 +1,196 @@
+"""The Character Studio window must survive every control inside it.
+
+"Preview" shipped as a bare <a href="/files/<slug>/preview.mp4">.  Same origin,
+so the Electron navigation guard waved it through, the settings window
+navigated itself to the raw file, and Chromium's chrome-less video player
+replaced the whole studio with no way back.  Two locks: no in-place navigation
+links in the markup, and a shell that refuses them anyway.
+"""
+import io
+import os
+import re
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def read(*parts):
+    with io.open(os.path.join(ROOT, *parts), encoding="utf-8") as handle:
+        return handle.read()
+
+
+class SettingsMarkupTest(unittest.TestCase):
+    def setUp(self):
+        self.settings = read("web", "settings.html")
+
+    def test_no_anchor_navigates_to_a_built_file(self):
+        self.assertNotRegex(self.settings, r"<a[^>]+href=[\"'`]?/files/")
+
+    def test_every_anchor_is_handled_or_in_page(self):
+        for href in re.findall(r"<a\b[^>]*href=\"([^\"]+)\"", self.settings):
+            self.assertTrue(href.startswith("#") or href == "/",
+                            "unhandled navigation link: " + href)
+
+    def test_lost_renders_explain_themselves_and_can_be_regenerated(self):
+        # Live case (2026-08-01, gary33): the initial build lost 4 of 16
+        # renders, so Validate & Rebuild was disabled - correctly, but
+        # silently, because the first slider touch overwrote the reason.
+        # The reason now survives every repaint, and a top-up button
+        # regenerates ONLY the missing shapes, then re-opens the gate.
+        self.assertIn('id="rig-fill-gaps"', self.settings)
+        self.assertIn("Generate ${RIG_GAPS.length} missing renders", self.settings)
+        self.assertIn("missing retained renders: '", self.settings)
+        self.assertIn("JSON.stringify({ slug, shapes })", self.settings)
+        self.assertIn("RIG_GAPS = [];", self.settings)
+
+    def test_rebuild_room_has_preview_progress_and_a_full_panel(self):
+        # 2026-08-01 usability pass: the preview plays inside the
+        # calibration room (stacked above it), the rebuild's status card
+        # pulses with a live bar and takes the spotlight, and every slider
+        # is visible at once in a two-column panel - no accidental scroll
+        # discovery.
+        self.assertIn('id="rig-preview-play"', self.settings)
+        self.assertIn("openPreview(RIG_SLUG)", self.settings)
+        self.assertIn("#preview-modal{z-index:60}", self.settings)
+        self.assertIn('id="rig-progress"', self.settings)
+        self.assertIn("'busy', percent", self.settings)
+        self.assertIn("rigPulse", self.settings)
+        self.assertIn("#rig-controls{display:grid;grid-template-columns:1fr 1fr",
+                      self.settings)
+        self.assertIn("scrollIntoView({ block: 'nearest'", self.settings)
+
+    def test_calibration_sliders_have_a_live_response_preview(self):
+        # WYSIWYG expectation (2026-08-01): dragging a slider must visibly
+        # change the face on the stage, not just a region's glow. The stage
+        # blends the neutral keyframe with the selected pose per region at
+        # the current slider weights, re-fetches the bank after every
+        # publish (epoch-keyed bitmaps), and the success message says when
+        # the rebuilt avatar is not the one on the desk.
+        self.assertIn('id="rig-show-blend"', self.settings)
+        self.assertIn("function rigBitmap", self.settings)
+        self.assertIn("function resetRigBitmaps", self.settings)
+        self.assertIn("ctx.clip();", self.settings)
+        # weight can exceed 1 now that sliders run past 100; canvas ignores
+        # out-of-range alpha assignments, so it is clamped explicitly.
+        self.assertIn("ctx.globalAlpha = Math.min(1, weight);", self.settings)
+        self.assertIn("'rig-show-blend', 'rig-show-mesh'", self.settings)
+        self.assertIn('press "Use this face" to see it live', self.settings)
+
+    def test_teeth_control_offers_donor_dropdowns_beside_the_sliders(self):
+        # Owner request 2026-08-01 (carol): the calibration room exposes the
+        # dental lock. Donor dropdowns per row list every candidate frame
+        # with its detected enamel pixel count, "auto" (the election) as
+        # default; the Teeth strength slider renders with the other controls
+        # straight from the schema; preset switches keep dental identity.
+        self.assertIn('id="rig-donor-upper"', self.settings)
+        self.assertIn('id="rig-donor-lower"', self.settings)
+        self.assertIn("function renderRigDental", self.settings)
+        self.assertIn("px enamel", self.settings)
+        self.assertIn("RIG_PROFILE[row + '_teeth_donor'] = select.value",
+                      self.settings)
+        self.assertIn("upper_teeth_donor: RIG_PROFILE.upper_teeth_donor",
+                      self.settings)
+        app = read("server", "app.py")
+        self.assertIn('teeth: float = _rig_control_field("teeth")', app)
+        self.assertIn('dental["candidates"][row]', app)
+
+    def test_calibration_fits_one_screen_with_footer_status(self):
+        # Owner 2026-08-01: the calibration room shows in ONE SHOT - a
+        # fixed-height flex dialog, nothing behind a scroll. Each control
+        # is a label row plus its banded slider (the prose moved into the
+        # tooltip), the stage flexes into the remaining height, and the
+        # status/progress card owns the footer's left side right next to
+        # Validate & rebuild - always visible, pulsing while busy.
+        self.assertIn("height:calc(100vh - 56px)", self.settings)
+        self.assertIn("#rig-content:not(.hidden){display:flex", self.settings)
+        self.assertIn('class="rig-foot-status"', self.settings)
+        self.assertNotIn('<div class="rig-help">', self.settings)
+        self.assertIn(".rig-stage{position:relative;flex:1;min-height:0",
+                      self.settings)
+        self.assertIn("green safe ${safeMinimum}–${safeMaximum}%, "
+                      "red experimental beyond", self.settings)
+
+    def test_avatar_page_leads_with_the_face_in_use(self):
+        # Owner 2026-08-01: the face IN USE tops the page; below it, the
+        # upload card and then the bench, freshest first. Also pinned: the
+        # frame-fix input is wide enough for its own placeholder.
+        self.assertIn('id="avatars-active"', self.settings)
+        self.assertIn("<h2>On the desk</h2>", self.settings)
+        self.assertIn("<h2>Candidates</h2>", self.settings)
+        self.assertLess(self.settings.index("<h2>On the desk</h2>"),
+                        self.settings.index("<h2>New face</h2>"))
+        self.assertIn('id="body-motion-frames" size="10"', self.settings)
+        self.assertIn("width:96px", self.settings)
+
+    def test_there_is_one_design(self):
+        # Atelier - the second, editorial skin - was dropped. All desktop
+        # surfaces now use the same quiet design. The
+        # attribute every rule keys off is still set, in one place, so the
+        # remaining CSS keeps working.
+        self.assertNotIn('id="design-toggle"', self.settings)
+        self.assertIn("document.documentElement.dataset.design = 'quiet'",
+                      self.settings)
+        self.assertIn("document.documentElement.dataset.design='quiet'",
+                      self.settings)
+
+    def test_upload_stages_a_naming_step_and_names_stay_editable(self):
+        # A raw file name ("IMG_4032") is a bad avatar name: a picked
+        # portrait is staged, the name field gets a cleaned suggestion
+        # (selected, so typing replaces it), and Enter or Add portrait
+        # commits. The name stays editable afterwards from the card.
+        self.assertIn("function stageUpload", self.settings)
+        self.assertIn("function suggestAvatarName", self.settings)
+        self.assertIn('id="createAvatar"', self.settings)
+        self.assertIn("stageUpload(dropped)", self.settings)
+        self.assertIn("stageUpload(file.files[0])", self.settings)
+        self.assertIn('data-act="rename"', self.settings)
+        self.assertIn('class="av-name"', self.settings)
+        self.assertIn("'/api/avatar/rename'", self.settings)
+        # Export must read the clean name span, not the h3 (which now also
+        # holds the rename button's glyph).
+        self.assertIn("querySelector('.av-name')", self.settings)
+        app = read("server", "app.py")
+        self.assertIn('@app.post("/api/avatar/rename")', app)
+        self.assertIn("class RenameRequest(BaseModel)", app)
+
+    def test_preview_opens_the_modal_player(self):
+        self.assertIn('data-act="preview"', self.settings)
+        self.assertIn("function openPreview(", self.settings)
+        self.assertIn('id="preview-video"', self.settings)
+
+    def test_preview_stops_playing_when_closed(self):
+        closer = self.settings.split("function closePreview()", 1)[1][:220]
+        self.assertIn("video.pause()", closer)
+        self.assertIn("removeAttribute('src')", closer)
+
+
+class NavigationGuardTest(unittest.TestCase):
+    def test_tool_windows_refuse_in_place_navigation(self):
+        main = read("electron", "main.cjs")
+        guard = main.split("function guardNavigation(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("targetUrl.pathname !== `/${kind}`", guard)
+        self.assertIn("event.preventDefault()", guard)
+
+
+class HeadFramingTest(unittest.TestCase):
+    def test_head_views_are_pinned_to_the_silhouette_crown(self):
+        runtime = read("web", "index.html")
+        marker = runtime.index("const viewCrop = (")
+        crop = runtime[marker:marker + 1400]
+        self.assertIn("const face = meta && meta.alignment && meta.alignment.face_bounds", crop)
+        self.assertIn("const top = face[1] - face[3] * .65", crop)
+        self.assertIn("y: Math.max(0, top)", crop)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+    def test_a_pasted_key_can_be_checked(self):
+        # A key field is unreadable by design, which is fine until you need
+        # to confirm you pasted the right one (owner, 2026-08-05). The
+        # handler is DELEGATED because the blocks re-render on every
+        # provider change and a bound one would be lost.
+        self.assertIn('data-peek="${kind}"', self.settings)
+        self.assertIn('class="keyrow"', self.settings)
+        self.assertIn("event.target.closest('[data-peek]')", self.settings)
+        self.assertIn("field.type = shown ? 'password' : 'text';", self.settings)

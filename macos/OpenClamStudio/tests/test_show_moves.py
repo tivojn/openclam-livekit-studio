@@ -1,0 +1,189 @@
+"""Show Me Some Moves: a third motion kind beside Horizon Walk and Edge Idle.
+
+Every move is a free act - performed in place on the 9:16 plate, first
+frame equals last - so the idle free-act pipeline carries it end to end;
+only the choreography prompt and the runtime trigger are new.
+"""
+import unittest
+from pathlib import Path
+
+from studio import library, motion
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class MoveStyles(unittest.TestCase):
+    def test_presets_and_default(self):
+        self.assertEqual(
+            {"viral", "hiphop", "kpop", "ballet", "salsa"},
+            set(motion.MOVE_STYLES))
+        # Owner default 2026-08-01: K-pop point dance ships unprompted.
+        self.assertEqual("kpop", motion.DEFAULT_MOVE_STYLE)
+        for style_id in motion.MOVE_STYLES:
+            style = motion.resolve_move_style(style_id)
+            self.assertEqual("free", style["validation"])
+            self.assertGreaterEqual(len(style["prompt"]), 60)
+
+    def test_the_signature_viral_prompt_is_verbatim(self):
+        prompt = motion.resolve_move_style("viral")["prompt"]
+        self.assertIn("seductive TikTok star captivating a live crowd", prompt)
+        self.assertIn("standout signature move", prompt)
+        self.assertIn("bold, confident pose", prompt)
+
+    def test_custom_move_round_trips_through_its_receipt(self):
+        style = motion.resolve_move_style(
+            "custom", "vogue with sharp arm frames and a dramatic pose")
+        receipt = motion._move_style_receipt(style)
+        self.assertEqual(style["prompt"], receipt["prompt"])
+        self.assertEqual(style, motion.resolve_move_style(receipt))
+        self.assertNotIn("prompt", motion._move_style_receipt("viral"))
+        with self.assertRaisesRegex(ValueError, "at least 12 characters"):
+            motion.resolve_move_style("custom", "spin")
+        with self.assertRaisesRegex(ValueError, "unknown move style"):
+            motion.resolve_move_style("moonwalk")
+
+    def test_move_prompts_ride_the_free_act_contracts(self):
+        keyframe = motion._move_keyframe_prompt("existing outfit", "viral")
+        video = motion._move_video_prompt("viral")
+        self.assertIn("seductive TikTok star", keyframe)
+        self.assertIn("seductive TikTok star", video)
+        # The proven free-act mechanics: loopable opening pose, first frame
+        # equals last, white plate, in-place performance.
+        self.assertIn("performance loop can begin and end on", keyframe)
+        self.assertIn("EXACT first frame and the EXACT final frame", video)
+        self.assertIn("pure white", video)
+
+    def test_move_sets_are_labelled_and_can_be_active(self):
+        source = (ROOT / "studio" / "library.py").read_text()
+        # The active-pointer index must not strip the move slot on read, or
+        # a move set can never show as "In use".
+        self.assertIn('"move": active.get("move"),', source)
+        # Sets are named from their own style receipt, not idle's fallback.
+        self.assertIn('(move or {}).get("label") if kind == "move" else', source)
+        self.assertIn('"move": "Show Me Some Moves"}.get(kind, "Edge Idle")', source)
+        # And pre-fix archives recover their real name at listing time.
+        self.assertIn('if kind == "move" and label in ("", "Edge Idle"):', source)
+
+    def test_rejected_motion_candidates_retry_with_a_strict_bound(self):
+        source = (ROOT / "studio" / "motion.py").read_text()
+        self.assertIn("MAX_CANDIDATE_ATTEMPTS = 3", source)
+        self.assertIn("attempt = rejections[rejected_kind] + 1", source)
+        self.assertIn("if attempt < MAX_CANDIDATE_ATTEMPTS:", source)
+        self.assertIn("_archive_rejected_candidate(", source)
+
+    def test_move_is_a_first_class_kind(self):
+        self.assertIn("move", library.MOTION_KINDS)
+        self.assertEqual(("move_style",), library._CLIP_KEYS["move"])
+        app = (ROOT / "server" / "app.py").read_text()
+        self.assertIn('pattern=r"^(walk|idle|move|both)$"', app)
+        self.assertIn('"has_move": has_move,', app)
+        export = (ROOT / "studio" / "export.py").read_text()
+        self.assertIn('("walk", "idle", "move")', export)
+
+
+class WhitePlateMatte(unittest.TestCase):
+    def test_refinement_cuts_plate_pockets_and_keeps_cream_wardrobe(self):
+        """Verified against the real defect 2026-07-31: a plate pocket at a
+        hair-shoulder gap shipped opaque and flashed white; cream shoes
+        measured whiteness <=0.68 vs plate 1.0."""
+        import numpy as np
+        from studio import motion
+        height, width = 200, 200
+        source = np.full((height, width, 3), 255, np.uint8)     # pure plate
+        source[40:160, 60:140] = (30, 30, 190)                  # red dress
+        source[150:196, 90:112] = (225, 236, 245)               # cream shoe
+        source[70:100, 120:138] = 255                           # plate pocket
+        source[70:80, 138:200] = 255                            # gap to plate
+        alpha = np.zeros((height, width), np.uint8)
+        alpha[38:198, 55:145] = 255      # Vision mask: includes the pocket
+        rgba = np.dstack([source, alpha])
+        refined = motion._refine_white_matte(source, rgba)
+        out = refined[:, :, 3]
+        self.assertLess(int(out[85, 130]), 40)      # pocket removed
+        self.assertEqual(255, int(out[100, 100]))   # dress kept
+        self.assertGreater(int(out[170, 100]), 200)  # cream shoe kept
+
+    def test_refinement_runs_before_temporal_repair_on_white_takes(self):
+        source = (ROOT / "studio" / "motion.py").read_text()
+        marker = source.index("def _segment_frames")
+        window = source[marker:marker + 4600]
+        self.assertIn("_refine_white_matte(frames[index], segmented[index])",
+                      window)
+        # It is the VISION-fallback sharpener; RVM output ships untouched.
+        self.assertIn("if not green_screen and rvm_frames is None:", window)
+
+
+class MoveRuntime(unittest.TestCase):
+    def test_hair_double_tap_and_menu_trigger_the_show(self):
+        renderer = (ROOT / "web" / "index.html").read_text()
+        self.assertIn("const toggleMove = () => {", renderer)
+        self.assertIn("if (!motion.move)", renderer)
+        self.assertIn("moveUntil = performance.now()", renderer)
+        self.assertIn("if (pointOnHead({ x: event.clientX, y: event.clientY })) toggleMove();",
+                      renderer)
+        self.assertIn("movesButton.addEventListener('click', toggleMove)", renderer)
+        self.assertIn("shell.onPetMoves(toggleMove)", renderer)
+        preload = (ROOT / "electron" / "preload.cjs").read_text()
+        self.assertIn("pet-moves", preload)
+        main = (ROOT / "electron" / "main.cjs").read_text()
+        self.assertIn("name: 'Moves', hint: '2×tap hair'", main)
+        self.assertIn("pet-moves", main)
+
+    def test_left_preview_panel_has_a_moves_tab(self):
+        settings = (ROOT / "web" / "settings.html").read_text()
+        self.assertIn('data-body-mode="move"', settings)
+        self.assertIn('id="body-move-file-count"', settings)
+        self.assertIn("['body', 'walk', 'idle', 'move'].includes(mode)", settings)
+        self.assertIn("kind === 'move' ? 'Show Me Some Moves'", settings)
+
+    def test_settings_offers_the_move_studio(self):
+        settings = (ROOT / "web" / "settings.html").read_text()
+        for style in ("viral", "hiphop", "kpop", "ballet", "salsa", "custom"):
+            self.assertIn(f'data-move-style="{style}"', settings)
+        self.assertIn('id="body-move-generate"', settings)
+        self.assertIn('id="body-move-sets"', settings)
+        self.assertIn("draftPromptFromGist('move'", settings)
+        self.assertIn("renderMotionSets('move')", settings)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class PromptRoom(unittest.TestCase):
+    def test_a_long_custom_prompt_survives_all_three_gates(self):
+        # A custom move description was cut off: 600 characters, enforced in
+        # THREE places that all had to agree - the textarea, the request
+        # model, and _clean inside the resolver, where it truncated in
+        # silence (owner, 2026-08-04).
+        source = (ROOT / "studio" / "motion.py").read_text()
+        self.assertNotIn("_clean(custom_prompt, 600)", source)
+        self.assertEqual(3, source.count("_clean(custom_prompt, 2400)"))
+        app = (ROOT / "server" / "app.py").read_text()
+        for field in ("walk_prompt", "pose_prompt", "move_prompt"):
+            self.assertIn(
+                f'{field}: str = Field(default="", max_length=2400)', app)
+        settings = (ROOT / "web" / "settings.html").read_text()
+        for field in ("body-walk-prompt", "body-motion-prompt",
+                      "body-move-prompt"):
+            self.assertIn(f'id="{field}" maxlength="2400"', settings)
+        # the full-body brief is the longest of the lot
+        self.assertIn('id="body-prompt" maxlength="4000"', settings)
+        self.assertIn('prompt: str = Field(default="", max_length=4000)', app)
+
+    def test_the_three_gates_never_disagree(self):
+        # The textarea must never let through more than the resolver keeps,
+        # or the cut happens after the owner has already typed it.
+        import re
+        settings = (ROOT / "web" / "settings.html").read_text()
+        app = (ROOT / "server" / "app.py").read_text()
+        for field, api in (("body-walk-prompt", "walk_prompt"),
+                           ("body-motion-prompt", "pose_prompt"),
+                           ("body-move-prompt", "move_prompt")):
+            ui = int(re.search(
+                rf'id="{field}" maxlength="(\d+)"', settings).group(1))
+            server = int(re.search(
+                rf'{api}: str = Field\(default="", max_length=(\d+)\)',
+                app).group(1))
+            self.assertEqual(ui, server, f"{field} and {api} disagree")
+            self.assertEqual(2400, ui)

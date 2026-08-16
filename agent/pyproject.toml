@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openclam-livekit-agent"
+version = "0.1.0"
+description = "LiveKit-only voice agent with per-session OpenClam BYOK support"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "httpx<1",
+    "livekit-agents[anthropic,deepgram,elevenlabs,google,openai,xai]==1.6.9",
+    "livekit-plugins-anthropic==1.6.9",
+    "livekit-plugins-deepgram==1.6.9",
+    "livekit-plugins-elevenlabs==1.6.9",
+    "livekit-plugins-google==1.6.9",
+    "livekit-plugins-openai==1.6.9",
+    "livekit-plugins-xai==1.6.9",
+    "python-dotenv==1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "A", "C4", "UP", "SIM", "RUF"]
+ignore = ["E501"]

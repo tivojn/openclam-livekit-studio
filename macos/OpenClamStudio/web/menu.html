@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>OpenClam Studio Menu</title>
+<style>
+/* The pet right-click menu, as its own window: native macOS menus reserve
+   the right column for keyboard accelerators, so the gesture hints could
+   never right-align there. Here each row is name (left) | hint (right).
+   Theme follows the app: the choice saved by Settings (same origin, same
+   localStorage key) wins, the system scheme otherwise. */
+:root{
+  color-scheme:light;--bg:rgba(255,255,255,.96);--line:rgba(26,28,31,.08);
+  --line-strong:rgba(26,28,31,.12);--ink:#1a1c1f;--dim:rgba(26,28,31,.50);
+  --hover:rgba(26,28,31,.05);--focus:#339cff;
+  --shadow:0 8px 24px rgba(13,13,13,.16)}
+:root[data-theme=dark]{
+  color-scheme:dark;--bg:rgba(33,33,33,.96);--line:rgba(255,255,255,.08);
+  --line-strong:rgba(255,255,255,.16);--ink:#fff;--dim:rgba(255,255,255,.50);
+  --hover:rgba(255,255,255,.08);--shadow:0 8px 24px rgba(0,0,0,.34)}
+html,body{margin:0;background:transparent;overflow:hidden;
+  user-select:none;-webkit-user-select:none}
+/* width:max-content: the panel must take its true content width even
+   while the window is still at its pre-measure size - inline-block alone
+   clamps to the viewport, rows overflow the border, and the right radius
+   and last row get clipped off. */
+#menu{display:inline-block;width:max-content;min-width:172px;margin:8px;padding:5px;
+  border-radius:10px;border:1px solid var(--line);
+  background:var(--bg);box-shadow:var(--shadow);
+  font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+  font-weight:430;color:var(--ink);backdrop-filter:blur(16px)}
+.item{display:flex;align-items:center;gap:8px;padding:5px 12px 5px 9px;
+  border-radius:6px;white-space:nowrap;cursor:default}
+.item.action:hover,.item:focus-visible{background:var(--hover)}
+.item:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.item.disabled{opacity:.48}
+.check{flex:none;width:13px;font-size:11px;text-align:center}
+.name{flex:none}
+.hint{flex:1;margin-left:20px;text-align:right;color:var(--dim);font-size:11.5px}
+.arrow{flex:1;text-align:right;color:var(--dim);font-size:10px}
+.sep{height:1px;margin:5px 9px;background:var(--line)}
+.sub{display:none;padding:2px 0 3px}
+.sub.on{display:block}
+.sub .item{padding-left:30px}
+</style>
+<script>document.documentElement.dataset.theme=localStorage.getItem('openclam-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+document.documentElement.dataset.design=localStorage.getItem('openclam-design')==='atelier'?'atelier':'quiet';</script>
+<div id="menu" role="menu" aria-label="Avatar controls" aria-orientation="vertical"></div>
+<script>
+const MENU=window.openclamMenu;
+const root=document.getElementById('menu');
+const ITEM_SELECTOR='[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]';
+let rowSequence=0;
+function row(item){
+  const el=document.createElement('div');
+  const enabled=item.enabled!==false;
+  el.className='item'+(enabled&&(item.id||item.submenu)?' action':'')
+    +(enabled?'':' disabled');
+  el.id=`menu-item-${++rowSequence}`;
+  el.tabIndex=-1;
+  const role=item.type==='checkbox'?'menuitemcheckbox'
+    :item.type==='radio'?'menuitemradio':'menuitem';
+  el.setAttribute('role',role);
+  el.setAttribute('aria-disabled',String(!enabled));
+  if(role!=='menuitem')el.setAttribute('aria-checked',String(Boolean(item.checked)));
+  if(item.id)el.dataset.actionId=String(item.id);
+  const check=document.createElement('span');check.className='check';
+  check.setAttribute('aria-hidden','true');
+  check.textContent=item.checked?(item.type==='radio'?'●':'✓'):'';
+  const name=document.createElement('span');name.className='name';
+  name.id=`${el.id}-label`;
+  name.textContent=item.name||'';
+  el.setAttribute('aria-labelledby',name.id);
+  el.append(check,name);
+  if(item.submenu){
+    const arrow=document.createElement('span');arrow.className='arrow';
+    arrow.setAttribute('aria-hidden','true');
+    arrow.textContent='▾';el.append(arrow);
+  }else{
+    const hint=document.createElement('span');hint.className='hint';
+    hint.id=`${el.id}-hint`;
+    hint.textContent=item.hint||'';el.append(hint);
+    if(hint.textContent)el.setAttribute('aria-describedby',hint.id);
+  }
+  return el;
+}
+function isVisibleItem(el){
+  for(let parent=el.parentElement;parent&&parent!==root;parent=parent.parentElement){
+    if(parent.classList.contains('sub')&&!parent.classList.contains('on'))return false;
+  }
+  return true;
+}
+function visibleItems(){
+  return [...root.querySelectorAll(ITEM_SELECTOR)].filter(isVisibleItem);
+}
+function focusItem(el){
+  if(!el)return;
+  root.querySelectorAll(ITEM_SELECTOR).forEach(item=>{item.tabIndex=item===el?0:-1;});
+  el.focus({preventScroll:true});
+}
+function submenuFor(trigger){
+  const id=trigger&&trigger.getAttribute('aria-controls');
+  return id?document.getElementById(id):null;
+}
+function setSubmenuOpen(trigger,open,moveFocus=false){
+  const sub=submenuFor(trigger);
+  if(!sub)return;
+  sub.classList.toggle('on',open);
+  trigger.setAttribute('aria-expanded',String(open));
+  if(!open&&sub.contains(document.activeElement))focusItem(trigger);
+  if(open&&moveFocus)focusItem(sub.querySelector(ITEM_SELECTOR));
+  report();
+}
+function activate(el,moveIntoSubmenu=false){
+  if(!el||el.getAttribute('aria-disabled')==='true')return;
+  if(el.getAttribute('aria-haspopup')==='menu'){
+    const opening=el.getAttribute('aria-expanded')!=='true';
+    setSubmenuOpen(el,opening,opening&&moveIntoSubmenu);
+    return;
+  }
+  const id=el.dataset.actionId;
+  if(id)MENU.action(id);
+}
+function report(){
+  const box=root.getBoundingClientRect();
+  // Margins (8+8) plus a couple of pixels of safety: an undersized window
+  // clips the rounded corners flat.
+  MENU.size({w:Math.ceil(box.width)+18,h:Math.ceil(box.height)+18});
+}
+MENU.onSpec(items=>{
+  root.textContent='';
+  rowSequence=0;
+  for(const item of items||[]){
+    if(item.type==='separator'){
+      const sep=document.createElement('div');sep.className='sep';
+      sep.setAttribute('role','separator');
+      sep.setAttribute('aria-orientation','horizontal');
+      root.append(sep);continue;
+    }
+    const el=row(item);
+    root.append(el);
+    if(item.submenu){
+      const sub=document.createElement('div');sub.className='sub';
+      sub.id=`${el.id}-submenu`;
+      sub.setAttribute('role','menu');
+      sub.setAttribute('aria-labelledby',`${el.id}-label`);
+      sub.setAttribute('aria-orientation','vertical');
+      sub.dataset.triggerId=el.id;
+      el.setAttribute('aria-haspopup','menu');
+      el.setAttribute('aria-expanded','false');
+      el.setAttribute('aria-controls',sub.id);
+      for(const child of item.submenu){
+        const childEl=row(child);
+        childEl.addEventListener('click',()=>activate(childEl));
+        sub.append(childEl);
+      }
+      root.append(sub);
+      el.addEventListener('click',()=>activate(el));
+    }else{
+      el.addEventListener('click',()=>activate(el));
+    }
+  }
+  report();
+  focusItem(visibleItems()[0]);
+});
+root.addEventListener('pointerdown',e=>{
+  const item=e.target.closest(ITEM_SELECTOR);
+  if(item&&root.contains(item))focusItem(item);
+});
+// Self-check after the shell resizes us: if the content still overflows
+// the viewport (any scaling mismatch between CSS px and window DIPs), ask
+// again - the shell folds its live zoom factor into the next answer.
+addEventListener('resize',()=>{
+  if(document.documentElement.scrollWidth>innerWidth+1||
+     document.documentElement.scrollHeight>innerHeight+1)report();
+});
+addEventListener('keydown',e=>{
+  const current=document.activeElement&&document.activeElement.closest
+    ?document.activeElement.closest(ITEM_SELECTOR):null;
+  if(e.key==='Escape'){
+    const sub=current&&current.closest('.sub.on');
+    if(sub){
+      const trigger=document.getElementById(sub.dataset.triggerId);
+      if(trigger)setSubmenuOpen(trigger,false);
+    }else MENU.close();
+    e.preventDefault();e.stopPropagation();return;
+  }
+  const items=visibleItems();
+  if(!items.length)return;
+  const index=items.indexOf(current);
+  let destination=null;
+  if(e.key==='ArrowDown')destination=index<0?items[0]:items[(index+1)%items.length];
+  else if(e.key==='ArrowUp')destination=index<0?items[items.length-1]
+    :items[(index-1+items.length)%items.length];
+  else if(e.key==='Home')destination=items[0];
+  else if(e.key==='End')destination=items[items.length-1];
+  else if(e.key==='ArrowRight'&&current&&current.getAttribute('aria-haspopup')==='menu'){
+    if(current.getAttribute('aria-disabled')==='true')return;
+    setSubmenuOpen(current,true,true);
+  }else if(e.key==='ArrowLeft'&&current){
+    const sub=current.closest('.sub.on');
+    if(sub){
+      const trigger=document.getElementById(sub.dataset.triggerId);
+      if(trigger)setSubmenuOpen(trigger,false);
+    }else return;
+  }else if((e.key==='Enter'||e.key===' ')&&current){
+    activate(current,true);
+  }else return;
+  if(destination)focusItem(destination);
+  e.preventDefault();e.stopPropagation();
+});
+addEventListener('contextmenu',e=>e.preventDefault());
+</script>

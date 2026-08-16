@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "openclam-livekit-pilot-broker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false
+    }
+  },
+  "vars": {
+    "AUTH_MODE": "pilot",
+    "BYOK_LEASE_TTL_SECONDS": "120",
+    "CORS_ORIGIN": "https://openclam.live",
+    "LIVEKIT_AGENT_NAME": "openclam-livekit-pilot",
+    "LIVEKIT_TOKEN_TTL_SECONDS": "600",
+    "LIVEKIT_URL": "wss://openclam-live-voice-kse86f6p.livekit.cloud"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CREDENTIAL_LEASES",
+        "class_name": "CredentialLease"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CredentialLease"]
+    }
+  ]
+}

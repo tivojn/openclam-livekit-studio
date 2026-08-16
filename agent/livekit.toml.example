@@ -1,0 +1,9 @@
+# Copy to livekit.toml locally, then run:
+#   lk agent create --project openclam-live-voice
+#
+# The real file contains the assigned agent ID and is intentionally ignored.
+[project]
+subdomain = "openclam-live-voice-kse86f6p"
+
+[agent]
+id = "replace-after-lk-agent-create"

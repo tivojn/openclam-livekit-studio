@@ -1,0 +1,236 @@
+name: OpenClamLiveKit
+
+options:
+  bundleIdPrefix: com.lionheart
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift
+    exactVersion: 2.16.0
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    exactVersion: 0.9.20
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEVELOPMENT_TEAM: X7R8N6MMSU
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  OpenClamLiveKit:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: KeyboardExtension/Shared
+      - path: KeyboardExtension/Host
+    dependencies:
+      - target: OpenClamLiveKitShareExtension
+      - target: OpenClamLiveKitScreenVoiceWidget
+      - target: OpenClamLiveKitKeyboard
+      - package: LiveKit
+        product: LiveKit
+      - package: ZIPFoundation
+        product: ZIPFoundation
+    configFiles:
+      Debug: Config/LiveTalk.xcconfig
+      Release: Config/LiveTalk.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot
+        CURRENT_PROJECT_VERSION: 20
+        MARKETING_VERSION: 1.0.0
+        CODE_SIGN_ENTITLEMENTS: App/OpenClamLiveKit.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Development
+          PROVISIONING_PROFILE_SPECIFIER: OpenClam LiveKit Pilot Development Main
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: OpenClam LiveKit Pilot
+        CFBundleName: OpenClam LiveKit Pilot
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        NSSupportsLiveActivities: true
+        UIBackgroundModes:
+          - audio
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        NSContactsUsageDescription: OpenClam searches contacts only when you approve it and shares only the exact fields you review and confirm.
+        NSLocationWhenInUseUsageDescription: OpenClam uses your location only while open to find places you ask for nearby.
+        NSMicrophoneUsageDescription: OpenClam records during explicit tap-to-talk or Screen Voice requests, or for up to 90 seconds after you turn on Keyboard Ear. Live Talk starts the microphone only after you tap the phone button, streams audio through LiveKit to your selected speech service while the app is in the foreground, and stops when you tap hang up or the app enters the background. Keyboard Ear discards standby audio; Apple recognition stays with Apple, and a selected cloud speech provider receives bounded audio only after a keyboard voice request begins.
+        NSSpeechRecognitionUsageDescription: OpenClam transcribes speech only during an explicit voice request. In Screen Voice, the recognized question is submitted automatically after you stop speaking; ordinary composer dictation remains editable before Send.
+        NSPhotoLibraryUsageDescription: OpenClam imports only photos and videos you choose; attachments go to your configured AI service only after you tap Send.
+        NSCalendarsFullAccessUsageDescription: OpenClam searches your calendars when you ask, and changes or deletes only events you review and approve.
+        NSCalendarsWriteOnlyAccessUsageDescription: OpenClam adds calendar events only after you review and approve them.
+        NSRemindersFullAccessUsageDescription: OpenClam searches your reminders when you ask, and creates, changes, completes, or deletes only items you review and approve.
+        NSAlarmKitUsageDescription: OpenClam schedules alarms that you explicitly review and approve.
+        NSCameraUsageDescription: OpenClam uses the camera only when you explicitly take a photo, turn on avatar face mirroring, or ask it to control the flashlight. Face mirroring stays on this device; photos are sent to your configured AI service only after you tap Send.
+        OPENCLAM_LIVETALK_BROKER_URL: $(OPENCLAM_LIVETALK_BROKER_URL)
+        OPENCLAM_LIVETALK_APP_TOKEN: $(OPENCLAM_LIVETALK_APP_TOKEN)
+        OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST: $(OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST)
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.lionheart.openclam.livekitpilot.command
+            CFBundleURLSchemes:
+              - openclam-livekit-pilot
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.openclam.avatar-package
+            UTTypeDescription: OpenClam Avatar Package
+            UTTypeConformsTo:
+              - public.zip-archive
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - avtr
+              public.mime-type:
+                - application/vnd.openclam.avatar+zip
+
+  OpenClamLiveKitShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+        excludes:
+          - Info.plist
+          - ShareExtension.entitlements
+      - path: App/ScreenContext/ScreenContextModels.swift
+      - path: App/ScreenContext/ScreenContextInbox.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-context-share
+        PRODUCT_NAME: OpenClamLiveKitShareExtension
+        CURRENT_PROJECT_VERSION: 20
+        MARKETING_VERSION: 1.0.0
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Development
+          PROVISIONING_PROFILE_SPECIFIER: OpenClam LiveKit Pilot Development Share
+
+  OpenClamLiveKitScreenVoiceWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ScreenVoicePTTWidget
+      - path: App/ScreenVoicePTT/ScreenVoicePTTActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget
+        PRODUCT_NAME: OpenClamLiveKitScreenVoiceWidget
+        CURRENT_PROJECT_VERSION: 20
+        MARKETING_VERSION: 1.0.0
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Development
+          PROVISIONING_PROFILE_SPECIFIER: OpenClam LiveKit Pilot Development Widget
+    info:
+      path: ScreenVoicePTTWidget/Info.plist
+      properties:
+        CFBundleDisplayName: OpenClam LiveKit Screen Voice
+        CFBundleName: OpenClam LiveKit Screen Voice
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  OpenClamLiveKitKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: KeyboardExtension/Extension
+      - path: KeyboardExtension/Shared
+      - path: KeyboardExtension/PrivacyInfo.xcprivacy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.keyboard
+        PRODUCT_NAME: OpenClamLiveKitKeyboard
+        CURRENT_PROJECT_VERSION: 20
+        MARKETING_VERSION: 1.0.0
+        INFOPLIST_FILE: KeyboardExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: KeyboardExtension/OpenClamKeyboard.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Development
+          PROVISIONING_PROFILE_SPECIFIER: OpenClam LiveKit Pilot Development Keyboard
+
+  OpenClamLiveKitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+      - path: ../../shared/avatar-package-v2/fixtures/ios-light-golden.avtr
+        buildPhase: resources
+    dependencies:
+      - target: OpenClamLiveKit
+      - package: ZIPFoundation
+        product: ZIPFoundation
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  OpenClamLiveKitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: OpenClamLiveKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.uitests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  OpenClamLiveKitKeyboard:
+    build:
+      targets:
+        OpenClamLiveKitKeyboard: all
+
+  OpenClamLiveKit:
+    build:
+      targets:
+        OpenClamLiveKit: all
+        OpenClamLiveKitTests: [test]
+    test:
+      targets:
+        - OpenClamLiveKitTests
+
+  OpenClamLiveKitUIAudit:
+    build:
+      targets:
+        OpenClamLiveKit: all
+        OpenClamLiveKitUITests: [test]
+    test:
+      targets:
+        - OpenClamLiveKitUITests
