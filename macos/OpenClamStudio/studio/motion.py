@@ -22,7 +22,11 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 from . import body, cutout
 
 
-MOTION_VERSION = 9
+# v13 adds current-frame, pose-guided upper-limb recovery to the source-aware
+# Vision fallback.  Older cuts can contain intact arms in the retained white-
+# plate source but only a faint semantic matte, so they must be re-cut before
+# reuse.  The recovery never borrows colour or geometry from another frame.
+MOTION_VERSION = 13
 # Full provider resolution. These were 512x768 - a decoded-atlas memory
 # budget from the traversal era - which threw away almost half the subject
 # pixels the in-place loop pipeline now buys (the portrait plate spends its
@@ -36,13 +40,12 @@ MAX_SHEET_FRAMES = 32
 # Gate rejections are dominated by near-misses, so a third candidate
 # meaningfully raises the odds a run ships instead of failing outright.
 MAX_CANDIDATE_ATTEMPTS = 3
-# TEMPORARY reliability mode, by explicit taste (2026-07-30): quality gates
-# reject too many honest takes, and a shipped clip with a visible loop seam
-# beats a failed generation. While True: the idle uses the FULL raw take
-# (its authored first-equals-last frame IS the seam), the in-place walk uses
-# the first half of its take with no loop search, and every quality gate on
-# those paths is demoted to a logged observation. Flip to False to restore
-# strict selection and gating; traversal styles (cartwheel) are unaffected.
+# Reliability mode keeps observed quality gates from rejecting an otherwise
+# usable provider take. It must not knowingly manufacture a bad loop seam:
+# when a complete gait period is measurable, the in-place walk still uses the
+# normal endpoint selector and only falls back to the first half when pose
+# cadence is unavailable. Idle keeps its authored full take. Traversal styles
+# (cartwheel) are unaffected.
 RELAXED_LOOP_SHIPPING = True
 DEFAULT_WALK_STYLE = "office"
 DEFAULT_IDLE_POSE = "back-heel"
@@ -1741,7 +1744,7 @@ def _segment_frames(frames, workspace, log):
         destination = os.path.join(alpha_dir, f"{index:04d}.png")
         pose_destination = os.path.join(pose_dir, f"{index:04d}.json")
         rendered = cutout.render(
-            sources[index], destination, log=lambda _message: None, tight=True,
+            sources[index], destination, log=lambda _message: None, tight=False,
             pose_destination=pose_destination)
         # On a green-screen clip the Vision mask is discarded in favour of the
         # chroma key below, so an empty mask must not fail the build. Vision
@@ -1789,7 +1792,9 @@ def _segment_frames(frames, workspace, log):
             _refine_white_matte(frames[index], segmented[index])
             for index in range(len(segmented))
         ]
-    repaired = _stabilise_segmented(segmented, poses)
+    source_frames = frames if not green_screen and rvm_frames is None else None
+    repaired = _stabilise_segmented(
+        segmented, poses, source_frames=source_frames)
     if green_screen:
         repaired = [
             cutout._decontaminate_edges(_despill_green(frame))
@@ -1803,22 +1808,73 @@ def _segment_frames(frames, workspace, log):
     # Green-spill neutralisation is a CHROMA-plate contract: on white-plate
     # takes it would demand naturally greenish pixels (a shadow, a jewel) be
     # "corrected", failing takes that have no green plate at all.
+    color_sources = segmented
+    if not green_screen and rvm_frames is None:
+        # The Vision helper reads a quality-96 JPEG staging copy, while the
+        # accepted upper-limb component deliberately restores the original
+        # decoded provider pixels. Build the expected colour authority with
+        # that same local rule: source RGB on accepted arms, helper RGB
+        # elsewhere. Comparing every subject pixel to the original frame would
+        # instead measure harmless JPEG staging deltas across the whole body.
+        color_sources = []
+        for index, (segmented_frame, source) in enumerate(zip(
+                segmented, frames)):
+            authority = segmented_frame.copy()
+            source_alpha = _white_plate_source_alpha(source)
+            authority[:, :, 3] = _recover_source_upper_limbs(
+                authority, authority[:, :, 3], source, poses[index],
+                source_alpha=source_alpha)
+            color_sources.append(authority)
     color_quality = _color_fidelity_quality(
-        segmented, repaired, check_green_spill=green_screen)
+        color_sources, repaired, check_green_spill=green_screen)
     return repaired, poses, matte_method, color_quality
 
 
-def _fill_lower_body_alpha_holes(alpha):
+def _white_plate_confidence(source):
+    """Per-pixel confidence that ``source`` is the known white plate."""
+    hsv = cv2.cvtColor(source[:, :, :3], cv2.COLOR_BGR2HSV).astype(np.float32)
+    return (
+        np.clip((hsv[:, :, 2] - 205) / 40, 0, 1)
+        * np.clip((70 - hsv[:, :, 1]) / 55, 0, 1)
+    )
+
+
+def _white_plate_source_alpha(source, confidence=None):
+    if confidence is None:
+        confidence = _white_plate_confidence(source)
+    return np.clip(
+        (1 - confidence) * 255, 0, 255,
+    ).astype(np.uint8)
+
+
+def _veto_current_white_plate(alpha, confidence):
+    """Remove temporal ghosts contradicted by the current source frame.
+
+    Temporal median/pose repair is useful for a genuine one-frame dropout, but
+    a union-only matte can also retain yesterday's heel position after the foot
+    moves.  The videos are authored on a known white plate, so a current pixel
+    with the same strict plate confidence used by ``_refine_white_matte`` is
+    definitive background.  This runs after every additive repair and therefore
+    also removes morphology-created duplicate stems without eroding the real,
+    dark source-supported heel.
+    """
+    output = alpha.copy()
+    output[confidence > 0.93] = 0
+    return output
+
+
+def _lower_body_alpha_hole_candidates(alpha):
+    """Pixels in small enclosed lower-body cavities worth source checking."""
     mask = (alpha >= 24).astype(np.uint8)
     points = cv2.findNonZero(mask)
     if points is None:
-        return alpha
+        return np.zeros(alpha.shape, dtype=bool)
     x, y, width, height = cv2.boundingRect(points)
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     if hierarchy is None:
-        return alpha
+        return np.zeros(alpha.shape, dtype=bool)
     maximum_area = max(64, float(mask.sum()) * 0.035)
-    output = alpha.copy()
+    candidates = np.zeros(alpha.shape, dtype=np.uint8)
     for index, contour in enumerate(contours):
         if hierarchy[0][index][3] < 0:
             continue
@@ -1826,8 +1882,300 @@ def _fill_lower_body_alpha_holes(alpha):
         moments = cv2.moments(contour)
         center_y = moments["m01"] / moments["m00"] if moments["m00"] else 0
         if 4 <= area <= maximum_area and center_y >= y + height * 0.40:
-            cv2.drawContours(output, [contour], -1, 255, thickness=cv2.FILLED)
+            cv2.drawContours(
+                candidates, [contour], -1, 1, thickness=cv2.FILLED)
+    return candidates.astype(bool)
+
+
+def _fill_lower_body_alpha_holes(alpha, source=None, source_alpha=None):
+    """Repair true lower-body losses without painting white leg gaps opaque.
+
+    The old contour-only fill could not distinguish a missing shoe pixel from
+    white plate visible between crossed calves, so it made every qualifying
+    cavity fully opaque.  On white-plate takes the retained source is the
+    authority: its continuous plate confidence restores dark subject pixels
+    while pure white remains transparent.  Without a source frame there is no
+    evidence that an enclosed cavity is a segmentation loss, so it is left
+    alone rather than risking invented anatomy.
+    """
+    candidates = _lower_body_alpha_hole_candidates(alpha)
+    if not candidates.any():
+        return alpha
+    output = alpha.copy()
+    if source is None:
+        return output
+    if source_alpha is None:
+        source_alpha = _white_plate_source_alpha(source)
+    output[candidates] = np.maximum(
+        output[candidates], source_alpha[candidates])
     return output
+
+
+def _recover_source_ankles(
+        current, alpha, source, pose, source_alpha=None):
+    """Restore white-plate-supported shoe detail near tracked ankles.
+
+    Vision's semantic matte can omit a one-pixel heel stem even when the source
+    plate resolves it cleanly.  The asymmetric box covers the lower calf, shoe,
+    and heel while staying local to each tracked ankle.  A source pixel still
+    needs alpha >= 24 under the same white-plate model, so true white can never
+    be introduced merely because it lies inside the box.
+    """
+    body_height = _pose_height(pose)
+    if body_height is None:
+        return alpha
+    if source_alpha is None:
+        source_alpha = _white_plate_source_alpha(source)
+    half_width = max(4, round(body_height * 0.075))
+    above = max(4, round(body_height * 0.095))
+    below = max(4, round(body_height * 0.142))
+    rows, columns = np.ogrid[:alpha.shape[0], :alpha.shape[1]]
+    region = np.zeros(alpha.shape, dtype=bool)
+    for joint in ("left_ankle", "right_ankle"):
+        point = _pose_point(pose, joint, 0.20)
+        if point is None:
+            continue
+        region |= (
+            (np.abs(columns - point[0]) <= half_width)
+            & (rows >= point[1] - above)
+            & (rows <= point[1] + below)
+        )
+    recovered = region & (source_alpha >= 24) & (source_alpha > alpha)
+    if not recovered.any():
+        return alpha
+    output = alpha.copy()
+    output[recovered] = source_alpha[recovered]
+    current[:, :, :3][recovered] = source[:, :, :3][recovered]
+    return output
+
+
+def _recover_source_upper_limbs(
+        current, alpha, source, pose, source_alpha=None):
+    """Restore source-supported arms and hands along the tracked skeleton.
+
+    Vision's person mask can lose most of a fast horizontal forearm even when
+    the retained white-plate frame resolves it cleanly.  Temporal union is a
+    poor fix for that case: the arm is moving, so neighbouring silhouettes
+    create a trail.  Instead, build narrow shoulder-to-elbow-to-wrist capsules
+    in the *current* pose and admit only non-plate source components that touch
+    the existing matte along that skeleton.  This keeps a genuine limb and its
+    hand connected while rejecting isolated plate marks inside the capsule.
+    """
+    body_height = _pose_height(pose)
+    if body_height is None:
+        return alpha
+    if source_alpha is None:
+        source_alpha = _white_plate_source_alpha(source)
+
+    region = np.zeros(alpha.shape, dtype=np.uint8)
+    seed_region = np.zeros(alpha.shape, dtype=np.uint8)
+    limb_width = max(5, round(body_height * 0.105))
+    seed_width = max(3, round(body_height * 0.050))
+    joint_radius = max(3, round(body_height * 0.055))
+    hand_length = max(4, round(body_height * 0.090))
+    tracked = 0
+    for side in ("left", "right"):
+        shoulder = _pose_point(pose, f"{side}_shoulder", 0.20)
+        elbow = _pose_point(pose, f"{side}_elbow", 0.20)
+        wrist = _pose_point(pose, f"{side}_wrist", 0.20)
+        if shoulder is None or elbow is None or wrist is None:
+            continue
+        tracked += 1
+        points = [
+            tuple(np.rint(point).astype(int))
+            for point in (shoulder, elbow, wrist)
+        ]
+        cv2.line(region, points[0], points[1], 1, limb_width)
+        cv2.line(region, points[1], points[2], 1, limb_width)
+        cv2.line(seed_region, points[0], points[1], 1, seed_width)
+        cv2.line(seed_region, points[1], points[2], 1, seed_width)
+        for point in points:
+            cv2.circle(region, point, joint_radius, 1, cv2.FILLED)
+
+        direction = wrist - elbow
+        length = float(np.linalg.norm(direction))
+        if length > 1:
+            hand_tip = wrist + direction / length * hand_length
+            hand_tip = tuple(np.rint(hand_tip).astype(int))
+            cv2.line(region, points[2], hand_tip, 1, limb_width)
+            cv2.line(seed_region, points[2], hand_tip, 1, seed_width)
+            cv2.circle(region, hand_tip, joint_radius, 1, cv2.FILLED)
+    if not tracked:
+        return alpha
+
+    source_subject = (source_alpha >= 24) & (region > 0)
+    if not source_subject.any():
+        return alpha
+    count, labels = cv2.connectedComponents(
+        source_subject.astype(np.uint8), connectivity=8)
+    if count <= 1:
+        return alpha
+    seeds = (
+        source_subject
+        & (seed_region > 0)
+        & (alpha >= 32)
+    )
+    kept = np.unique(labels[seeds])
+    kept = kept[kept > 0]
+    if not kept.size:
+        return alpha
+    connected = source_subject & np.isin(labels, kept)
+    if not connected.any():
+        return alpha
+    output = alpha.copy()
+    output[connected] = np.maximum(
+        output[connected], source_alpha[connected])
+    # The semantic matte's weak arm pixels can already be opaque enough that
+    # the alpha comparison above does not call them "recovered", while their
+    # RGB still came from an aligned neighbour.  Current-source authority is
+    # atomic: once a connected limb component is accepted, both its alpha and
+    # colour come from this frame so no temporal patchwork remains.
+    current[:, :, :3][connected] = source[:, :, :3][connected]
+    return output
+
+
+def _endpoint_connected_component(mask, start, end, radius):
+    """The mask component touching small neighbourhoods at both endpoints."""
+    count, labels, statistics, _centroids = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=8)
+    if count <= 1:
+        return None
+    rows, columns = np.ogrid[:mask.shape[0], :mask.shape[1]]
+    start_disc = (
+        (columns - start[0]) ** 2 + (rows - start[1]) ** 2 <= radius ** 2)
+    end_disc = (
+        (columns - end[0]) ** 2 + (rows - end[1]) ** 2 <= radius ** 2)
+    start_labels = set(
+        int(value) for value in np.unique(labels[start_disc]) if value)
+    end_labels = set(
+        int(value) for value in np.unique(labels[end_disc]) if value)
+    shared = start_labels & end_labels
+    if not shared:
+        return None
+    label = max(shared, key=lambda value: statistics[value, cv2.CC_STAT_AREA])
+    return labels == label
+
+
+def _source_upper_limb_quality(
+        alpha, source_alpha, pose, baseline_alpha=None):
+    """Hard current-source integrity check for tracked upper-arm segments.
+
+    A wrist-disc presence test misses a forearm whose two ends remain visible.
+    For every raw-source segment that really connects its tracked endpoints,
+    require the final matte to connect those same endpoints, retain at least
+    90% of source alpha overall and 75% in the weakest cross-section, and keep
+    opaque output within one pixel of current-frame source support.
+    """
+    unavailable = {
+        "available": False,
+        "valid": True,
+        "reason": "no source-connected upper-limb segment to measure",
+        "segments": {},
+    }
+    body_height = _pose_height(pose)
+    if body_height is None:
+        return unavailable
+    corridor_width = max(5, round(body_height * 0.105))
+    endpoint_radius = max(3, round(body_height * 0.040))
+    source_support = source_alpha >= 24
+    source_margin = cv2.dilate(
+        source_support.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        iterations=1,
+    ).astype(bool)
+    rows, columns = np.indices(alpha.shape)
+    segments = {}
+    failures = []
+    for side in ("left", "right"):
+        points = {
+            joint: _pose_point(pose, f"{side}_{joint}", 0.20)
+            for joint in ("shoulder", "elbow", "wrist")
+        }
+        for first, second in (("shoulder", "elbow"), ("elbow", "wrist")):
+            start, end = points[first], points[second]
+            if start is None or end is None:
+                continue
+            corridor = np.zeros(alpha.shape, dtype=np.uint8)
+            start_px = tuple(np.rint(start).astype(int))
+            end_px = tuple(np.rint(end).astype(int))
+            cv2.line(
+                corridor, start_px, end_px, 1, corridor_width, cv2.LINE_8)
+            source_component = _endpoint_connected_component(
+                source_support & (corridor > 0),
+                start, end, endpoint_radius)
+            if source_component is None:
+                continue
+
+            output_support = (alpha >= 24) & source_component
+            output_connected = _endpoint_connected_component(
+                output_support, start, end, endpoint_radius) is not None
+            source_weight = source_alpha[source_component].astype(np.float64)
+            output_weight = np.minimum(
+                alpha[source_component], source_alpha[source_component],
+            ).astype(np.float64)
+            alpha_recall = float(
+                np.sum(output_weight) / max(1.0, np.sum(source_weight)))
+
+            vector = end - start
+            length_squared = float(np.dot(vector, vector))
+            projection = (
+                (columns[source_component] - start[0]) * vector[0]
+                + (rows[source_component] - start[1]) * vector[1]
+            ) / max(1.0, length_squared)
+            slice_recalls = []
+            for lower in np.linspace(0, 0.9, 10):
+                selection = (projection >= lower) & (projection < lower + 0.1)
+                if int(np.sum(selection)) < 4:
+                    continue
+                denominator = float(np.sum(source_weight[selection]))
+                slice_recalls.append(float(
+                    np.sum(output_weight[selection]) / max(1.0, denominator)))
+            cross_section_recall = (
+                float(np.percentile(slice_recalls, 10))
+                if slice_recalls else 0.0)
+            # Only pixels introduced by current-source recovery belong to this
+            # gate. A semantic matte can carry one or two old fringe samples
+            # elsewhere in the broad pose corridor; they cannot help endpoint
+            # connectivity or recall because those metrics are restricted to
+            # the current source component, and they are not recovery output.
+            outside_core = (
+                (alpha >= 96)
+                & (baseline_alpha < 96)
+                & (corridor > 0)
+                & ~source_margin
+                if baseline_alpha is not None else
+                np.zeros(alpha.shape, dtype=bool)
+            )
+            outside_core_pixels = int(np.count_nonzero(outside_core))
+            valid = (
+                output_connected
+                and alpha_recall >= 0.90
+                and cross_section_recall >= 0.75
+                and outside_core_pixels == 0
+            )
+            name = f"{side}_{first}_{second}"
+            segments[name] = {
+                "valid": valid,
+                "output_connected": output_connected,
+                "alpha_recall": round(alpha_recall, 4),
+                "cross_section_recall_p10": round(cross_section_recall, 4),
+                "outside_source_core_pixels": outside_core_pixels,
+            }
+            if not valid:
+                failures.append(name)
+    if not segments:
+        return unavailable
+    return {
+        "available": True,
+        "valid": not failures,
+        "reason": (
+            "source-supported arms remain connected"
+            if not failures else
+            "broken source-supported upper-limb segment: "
+            + ", ".join(failures)
+        ),
+        "segments": segments,
+    }
 
 
 # ------------------------------------------------------- robust video matting
@@ -1916,9 +2264,7 @@ def _refine_white_matte(source, rgba):
     mask = (alpha > 127).astype(np.uint8)
     if not mask.any():
         return rgba
-    hsv = cv2.cvtColor(source, cv2.COLOR_BGR2HSV).astype(np.float32)
-    whiteness = (np.clip((hsv[:, :, 2] - 205) / 40, 0, 1)
-                 * np.clip((70 - hsv[:, :, 1]) / 55, 0, 1))
+    whiteness = _white_plate_confidence(source)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     core = cv2.erode(mask, kernel, iterations=2).astype(bool)
     reach = cv2.dilate(mask, kernel, iterations=5).astype(bool)
@@ -1953,8 +2299,10 @@ def _refine_white_matte(source, rgba):
     core_labels = core_labels[core_labels > 0]
     if core_labels.size:
         refined[np.isin(labels, core_labels) & solid] = 255
-    refined = cv2.GaussianBlur(
-        np.clip(refined, 0, 255).astype(np.uint8), (0, 0), 0.6)
+    # Keep Vision's native anti-aliasing and the source classifications above.
+    # A second full-frame Gaussian pass widened the 10-90% edge transition and
+    # reintroduced plate alpha immediately after we had classified it away.
+    refined = np.clip(refined, 0, 255).astype(np.uint8)
     output = rgba.copy()
     output[:, :, 3] = refined
     scale = refined.astype(np.float32)[..., None] / 255
@@ -1968,7 +2316,9 @@ def _refine_white_matte(source, rgba):
     return output
 
 
-def _stabilise_segmented(segmented, poses=None):
+def _stabilise_segmented(segmented, poses=None, source_frames=None):
+    if source_frames is not None and len(source_frames) != len(segmented):
+        raise ValueError("source and segmented frame counts differ")
     repaired = []
     close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     anchors = []
@@ -2001,19 +2351,55 @@ def _stabilise_segmented(segmented, poses=None):
         stable_alpha = np.clip(stable_alpha, 0, 255).astype(np.uint8)
         stable_alpha = _repair_pose_extremities(
             index, current, segmented, poses, stable_alpha)
-        stable_alpha = cv2.morphologyEx(
-            stable_alpha,
-            cv2.MORPH_CLOSE,
-            close_kernel,
-        )
+        source = source_frames[index] if source_frames is not None else None
+        source_alpha = None
+        source_confidence = None
+        if source is not None:
+            if source.shape[:2] != current.shape[:2]:
+                raise ValueError("source and segmented frame dimensions differ")
+            # One HSV conversion feeds both local recovery passes; Vision is
+            # still the dominant cost and source-aware refinement stays O(px).
+            source_confidence = _white_plate_confidence(source)
+            source_alpha = _white_plate_source_alpha(
+                source, confidence=source_confidence)
+            alpha_before_limb_recovery = stable_alpha.copy()
+            stable_alpha = _recover_source_upper_limbs(
+                current, stable_alpha, source,
+                poses[index] if poses else None,
+                source_alpha=source_alpha)
+            stable_alpha = _recover_source_ankles(
+                current, stable_alpha, source, poses[index] if poses else None,
+                source_alpha=source_alpha)
+        if source is None:
+            # Chroma/RVM inputs do not have the known white-plate authority used
+            # below, so retain the historical tiny-gap repair for those paths.
+            stable_alpha = cv2.morphologyEx(
+                stable_alpha,
+                cv2.MORPH_CLOSE,
+                close_kernel,
+            )
         alpha_before_hole_fill = stable_alpha.copy()
-        stable_alpha = _fill_lower_body_alpha_holes(stable_alpha)
-        filled_holes = ((alpha_before_hole_fill < 24) & (stable_alpha >= 24)).astype(np.uint8)
+        stable_alpha = _fill_lower_body_alpha_holes(
+            stable_alpha, source, source_alpha=source_alpha)
+        filled_holes = (
+            (alpha_before_hole_fill < 24) & (stable_alpha >= 24)
+        ).astype(np.uint8)
+        if source is not None:
+            recovered = stable_alpha > alpha_before_hole_fill
+            current[:, :, :3][recovered] = source[:, :, :3][recovered]
+            stable_alpha = _veto_current_white_plate(
+                stable_alpha, source_confidence)
+            limb_quality = _source_upper_limb_quality(
+                stable_alpha, source_alpha,
+                poses[index] if poses else None,
+                baseline_alpha=alpha_before_limb_recovery)
+            if limb_quality["available"] and not limb_quality["valid"]:
+                raise RuntimeError(limb_quality["reason"])
         presence = (stable_alpha >= 24).astype(np.uint8)
         interior = cv2.distanceTransform(presence, cv2.DIST_L2, 3) >= 1.5
         stable_alpha[interior] = 255
-        stable_alpha[stable_alpha < 16] = 0
-        if filled_holes.any():
+        stable_alpha[stable_alpha < 8] = 0
+        if source is None and filled_holes.any():
             current[:, :, :3] = cv2.inpaint(
                 current[:, :, :3], filled_holes * 255, 5, cv2.INPAINT_TELEA)
         current[:, :, 3] = stable_alpha
@@ -2848,7 +3234,7 @@ def _normalise_frames(frames, include_scale=False):
         crop = frame[top:bottom, left:right]
         resized = _resize_rgba_premultiplied(
             crop, (output_width, output_height))
-        resized[:, :, 3][resized[:, :, 3] < 16] = 0
+        resized[:, :, 3][resized[:, :, 3] < 8] = 0
         resized[:, :, :3][resized[:, :, 3] == 0] = 0
         canvas = np.zeros((TARGET_HEIGHT, TARGET_WIDTH, 4), dtype=np.uint8)
         canvas[offset_y:offset_y + output_height, offset_x:offset_x + output_width] = resized
@@ -3336,6 +3722,34 @@ def _silhouette_closure_quality(
     }
 
 
+def _relaxed_walk_selection(frames, poses, fps, loop, pose_profile):
+    """Choose a closed full gait without turning reliability mode into a veto.
+
+    The old reliability path always cut the first half of a six-second take.
+    That made every ordinary transition faithful, but manufactured a large
+    mid-take -> frame-zero snap. When Vision can measure a repeated gait, use
+    the regular full-cycle selector. If tracking is unavailable or the take
+    has no valid cycle, preserve reliability mode's non-rejecting fallback.
+    """
+    half = max(8, len(frames) // 2)
+    fallback = (frames[:half], 0, half, [], "first-half fallback")
+    source_gait = _source_gait_profile(poses) if poses else None
+    if not source_gait or not source_gait.get("period"):
+        return fallback
+    try:
+        selected, start, end, alternates = _select_loop(
+            frames, fps,
+            loop["target"], loop["minimum"], loop["maximum"],
+            poses=poses,
+            require_pose_cycle=True,
+            pose_profile=pose_profile,
+            return_candidates=True,
+        )
+    except RuntimeError:
+        return fallback
+    return selected, start, end, alternates, "closed full-gait selection"
+
+
 def _process_clip(
         kind, video, fps, stage, log, idle_validation="back-heel",
         walk_style=None):
@@ -3367,13 +3781,12 @@ def _process_clip(
         loop = walk_style["loop"]
         gait_validation = walk_style["validation"] != "traversal" and not relaxed
         if relaxed:
-            # First half of the take, no loop search: the mid-take cut will
-            # snap against frame 0, and that is the accepted price for a
-            # generation that always ships. Metrics below become receipts.
-            half = max(8, len(recentered) // 2)
-            selected, loop_start, loop_end = recentered[:half], 0, half
-            loop_alternates = []
-            log(f"relaxed loop shipping: first {half} frames, gates observed only")
+            (selected, loop_start, loop_end, loop_alternates,
+             selection_method) = _relaxed_walk_selection(
+                recentered, poses, fps, loop, walk_style["validation"])
+            log(
+                f"relaxed loop shipping: {selection_method} "
+                f"{loop_start}:{loop_end}; gates observed only")
         else:
             selected, loop_start, loop_end, loop_alternates = _select_loop(
                 recentered, fps, loop["target"], loop["minimum"], loop["maximum"],
@@ -3948,6 +4361,7 @@ def recut(avatar_dir, kind, log=print, progress=None):
             if os.path.isfile(source_path):
                 shutil.copy2(source_path, os.path.join(raw_dir, name))
         clip = _process_clip(kind, raw_video, fps, stage, log, **process_options)
+        metadata["v"] = MOTION_VERSION
         metadata[kind] = clip
         metadata["updated"] = datetime.datetime.now().isoformat(
             timespec="seconds")

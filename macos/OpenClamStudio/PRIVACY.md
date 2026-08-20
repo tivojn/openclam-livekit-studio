@@ -59,13 +59,10 @@ the renderer.
 - Packaged builds check this project's GitHub Releases endpoint for a newer
   version. The request contains the app's product user-agent and ordinary
   network metadata, not conversations, avatars, credentials, or device state.
-- Opening Avatar Store requests its small public catalog and thumbnails from
-  `tivojn/openclam-avatar-store` on GitHub. Downloading an avatar is always an
-  explicit user action; GitHub receives ordinary network metadata, while
-  OpenClam receives only public catalog/package bytes. No local portrait,
-  conversation, credential, or installed-avatar data is uploaded. Catalog,
-  thumbnail, and partial-package caches remain local and can be replaced by a
-  verified retry.
+- Avatar Store is unavailable in v1.0.1. The shipped app has no catalog URL,
+  does not request store catalogs, thumbnails, or packages, and does not expose
+  any stale store cache. Local `.avtr` import and library management do not
+  contact a store.
 
 Provider terms and retention policies apply to requests made to those
 providers. Local Ollama, macOS System Voice, and bundled MLX Whisper options
@@ -85,9 +82,9 @@ but exclude runtime caches, diagnostics, histories, application settings, and
 credentials. iPhone-light packages contain only the fixed verified runtime
 assets. Neither file causes background synchronization.
 
-Avatar Store packages use the same AVTR validation and remain local after
-installation. The Mac downloads only the `macos-full` variant; the iPhone app
-downloads only `ios-light`. Neither app silently substitutes the other
+Directly imported AVTR packages use the same strict validation and remain local
+after installation. The Mac accepts only the `macos-full` authoring variant;
+the iPhone accepts only `ios-light`. Neither app silently substitutes the other
 platform's package.
 
 ## Deletion

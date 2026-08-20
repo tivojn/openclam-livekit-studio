@@ -46,11 +46,44 @@ class PromptSmith(unittest.TestCase):
     def test_body_brief_gets_the_structural_rules_appended(self):
         direction = ("A sleek photoreal look: fitted charcoal blazer over a "
                      "silk shell, slim cropped trousers, pointed leather "
-                     "flats, fine gold jewellery, palette of graphite and "
+                     "flats, one slim platinum watch, palette of graphite and "
                      "champagne.")
         result, _chat_mock = _expand("body", "sleek office minimalism", direction)
         self.assertIn(direction[:40], result)
         self.assertIn(wardrobe.STRUCTURAL_RULE, result)
+        self.assertIn(wardrobe.ACCESSORY_RULE, result)
+
+    def test_body_brief_uses_gender_proper_luxury_and_long_leg_rules(self):
+        _result, chat = _expand(
+            "body", "formal evening tailoring",
+            "A long enough precise evening wardrobe direction with sculpted "
+            "tailoring, black wool, no jewellery, and polished footwear. " * 2,
+        )
+        brief = chat.call_args.args[2].lower()
+        for phrase in (
+            "fuchsia", "never use cobalt", "naturally long legs",
+            "long must never become exaggerated", "dior wrap blazers",
+            "at least 90mm", "for masculine styling", "never pumps",
+            "gold is forbidden", "omission is preferred",
+            "no statement jewellery", "smoky eyes or a bold lip",
+            "zero fast-fashion noise",
+        ):
+            self.assertIn(phrase, brief)
+        self.assertNotIn("real-looking gold", brief)
+
+    def test_body_rewrite_cannot_reintroduce_gold_or_accessory_clutter(self):
+        with self.assertRaisesRegex(RuntimeError, "banned material or colour gold"):
+            _expand(
+                "body", "add jewelry",
+                "A precisely fitted scarlet wool suit with realistic seams and a "
+                "rose gold chain, kept opaque and polished from shoulder to ankle.",
+            )
+        with self.assertRaisesRegex(RuntimeError, "excessive accessories"):
+            _expand(
+                "body", "more accessories",
+                "A precisely fitted camel wool suit with realistic seams, layered "
+                "necklaces, stacked bracelets, and polished black ankle boots.",
+            )
 
     def test_body_brief_refuses_banned_garments(self):
         with self.assertRaisesRegex(RuntimeError, "banned garment"):
@@ -107,7 +140,7 @@ class RewriteFromKeyPoints(unittest.TestCase):
              mock.patch.object(promptsmith.wardrobe, "_llm_route",
                                lambda: ("route", "model")), \
              mock.patch.object(promptsmith.wardrobe, "_finalise",
-                               lambda text: text):
+                               lambda text, *_args: text):
             promptsmith.expand("body", "keep the red bandana",
                                base="A charcoal suit, sharp shoulders.")
         self.assertIn("CURRENT BRIEF:", seen["ask"])
@@ -120,7 +153,7 @@ class RewriteFromKeyPoints(unittest.TestCase):
              mock.patch.object(promptsmith.wardrobe, "_llm_route",
                                lambda: ("route", "model")), \
              mock.patch.object(promptsmith.wardrobe, "_finalise",
-                               lambda text: text):
+                               lambda text, *_args: text):
             promptsmith.expand("body", "a pirate captain")
         self.assertTrue(seen["ask"].startswith("Gist:"))
 

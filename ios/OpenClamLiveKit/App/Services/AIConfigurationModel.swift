@@ -174,34 +174,140 @@ final class AIConfigurationModel: ObservableObject {
 
     func reconcileAvatarCatalog(_ identities: [AvatarAgentIdentity]) {
         let availableIDs = Set(identities.map(\.id))
-        for identity in identities where avatarAgentProfiles[identity.id] == nil {
+        var reconciledProfiles = avatarAgentProfiles.filter {
+            availableIDs.contains($0.key)
+        }
+        for identity in identities where reconciledProfiles[identity.id] == nil {
             let profile = AvatarAgentProfile(
                 id: identity.id,
                 displayName: identity.displayName
             )
             if let validated = try? profile.validated() {
-                avatarAgentProfiles[identity.id] = validated
+                reconciledProfiles[identity.id] = validated
             }
         }
+        avatarAgentProfiles = reconciledProfiles
         if !availableIDs.contains(activeAvatarID) {
-            activeAvatarID = AvatarAgentIdentity.defaultID
+            activeAvatarID = Self.fallbackAvatarIdentity(in: identities).id
         }
+        reconcileAvatarThreadMap(availableIDs: availableIDs)
     }
 
-    func removeImportedAvatarProfile(id: String) {
-        guard !AvatarAgentIdentity.defaultPack.contains(where: { $0.id == id }) else {
+    /// Moves persisted user-authored state when a byte-exact owned legacy
+    /// package is superseded by its bundled identity. Callers are responsible
+    /// for proving the package match before invoking this method; arbitrary
+    /// imported IDs never enter this migration path.
+    func migrateAvatarIdentity(
+        from sourceID: String,
+        to target: AvatarAgentIdentity
+    ) {
+        guard sourceID != target.id,
+              OpenClamAvatarID.isValid(sourceID),
+              OpenClamAvatarID.isValid(target.id) else {
             return
         }
+
+        var profiles = avatarAgentProfiles
+        if let source = profiles.removeValue(forKey: sourceID) {
+            let migrated = AvatarAgentProfile(
+                id: target.id,
+                displayName: target.displayName,
+                languageModelOverride: source.languageModelOverride,
+                voiceOverride: source.voiceOverride,
+                speechRecognitionOverride: source.speechRecognitionOverride,
+                liveTalkPreferences: source.liveTalkPreferences,
+                liveTalkConfiguration: source.liveTalkConfiguration,
+                systemPrompt: source.systemPrompt,
+                userPrompt: source.userPrompt
+            )
+            if let validated = try? migrated.validated() {
+                profiles[target.id] = validated
+            }
+        } else if profiles[target.id] == nil {
+            let profile = AvatarAgentProfile(
+                id: target.id,
+                displayName: target.displayName
+            )
+            if let validated = try? profile.validated() {
+                profiles[target.id] = validated
+            }
+        }
+        avatarAgentProfiles = profiles
+
+        let sourceWasActive = activeAvatarID == sourceID
+        if sourceWasActive {
+            activeAvatarID = target.id
+        }
+
+        var threads = avatarAgentThreads
+        let sourceActiveThread = threads.activeThreadByAvatar.removeValue(
+            forKey: sourceID
+        )
+        threads.avatarByThread = threads.avatarByThread.mapValues { avatarID in
+            avatarID == sourceID ? target.id : avatarID
+        }
+        if let sourceActiveThread,
+           sourceWasActive || threads.activeThreadByAvatar[target.id] == nil {
+            threads.activeThreadByAvatar[target.id] = sourceActiveThread
+        }
+        avatarAgentThreads = threads
+    }
+
+    /// Removes every persisted selection owned by an imported avatar. The
+    /// fallback is stable across launches: prefer Captain Ayer, then the
+    /// lexicographically first available identity if a future catalog changes.
+    @discardableResult
+    func removeImportedAvatarProfile(
+        id: String,
+        availableIdentities: [AvatarAgentIdentity] = AvatarAgentIdentity.defaultPack
+    ) -> AvatarAgentIdentity? {
+        guard OpenClamAvatarCatalog.avatar(id: id) == nil,
+              id != AvatarAgentIdentity.defaultID else {
+            return nil
+        }
+
+        let availableIDs = Set(availableIdentities.map(\.id))
+        let needsFallback = activeAvatarID == id
+            || !availableIDs.contains(activeAvatarID)
+        let fallback = Self.fallbackAvatarIdentity(in: availableIdentities)
+
         avatarAgentProfiles.removeValue(forKey: id)
-        if activeAvatarID == id {
-            activeAvatarID = AvatarAgentIdentity.defaultID
+        if needsFallback {
+            activeAvatarID = fallback.id
         }
-        if let threadID = avatarAgentThreads.activeThreadByAvatar.removeValue(forKey: id) {
-            avatarAgentThreads.avatarByThread.removeValue(forKey: threadID)
+        reconcileAvatarThreadMap(availableIDs: availableIDs)
+        return needsFallback ? fallback : nil
+    }
+
+    private static func fallbackAvatarIdentity(
+        in identities: [AvatarAgentIdentity]
+    ) -> AvatarAgentIdentity {
+        if let preferred = identities.first(where: {
+            $0.id == AvatarAgentIdentity.defaultID
+        }) {
+            return preferred
         }
-        avatarAgentThreads.avatarByThread = avatarAgentThreads.avatarByThread.filter {
-            $0.value != id
+        if let first = identities.sorted(by: { $0.id < $1.id }).first {
+            return first
         }
+        return AvatarAgentIdentity.defaultPack.first(where: {
+            $0.id == AvatarAgentIdentity.defaultID
+        }) ?? AvatarAgentIdentity(
+            id: AvatarAgentIdentity.defaultID,
+            displayName: "Captain Ayer"
+        )
+    }
+
+    private func reconcileAvatarThreadMap(availableIDs: Set<String>) {
+        var reconciled = avatarAgentThreads
+        reconciled.avatarByThread = reconciled.avatarByThread.filter {
+            availableIDs.contains($0.value)
+        }
+        reconciled.activeThreadByAvatar = reconciled.activeThreadByAvatar.filter {
+            availableIDs.contains($0.key)
+                && reconciled.avatarByThread[$0.value] == $0.key
+        }
+        avatarAgentThreads = reconciled
     }
 
     @discardableResult

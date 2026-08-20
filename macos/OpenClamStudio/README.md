@@ -132,14 +132,12 @@ for the complete portable file contract.
 
 ## Avatar Store
 
-Avatar Store reads the versioned public catalog at
-[`tivojn/openclam-avatar-store`](https://github.com/tivojn/openclam-avatar-store).
-Vivieen is its first entry, with separate iPhone-light and Mac-full AVTR v2
-downloads. The store shows the verified thumbnail before download, reports
-whole-number percentage progress, supports cancel/retry, and installs only
-after origin, byte-count, SHA-256, profile, schema, and internal asset-ledger
-checks pass. Existing valid installs remain available if a catalog refresh or
-package update fails.
+Avatar Store is unavailable in v1.0.1: the shipped app has no remote catalog
+URL, the Settings entry is hidden, and its IPC boundary fails closed before any
+network request or cached remote entry can be used. Direct `.avtr` import,
+library use, export, and deletion remain available in Avatar Studio. Dormant
+generic catalog validation and download code is retained for a future release
+only after its media and endpoint have been separately reviewed.
 
 ## Build a DMG
 

@@ -64,7 +64,7 @@ def route_test_application():
     fake_rig.CONTROLS = {
         name: {"default": 0, "minimum": 0, "maximum": 150}
         for name in (
-            "lips", "jaw", "cheeks", "brows", "forehead",
+            "lips", "jaw", "cheeks", "eyebags", "brows", "forehead",
             "nasolabial", "nose", "teeth",
         )
     }

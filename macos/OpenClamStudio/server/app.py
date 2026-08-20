@@ -216,11 +216,12 @@ def _last_failure(slug):
 
 def _already_running(slug):
     with _jlock:
-        job_id = (_jobs.get(slug) or {}).get("id")
+        current = dict(_jobs.get(slug) or {})
     return {
         "started": False,
         "reason": "already building",
-        "job_id": job_id,
+        "job_id": current.get("id"),
+        "kind": current.get("kind"),
     }
 
 
@@ -303,7 +304,7 @@ def active_slug():
         return None
 
 
-RUNTIME_VERSION = 16  # v16: high-definition alpha twins (HEVC q85, VP9 crf18)
+RUNTIME_VERSION = 17  # v17: independent under-eye speech target/runtime layer
 
 
 def ensure_runtime(slug, log=print):
@@ -496,7 +497,7 @@ def _recompose_thread(slug, profile):
             _jobs[slug]["done"] = True
 
 
-def _publish_runtime_atomic(slug, log=print):
+def _publish_runtime_atomic(slug, log=print, keep_previous=False):
     from studio import export
     directory = reg().adir(slug)
     _recover_runtime_swap(slug)
@@ -527,7 +528,8 @@ def _publish_runtime_atomic(slug, log=print):
             if os.path.exists(previous):
                 os.replace(previous, live)
             raise
-        shutil.rmtree(previous, ignore_errors=True)
+        if not keep_previous:
+            shutil.rmtree(previous, ignore_errors=True)
     except Exception:
         if not os.path.exists(live) and os.path.exists(previous):
             os.replace(previous, live)
@@ -537,10 +539,279 @@ def _publish_runtime_atomic(slug, log=print):
             shutil.rmtree(staged, ignore_errors=True)
 
 
+_BODY_EDIT_TRANSACTION_DIRNAME = ".body-edit-transaction"
+_BODY_EDIT_TRANSACTION_VERSION = 1
+_BODY_EDIT_TRANSACTION_PHASES = frozenset({
+    "prepared", "body-installed", "state-written", "committed",
+})
+
+
+def _body_edit_transaction_dir(directory):
+    return os.path.join(directory, _BODY_EDIT_TRANSACTION_DIRNAME)
+
+
+def _fsync_directory(directory):
+    """Best-effort durability for an atomic rename's parent directory."""
+    descriptor = None
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+        os.fsync(descriptor)
+    except OSError:
+        # Some packaged/runtime filesystems do not permit directory fsync.
+        # The atomic rename still provides process-failure safety there.
+        pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _write_private_json(path, payload):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    temporary = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=1)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        _fsync_directory(os.path.dirname(path))
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _copy_private_file(source, destination):
+    if os.path.islink(source) or not os.path.isfile(source):
+        raise RuntimeError("body-edit snapshot source is not a regular file")
+    shutil.copy2(source, destination)
+    os.chmod(destination, 0o600)
+
+
+def _copy_private_tree(source, destination):
+    if os.path.islink(source) or not os.path.isdir(source):
+        raise RuntimeError("body-edit snapshot source is not a regular directory")
+    for root, directories, files in os.walk(source):
+        for name in directories + files:
+            if os.path.islink(os.path.join(root, name)):
+                raise RuntimeError("body-edit snapshots do not follow symbolic links")
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+def _read_body_edit_journal(directory):
+    transaction = _body_edit_transaction_dir(directory)
+    path = os.path.join(transaction, "transaction.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            journal = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            "an unfinished full-body edit has unreadable recovery data") from error
+    if (not isinstance(journal, dict)
+            or journal.get("v") != _BODY_EDIT_TRANSACTION_VERSION
+            or journal.get("phase") not in _BODY_EDIT_TRANSACTION_PHASES):
+        raise RuntimeError("an unfinished full-body edit has invalid recovery data")
+    return journal
+
+
+def _begin_body_edit_transaction(slug):
+    """Persist exact pre-edit state before any canonical authoring mutation."""
+    directory = reg().adir(slug)
+    transaction = _body_edit_transaction_dir(directory)
+    if os.path.exists(transaction):
+        _recover_body_edit_transaction(slug)
+    stage = tempfile.mkdtemp(
+        prefix=".body-edit-transaction-stage-", dir=directory)
+    try:
+        os.chmod(stage, 0o700)
+        manifest = os.path.join(directory, "manifest.json")
+        motion = os.path.join(directory, "motion")
+        library_index = os.path.join(directory, "library", "library.json")
+        runtime = runtime_dir(slug)
+        journal = {
+            "v": _BODY_EDIT_TRANSACTION_VERSION,
+            "slug": slug,
+            "phase": "prepared",
+            "manifest_existed": os.path.isfile(manifest),
+            "motion_existed": os.path.isdir(motion),
+            "library_index_existed": os.path.isfile(library_index),
+            "runtime_existed": os.path.isdir(runtime),
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        if journal["manifest_existed"]:
+            _copy_private_file(manifest, os.path.join(stage, "manifest.json"))
+        if journal["motion_existed"]:
+            _copy_private_tree(motion, os.path.join(stage, "motion"))
+        if journal["library_index_existed"]:
+            _copy_private_file(
+                library_index, os.path.join(stage, "library.json"))
+        _write_private_json(os.path.join(stage, "transaction.json"), journal)
+        os.replace(stage, transaction)
+        stage = None
+        _fsync_directory(directory)
+        return journal
+    finally:
+        if stage and os.path.exists(stage):
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def _set_body_edit_transaction_phase(slug, phase):
+    if phase not in _BODY_EDIT_TRANSACTION_PHASES:
+        raise ValueError(f"invalid body-edit transaction phase: {phase}")
+    directory = reg().adir(slug)
+    journal = _read_body_edit_journal(directory)
+    if journal.get("slug") != slug:
+        raise RuntimeError("body-edit recovery data belongs to another avatar")
+    journal["phase"] = phase
+    journal["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+    _write_private_json(
+        os.path.join(_body_edit_transaction_dir(directory), "transaction.json"),
+        journal)
+    return journal
+
+
+def _replace_tree_from_snapshot(snapshot, destination):
+    """Atomically copy a retained tree into place without consuming it."""
+    parent = os.path.dirname(destination)
+    stage = tempfile.mkdtemp(prefix=".body-edit-restore-", dir=parent)
+    displaced = None
+    try:
+        _copy_private_tree(snapshot, stage)
+        if os.path.exists(destination):
+            displaced = (
+                destination + ".body-edit-displaced-" + secrets.token_hex(4))
+            os.replace(destination, displaced)
+        try:
+            os.replace(stage, destination)
+            stage = None
+        except Exception:
+            if (not os.path.exists(destination) and displaced
+                    and os.path.exists(displaced)):
+                os.replace(displaced, destination)
+                displaced = None
+            raise
+        if displaced:
+            shutil.rmtree(displaced, ignore_errors=True)
+            displaced = None
+        _fsync_directory(parent)
+    finally:
+        if stage and os.path.exists(stage):
+            shutil.rmtree(stage, ignore_errors=True)
+        if displaced and os.path.exists(displaced):
+            # A restored destination is authoritative. A displaced tree is
+            # only the failed/new state and must never replace it afterward.
+            shutil.rmtree(displaced, ignore_errors=True)
+
+
+def _restore_file_snapshot(snapshot, destination, existed):
+    if not existed:
+        try:
+            os.remove(destination)
+        except FileNotFoundError:
+            pass
+        return
+    if not os.path.isfile(snapshot) or os.path.islink(snapshot):
+        raise RuntimeError("body-edit file snapshot is missing")
+    os.makedirs(os.path.dirname(destination), mode=0o700, exist_ok=True)
+    temporary = destination + ".body-edit-restore-" + secrets.token_hex(4)
+    try:
+        shutil.copy2(snapshot, temporary)
+        os.replace(temporary, destination)
+        _fsync_directory(os.path.dirname(destination))
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _restore_tree_snapshot(snapshot, destination, existed):
+    if not existed:
+        shutil.rmtree(destination, ignore_errors=True)
+        return
+    if not os.path.isdir(snapshot) or os.path.islink(snapshot):
+        raise RuntimeError("body-edit directory snapshot is missing")
+    _replace_tree_from_snapshot(snapshot, destination)
+
+
+def _finish_committed_body_edit(slug, log=print):
+    """Complete cleanup for a committed edit; safe to repeat after a crash."""
+    from studio import body, library
+    directory = reg().adir(slug)
+    try:
+        library.archive_body(directory)
+    except Exception as archive_error:
+        # Canonical body/manifest/runtime are already committed. Status sync
+        # retries this idempotent archive, so do not roll back a working edit.
+        log(f"could not archive the edited body set: {archive_error}")
+    shutil.rmtree(os.path.join(directory, ".body-cache"), ignore_errors=True)
+    body.commit_previous(directory)
+    shutil.rmtree(runtime_dir(slug) + ".previous", ignore_errors=True)
+    shutil.rmtree(_body_edit_transaction_dir(directory), ignore_errors=True)
+    _fsync_directory(directory)
+
+
+def _recover_body_edit_transaction(slug, log=print):
+    """Roll back or finish one persisted body edit after interruption."""
+    from studio import body
+    directory = reg().adir(slug)
+    transaction = _body_edit_transaction_dir(directory)
+    if not os.path.isdir(transaction):
+        return None
+    journal = _read_body_edit_journal(directory)
+    if journal.get("slug") != slug:
+        raise RuntimeError("body-edit recovery data belongs to another avatar")
+    if journal["phase"] == "committed":
+        _finish_committed_body_edit(slug, log=log)
+        return "committed"
+
+    previous_body = os.path.join(directory, "body.previous")
+    canonical_body = os.path.join(directory, "body")
+    if os.path.isdir(previous_body):
+        _replace_tree_from_snapshot(previous_body, canonical_body)
+    elif journal["phase"] != "prepared":
+        raise RuntimeError("the pre-edit body recovery snapshot is missing")
+
+    _restore_tree_snapshot(
+        os.path.join(transaction, "motion"),
+        os.path.join(directory, "motion"),
+        bool(journal.get("motion_existed")))
+    _restore_file_snapshot(
+        os.path.join(transaction, "manifest.json"),
+        os.path.join(directory, "manifest.json"),
+        bool(journal.get("manifest_existed")))
+    _restore_file_snapshot(
+        os.path.join(transaction, "library.json"),
+        os.path.join(directory, "library", "library.json"),
+        bool(journal.get("library_index_existed")))
+
+    live = runtime_dir(slug)
+    previous_runtime = live + ".previous"
+    if os.path.isdir(previous_runtime):
+        _replace_tree_from_snapshot(previous_runtime, live)
+    elif not journal.get("runtime_existed"):
+        shutil.rmtree(live, ignore_errors=True)
+
+    body.commit_previous(directory)
+    shutil.rmtree(previous_runtime, ignore_errors=True)
+    shutil.rmtree(transaction, ignore_errors=True)
+    _fsync_directory(directory)
+    log("recovered the previous full-body authoring state")
+    return "rolled-back"
+
+
+def _recover_body_edit_transaction_if_idle(slug, log=print):
+    """Never mistake an active worker's journal for a crashed transaction."""
+    with _jlock:
+        current = _jobs.get(slug) or {}
+        if current and not current.get("done"):
+            return None
+    return _recover_body_edit_transaction(slug, log=log)
+
+
 def _body_stage(slug, options, w, progress):
     """Generate the three body plates and publish them. Shared by the
     standalone body job and the one-click pipeline; raises on failure."""
     from studio import body, library, motion
+    _recover_body_edit_transaction(slug, log=w)
     progress("generation", .12, "Generating front, side, and back bodies")
     metadata = body.build(
         reg().adir(slug), options, log=w, progress=progress)
@@ -579,6 +850,82 @@ def _body_thread(slug, options):
     finally:
         with _jlock:
             _jobs[slug]["done"] = True
+
+
+def _body_edit_stage(slug, instruction, writer, progress):
+    """Edit one coherent turnaround and publish it as an undoable body set."""
+    from studio import body, library
+    directory = reg().adir(slug)
+    _recover_body_edit_transaction(slug, log=writer)
+    # Preserve the exact current body and all canonical motion sets before the
+    # journal snapshot. This durable library copy is the user's visible undo;
+    # the journal remains the byte-exact crash/exception rollback source.
+    library.sync_canonical(directory)
+    previous_manifest = reg().read_manifest(slug) or {}
+    _begin_body_edit_transaction(slug)
+    try:
+        metadata = body.edit(
+            directory, instruction, log=writer, progress=progress)
+        _set_body_edit_transaction_phase(slug, "body-installed")
+        manifest = dict(previous_manifest)
+        manifest["body"] = metadata
+        _apply_motion_metadata(
+            manifest, library.reconcile_motion_with_body(directory))
+        reg().write_manifest(slug, manifest)
+        _set_body_edit_transaction_phase(slug, "state-written")
+        progress("runtime", .92, "Publishing edited transparent companion")
+        _publish_runtime_atomic(slug, log=writer, keep_previous=True)
+        # From this durable marker onward body, motion, manifest, and runtime
+        # are a coherent committed state. Recovery finishes archive/cleanup
+        # rather than reverting a successfully published edit.
+        _set_body_edit_transaction_phase(slug, "committed")
+        _finish_committed_body_edit(slug, log=writer)
+        return metadata
+    except Exception as error:
+        rollback_errors = []
+        try:
+            _recover_body_edit_transaction(slug, log=writer)
+        except Exception as rollback_error:
+            rollback_errors.append(f"exact rollback: {rollback_error}")
+        failure = str(error)
+        if rollback_errors:
+            failure = f"{failure}; {'; '.join(rollback_errors)}"
+        raise RuntimeError(failure) from error
+
+
+def _body_edit_thread(slug, instruction, job_id):
+    writer = jlog(slug, "editing the matched full-body set")
+    with _jlock:
+        job = _jobs.get(slug)
+        if not job or job.get("id") != job_id:
+            return
+        job.update(
+            done=False, error="", log=[], kind="body-edit",
+            progress={"stage": "provider", "value": .03,
+                      "label": "Preparing xAI full-body edit"})
+    failure = ""
+    try:
+        _body_edit_stage(
+            slug, instruction, writer,
+            lambda stage, value, label: _job_progress(
+                slug, stage, value, label, job_id=job_id))
+        _job_progress(
+            slug, "done", 1.0, "Edited full-body set ready", job_id=job_id)
+        writer("front, side, and back edits passed local identity lock")
+    except Exception as error:
+        failure = str(error)
+        # The instruction is authoring input, not diagnostic telemetry. A
+        # provider may echo it in an HTTP error body, so remove both literal
+        # and JSON-escaped forms before the job record/build log persists it.
+        for private_value in {
+                instruction,
+                json.dumps(instruction, ensure_ascii=False)[1:-1]}:
+            if private_value:
+                failure = failure.replace(
+                    private_value, "[full-body edit instruction redacted]")
+        writer(f"FAILED: {failure}")
+    finally:
+        _finish_job(slug, job_id, failure)
 
 
 def _motion_stage(slug, kinds, idle_pose, walk_style, move_style, writer,
@@ -698,7 +1045,7 @@ def _pipeline_thread(slug, job_id, notes=""):
 
     failure = ""
     try:
-        from studio import motion
+        from studio import motion, wardrobe
         manifest = reg().read_manifest(slug) or {}
         # A keep-note CHANGES the head prompt, so the face that is already
         # built was made without it - skipping the face would have meant
@@ -727,8 +1074,20 @@ def _pipeline_thread(slug, job_id, notes=""):
                           "One-click 2/3: full body already built",
                           job_id=job_id)
         else:
-            _body_stage(slug, BodyProfileInput(notes=notes).model_dump(), writer,
-                        band(.30, .28, "One-click 2/3: "))
+            tailored = wardrobe.tailored_prompt(reg().adir(slug), log=writer)
+            body_prompt = tailored.get("prompt") or wardrobe.preset_prompt()
+            body_traits = tailored.get("traits") or {}
+            _body_stage(
+                slug,
+                BodyProfileInput(
+                    prompt=body_prompt,
+                    notes=notes,
+                    presentation=body_traits.get("presentation") or "androgynous",
+                    medium=body_traits.get("medium") or "photograph",
+                ).model_dump(),
+                writer,
+                band(.30, .28, "One-click 2/3: "),
+            )
         # The takes run ONE AT A TIME with backoff retries: firing all
         # three at once burst past xAI's 2-requests-per-second team limit
         # ("Too many requests", eve 2026-08-01) and one provider hiccup
@@ -896,6 +1255,7 @@ class RigProfileInput(BaseModel):
     lips: float = _rig_control_field("lips")
     jaw: float = _rig_control_field("jaw")
     cheeks: float = _rig_control_field("cheeks")
+    eyebags: float = _rig_control_field("eyebags")
     brows: float = _rig_control_field("brows")
     forehead: float = _rig_control_field("forehead")
     nasolabial: float = _rig_control_field("nasolabial")
@@ -920,11 +1280,27 @@ class BodyProfileInput(BaseModel):
     prompt: str = Field(default="", max_length=4000)
     outfit: str = Field(default="", max_length=500)
     notes: str = Field(default="", max_length=600)
+    # Visible styling inferred from the uploaded reference. This is not a
+    # gender-identity field; it exists so the final plate includes one footwear
+    # branch instead of mentioning feminine and masculine directions together.
+    presentation: str = Field(
+        default="androgynous",
+        pattern=r"^(feminine|masculine|androgynous)$",
+    )
+    medium: str = Field(
+        default="photograph",
+        pattern=r"^(photograph|game art|anime|illustration|3d render)$",
+    )
 
 
 class BodyRequest(BaseModel):
     slug: str = Field(pattern=SLUG_PATTERN)
     profile: BodyProfileInput
+
+
+class BodyEditRequest(BaseModel):
+    slug: str = Field(pattern=SLUG_PATTERN)
+    instruction: str = Field(min_length=4, max_length=600)
 
 
 class BodyPromptRequest(BaseModel):
@@ -1162,25 +1538,25 @@ async def api_build(b: Slug):
 
 @app.get("/api/avatar/body")
 async def api_body(slug: str = Query(pattern=SLUG_PATTERN)):
+    _recover_body_edit_transaction_if_idle(slug)
     manifest = reg().read_manifest(slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
+    from studio import body
     try:
-        from studio import body
         provider = body.default_provider()
         provider_error = None
     except Exception as error:
         provider = None
         provider_error = str(error)
     try:
-        from studio import body
         video_provider = body.default_video_provider()
         video_provider_error = None
     except Exception as error:
         video_provider = None
         video_provider_error = str(error)
     directory = reg().adir(slug)
-    body_metadata = manifest.get("body") or {}
+    body_metadata = body.public_body_metadata(manifest.get("body") or {})
     motion_metadata = manifest.get("motion") or {}
     body_views = body_metadata.get("views") or {}
     has_turnaround = all(
@@ -1202,22 +1578,50 @@ async def api_body(slug: str = Query(pattern=SLUG_PATTERN)):
     has_walk = has_motion_clip("walk")
     has_idle = has_motion_clip("idle")
     has_move = has_motion_clip("move")
-    from studio import library
+    body_edit_sources_ready = False
+    body_edit_source_error = ""
     try:
-        # Adopt pre-library avatars: their canonical body and motion become
-        # the first archived set. Content digests keep this idempotent.
-        library.sync_canonical(directory)
-    except Exception as sync_error:
-        print(f"[avatar:{slug}] library sync failed: {sync_error}", flush=True)
+        authored_body = body._body_metadata(directory)
+        for view in body.BODY_VIEWS:
+            body._body_source(directory, authored_body, view)
+        body_edit_sources_ready = True
+    except (RuntimeError, ValueError, OSError) as error:
+        body_edit_source_error = str(error)
+    body_edit_available = bool(
+        has_turnaround and body_edit_sources_ready and provider
+        and body.supports_xai_edit(provider))
+    if not has_turnaround:
+        body_edit_reason = "Generate Front, Side, and Back before editing."
+    elif not body_edit_sources_ready:
+        body_edit_reason = (
+            body_edit_source_error
+            or "The retained Front, Side, and Back source plates are missing.")
+    elif provider_error:
+        body_edit_reason = provider_error
+    elif not body.supports_xai_edit(provider):
+        body_edit_reason = (
+            "Choose xAI Grok Imagine Image 2.0 under AI & Voice → Image "
+            "to edit an existing full-body set.")
+    else:
+        body_edit_reason = ""
+    from studio import library
     with _jlock:
-        job = _jobs.get(slug)
-        job = dict(job) if job and (
-            job.get("kind") == "body" or
-            str(job.get("kind") or "").startswith("motion")) else None
+        current_job = dict(_jobs.get(slug) or {})
+    if not current_job or current_job.get("done"):
+        try:
+            # Adopt pre-library avatars only while canonical state is stable.
+            # During a live edit the body has a deliberate pre-commit window;
+            # archiving it here would expose a set whose runtime later failed.
+            library.sync_canonical(directory)
+        except Exception as sync_error:
+            print(f"[avatar:{slug}] library sync failed: {sync_error}", flush=True)
+    job = current_job if current_job and (
+        str(current_job.get("kind") or "").startswith("body") or
+        str(current_job.get("kind") or "").startswith("motion")) else None
     from studio import wardrobe
     cached_prompt = wardrobe.cached_prompt(directory)
     return {
-        "body": manifest.get("body"),
+        "body": body_metadata or None,
         "motion": manifest.get("motion"),
         "motion_assets": _motion_asset_catalog(
             slug, directory, motion_metadata),
@@ -1234,6 +1638,9 @@ async def api_body(slug: str = Query(pattern=SLUG_PATTERN)):
         "has_move": has_move,
         "provider": provider,
         "provider_error": provider_error,
+        "body_edit_available": body_edit_available,
+        "body_edit_sources_ready": body_edit_sources_ready,
+        "body_edit_reason": body_edit_reason,
         "video_provider": video_provider,
         "video_provider_error": video_provider_error,
         "default_prompt": (cached_prompt or {}).get(
@@ -1313,6 +1720,7 @@ async def api_media_defaults():
 
 @app.post("/api/avatar/body/generate")
 async def api_body_generate(request: BodyRequest):
+    _recover_body_edit_transaction_if_idle(request.slug)
     manifest = reg().read_manifest(request.slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
@@ -1333,6 +1741,52 @@ async def api_body_generate(request: BodyRequest):
         raise
     return {
         "started": True, "slug": request.slug, "kind": "body",
+        "job_id": job_id}
+
+
+@app.post("/api/avatar/body/edit")
+async def api_body_edit(request: BodyEditRequest):
+    _recover_body_edit_transaction_if_idle(request.slug)
+    manifest = reg().read_manifest(request.slug)
+    if not manifest:
+        raise HTTPException(404, "avatar not found")
+    if manifest.get("status") != "ready":
+        raise HTTPException(400, "build this avatar before editing its body")
+    with _jlock:
+        current_job = _jobs.get(request.slug) or {}
+        already_running = bool(current_job and not current_job.get("done"))
+    if already_running:
+        return _already_running(request.slug)
+    from studio import body
+    try:
+        provider = body.default_provider()
+    except Exception as error:
+        raise HTTPException(409, str(error)) from error
+    if not body.supports_xai_edit(provider):
+        raise HTTPException(
+            409,
+            "Choose xAI Grok Imagine Image 2.0 under AI & Voice → Image "
+            "before editing a full-body set.")
+    try:
+        metadata = body._body_metadata(reg().adir(request.slug))
+        for view in body.BODY_VIEWS:
+            body._body_source(reg().adir(request.slug), metadata, view)
+        instruction = body._edit_instruction(request.instruction)
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(422, str(error)) from error
+    job_id = _reserve_job(
+        request.slug, "body-edit", "Preparing xAI full-body edit")
+    if not job_id:
+        return _already_running(request.slug)
+    try:
+        threading.Thread(
+            target=_body_edit_thread,
+            args=(request.slug, instruction, job_id), daemon=True).start()
+    except Exception as error:
+        _finish_job(request.slug, job_id, error)
+        raise
+    return {
+        "started": True, "slug": request.slug, "kind": "body-edit",
         "job_id": job_id}
 
 
@@ -1685,6 +2139,7 @@ async def api_motion_set_remove(request: MotionSetRequest):
 
 @app.post("/api/avatar/body/set/activate")
 async def api_body_set_activate(request: BodySetRequest):
+    _recover_body_edit_transaction_if_idle(request.slug)
     manifest = reg().read_manifest(request.slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
@@ -1715,6 +2170,7 @@ async def api_body_set_activate(request: BodySetRequest):
 
 @app.post("/api/avatar/body/set/remove")
 async def api_body_set_remove(request: BodySetRequest):
+    _recover_body_edit_transaction_if_idle(request.slug)
     manifest = reg().read_manifest(request.slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
@@ -1756,6 +2212,7 @@ async def api_body_set_remove(request: BodySetRequest):
 
 @app.post("/api/avatar/body/remove")
 async def api_body_remove(request: Slug):
+    _recover_body_edit_transaction_if_idle(request.slug)
     manifest = reg().read_manifest(request.slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
@@ -1798,20 +2255,20 @@ def _publish_runtime(slug, label):
     creates a done=False job that nothing ever finishes, which left avatar
     cards stuck on 'publishing 100%' with disabled buttons until restart."""
     job_id = _reserve_job(slug, "publish", label)
-    writer = jlog(slug, label) if job_id else (
-        lambda msg: print(f"[avatar:{slug}] {msg}", flush=True))
+    if not job_id:
+        raise RuntimeError("avatar generation is still running")
+    writer = jlog(slug, label)
     try:
         ensure_runtime(slug, log=writer)
     except Exception as error:
-        if job_id:
-            _finish_job(slug, job_id, error)
+        _finish_job(slug, job_id, error)
         raise
-    if job_id:
-        _finish_job(slug, job_id)
+    _finish_job(slug, job_id)
 
 
 @app.post("/api/avatar/activate")
 async def api_activate(b: Slug):
+    _recover_body_edit_transaction_if_idle(b.slug)
     r = reg()
     m = r.read_manifest(b.slug) or {}
     if m.get("status") != "ready":
@@ -1845,6 +2302,7 @@ async def api_companion(request: CompanionRequest):
         return {"companion": None}
     if not re.fullmatch(SLUG_PATTERN, slug):
         raise HTTPException(422, "invalid avatar slug")
+    _recover_body_edit_transaction_if_idle(slug)
     manifest = registry.read_manifest(slug) or {}
     if manifest.get("status") != "ready":
         raise HTTPException(400, "build this avatar before adding it to the desk")
@@ -1885,6 +2343,10 @@ async def api_avatar_export(
         raise HTTPException(404, "avatar not found")
     if _avatar_is_busy(slug):
         raise HTTPException(409, "wait for avatar generation to finish")
+    _recover_body_edit_transaction_if_idle(slug)
+    manifest = registry.read_manifest(slug)
+    if not isinstance(manifest, dict):
+        raise HTTPException(404, "avatar not found")
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".openclam-{variant}-", suffix=".avtr"
     )
@@ -2445,8 +2907,28 @@ def _warm():
 
 
 def _start():
+    recovery_failed = set()
+    try:
+        avatars = reg().list_avatars()
+    except Exception as error:
+        avatars = []
+        print("[openclam] body-edit recovery scan failed:", error, flush=True)
+    for avatar in avatars:
+        slug = avatar.get("slug")
+        if not slug:
+            continue
+        try:
+            _recover_body_edit_transaction(
+                slug,
+                log=lambda message, current=slug: print(
+                    f"[avatar:{current}] {message}", flush=True))
+        except Exception as error:
+            recovery_failed.add(slug)
+            print(
+                f"[avatar:{slug}] body-edit recovery failed: {error}",
+                flush=True)
     s = active_slug()
-    if s:
+    if s and s not in recovery_failed:
         try:
             ensure_runtime(s)
         except Exception as e:

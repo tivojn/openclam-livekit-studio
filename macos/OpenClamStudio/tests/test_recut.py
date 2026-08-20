@@ -6,8 +6,10 @@ runtime republished with matte_method robust-video-matting.
 """
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from studio import motion
 
@@ -26,7 +28,6 @@ class RecutContract(unittest.TestCase):
                 motion.recut(avatar_dir, "move")
 
     def test_recut_requires_the_retained_raw(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as avatar_dir:
             motion_dir = os.path.join(avatar_dir, "motion")
             os.makedirs(motion_dir)
@@ -34,6 +35,27 @@ class RecutContract(unittest.TestCase):
                 json.dump({"move": {"frames": 3}}, f)
             with self.assertRaisesRegex(RuntimeError, "retained raw"):
                 motion.recut(avatar_dir, "move")
+
+    def test_recut_stamps_the_current_motion_pipeline_version(self):
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            motion_dir = os.path.join(avatar_dir, "motion")
+            raw_dir = os.path.join(motion_dir, "raw")
+            os.makedirs(raw_dir)
+            with open(os.path.join(motion_dir, "motion.json"), "w") as handle:
+                json.dump({"v": motion.MOTION_VERSION - 1,
+                           "move": {"frames": 3}}, handle)
+            with open(os.path.join(raw_dir, "move-source.mp4"), "wb") as handle:
+                handle.write(b"retained motion")
+            replacement = {"frames": 3, "fps": 12, "sheets": []}
+
+            with mock.patch.object(
+                    motion, "_process_clip", return_value=replacement):
+                result = motion.recut(avatar_dir, "move")
+
+            self.assertEqual(motion.MOTION_VERSION, result["v"])
+            with open(os.path.join(motion_dir, "motion.json")) as handle:
+                installed = json.load(handle)
+            self.assertEqual(motion.MOTION_VERSION, installed["v"])
 
     def test_server_and_ui_wiring(self):
         app = (ROOT / "server" / "app.py").read_text()

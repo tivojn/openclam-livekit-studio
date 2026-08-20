@@ -14,6 +14,126 @@ final class CaptainAyerFaceReactionTests: XCTestCase {
         XCTAssertNil(CaptainAyerFaceHitMap.region(at: CGPoint(x: 1.2, y: 0.5)))
     }
 
+    func testFullBodyHitMapIncludesHandsAndMeaningfulZones() {
+        XCTAssertEqual(
+            CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.50, y: 0.10)),
+            .head
+        )
+        XCTAssertEqual(
+            CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.30, y: 0.53)),
+            .leadingHand
+        )
+        XCTAssertEqual(
+            CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.70, y: 0.53)),
+            .trailingHand
+        )
+        XCTAssertEqual(
+            CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.44, y: 0.275)),
+            .heart
+        )
+        XCTAssertEqual(
+            CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.50, y: 0.45)),
+            .torso
+        )
+        XCTAssertEqual(
+            CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.50, y: 0.72)),
+            .lowerBody
+        )
+        XCTAssertEqual(
+            CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.50, y: 0.94)),
+            .feet
+        )
+        XCTAssertNil(CaptainAyerBodyHitMap.region(at: CGPoint(x: 0.05, y: 0.80)))
+    }
+
+    func testAmbientBlinkPlansArePairedAsymmetricAndSometimesPartial() {
+        let partialPlan = CaptainAyerAmbientMotionPlanner.blinkPlan(
+            delaySample: 0,
+            durationSample: 0.5,
+            offsetSample: 0.5,
+            characterSample: 0.10,
+            leadingEyeSample: 0.2,
+            asymmetrySample: 0.5
+        )
+        XCTAssertEqual(partialPlan.leadingEye, .left)
+        XCTAssertGreaterThanOrEqual(partialPlan.delay, 2.8)
+        XCTAssertGreaterThan(partialPlan.followingEyeDelay, 0)
+        XCTAssertLessThan(partialPlan.leftPeakClosure, 0.80)
+        XCTAssertLessThan(partialPlan.rightPeakClosure, 0.80)
+
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let event = partialPlan.event(startingAt: start)
+        XCTAssertNotEqual(event.leftStart, event.rightStart)
+        let overlap = start.addingTimeInterval(partialPlan.duration * 0.39)
+        let leftClosure = event.closure(for: .left, at: overlap)
+        let rightClosure = event.closure(for: .right, at: overlap)
+        XCTAssertGreaterThan(leftClosure, 0.50)
+        XCTAssertGreaterThan(rightClosure, 0.40)
+        XCTAssertNotEqual(leftClosure, rightClosure, accuracy: 0.0001)
+
+        let fullPlan = CaptainAyerAmbientMotionPlanner.blinkPlan(
+            delaySample: 1,
+            durationSample: 1,
+            offsetSample: 1,
+            characterSample: 0.8,
+            leadingEyeSample: 0.8,
+            asymmetrySample: 0.8
+        )
+        XCTAssertEqual(fullPlan.leadingEye, .right)
+        XCTAssertGreaterThanOrEqual(fullPlan.leftPeakClosure, 0.92)
+        XCTAssertGreaterThanOrEqual(fullPlan.rightPeakClosure, 0.94)
+        XCTAssertLessThanOrEqual(fullPlan.followingEyeDelay, 0.034)
+    }
+
+    func testAmbientIrisPlanStaysSubtleAndReturnsHome() throws {
+        let plan = CaptainAyerAmbientMotionPlanner.gazePlan(
+            delaySample: 0.4,
+            horizontalSample: 1,
+            verticalSample: 0,
+            paceSample: 0.5,
+            dwellSample: 0.5
+        )
+        XCTAssertLessThanOrEqual(abs(plan.target.x), 0.22)
+        XCTAssertLessThanOrEqual(abs(plan.target.y), 0.28)
+        XCTAssertGreaterThanOrEqual(plan.delay, 5.0)
+
+        let start = Date(timeIntervalSinceReferenceDate: 2_000)
+        let event = plan.event(startingAt: start)
+        let dwell = try XCTUnwrap(
+            event.direction(
+                at: start.addingTimeInterval(plan.acquireDuration + 0.1)
+            )
+        )
+        XCTAssertEqual(dwell.x, plan.target.x, accuracy: 0.0001)
+        XCTAssertEqual(dwell.y, plan.target.y, accuracy: 0.0001)
+        XCTAssertNil(
+            event.direction(at: start.addingTimeInterval(plan.totalDuration))
+        )
+    }
+
+    func testAmbientIrisDutyCycleStaysLowAcrossDeterministicExtremes() {
+        let samples = [0.0, 1.0]
+        let plans = samples.flatMap { delay in
+            samples.flatMap { pace in
+                samples.map { dwell in
+                    CaptainAyerAmbientMotionPlanner.gazePlan(
+                        delaySample: delay,
+                        horizontalSample: 1,
+                        verticalSample: 0,
+                        paceSample: pace,
+                        dwellSample: dwell
+                    )
+                }
+            }
+        }
+        let dutyCycles = plans.map(\.activeDutyCycle)
+        let averageDutyCycle = dutyCycles.reduce(0, +) / Double(dutyCycles.count)
+
+        XCTAssertLessThanOrEqual(dutyCycles.max() ?? 1, 0.25)
+        XCTAssertGreaterThanOrEqual(averageDutyCycle, 0.15)
+        XCTAssertLessThanOrEqual(averageDutyCycle, 0.25)
+    }
+
     @MainActor
     func testExactReactionDurationsAndPeakPoses() {
         let start = Date()
@@ -72,6 +192,21 @@ final class CaptainAyerFaceReactionTests: XCTestCase {
         XCTAssertTrue(reduced.leftEye != nil || reduced.rightEye != nil)
         XCTAssertNotNil(reduced.leftBrowFrame)
         XCTAssertEqual(reduced.wideMouthOpacity, 0.8)
+        controller.cancelAll()
+    }
+
+    @MainActor
+    func testHandTapCreatesRestrainedCoordinatedReaction() {
+        let controller = CaptainAyerFaceReactionController()
+        let start = Date()
+        XCTAssertTrue(controller.react(to: .leadingHand, at: start))
+
+        let state = controller.renderState(at: start.addingTimeInterval(0.28))
+        XCTAssertNotNil(state.leftEye)
+        XCTAssertGreaterThan(state.wideMouthOpacity, 0)
+        XCTAssertNotNil(state.gazeFrame)
+        XCTAssertLessThan(abs(state.headPose.yaw), 0.13)
+        XCTAssertLessThan(abs(state.headPose.roll), 0.19)
         controller.cancelAll()
     }
 
@@ -144,25 +279,21 @@ final class CaptainAyerFaceReactionTests: XCTestCase {
     }
 
     @MainActor
-    func testPublicGuideSpriteSheetsAreBundledAtExactFrameDimensions() throws {
-        let guide = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
-        let expected: [(OpenClamAvatarAssetRole, (Int, Int))] = [
-            (.eyeLeft, (4, 32)),
-            (.eyeRight, (4, 32)),
-            (.browLeft, (4, 126)),
-            (.browRight, (4, 126)),
-            (.gazeLeftAtlas, (100, 44)),
-            (.gazeRightAtlas, (100, 44)),
+    func testEyeAndBrowSpriteSheetsAreBundledAtExactFrameDimensions() throws {
+        let expected = [
+            "CaptainAyerEyeLeft": (182, 832),
+            "CaptainAyerEyeRight": (176, 840),
+            "CaptainAyerBrowLeft": (213, 4_368),
+            "CaptainAyerBrowRight": (214, 4_284),
+            "CaptainAyerGazeLeftAtlas": (2_875, 649),
+            "CaptainAyerGazeRightAtlas": (2_875, 671),
         ]
 
-        for (role, dimensions) in expected {
-            let image = try XCTUnwrap(
-                OpenClamAvatarAssetStore.shared.image(for: guide, role: role),
-                "Missing public guide sprite: \(role)"
-            )
+        for (name, dimensions) in expected {
+            let image = try XCTUnwrap(UIImage(named: name), "Missing sprite asset: \(name)")
             let cgImage = try XCTUnwrap(image.cgImage)
-            XCTAssertEqual(cgImage.width, dimensions.0)
-            XCTAssertEqual(cgImage.height, dimensions.1)
+            XCTAssertEqual(cgImage.width, dimensions.0, name)
+            XCTAssertEqual(cgImage.height, dimensions.1, name)
         }
     }
 }

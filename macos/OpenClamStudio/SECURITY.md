@@ -43,12 +43,12 @@ projects, or unredacted logs.
 - AVTR imports reject traversal, extra and duplicate paths, non-regular entries,
   links, oversized content, MIME/dimension mismatches, and altered hashes before
   atomic installation.
-- Avatar Store accepts a bounded, strict catalog only from the exact public
-  `tivojn/openclam-avatar-store` GitHub path. Thumbnail and release downloads
-  are restricted to reviewed GitHub origins and redirects, streamed with hard
-  byte limits, and checked against the catalog's exact size and SHA-256 before
-  the existing AVTR validator performs an atomic install. A failed update never
-  replaces the last valid installed avatar.
+- Avatar Store is release-disabled in v1.0.1. Production code contains no
+  catalog endpoint, hides the Settings entry, refuses every store IPC operation
+  before network or cache access, and never exposes a stale remote catalog.
+  The dormant generic engine still requires an explicit repository policy,
+  strict redirect allowlisting, byte limits, SHA-256 verification, and the
+  existing atomic AVTR validator. Direct local `.avtr` workflows are unchanged.
 - The packaged app does not include phone pairing, LAN relay, EnConvo routing,
   System Audio capture, Apple Events automation, or Accessibility triggers.
 

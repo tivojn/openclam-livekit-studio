@@ -26,11 +26,15 @@ The ignored local files include `agent/livekit.toml`,
 
 1. Build from a fresh public snapshot, not the private development history.
 2. Run `python3 scripts/public-release-audit.py .` before committing.
+   For a release, verify both the tree and extracted Git archive against one
+   external file/mode/SHA-256 manifest.
 3. For the first public commit, rerun it with `--require-fresh-history` after
    the commit exists.
 4. Run the iOS, broker, agent, and macOS test suites.
-5. Publish no human-likeness asset without documented ownership, consent, and
-   redistribution rights.
+5. Publish no human-likeness asset outside the exact, hash-pinned Captain Ayer
+   and Ara paths without documented ownership, consent, and redistribution
+   rights. Keep their restricted media license separate from the MIT software
+   license.
 6. Publish macOS binaries only after Developer ID signing, Hardened Runtime,
    notarization, stapling, Gatekeeper assessment, and mounted-image re-audit.
 7. Attach generated binaries to a GitHub Release; do not commit DMGs, IPAs,

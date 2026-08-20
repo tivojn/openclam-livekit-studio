@@ -17,10 +17,20 @@ SPEC.loader.exec_module(BUILD)
 
 
 class AvatarStoreReleaseTests(unittest.TestCase):
-    def test_catalog_validator_accepts_the_frozen_contract(self):
+    IDENTITY = {
+        "identifier": "fixture-avatar",
+        "display_name": "Fixture Avatar",
+        "author": "Example Publisher",
+        "version": 7,
+    }
+
+    def test_catalog_validator_accepts_a_synthetic_generic_contract(self):
         digest = "a" * 64
         package = lambda profile: {
-            "url": f"https://github.com/tivojn/openclam-avatar-store/{profile}",
+            "url": (
+                "https://github.com/openclam-fixtures/avatar-store-fixtures/"
+                f"releases/download/fixtures-v1/fixture-avatar-{profile}.avtr"
+            ),
             "sha256": digest,
             "bytes": 1,
             "format": "openclam-avatar",
@@ -29,12 +39,16 @@ class AvatarStoreReleaseTests(unittest.TestCase):
         catalog = {
             "schemaVersion": 1,
             "entries": [{
-                "id": "vivieen",
-                "name": "Vivieen",
-                "author": "OpenClam",
-                "version": 1,
+                "id": self.IDENTITY["identifier"],
+                "name": self.IDENTITY["display_name"],
+                "author": self.IDENTITY["author"],
+                "version": self.IDENTITY["version"],
                 "thumbnail": {
-                    "url": BUILD.THUMBNAIL_URL,
+                    "url": (
+                        "https://raw.githubusercontent.com/openclam-fixtures/"
+                        "avatar-store-fixtures/main/catalog/v1/"
+                        "fixture-avatar-thumbnail.png"
+                    ),
                     "sha256": digest,
                     "bytes": 1,
                     "mime": "image/png",
@@ -47,15 +61,18 @@ class AvatarStoreReleaseTests(unittest.TestCase):
                 },
             }],
         }
-        BUILD._validate_catalog(catalog)
+        BUILD._validate_catalog(catalog, **self.IDENTITY)
 
     def test_catalog_validator_rejects_extra_mutable_fields(self):
         with self.assertRaises(BUILD.StoreBuildError):
-            BUILD._validate_catalog({
-                "schemaVersion": 1,
-                "generatedAt": "never allowed",
-                "entries": [],
-            })
+            BUILD._validate_catalog(
+                {
+                    "schemaVersion": 1,
+                    "generatedAt": "never allowed",
+                    "entries": [],
+                },
+                **self.IDENTITY,
+            )
 
     def test_archive_normalization_is_byte_reproducible(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -83,16 +100,59 @@ class AvatarStoreReleaseTests(unittest.TestCase):
         self.assertEqual(schema["required"], ["schemaVersion", "entries"])
         self.assertFalse(schema["additionalProperties"])
 
-    def test_release_urls_and_names_are_frozen(self):
-        self.assertEqual(BUILD.IOS_FILENAME, "Vivieen-iPhone.avtr")
-        self.assertEqual(BUILD.MAC_FILENAME, "Vivieen-Mac.avtr")
-        self.assertEqual(BUILD.THUMBNAIL_FILENAME, "vivieen-thumbnail.png")
+    def test_artifact_names_are_derived_from_explicit_synthetic_identity(self):
         self.assertEqual(
-            BUILD.CATALOG_URL,
-            "https://raw.githubusercontent.com/tivojn/openclam-avatar-store/"
-            "main/catalog/v1/catalog.json",
+            BUILD.artifact_filenames("fixture-avatar"),
+            (
+                "fixture-avatar-ios-light.avtr",
+                "fixture-avatar-macos-full.avtr",
+                "fixture-avatar-thumbnail.png",
+            ),
         )
-        self.assertTrue(BUILD.RELEASE_URL.endswith("/avatars-v1.0.0"))
+        for removed_default in (
+            "CATALOG_URL", "THUMBNAIL_URL", "RELEASE_URL",
+            "IOS_FILENAME", "MAC_FILENAME", "THUMBNAIL_FILENAME",
+        ):
+            self.assertFalse(hasattr(BUILD, removed_default))
+
+    def test_identity_and_urls_fail_closed(self):
+        with self.assertRaises(BUILD.StoreBuildError):
+            BUILD.artifact_filenames("Fixture Avatar")
+        with self.assertRaises(BUILD.StoreBuildError):
+            BUILD._safe_text(" Publisher", "avatar publisher")
+        with self.assertRaises(BUILD.StoreBuildError):
+            BUILD._strict_https("http://example.invalid/file", "example.invalid")
+        BUILD._validate_repository_urls(
+            catalog_url=(
+                "https://raw.githubusercontent.com/openclam-fixtures/"
+                "avatar-store-fixtures/main/catalog/v1/catalog.json"
+            ),
+            release_url=(
+                "https://github.com/openclam-fixtures/avatar-store-fixtures/"
+                "releases/download/fixtures-v1"
+            ),
+            thumbnail_url=(
+                "https://raw.githubusercontent.com/openclam-fixtures/"
+                "avatar-store-fixtures/main/catalog/v1/fixture-avatar-thumbnail.png"
+            ),
+            thumbnail_filename="fixture-avatar-thumbnail.png",
+        )
+        with self.assertRaises(BUILD.StoreBuildError):
+            BUILD._validate_repository_urls(
+                catalog_url=(
+                    "https://raw.githubusercontent.com/openclam-fixtures/"
+                    "avatar-store-fixtures/main/catalog/v1/catalog.json"
+                ),
+                release_url=(
+                    "https://github.com/different-owner/avatar-store-fixtures/"
+                    "releases/download/fixtures-v1"
+                ),
+                thumbnail_url=(
+                    "https://raw.githubusercontent.com/openclam-fixtures/"
+                    "avatar-store-fixtures/main/catalog/v1/fixture-avatar-thumbnail.png"
+                ),
+                thumbnail_filename="fixture-avatar-thumbnail.png",
+            )
 
 
 if __name__ == "__main__":

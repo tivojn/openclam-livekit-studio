@@ -25,34 +25,38 @@ from . import cutout, face
 STYLES = {"photorealistic", "editorial", "illustrated", "anime", "soft-3d"}
 POSES = {"relaxed", "confident", "friendly", "formal", "casual"}
 BODY_VIEWS = ("front", "side", "back")
+XAI_EDIT_PROVIDER = "xai"
+XAI_EDIT_MODEL = "grok-imagine-image-2.0"
+# Leave a small margin beneath Imagine 2.0's 8 KiB request ceiling.  This is a
+# byte budget because CJK, emoji, and accented text are not one byte per Python
+# character.
+FULL_BODY_PROMPT_MAX_BYTES = 8_000
+_MIN_GENERATED_HEAD_SCALE = 0.17
+_MAX_GENERATED_HEAD_SCALE = 1.8
+_MIN_GENERATED_FACE_WIDTH_PX = 84
+_MIN_GENERATED_FACE_HEIGHT_PX = 100
+_MIN_GENERATED_FACE_WIDTH_RATIO = 0.075
+_MIN_GENERATED_FACE_HEIGHT_RATIO = 0.065
 DEFAULT_BODY_PROMPT = (
-    "Create a photorealistic full-body wardrobe at couture level - the poise "
-    "of a front-row fashion client, styled with editorial discipline. Build "
-    "the palette as a hierarchy: one luminous hero colour (rich, refined, "
-    "never neon), one supporting accent such as champagne metal or a tonal "
-    "step of the hero, and quiet neutral foundations like ivory, soft taupe, "
-    "or charcoal, all named explicitly. Dress the subject in one precisely "
-    "tailored, opaque hero garment with sculpted structure: a defined waist, "
-    "a clean modern neckline - asymmetric or architectural - and a "
-    "streamlined line that follows the figure without restricting movement. "
-    "Use a substantial fabric with real behaviour - matte crepe with subtle "
-    "stretch, silk mikado, double-faced wool, or fine gabardine - with crisp "
-    "internal structure so the silhouette reads smooth and refined from "
-    "shoulder to hem. Add exactly ONE statement detail, such as a slim "
-    "sculptural metal waist clasp or a single architectural seam, and keep "
-    "jewellery restrained to small matching stud earrings and a delicate "
-    "ring. Finish with pointed leather pumps in the spirit of a classic "
-    "100mm dorsay stiletto - an unmistakable killer heel, immaculately "
-    "polished. Maintain flawless seams, realistic fabric tension, "
-    "understated luxury, and confident photographic polish. The outfit must "
-    "be opaque, properly fitted, and appropriate for public or professional "
-    "wear: no nudity, lingerie, sheer fabric, bare midriff, or extreme "
-    "neckline. The subject carries nothing at all: both hands stay empty, "
-    "with no bag, handbag, clutch, purse, tote, backpack, briefcase, phone, "
-    "cup, or umbrella held in either hand and nothing slung over a shoulder "
-    "or arm. Preserve the person's identity, any eyeglasses worn in the "
-    "reference, groomed hair, natural proportions, real skin texture, and "
-    "apparent age."
+    "Create a photorealistic couture-level full-body wardrobe with tailored "
+    "authority, editorial sensuality, and zero fast-fashion noise. Read only "
+    "the subject's visible feminine, masculine, or androgynous presentation; "
+    "do not claim a gender identity and never force a gendered shoe or beauty "
+    "code when the presentation is uncertain. Use exactly one hero colour from fuchsia, "
+    "scarlet, coral, ultramarine, or camel, plus one restrained accent and "
+    "quiet black, charcoal, taupe, or chocolate neutrals. Never use cobalt. "
+    "Emerald belongs to the broader house palette but must become ultramarine "
+    "on this cutout plate because green damages alpha extraction. Use opaque, "
+    "substantial fabric with believable behaviour and crisp seam "
+    "tension. Keep the silhouette structured, sensual, and polished: no bare "
+    "midriff, sheer fabric, or extreme plunging neckline. Keep accessories "
+    "minimal and understated, never ornate, layered, stacked, or visually busy. "
+    "Preserve the existing hairstyle with a sleek finish, luminous real skin "
+    "texture, defined brows, and presentation-appropriate grooming. Keep "
+    "everything opaque and suitable "
+    "for public view: no nudity, lingerie, or exposed intimate areas. Both hands "
+    "stay empty and clearly visible; nothing is held, carried, or slung on the "
+    "body."
 )
 
 
@@ -71,8 +75,11 @@ def _direction(options):
     rides after the prompt, never instead of it, and it goes last so it
     reads as the final word.
     """
+    from . import wardrobe
+
     notes = _clean(options.get("notes"), 600)
-    custom = _clean(options.get("prompt"), 2400)
+    custom = wardrobe.migrate_legacy_prompt(
+        _clean(options.get("prompt"), 4000), maximum=4000)
     if custom:
         return f"{custom} MUST KEEP: {notes}" if notes else custom
     legacy = []
@@ -83,11 +90,61 @@ def _direction(options):
         legacy.append(f"MUST KEEP: {notes}")
     base = " ".join(legacy)
     if not base:
-        return DEFAULT_BODY_PROMPT
+        return wardrobe.migrate_legacy_prompt(
+            DEFAULT_BODY_PROMPT, ensure_rule=True)
     if not _clean(options.get("outfit"), 500):
         # A note alone still wants the house prompt behind it.
-        return f"{DEFAULT_BODY_PROMPT} {base}"
+        default = wardrobe.migrate_legacy_prompt(
+            DEFAULT_BODY_PROMPT, ensure_rule=True)
+        return f"{default} {base}"
     return base
+
+
+def public_body_metadata(metadata):
+    """Read-only policy projection for body status/API responses.
+
+    Existing body projects may contain a prompt written by the retired gold and
+    statement-jewellery template.  Return a shallow structural copy whose prompt
+    is migrated for display/regeneration; never rewrite the authoring manifest.
+    """
+    from . import wardrobe
+
+    if not isinstance(metadata, dict):
+        return metadata
+    projected = dict(metadata)
+    options = metadata.get("options")
+    if not isinstance(options, dict):
+        return projected
+    projected_options = dict(options)
+    direction = _direction(options)
+    projected_options["prompt"] = wardrobe.migrate_legacy_prompt(
+        direction, stored=True, ensure_rule=True, maximum=4000)
+    projected["options"] = projected_options
+    return projected
+
+
+def _presentation_context(options, style):
+    """One explicit presentation branch for the final provider plate.
+
+    A previous generic wrapper listed both 90 mm pumps and masculine no-heels
+    language in every request. Even when the tailored portrait brief was right,
+    that mixed instruction left the image model free to pick the wrong shoe.
+    """
+    from . import wardrobe
+
+    presentation = wardrobe._normalise_presentation(
+        options.get("presentation") or "androgynous")
+    medium = _clean(options.get("medium"), 40).lower()
+    if not medium:
+        medium = {
+            "photorealistic": "photograph",
+            "editorial": "photograph",
+            "illustrated": "illustration",
+            "anime": "anime",
+            "soft-3d": "3d render",
+        }[style]
+    return presentation, medium, wardrobe._presentation_rule(
+        presentation, medium)
 
 
 def image_provider_selection():
@@ -110,12 +167,148 @@ def default_video_provider():
     return public
 
 
+def _utf8_prefix(value, maximum):
+    """Return a readable prefix that occupies no more than ``maximum`` bytes."""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum:
+        return value
+    if maximum < 4:
+        return ""
+    clipped = encoded[:maximum - 3].decode("utf-8", errors="ignore").rstrip()
+    # Avoid cutting an English word when doing so still keeps most of the
+    # available art direction. CJK text has no spaces and remains character-safe.
+    if " " in clipped:
+        whole_words = clipped.rsplit(" ", 1)[0].rstrip(" ,;:-")
+        if len(whole_words.encode("utf-8")) >= maximum // 2:
+            clipped = whole_words
+    return clipped.rstrip(" ,;:-") + "…"
+
+
+def _fit_direction_bytes(direction, maximum):
+    """Fit editable prose while retaining a trailing owner MUST KEEP note."""
+    if len(direction.encode("utf-8")) <= maximum:
+        return direction
+    marker = " MUST KEEP: "
+    if marker not in direction:
+        return _utf8_prefix(direction, maximum)
+    main, note = direction.rsplit(marker, 1)
+    tail = marker + note
+    # Owner notes are deliberately bounded upstream. Keep the complete note
+    # whenever possible and trim the generative prose ahead of it.
+    if len(tail.encode("utf-8")) >= maximum - 64:
+        tail = marker + _utf8_prefix(note, max(32, maximum // 3))
+    main_budget = maximum - len(tail.encode("utf-8"))
+    return _utf8_prefix(main, main_budget).rstrip() + tail
+
+
+def _fit_full_body_prompt(prompt):
+    marker = "EDITABLE ART DIRECTION — "
+    start = prompt.index(marker) + len(marker)
+    end = prompt.index("\n\n", start)
+    fixed_bytes = len((prompt[:start] + prompt[end:]).encode("utf-8"))
+    available = FULL_BODY_PROMPT_MAX_BYTES - fixed_bytes
+    if available < 256:
+        raise RuntimeError("the fixed full-body safety prompt exceeds its provider budget")
+    direction = _fit_direction_bytes(prompt[start:end], available)
+    fitted = prompt[:start] + direction + prompt[end:]
+    if len(fitted.encode("utf-8")) > FULL_BODY_PROMPT_MAX_BYTES:
+        raise RuntimeError("the full-body prompt could not be fitted safely")
+    return fitted
+
+
+def _head_scale_is_safe(scale):
+    return (np.isfinite(scale)
+            and _MIN_GENERATED_HEAD_SCALE <= scale <= _MAX_GENERATED_HEAD_SCALE)
+
+
+def _head_alignment_failure(scale, face_bounds, body_shape, residual):
+    """Return a precise reason when a generated head cannot be face-locked.
+
+    The affine scale is relative to the normalized canonical portrait, so it
+    is not a reliable measure of rendered head quality by itself.  Landmark
+    fitting can move a few thousandths between otherwise identical runs while
+    the destination face remains crisp and normally proportioned.  Keep a
+    narrow hard transform floor, then require Cleo-calibrated destination
+    resolution/framing and a clean landmark fit.
+    """
+    if not _head_scale_is_safe(scale):
+        return (
+            f"generated head transform is unsafe ({scale:.3f}x; expected "
+            f"{_MIN_GENERATED_HEAD_SCALE:.3f}x to "
+            f"{_MAX_GENERATED_HEAD_SCALE:.3f}x)")
+
+    body_height, body_width = body_shape[:2]
+    _x, _y, face_width, face_height = face_bounds
+    required_width = max(
+        _MIN_GENERATED_FACE_WIDTH_PX,
+        int(round(body_width * _MIN_GENERATED_FACE_WIDTH_RATIO)),
+    )
+    required_height = max(
+        _MIN_GENERATED_FACE_HEIGHT_PX,
+        int(round(body_height * _MIN_GENERATED_FACE_HEIGHT_RATIO)),
+    )
+    if face_width < required_width or face_height < required_height:
+        return (
+            "generated head is too small for a crisp identity lock "
+            f"({face_width}x{face_height}px; need at least "
+            f"{required_width}x{required_height}px)")
+
+    median_residual = float(np.median(residual))
+    max_residual = float(np.max(residual))
+    median_limit = max(5.0, face_width * 0.075)
+    max_limit = max(14.0, face_width * 0.20)
+    if (not np.isfinite(median_residual)
+            or not np.isfinite(max_residual)
+            or median_residual > median_limit
+            or max_residual > max_limit):
+        return (
+            "generated face alignment is unstable "
+            f"(median {median_residual:.1f}px, max {max_residual:.1f}px)")
+    return None
+
+
 def _prompt(options, view="front"):
     if view not in BODY_VIEWS:
         raise ValueError(f"unknown full-body view: {view}")
     style = options.get("style") if options.get("style") in STYLES else "photorealistic"
     pose = options.get("pose") if options.get("pose") in POSES else "relaxed"
     direction = _direction(options)
+    presentation, medium, presentation_rule = _presentation_context(
+        options, style)
+    from . import wardrobe
+    # Cached house prompts carry the exact fixed accessory clause. Remove that
+    # known negative rule before checking the owner's/model's editable prose for
+    # contradictory positive assignments.
+    editable_direction = direction.replace(wardrobe.ACCESSORY_RULE, " ").replace(
+        presentation_rule, " ")
+    if presentation != "feminine" and wardrobe._assigns_feminine_heels(
+            editable_direction):
+        raise ValueError(
+            "the full-body direction assigns feminine heels to a "
+            "non-feminine presentation")
+    if wardrobe._assigns_gold(editable_direction):
+        raise ValueError("the full-body direction assigns forbidden gold styling")
+    if wardrobe._assigns_excessive_accessories(editable_direction):
+        raise ValueError("the full-body direction assigns excessive accessories")
+    # Wardrobe's cached brief ends with deterministic house and rig clauses.
+    # This plate wrapper carries those clauses itself, so remove their exact
+    # duplicates before adding the view-specific identity/turnaround contract.
+    stylised = medium in {"game art", "anime", "illustration", "3d render"}
+    repeated_rules = [
+        presentation_rule, wardrobe.ACCESSORY_RULE, wardrobe.STRUCTURAL_RULE,
+    ]
+    house_section = ""
+    if not stylised:
+        repeated_rules += [wardrobe.COLOR_RULE, wardrobe.LUXURY_FINISH_RULE]
+        house_section = (
+            "\n\nHOUSE STYLE — " + wardrobe.COLOR_RULE + " "
+            + wardrobe.LUXURY_FINISH_RULE)
+    for rule in repeated_rules:
+        direction = direction.replace(rule, " ")
+    # ``_direction`` already bounds custom prose and the owner note separately.
+    # Leave enough room here for both; the UTF-8 fitter below owns the final
+    # provider budget and knows how to retain the trailing MUST KEEP clause.
+    direction = _clean(direction, 4800) or DEFAULT_BODY_PROMPT
     style_text = {
         "photorealistic": "Photorealistic editorial portrait photography with natural skin texture",
         "editorial": "High-fashion editorial portrait photography with restrained luxury styling",
@@ -153,7 +346,7 @@ def _prompt(options, view="front"):
             "accessories, and garment length."
         ),
     }[view]
-    return f"""Create one vertical 3:4 full-body {view}-view character plate of the exact same adult person.
+    prompt = f"""Create one vertical 3:4 full-body {view}-view character plate of the exact same adult person.
 
 TURNAROUND CONTRACT — this is one member of a matched FRONT / RIGHT-SIDE / BACK full-body set. Return exactly one complete figure for this {view} plate, never a triptych, contact sheet, split screen, duplicate person, inset, or labeled diagram. Treat the camera as rotating around one stationary person: preserve the same posture, shoulder level, arm placement, hand state, leg spacing, weight distribution, outfit, body scale, and camera height across all three plates.
 
@@ -163,19 +356,28 @@ VIEW — {view_text}
 
 COMPOSITION — show the complete figure from the top of the hair through both feet with 7% clear margin around the silhouette. Camera at waist height, long portrait lens, minimal perspective distortion. Use a {pose_text}. Both hands, both legs, and all footwear must be complete and anatomically correct; no crop, no props, no furniture, no text.
 
+PROPORTION TARGET — give the adult figure a believable supermodel-calibre editorial silhouette: tall, poised, and sculpted, with naturally long legs and a balanced torso-to-leg ratio. Long must never become exaggerated. Reject stretched femurs or shins, a tiny torso, pinched waist, warped hips, knees, or ankles, impossible height, or fashion-illustration anatomy. Preserve any body characteristics clearly visible in the reference and keep adult anatomy realistic.
+
 CARRY NOTHING — both hands are completely empty and clearly visible. Do NOT place a bag, handbag, clutch, purse, tote, shopping bag, backpack, briefcase, portfolio, folder, book, paper, phone, cup, glass, umbrella, weapon, staff, or any other object in either hand, and do NOT sling a bag, strap, or pouch over a shoulder, hook one on an elbow, or wear one across the body. Nothing is held, carried, hooked, or leaned against the figure in any plate of the turnaround.
 
-EDITABLE ART DIRECTION — {direction}
+NO GOLD AND MINIMAL ACCESSORIES — {wardrobe.ACCESSORY_RULE}
 
-DECENCY FLOOR — regardless of the editable direction, use tasteful opaque clothing suitable for an adult in public. No nudity, lingerie, transparent fabric, exposed intimate areas, or sexually provocative styling. The result must read as proper, decent, and intentionally fashionable.
+EDITABLE ART DIRECTION — {direction}{house_section}
+
+PRESENTATION AND FOOTWEAR — this plate uses only the {presentation} branch inferred from the reference; it is visible styling, not a claim about gender identity. {presentation_rule}
+
+DECENCY FLOOR — regardless of the editable direction, use tasteful opaque clothing suitable for an adult in public. No nudity, lingerie, bare midriff, sheer or transparent fabric, exposed intimate areas, extreme plunging neckline, or sexually provocative styling. The result must read as structured, sensual, polished, proper, and intentionally fashionable.
 
 STYLE — {style_text}. Match the reference head's lighting direction, color temperature, realism, and photographic texture. Avoid airbrushed skin, plastic fabric, exaggerated anatomy, or game-interface styling.
+
+NO COBALT — cobalt is forbidden in clothing, footwear, jewellery, backdrop, and lighting. If the editable art direction requests cobalt, substitute ultramarine and keep the rest of the direction unchanged.
 
 NO GREEN — ban the color green everywhere in the image: no green clothing, garment parts, or accessories, no green props or jewelry stones, no green background, backdrop tint, or green cast in the lighting. If the editable art direction asks for green, substitute a different color and keep everything else of that direction. Downstream alpha keying misreads green as background, so any green in the plate corrupts the cutout.
 
 NO WHITE WARDROBE — ban white and off-white in everything worn: no white or off-white tops, shirts, dresses, trousers, skirts, jackets, or outerwear, and absolutely no white shoes, sneakers, heels, or soles. The figure is cut out from a light studio backdrop, and white wardrobe dissolves into it and shreds the silhouette. If the editable art direction asks for white, substitute a clearly non-white, non-green color and keep everything else of that direction.
 
 BACKGROUND — simple clean studio backdrop with strong person/background separation, never green or green-tinted. The application will remove the background locally, so preserve fine hair edges and do not add smoke, veils, loose particles, or cast shadows behind the figure."""
+    return _fit_full_body_prompt(prompt)
 
 
 def _detect(image, label):
@@ -208,11 +410,13 @@ def _face_transform(keyframe, body_image):
         raise RuntimeError("could not align the original face to the generated body")
     projected = cv2.transform(source[None, :, :], transform)[0]
     residual = np.linalg.norm(projected - target, axis=1)
-    scale = float(np.sqrt(transform[0, 0] ** 2 + transform[0, 1] ** 2))
-    if not 0.18 <= scale <= 1.8:
-        raise RuntimeError(f"generated head scale is unsafe ({scale:.2f}x)")
     oval = body_landmarks[face.FACE_OVAL]
     x, y, width, height = cv2.boundingRect(np.round(oval).astype(np.int32))
+    scale = float(np.sqrt(transform[0, 0] ** 2 + transform[0, 1] ** 2))
+    failure = _head_alignment_failure(
+        scale, (x, y, width, height), body_image.shape, residual)
+    if failure:
+        raise RuntimeError(failure)
     return transform, {
         "residual_median_px": round(float(np.median(residual)), 3),
         "residual_max_px": round(float(np.max(residual)), 3),
@@ -347,7 +551,110 @@ def _cached_view_source(cache_dir, view):
     ), None)
 
 
-def build(avatar_dir, options, log=print, progress=None):
+def supports_xai_edit(provider):
+    """Whether this public provider descriptor may edit an existing body."""
+    return bool(
+        isinstance(provider, dict)
+        and provider.get("name") == XAI_EDIT_PROVIDER
+        and provider.get("model") == XAI_EDIT_MODEL
+    )
+
+
+def _body_metadata(avatar_dir):
+    path = os.path.join(avatar_dir, "body", "body.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RuntimeError("generate a complete full-body set before editing it") from error
+    if not isinstance(metadata, dict):
+        raise RuntimeError("generate a complete full-body set before editing it")
+    return metadata
+
+
+def _body_source(avatar_dir, metadata, view):
+    body_dir = os.path.join(avatar_dir, "body")
+    body_root = os.path.realpath(body_dir)
+    record = (metadata.get("views") or {}).get(view) or {}
+    name = os.path.basename(str(record.get("source") or ""))
+    candidate = os.path.join(body_dir, name) if name else ""
+    if (candidate and os.path.isfile(candidate)
+            and not os.path.islink(candidate)
+            and os.path.commonpath((body_root, os.path.realpath(candidate))) == body_root):
+        return candidate
+    prefix = f"source-{view}."
+    candidates = [
+        os.path.join(body_dir, item)
+        for item in sorted(os.listdir(body_dir))
+        if (item.startswith(prefix)
+            and os.path.isfile(os.path.join(body_dir, item))
+            and not os.path.islink(os.path.join(body_dir, item))
+            and os.path.commonpath((
+                body_root, os.path.realpath(os.path.join(body_dir, item)))) == body_root)
+    ] if os.path.isdir(body_dir) else []
+    if len(candidates) == 1:
+        return candidates[0]
+    raise RuntimeError(f"the current {view} source plate is missing")
+
+
+def _edit_instruction(value):
+    instruction = _clean(value, 600)
+    if len(instruction) < 4:
+        raise ValueError("describe the full-body change in at least four characters")
+    from . import wardrobe
+    if wardrobe._assigns_gold(instruction):
+        raise ValueError("gold styling is not allowed in a full-body edit")
+    if wardrobe._assigns_excessive_accessories(instruction):
+        raise ValueError("excessive accessories are not allowed in a full-body edit")
+    return instruction
+
+
+def _edit_prompt(instruction, view):
+    """A bounded, view-aware prompt for one member of a matched edit set."""
+    if view not in BODY_VIEWS:
+        raise ValueError(f"unknown full-body view: {view}")
+    from . import wardrobe
+    reference_contract = {
+        "front": (
+            "Reference 1 is the approved FRONT body plate. Reference 2 is the "
+            "canonical identity head."
+        ),
+        "side": (
+            "Reference 1 is the approved RIGHT-SIDE body plate. Reference 2 is "
+            "the newly edited FRONT plate and is the authority for the requested "
+            "wardrobe change. Reference 3 is the canonical identity head."
+        ),
+        "back": (
+            "Reference 1 is the approved BACK body plate. Reference 2 is the "
+            "newly edited FRONT plate and is the authority for the requested "
+            "wardrobe change. Reference 3 is the canonical identity head."
+        ),
+    }[view]
+    view_contract = {
+        "front": "Keep a true straight-on front view.",
+        "side": "Keep a true 90-degree right-side profile.",
+        "back": "Keep a true back view with the face completely out of view.",
+    }[view]
+    return f"""Precisely edit one existing full-body turnaround plate.
+
+REFERENCES — {reference_contract}
+
+REQUESTED CHANGE — {instruction}
+
+EDIT CONTRACT — Apply only the requested visual change, then preserve everything else from Reference 1: the exact adult person, identity, apparent age, skin tone, hairstyle, body proportions, naturally long but realistic legs, pose, hand placement, foot placement, garment fit, materials, lighting, camera height, 3:4 canvas, full-body framing, and clean studio backdrop. {view_contract} Return exactly one person and one complete figure with both hands and both feet visible and clear silhouette margins. Do not crop, zoom, rotate, add text, add props, or redesign the face. Keep the mouth neutral and closed. The three plates must remain one coherent matched turnaround.
+
+IDENTITY LOCK — Use the identity-head reference only to preserve identity and hair. Never paste a floating portrait, enlarge the head, alter facial anatomy, beautify, de-age, or change eyewear.
+
+LOCAL CUTOUT CONTRACT — Keep the backdrop simple and high-contrast for local background removal. No green or green cast anywhere. No white or off-white wardrobe or footwear. Never use cobalt; substitute ultramarine. Preserve fine hair edges without smoke, veils, particles, shadows, furniture, or scenery.
+
+GOLD AND ACCESSORIES — {wardrobe.ACCESSORY_RULE}
+
+DECENCY AND RIG — Opaque public attire only: no nudity, lingerie, bare midriff, sheer fabric, exposed intimate areas, or extreme plunging neckline. Both hands stay empty. Nothing may be held, carried, slung, or hooked on the body."""
+
+
+def _install_sources(avatar_dir, sources, provider, options, log=print,
+                     progress=None, edit_receipt=None, keep_previous=False):
+    """Run local cutout/identity QA and atomically install three raw plates."""
     keyframe_path = os.path.join(avatar_dir, "keyframe.png")
     keyframe = cv2.imread(keyframe_path)
     if keyframe is None:
@@ -355,61 +662,12 @@ def build(avatar_dir, options, log=print, progress=None):
     identity_reference = _identity_reference(avatar_dir)
     if not os.path.isfile(identity_reference):
         raise RuntimeError("avatar identity head is missing")
-    provider_config, provider = image_provider_selection()
-    prompts = {view: _prompt(options, view=view) for view in BODY_VIEWS}
-    with open(identity_reference, "rb") as handle:
-        identity_digest = hashlib.sha256(handle.read()).hexdigest()
-    signature = hashlib.sha256(
-        (provider["name"] + "\n" + str(provider.get("model")) + "\n" +
-         identity_digest + "\n" + "\n--- VIEW ---\n".join(
-             prompts[view] for view in BODY_VIEWS)).encode("utf-8")
-    ).hexdigest()
-    cache_dir = os.path.join(avatar_dir, ".body-cache")
-    cache_signature = os.path.join(cache_dir, "signature")
-    cache_matches = False
-    if os.path.isfile(cache_signature):
-        with open(cache_signature) as handle:
-            cache_matches = handle.read().strip() == signature
-    if not cache_matches:
-        shutil.rmtree(cache_dir, ignore_errors=True)
-        os.makedirs(cache_dir, mode=0o700)
-        with open(cache_signature, "w") as handle:
-            handle.write(signature)
-    cached = {
-        view: _cached_view_source(cache_dir, view)
-        for view in BODY_VIEWS
-    }
-    stage = tempfile.mkdtemp(prefix=".body-stage-", dir=avatar_dir)
-    raw_dir = os.path.join(stage, "raw")
-    os.makedirs(raw_dir)
-    try:
-        log(f"using OpenClam image provider: {provider['title']}")
-        sources = {}
-        for view_index, view in enumerate(BODY_VIEWS):
-            generated = cached[view]
-            if generated:
-                log(f"reusing the generated {view} body plate after a local QA retry")
-            else:
-                _emit(
-                    progress, "generation", .14 + view_index * .18,
-                    f"Generating {view} full-body view")
-                log(f"generating {view} full body from the canonical HD head")
-                references = [identity_reference]
-                if view != "front":
-                    references.append(sources["front"])
-                provider_dir = os.path.join(raw_dir, view)
-                os.makedirs(provider_dir, mode=0o700)
-                generated = media_gen.generate_image_edit_sync(
-                    prompts[view], references, provider_config,
-                    aspect_ratio="3:4", quality="high",
-                    output_dir=provider_dir,
-                    file_name=f"body-source-{view}")
-                extension = os.path.splitext(generated)[1].lower() or ".png"
-                cached_path = os.path.join(cache_dir, f"source-{view}{extension}")
-                shutil.copy2(generated, cached_path)
-                generated = cached_path
-            sources[view] = generated
+    for view in BODY_VIEWS:
+        if not os.path.isfile(str(sources.get(view) or "")):
+            raise RuntimeError(f"the generated {view} body source is missing")
 
+    stage = tempfile.mkdtemp(prefix=".body-stage-", dir=avatar_dir)
+    try:
         staged_sources = {}
         for view in BODY_VIEWS:
             extension = os.path.splitext(sources[view])[1].lower() or ".png"
@@ -489,6 +747,8 @@ def build(avatar_dir, options, log=print, progress=None):
                 "walk_source": view_metadata["side"]["source"],
                 "idle_view": "front",
                 "idle_source": view_metadata["front"]["source"],
+                "move_view": "front",
+                "move_source": view_metadata["front"]["source"],
             },
             "provider": provider,
             "options": {
@@ -500,6 +760,8 @@ def build(avatar_dir, options, log=print, progress=None):
             },
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
         }
+        if edit_receipt:
+            metadata["edit"] = dict(edit_receipt)
         with open(os.path.join(stage, "body.json"), "w") as handle:
             json.dump(metadata, handle, indent=1)
 
@@ -509,14 +771,165 @@ def build(avatar_dir, options, log=print, progress=None):
             shutil.rmtree(backup)
         if os.path.exists(destination):
             os.replace(destination, backup)
-        os.replace(stage, destination)
-        stage = None
-        shutil.rmtree(backup, ignore_errors=True)
-        shutil.rmtree(cache_dir, ignore_errors=True)
+        try:
+            os.replace(stage, destination)
+            stage = None
+        except Exception:
+            if not os.path.exists(destination) and os.path.exists(backup):
+                os.replace(backup, destination)
+            raise
+        if not keep_previous:
+            shutil.rmtree(backup, ignore_errors=True)
         return metadata
     finally:
         if stage and os.path.exists(stage):
             shutil.rmtree(stage, ignore_errors=True)
+
+
+def build(avatar_dir, options, log=print, progress=None):
+    identity_reference = _identity_reference(avatar_dir)
+    if not os.path.isfile(identity_reference):
+        raise RuntimeError("avatar identity head is missing")
+    provider_config, provider = image_provider_selection()
+    prompts = {view: _prompt(options, view=view) for view in BODY_VIEWS}
+    with open(identity_reference, "rb") as handle:
+        identity_digest = hashlib.sha256(handle.read()).hexdigest()
+    signature = hashlib.sha256(
+        (provider["name"] + "\n" + str(provider.get("model")) + "\n" +
+         identity_digest + "\n" + "\n--- VIEW ---\n".join(
+             prompts[view] for view in BODY_VIEWS)).encode("utf-8")
+    ).hexdigest()
+    cache_dir = os.path.join(avatar_dir, ".body-cache")
+    cache_signature = os.path.join(cache_dir, "signature")
+    cache_matches = False
+    if os.path.isfile(cache_signature):
+        with open(cache_signature) as handle:
+            cache_matches = handle.read().strip() == signature
+    if not cache_matches:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        os.makedirs(cache_dir, mode=0o700)
+        with open(cache_signature, "w") as handle:
+            handle.write(signature)
+    cached = {
+        view: _cached_view_source(cache_dir, view)
+        for view in BODY_VIEWS
+    }
+    provider_stage = tempfile.mkdtemp(prefix=".body-provider-", dir=avatar_dir)
+    try:
+        log(f"using OpenClam image provider: {provider['title']}")
+        sources = {}
+        for view_index, view in enumerate(BODY_VIEWS):
+            generated = cached[view]
+            if generated:
+                log(f"reusing the generated {view} body plate after a local QA retry")
+            else:
+                _emit(
+                    progress, "generation", .14 + view_index * .18,
+                    f"Generating {view} full-body view")
+                log(f"generating {view} full body from the canonical HD head")
+                references = [identity_reference]
+                if view != "front":
+                    references.append(sources["front"])
+                provider_dir = os.path.join(provider_stage, view)
+                os.makedirs(provider_dir, mode=0o700)
+                generated = media_gen.generate_image_edit_sync(
+                    prompts[view], references, provider_config,
+                    aspect_ratio="3:4", quality="high",
+                    output_dir=provider_dir,
+                    file_name=f"body-source-{view}")
+                extension = os.path.splitext(generated)[1].lower() or ".png"
+                cached_path = os.path.join(cache_dir, f"source-{view}{extension}")
+                shutil.copy2(generated, cached_path)
+                generated = cached_path
+            sources[view] = generated
+        metadata = _install_sources(
+            avatar_dir, sources, provider, options, log=log, progress=progress)
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        return metadata
+    finally:
+        shutil.rmtree(provider_stage, ignore_errors=True)
+
+
+def edit(avatar_dir, instruction, log=print, progress=None):
+    """Edit a matched three-view set through xAI Image 2.0 only.
+
+    The provider receives the current local sources and identity head. Canonical
+    files are replaced only after all three provider results pass the same local
+    cutout and face-lock gates as a newly generated body.
+    """
+    instruction = _edit_instruction(instruction)
+    provider_config, provider = image_provider_selection()
+    if not supports_xai_edit(provider):
+        raise RuntimeError(
+            "Full-body editing requires xAI Grok Imagine Image 2.0 as the "
+            "selected Image provider")
+    current = _body_metadata(avatar_dir)
+    current_sources = {
+        view: _body_source(avatar_dir, current, view)
+        for view in BODY_VIEWS
+    }
+    identity_reference = _identity_reference(avatar_dir)
+    if not os.path.isfile(identity_reference):
+        raise RuntimeError("avatar identity head is missing")
+    provider_stage = tempfile.mkdtemp(prefix=".body-edit-provider-", dir=avatar_dir)
+    edited = {}
+    try:
+        log(f"using {provider['title']} to edit the matched full-body set")
+        for view_index, view in enumerate(BODY_VIEWS):
+            _emit(
+                progress, "editing", .10 + view_index * .18,
+                f"Editing {view} full-body view")
+            references = [current_sources[view]]
+            if view != "front":
+                references.append(edited["front"])
+            references.append(identity_reference)
+            output_dir = os.path.join(provider_stage, view)
+            os.makedirs(output_dir, mode=0o700)
+            edited[view] = media_gen.generate_image_edit_sync(
+                _edit_prompt(instruction, view), references, provider_config,
+                aspect_ratio="3:4", quality="high", output_dir=output_dir,
+                file_name=f"body-edit-{view}")
+        options = dict(current.get("options") or {})
+        body_path = os.path.join(avatar_dir, "body", "body.png")
+        with open(body_path, "rb") as handle:
+            source_body_sha = hashlib.sha256(handle.read()).hexdigest()
+        receipt = {
+            "provider": provider,
+            "scope": "front+side+back",
+            "instruction_sha256": hashlib.sha256(
+                instruction.encode("utf-8")).hexdigest(),
+            "source_body_sha256": source_body_sha,
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        return _install_sources(
+            avatar_dir, edited, provider, options, log=log, progress=progress,
+            edit_receipt=receipt, keep_previous=True)
+    finally:
+        shutil.rmtree(provider_stage, ignore_errors=True)
+
+
+def commit_previous(avatar_dir):
+    shutil.rmtree(os.path.join(avatar_dir, "body.previous"), ignore_errors=True)
+
+
+def restore_previous(avatar_dir):
+    """Restore the pre-edit body after a manifest/runtime transaction fails."""
+    destination = os.path.join(avatar_dir, "body")
+    previous = destination + ".previous"
+    if not os.path.isdir(previous):
+        return False
+    failed = destination + ".failed-edit"
+    shutil.rmtree(failed, ignore_errors=True)
+    if os.path.exists(destination):
+        os.replace(destination, failed)
+    try:
+        os.replace(previous, destination)
+    except Exception:
+        if not os.path.exists(destination) and os.path.exists(failed):
+            os.replace(failed, destination)
+        raise
+    shutil.rmtree(failed, ignore_errors=True)
+    return True
 
 
 def remove(avatar_dir):

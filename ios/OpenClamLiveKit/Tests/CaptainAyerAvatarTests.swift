@@ -29,6 +29,64 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertEqual(planner.timeline(for: "").cues, [.init(offset: 0, viseme: .silence)])
     }
 
+    func testUnpunctuatedTimelineCrossfadesFromSilenceAtOnsetAtSixtyHertz() {
+        let timeline = CaptainAyerLipSyncPlanner().timeline(
+            for: "Photo",
+            duration: 1
+        )
+
+        let onset = timeline.renderState(at: 0)
+        XCTAssertEqual(onset.previous, .silence)
+        XCTAssertEqual(onset.current, .labiodental)
+        XCTAssertEqual(onset.blend, 0, accuracy: 0.0001)
+
+        let firstDisplayTick = timeline.renderState(at: 1.0 / 60.0)
+        XCTAssertEqual(firstDisplayTick.previous, .silence)
+        XCTAssertEqual(firstDisplayTick.current, onset.current)
+        XCTAssertGreaterThan(firstDisplayTick.blend, 0)
+        XCTAssertLessThan(
+            firstDisplayTick.blend,
+            0.38,
+            "Even the shortest opening fade must have multiple 60 Hz frames"
+        )
+    }
+
+    func testUnpunctuatedTimelineClosesContinuouslyAtSixtyHertz() throws {
+        let timeline = CaptainAyerLipSyncPlanner().timeline(
+            for: "Hello",
+            duration: 1
+        )
+        let closingCue = try XCTUnwrap(timeline.cues.last)
+        let precedingCue = try XCTUnwrap(timeline.cues.dropLast().last)
+        let expectedClosingOffset = max(
+            precedingCue.offset,
+            timeline.duration - CaptainAyerLipSyncTimeline.fadeDuration(
+                from: precedingCue.viseme,
+                to: .silence
+            )
+        )
+
+        XCTAssertEqual(closingCue.viseme, .silence)
+        XCTAssertEqual(closingCue.offset, expectedClosingOffset, accuracy: 0.0001)
+
+        let lastDisplayTick = timeline.renderState(
+            at: timeline.duration - 1.0 / 60.0
+        )
+        XCTAssertEqual(lastDisplayTick.previous, precedingCue.viseme)
+        XCTAssertEqual(lastDisplayTick.current, .silence)
+        XCTAssertGreaterThan(lastDisplayTick.blend, 0.75)
+        XCTAssertLessThanOrEqual(
+            1 - lastDisplayTick.blend,
+            0.23,
+            "The endpoint must be no larger than one normal 60 Hz fade step"
+        )
+
+        let limit = timeline.renderState(at: timeline.duration - 0.000_001)
+        XCTAssertEqual(limit.current, .silence)
+        XCTAssertGreaterThan(limit.blend, 0.999)
+        XCTAssertEqual(timeline.renderState(at: timeline.duration), .idle)
+    }
+
     func testUTF16ProgressHandlesEmojiBeforeSpeechBoundary() {
         let planner = CaptainAyerLipSyncPlanner()
         let text = "🙂 hello world"
@@ -110,19 +168,15 @@ final class CaptainAyerAvatarTests: XCTestCase {
     }
 
     @MainActor
-    func testEveryPublicGuideFrameIsBundledAndDecodable() throws {
-        let guide = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
-        let roles: [OpenClamAvatarAssetRole] = [
-            .thumbnail,
-            .body,
-            .headMask,
-        ] + OpenClamAvatarViseme.allCases.map(OpenClamAvatarAssetRole.viseme)
+    func testEveryCaptainAyerFrameIsBundledAndDecodable() {
+        let names = [
+            "CaptainAyerBody",
+            "CaptainAyerHeadMask",
+            "CaptainAyerKeyframe",
+        ] + CaptainAyerViseme.allCases.map(\.assetName)
 
-        for role in roles {
-            XCTAssertNotNil(
-                OpenClamAvatarAssetStore.shared.image(for: guide, role: role),
-                "Missing public guide asset: \(role)"
-            )
+        for name in names {
+            XCTAssertNotNil(UIImage(named: name), "Missing avatar asset: \(name)")
         }
     }
 
@@ -144,6 +198,166 @@ final class CaptainAyerAvatarTests: XCTestCase {
             accuracy: 0.0001
         )
         XCTAssertGreaterThan(CaptainAyerOverlayTuning.minimumOpacity, 0)
+    }
+
+    func testStageDragIntentGivesVerticalOpacityExclusivePrecedence() {
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 2, height: 6),
+                supportsOpacity: true
+            ),
+            .pending
+        )
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 28, height: 5),
+                supportsOpacity: true
+            ),
+            .gaze
+        )
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 4, height: 19),
+                supportsOpacity: true
+            ),
+            .opacity
+        )
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 4, height: 30),
+                supportsOpacity: false
+            ),
+            .gaze
+        )
+        XCTAssertNotEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 25, height: 20),
+                supportsOpacity: true
+            ),
+            .opacity
+        )
+
+        var vertical = CaptainAyerAvatarDragSession()
+        vertical.update(
+            translation: CGSize(width: 2, height: 6),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(vertical.intent, .pending)
+        vertical.update(
+            translation: CGSize(width: 2, height: 12),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(vertical.intent, .pending)
+        vertical.update(
+            translation: CGSize(width: 2, height: 32),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(vertical.intent, .opacity)
+        XCTAssertEqual(vertical.completion, .opacity)
+        XCTAssertNotEqual(vertical.completion, .tap)
+        XCTAssertNotEqual(vertical.completion, .gaze)
+
+        var horizontal = CaptainAyerAvatarDragSession()
+        horizontal.update(
+            translation: CGSize(width: 32, height: 2),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(horizontal.intent, .gaze)
+        XCTAssertEqual(horizontal.completion, .gaze)
+
+        var shortTouch = CaptainAyerAvatarDragSession()
+        shortTouch.update(
+            translation: CGSize(width: 4, height: 4),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(shortTouch.intent, .pending)
+        XCTAssertEqual(shortTouch.completion, .tap)
+    }
+
+    func testOpacityDragDoesNotExposeAPersistedValueUntilCompletion() {
+        var session = CaptainAyerOpacityDragSession(startingOpacity: 0.50)
+        session.update(verticalTranslation: -120)
+
+        XCTAssertEqual(session.startingOpacity, 0.50, accuracy: 0.0001)
+        XCTAssertEqual(session.previewOpacity, 0.90, accuracy: 0.0001)
+        XCTAssertNil(session.persistedValue)
+
+        let completedValue = session.complete()
+        XCTAssertEqual(completedValue, 0.90, accuracy: 0.0001)
+        XCTAssertEqual(session.persistedValue, 0.90)
+    }
+
+    func testSubtleVisibleAvatarCanStillCompleteAnOpacitySwipe() throws {
+        // The visual avatar begins almost transparent. The gesture path must
+        // nevertheless retain its full 10–100% range and commit only once the
+        // visible stage's drag ends.
+        var state = CaptainAyerOverlayGestureState()
+        let preview = try XCTUnwrap(
+            state.updateOpacityDrag(
+                startingOpacity: CaptainAyerOverlayTuning.initialOpacity,
+                verticalTranslation: -240
+            )
+        )
+
+        XCTAssertGreaterThan(preview, 0.90)
+        XCTAssertTrue(state.hasOpacityDrag)
+
+        let committed = try XCTUnwrap(state.completeOpacityDrag())
+        XCTAssertEqual(committed, preview, accuracy: 0.0001)
+        XCTAssertFalse(state.hasOpacityDrag)
+    }
+
+    func testPinchAtomicallyRevertsAndInvalidatesThresholdedOpacityDrag() throws {
+        var drag = CaptainAyerAvatarDragSession()
+        drag.update(
+            translation: CGSize(width: 2, height: -19),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(drag.intent, .opacity)
+
+        var state = CaptainAyerOverlayGestureState()
+        let preview = try XCTUnwrap(
+            state.updateOpacityDrag(
+                startingOpacity: 0.50,
+                verticalTranslation: -120
+            )
+        )
+
+        XCTAssertEqual(preview, 0.90, accuracy: 0.0001)
+        XCTAssertTrue(state.hasOpacityDrag)
+        XCTAssertFalse(state.isPinching)
+
+        let revertedOpacity = try XCTUnwrap(state.beginPinch())
+        XCTAssertEqual(revertedOpacity, 0.50, accuracy: 0.0001)
+        XCTAssertTrue(state.isPinching)
+        XCTAssertFalse(state.hasOpacityDrag)
+        XCTAssertTrue(state.suppressesOpacityUntilDragEnd)
+
+        // Even if pinch ends first, the stale inner drag cannot re-arm the
+        // preview before its delayed onEnded callback arrives.
+        state.endPinch()
+        XCTAssertFalse(state.isPinching)
+        XCTAssertEqual(drag.completion, .opacity)
+        XCTAssertNil(
+            state.updateOpacityDrag(
+                startingOpacity: 0.50,
+                verticalTranslation: -150
+            )
+        )
+        XCTAssertNil(state.completeOpacityDrag())
+        XCTAssertFalse(state.suppressesOpacityUntilDragEnd)
+
+        let nextDragPreview = try XCTUnwrap(
+            state.updateOpacityDrag(
+                startingOpacity: 0.50,
+                verticalTranslation: -30
+            )
+        )
+        XCTAssertEqual(nextDragPreview, 0.60, accuracy: 0.0001)
+        XCTAssertTrue(state.hasOpacityDrag)
+        let nextCompletedOpacity = try XCTUnwrap(state.completeOpacityDrag())
+        XCTAssertEqual(nextCompletedOpacity, 0.60, accuracy: 0.0001)
+        XCTAssertFalse(state.hasOpacityDrag)
     }
 
     func testOpeningWhisperOpacityIsVisibleButSubtle() {
@@ -184,6 +398,116 @@ final class CaptainAyerAvatarTests: XCTestCase {
             CaptainAyerOverlayTuning.railIdleOpacity,
             1
         )
+    }
+
+    func testOptionalMotionAvailabilityReportsEveryRuntimeBlocker() {
+        let ready = OpenClamAvatarMotionRuntimeContext(
+            hasAsset: true,
+            reduceMotion: false,
+            isSpeaking: false,
+            isLiveTalkActive: false,
+            isAvatarHidden: false,
+            isFaceMirrorActive: false
+        )
+        XCTAssertNil(OpenClamAvatarMotionAvailabilityPolicy.disabledReason(for: ready))
+
+        let blocked: [(OpenClamAvatarMotionRuntimeContext, String)] = [
+            (
+                .init(
+                    hasAsset: false, reduceMotion: false, isSpeaking: false,
+                    isLiveTalkActive: false, isAvatarHidden: false,
+                    isFaceMirrorActive: false
+                ),
+                "Not included in this avatar"
+            ),
+            (
+                .init(
+                    hasAsset: true, reduceMotion: true, isSpeaking: false,
+                    isLiveTalkActive: false, isAvatarHidden: false,
+                    isFaceMirrorActive: false
+                ),
+                "Unavailable with Reduce Motion"
+            ),
+            (
+                .init(
+                    hasAsset: true, reduceMotion: false, isSpeaking: false,
+                    isLiveTalkActive: true, isAvatarHidden: false,
+                    isFaceMirrorActive: false
+                ),
+                "Unavailable during Live Talk"
+            ),
+            (
+                .init(
+                    hasAsset: true, reduceMotion: false, isSpeaking: true,
+                    isLiveTalkActive: false, isAvatarHidden: false,
+                    isFaceMirrorActive: false
+                ),
+                "Unavailable while speaking"
+            ),
+            (
+                .init(
+                    hasAsset: true, reduceMotion: false, isSpeaking: false,
+                    isLiveTalkActive: false, isAvatarHidden: true,
+                    isFaceMirrorActive: false
+                ),
+                "Unavailable while avatar is hidden"
+            ),
+            (
+                .init(
+                    hasAsset: true, reduceMotion: false, isSpeaking: false,
+                    isLiveTalkActive: false, isAvatarHidden: false,
+                    isFaceMirrorActive: true
+                ),
+                "Unavailable during face mirroring"
+            ),
+        ]
+
+        for (context, expectedReason) in blocked {
+            XCTAssertEqual(
+                OpenClamAvatarMotionAvailabilityPolicy.disabledReason(for: context),
+                expectedReason
+            )
+        }
+    }
+
+    func testMotionSessionArbitratesWalkIdleMovesAndInteractions() {
+        var session = OpenClamAvatarMotionSessionState()
+
+        XCTAssertEqual(session.request(.walk, canStart: false), .none)
+        XCTAssertNil(session.activeKind)
+        XCTAssertEqual(session.request(.walk, canStart: true), .start(.walk))
+        XCTAssertEqual(session.activeKind, .walk)
+        XCTAssertEqual(
+            session.request(.edgeIdle, canStart: true),
+            .replace(.walk, .edgeIdle)
+        )
+        XCTAssertEqual(session.activeKind, .edgeIdle)
+        XCTAssertEqual(session.complete(.walk), .none, "Stale completion cannot stop a replacement")
+        XCTAssertEqual(session.activeKind, .edgeIdle)
+        XCTAssertEqual(
+            session.request(.moves, canStart: true),
+            .replace(.edgeIdle, .moves)
+        )
+        XCTAssertEqual(session.complete(.edgeIdle), .none)
+        XCTAssertEqual(session.complete(.moves), .stop(.moves))
+        XCTAssertNil(session.activeKind)
+
+        XCTAssertEqual(session.request(.edgeIdle, canStart: true), .start(.edgeIdle))
+        XCTAssertEqual(session.request(.edgeIdle, canStart: true), .stop(.edgeIdle))
+        XCTAssertNil(session.activeKind)
+
+        for _ in 0 ..< 4 {
+            XCTAssertEqual(session.request(.moves, canStart: true), .start(.moves))
+            XCTAssertEqual(session.interrupt(), .stop(.moves))
+            XCTAssertNil(session.activeKind)
+        }
+        XCTAssertEqual(session.interrupt(), .none)
+    }
+
+    func testMotionPlaybackModeIsKeyDerivedAndNotPackageControlled() {
+        XCTAssertTrue(OpenClamAvatarMotionKind.walk.loops)
+        XCTAssertTrue(OpenClamAvatarMotionKind.edgeIdle.loops)
+        XCTAssertFalse(OpenClamAvatarMotionKind.moves.loops)
     }
 
     @MainActor

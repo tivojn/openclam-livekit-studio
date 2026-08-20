@@ -1,3 +1,5 @@
+import AVFoundation
+import CoreMedia
 import CryptoKit
 import Foundation
 import ImageIO
@@ -20,6 +22,16 @@ struct OpenClamAvatarPackageAsset: Codable, Equatable, Sendable {
     let height: Int
 }
 
+struct OpenClamAvatarPackageMotionAsset: Codable, Equatable, Sendable {
+    let path: String
+    let sha256: String
+    let byteCount: Int
+    let mediaType: String
+    let width: Int
+    let height: Int
+    let durationMilliseconds: Int
+}
+
 struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
     let format: String
     let version: Int
@@ -28,6 +40,7 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
     let displayName: String
     let rig: OpenClamAvatarRigGeometry
     let assets: [String: OpenClamAvatarPackageAsset]
+    let motions: [String: OpenClamAvatarPackageMotionAsset]?
 }
 
 enum OpenClamAvatarArchiveEntryKind: Equatable, Sendable {
@@ -72,7 +85,11 @@ enum OpenClamAvatarPackageError: LocalizedError, Equatable {
     case invalidAssetImage(String)
     case mimeTypeMismatch(String)
     case dimensionMismatch(String)
+    case invalidMotionMedia(String)
+    case motionDurationMismatch(String)
     case installationFailed
+    case avatarOperationInProgress
+    case protectedAvatar
     case deletionFailed
 
     var errorDescription: String? {
@@ -102,7 +119,7 @@ enum OpenClamAvatarPackageError: LocalizedError, Equatable {
         case let .unsupportedFormat(format):
             "Avatar format “\(format)” is not supported. Export an OpenClam iPhone-light avatar."
         case let .unsupportedVersion(version):
-            "Avatar version \(version) is not supported. Export version 2 for iPhone."
+            "Avatar version \(version) is not supported. Export version 2 or 3 for iPhone."
         case let .unsupportedVariant(variant):
             "Avatar variant “\(variant)” is not supported. Export the ios-light variant."
         case .invalidIdentifier:
@@ -131,8 +148,16 @@ enum OpenClamAvatarPackageError: LocalizedError, Equatable {
             "The \(role) image type does not match the manifest."
         case let .dimensionMismatch(role):
             "The \(role) image dimensions do not match the avatar rig."
+        case let .invalidMotionMedia(role):
+            "The \(role) motion must be a transparent HEVC QuickTime movie without audio."
+        case let .motionDurationMismatch(role):
+            "The \(role) motion duration does not match the avatar manifest."
         case .installationFailed:
             "OpenClam could not install this avatar. Your existing avatars were left unchanged."
+        case .avatarOperationInProgress:
+            "Another avatar change is still finishing. Wait a moment and try again."
+        case .protectedAvatar:
+            "This avatar is included with OpenClam and cannot be deleted."
         case .deletionFailed:
             "OpenClam could not delete this avatar. It remains available."
         }
@@ -141,7 +166,12 @@ enum OpenClamAvatarPackageError: LocalizedError, Equatable {
 
 enum OpenClamAvatarPackageContract {
     static let canonicalFormat = "openclam-avatar"
-    static let version = 2
+    static let legacyVersion = 2
+    static let motionVersion = 3
+    /// Kept for existing v2 exporter/tests; new motion-capable exports use
+    /// `motionVersion` explicitly.
+    static let version = legacyVersion
+    static let supportedVersions = Set([legacyVersion, motionVersion])
     static let variant = "ios-light"
     static let manifestPath = "manifest.json"
 
@@ -151,7 +181,13 @@ enum OpenClamAvatarPackageContract {
     static let maximumManifestByteCount: UInt64 = 128 * 1_024
     static let maximumImageDimension = 8_192
     static let maximumDecodedPixelCount: UInt64 = 16 * 1_024 * 1_024
-    static let expectedFileCount = 19
+    static let baseFileCount = 19
+    static let maximumFileCount = baseFileCount + OpenClamAvatarMotionKind.allCases.count
+    static let maximumMotionDimension = 4_096
+    static let maximumMotionPixelCount: UInt64 = 16 * 1_024 * 1_024
+    static let minimumMotionDurationMilliseconds = 250
+    static let maximumMotionDurationMilliseconds = 12_000
+    static let motionDurationToleranceMilliseconds = 50
 
     struct AssetSpecification: Sendable {
         let key: String
@@ -196,11 +232,27 @@ enum OpenClamAvatarPackageContract {
         uniqueKeysWithValues: assetSpecifications.map { ($0.key, $0) }
     )
 
+    struct MotionSpecification: Sendable {
+        let kind: OpenClamAvatarMotionKind
+        let path: String
+    }
+
+    static let motionSpecifications: [MotionSpecification] = [
+        .init(kind: .walk, path: "assets/motion-walk.mov"),
+        .init(kind: .edgeIdle, path: "assets/motion-edge-idle.mov"),
+        .init(kind: .moves, path: "assets/motion-moves.mov"),
+    ]
+
+    static let motionSpecificationsByKey = Dictionary(
+        uniqueKeysWithValues: motionSpecifications.map { ($0.kind.rawValue, $0) }
+    )
+
     static let allowedArchivePaths: Set<String> = {
         var paths = Set([manifestPath])
         for specification in assetSpecifications {
             paths.formUnion(specification.allowedPaths)
         }
+        paths.formUnion(motionSpecifications.map(\.path))
         return paths
     }()
 
@@ -222,7 +274,7 @@ enum OpenClamAvatarPackageContract {
         guard archiveByteCount <= maximumArchiveByteCount else {
             throw OpenClamAvatarPackageError.archiveTooLarge
         }
-        guard entries.count == expectedFileCount else {
+        guard (baseFileCount ... maximumFileCount).contains(entries.count) else {
             throw OpenClamAvatarPackageError.tooManyFiles
         }
 
@@ -290,11 +342,120 @@ enum OpenClamAvatarPackageContract {
 }
 
 struct OpenClamAvatarPackageStore: Sendable {
-    let storageRoot: URL
+    struct OwnedLegacyDuplicateSignature: Equatable, Sendable {
+        let sourceID: String
+        let targetID: String
+        let displayName: String
+        let manifestSHA256: String
 
-    init(storageRoot: URL = OpenClamAvatarPackageContract.defaultStorageRoot) {
+        static let authorizedAraV2 = Self(
+            sourceID: "ara-2",
+            targetID: "ara",
+            displayName: "Ara",
+            manifestSHA256: "05b4747752bff5a7614c47cd4a0741cd58da68fb061565eccd26fe334a1aa497"
+        )
+    }
+
+    struct IdentityMigration: Equatable, Sendable {
+        let sourceID: String
+        let targetID: String
+        let targetDisplayName: String
+    }
+
+    let storageRoot: URL
+    private let deletionMoveItem: @Sendable (URL, URL) throws -> Void
+    private let deletionRemoveItem: @Sendable (URL) throws -> Void
+    private let ownedLegacyDuplicateSignatures: [OwnedLegacyDuplicateSignature]
+
+    init(
+        storageRoot: URL = OpenClamAvatarPackageContract.defaultStorageRoot,
+        deletionMoveItem: @escaping @Sendable (URL, URL) throws -> Void = {
+            try FileManager.default.moveItem(at: $0, to: $1)
+        },
+        deletionRemoveItem: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        },
+        ownedLegacyDuplicateSignatures: [OwnedLegacyDuplicateSignature] = [
+            .authorizedAraV2,
+        ]
+    ) {
         self.storageRoot = storageRoot.standardizedFileURL
+        self.deletionMoveItem = deletionMoveItem
+        self.deletionRemoveItem = deletionRemoveItem
+        self.ownedLegacyDuplicateSignatures = ownedLegacyDuplicateSignatures
+        recoverDeletionTransactions()
         recoverInterruptedReplacements()
+    }
+
+    /// Retires only byte-exact, user-authorized legacy packages that became a
+    /// duplicate of a bundled identity. The validated files are moved to a
+    /// hidden, deterministic quarantine directory rather than deleted. A
+    /// nonmatching package—even one named `ara-2`—is left installed.
+    func quarantineOwnedLegacyDuplicates() -> [IdentityMigration] {
+        let fileManager = FileManager.default
+        return ownedLegacyDuplicateSignatures.compactMap { signature in
+            let canonical = storageRoot.appendingPathComponent(
+                signature.sourceID,
+                isDirectory: true
+            )
+            let quarantine = storageRoot.appendingPathComponent(
+                ".retired-owned-\(signature.sourceID)-to-\(signature.targetID)-"
+                    + String(signature.manifestSHA256.prefix(12)),
+                isDirectory: true
+            )
+
+            if exactOwnedLegacyDescriptor(at: quarantine, signature: signature) != nil {
+                return IdentityMigration(
+                    sourceID: signature.sourceID,
+                    targetID: signature.targetID,
+                    targetDisplayName: signature.displayName
+                )
+            }
+            guard exactOwnedLegacyDescriptor(at: canonical, signature: signature) != nil,
+                  !fileManager.fileExists(atPath: quarantine.path) else {
+                return nil
+            }
+
+            do {
+                try fileManager.moveItem(at: canonical, to: quarantine)
+                guard exactOwnedLegacyDescriptor(
+                    at: quarantine,
+                    signature: signature
+                ) != nil else {
+                    try? fileManager.moveItem(at: quarantine, to: canonical)
+                    return nil
+                }
+                return IdentityMigration(
+                    sourceID: signature.sourceID,
+                    targetID: signature.targetID,
+                    targetDisplayName: signature.displayName
+                )
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    private func exactOwnedLegacyDescriptor(
+        at directory: URL,
+        signature: OwnedLegacyDuplicateSignature
+    ) -> OpenClamAvatarDescriptor? {
+        guard let descriptor = try? validatedDescriptor(in: directory),
+              descriptor.id == signature.sourceID,
+              descriptor.displayName == signature.displayName else {
+            return nil
+        }
+        let manifestURL = directory.appendingPathComponent(
+            OpenClamAvatarPackageContract.manifestPath,
+            isDirectory: false
+        )
+        guard let data = try? Data(contentsOf: manifestURL, options: .mappedIfSafe) else {
+            return nil
+        }
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return digest == signature.manifestSHA256 ? descriptor : nil
     }
 
     func installArchive(
@@ -591,33 +752,229 @@ struct OpenClamAvatarPackageStore: Sendable {
     }
 
     func deleteInstalledAvatar(id: String) throws {
-        guard OpenClamAvatarID.isValid(id),
-              !OpenClamAvatarCatalog.avatars.contains(where: { $0.id == id }) else {
+        guard OpenClamAvatarID.isValid(id) else {
             throw OpenClamAvatarPackageError.deletionFailed
         }
-        let fileManager = FileManager.default
+        guard !OpenClamAvatarCatalog.avatars.contains(where: { $0.id == id }),
+              id != AvatarAgentIdentity.defaultID else {
+            throw OpenClamAvatarPackageError.protectedAvatar
+        }
         let target = storageRoot.appendingPathComponent(id, isDirectory: true)
-        guard fileManager.fileExists(atPath: target.path) else {
+        let targetValues = try? target.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard targetValues?.isDirectory == true,
+              targetValues?.isSymbolicLink != true,
+              let installed = try? validatedDescriptor(in: target),
+              installed.id == id else {
             throw OpenClamAvatarPackageError.deletionFailed
         }
 
-        let tombstone = storageRoot.appendingPathComponent(
-            ".delete-\(UUID().uuidString)",
-            isDirectory: true
+        let transactionID = UUID().uuidString.lowercased()
+        let tombstone = deletionTombstoneURL(
+            id: id,
+            transactionID: transactionID
+        )
+        let receipt = deletionReceiptURL(
+            id: id,
+            transactionID: transactionID
         )
         do {
-            try fileManager.moveItem(at: target, to: tombstone)
-            do {
-                try fileManager.removeItem(at: tombstone)
-            } catch {
-                try? fileManager.moveItem(at: tombstone, to: target)
-                throw OpenClamAvatarPackageError.deletionFailed
-            }
-        } catch let error as OpenClamAvatarPackageError {
-            throw error
+            try Data("openclam-avatar-delete-v1\n".utf8).write(
+                to: receipt,
+                options: [.atomic]
+            )
         } catch {
             throw OpenClamAvatarPackageError.deletionFailed
         }
+
+        do {
+            // The receipt is written first so every possible termination point
+            // is recoverable. Its state is determined by the canonical target:
+            // target present means pre-commit; target absent means committed.
+            try deletionMoveItem(target, tombstone)
+        } catch {
+            try? FileManager.default.removeItem(at: receipt)
+            throw OpenClamAvatarPackageError.deletionFailed
+        }
+
+        // Cleanup is deliberately best effort after the atomic commit. An app
+        // termination or partial FileManager removal cannot resurrect a broken
+        // package. The receipt remains until profile and thread cleanup has
+        // persisted, and exact tombstones are purged at the next launch.
+        try? deletionRemoveItem(tombstone)
+    }
+
+    /// Removes the durable receipt only after higher-level avatar profile and
+    /// thread references have been persisted. Repeating this is intentionally
+    /// safe so a second launch can finish a previously interrupted cleanup.
+    func acknowledgeCommittedDeletion(id: String) {
+        guard OpenClamAvatarID.isValid(id) else { return }
+        let fileManager = FileManager.default
+        for receipt in deletionReceiptURLs().filter({
+            deletionReceiptArtifact(for: $0)?.id == id
+        }) {
+            try? fileManager.removeItem(at: receipt)
+        }
+    }
+
+    /// IDs whose package rename committed but whose persisted agent/profile
+    /// cleanup was not acknowledged before process termination.
+    func committedDeletionIDs() -> Set<String> {
+        Set(deletionReceiptURLs().compactMap { receipt in
+            guard let artifact = deletionReceiptArtifact(for: receipt),
+                  isRegularNonSymbolicFile(receipt) else {
+                return nil
+            }
+            let canonical = storageRoot.appendingPathComponent(
+                artifact.id,
+                isDirectory: true
+            )
+            return FileManager.default.fileExists(atPath: canonical.path)
+                ? nil
+                : artifact.id
+        })
+    }
+
+    /// Deletion tombstones and receipts live only in this app's private avatar
+    /// root and use exact ID + UUID names. A tombstone implies the same-volume
+    /// rename committed. Ensure it has a durable receipt, then purge it instead
+    /// of restoring after a crash: recursive removal may already be partial.
+    private func recoverDeletionTransactions() {
+        let fileManager = FileManager.default
+        guard let candidates = try? fileManager.contentsOfDirectory(
+            at: storageRoot,
+            includingPropertiesForKeys: [
+                .isDirectoryKey,
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+            ],
+            options: []
+        ) else {
+            return
+        }
+
+        for tombstone in candidates.sorted(by: {
+            $0.lastPathComponent < $1.lastPathComponent
+        }) {
+            guard let artifact = deletionTombstoneArtifact(for: tombstone),
+                  let values = try? tombstone.resourceValues(
+                      forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                  ),
+                  values.isDirectory == true,
+                  values.isSymbolicLink != true else {
+                continue
+            }
+            let receipt = deletionReceiptURL(
+                id: artifact.id,
+                transactionID: artifact.transactionID
+            )
+            if !fileManager.fileExists(atPath: receipt.path) {
+                try? Data("openclam-avatar-delete-v1\n".utf8).write(
+                    to: receipt,
+                    options: [.atomic]
+                )
+            }
+            // Never discard the only durable evidence of a committed delete.
+            // A damaged directory or symlink at the receipt path is not a
+            // receipt, and a failed write must leave the tombstone available
+            // for a later recovery attempt.
+            guard isRegularNonSymbolicFile(receipt) else {
+                continue
+            }
+            try? fileManager.removeItem(at: tombstone)
+        }
+
+        // A receipt created before a rename that never committed is harmless:
+        // the canonical validated package still exists, so discard the intent.
+        for receipt in deletionReceiptURLs() {
+            guard let artifact = deletionReceiptArtifact(for: receipt),
+                  isRegularNonSymbolicFile(receipt) else {
+                continue
+            }
+            let canonical = storageRoot.appendingPathComponent(
+                artifact.id,
+                isDirectory: true
+            )
+            if fileManager.fileExists(atPath: canonical.path) {
+                try? fileManager.removeItem(at: receipt)
+            }
+        }
+    }
+
+    private struct DeletionArtifact {
+        let id: String
+        let transactionID: String
+    }
+
+    private func deletionTombstoneURL(
+        id: String,
+        transactionID: String
+    ) -> URL {
+        storageRoot.appendingPathComponent(
+            ".delete-\(id).\(transactionID)",
+            isDirectory: true
+        )
+    }
+
+    private func deletionReceiptURL(
+        id: String,
+        transactionID: String
+    ) -> URL {
+        storageRoot.appendingPathComponent(
+            ".delete-receipt-\(id).\(transactionID)",
+            isDirectory: false
+        )
+    }
+
+    private func deletionTombstoneArtifact(for url: URL) -> DeletionArtifact? {
+        deletionArtifact(for: url, prefix: ".delete-")
+    }
+
+    private func deletionReceiptArtifact(for url: URL) -> DeletionArtifact? {
+        deletionArtifact(for: url, prefix: ".delete-receipt-")
+    }
+
+    private func deletionArtifact(
+        for url: URL,
+        prefix: String
+    ) -> DeletionArtifact? {
+        let name = url.lastPathComponent
+        guard name.hasPrefix(prefix),
+              prefix != ".delete-" || !name.hasPrefix(".delete-receipt-") else {
+            return nil
+        }
+        let components = name.dropFirst(prefix.count).split(
+            separator: ".",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard components.count == 2 else { return nil }
+        let id = String(components[0])
+        guard OpenClamAvatarID.isValid(id),
+              UUID(uuidString: String(components[1])) != nil else {
+            return nil
+        }
+        return .init(id: id, transactionID: String(components[1]))
+    }
+
+    private func deletionReceiptURLs() -> [URL] {
+        let fileManager = FileManager.default
+        return (try? fileManager.contentsOfDirectory(
+            at: storageRoot,
+            includingPropertiesForKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+            ],
+            options: []
+        ))?.filter { deletionReceiptArtifact(for: $0) != nil } ?? []
+    }
+
+    private func isRegularNonSymbolicFile(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        return values?.isRegularFile == true && values?.isSymbolicLink != true
     }
 
     func validatedDescriptor(in directory: URL) throws -> OpenClamAvatarDescriptor {
@@ -651,11 +1008,14 @@ struct OpenClamAvatarPackageStore: Sendable {
             throw OpenClamAvatarPackageError.invalidManifest
         }
         try validateManifestContract(manifest)
-        guard installedAssetPaths == Set(manifest.assets.values.map(\.path)) else {
+        let declaredPaths = Set(manifest.assets.values.map(\.path))
+            .union(manifest.motions?.values.map(\.path) ?? [])
+        guard installedAssetPaths == declaredPaths else {
             throw OpenClamAvatarPackageError.privateMetadataNotAllowed
         }
 
         var references: [OpenClamAvatarAssetRole: OpenClamAvatarAssetReference] = [:]
+        var motionReferences: [OpenClamAvatarMotionKind: OpenClamAvatarMotionAsset] = [:]
         var includedByteCount = 0
         for specification in OpenClamAvatarPackageContract.assetSpecifications {
             guard let asset = manifest.assets[specification.key] else {
@@ -676,6 +1036,30 @@ struct OpenClamAvatarPackageStore: Sendable {
             includedByteCount = sum.partialValue
             references[specification.role] = .installedFile(fileURL)
         }
+        for specification in OpenClamAvatarPackageContract.motionSpecifications {
+            guard let motion = manifest.motions?[specification.kind.rawValue] else {
+                continue
+            }
+            let fileURL = directory.appendingPathComponent(motion.path, isDirectory: false)
+            try validateMotion(
+                motion,
+                roleKey: specification.kind.rawValue,
+                fileURL: fileURL
+            )
+            let sum = includedByteCount.addingReportingOverflow(motion.byteCount)
+            guard !sum.overflow else {
+                throw OpenClamAvatarPackageError.packageContentsTooLarge
+            }
+            includedByteCount = sum.partialValue
+            motionReferences[specification.kind] = OpenClamAvatarMotionAsset(
+                reference: .installedFile(fileURL),
+                pixelSize: OpenClamAvatarSize(
+                    width: Double(motion.width),
+                    height: Double(motion.height)
+                ),
+                durationMilliseconds: motion.durationMilliseconds
+            )
+        }
 
         guard let avatarID = OpenClamAvatarID(rawValue: manifest.id) else {
             throw OpenClamAvatarPackageError.invalidIdentifier
@@ -688,7 +1072,8 @@ struct OpenClamAvatarPackageStore: Sendable {
             includedByteCount: includedByteCount,
             geometry: manifest.rig,
             compatibility: .iosLight,
-            assets: references
+            assets: references,
+            motions: motionReferences
         )
     }
 
@@ -728,7 +1113,10 @@ struct OpenClamAvatarPackageStore: Sendable {
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: []
         )
-        guard assetItems.count == OpenClamAvatarPackageContract.assetSpecifications.count else {
+        let minimumAssetItemCount = OpenClamAvatarPackageContract.assetSpecifications.count
+        let maximumAssetItemCount = minimumAssetItemCount
+            + OpenClamAvatarMotionKind.allCases.count
+        guard (minimumAssetItemCount ... maximumAssetItemCount).contains(assetItems.count) else {
             throw OpenClamAvatarPackageError.tooManyFiles
         }
         for item in assetItems {
@@ -754,10 +1142,17 @@ struct OpenClamAvatarPackageStore: Sendable {
             throw OpenClamAvatarPackageError.invalidManifest
         }
 
-        try requireExactKeys(
-            root,
-            ["format", "version", "variant", "id", "displayName", "rig", "assets"]
-        )
+        let baseKeys = Set(["format", "version", "variant", "id", "displayName", "rig", "assets"])
+        guard let version = root["version"] as? Int else {
+            throw OpenClamAvatarPackageError.invalidManifest
+        }
+        if version == OpenClamAvatarPackageContract.legacyVersion {
+            try requireExactKeys(root, baseKeys)
+        } else if root["motions"] != nil {
+            try requireExactKeys(root, baseKeys.union(["motions"]))
+        } else {
+            try requireExactKeys(root, baseKeys)
+        }
         guard let assets = root["assets"] as? [String: Any],
               Set(assets.keys) == Set(OpenClamAvatarPackageContract.assetSpecificationsByKey.keys),
               let rig = root["rig"] as? [String: Any] else {
@@ -771,6 +1166,28 @@ struct OpenClamAvatarPackageStore: Sendable {
                 asset,
                 ["path", "sha256", "byteCount", "mediaType", "width", "height"]
             )
+        }
+        if let rawMotions = root["motions"] {
+            guard version == OpenClamAvatarPackageContract.motionVersion,
+                  let motions = rawMotions as? [String: Any],
+                  !motions.isEmpty,
+                  Set(motions.keys).isSubset(
+                    of: Set(OpenClamAvatarPackageContract.motionSpecificationsByKey.keys)
+                  ) else {
+                throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+            }
+            for value in motions.values {
+                guard let motion = value as? [String: Any] else {
+                    throw OpenClamAvatarPackageError.invalidManifest
+                }
+                try requireExactKeys(
+                    motion,
+                    [
+                        "path", "sha256", "byteCount", "mediaType", "width",
+                        "height", "durationMilliseconds",
+                    ]
+                )
+            }
         }
         try requireExactKeys(
             rig,
@@ -803,7 +1220,7 @@ struct OpenClamAvatarPackageStore: Sendable {
         guard manifest.format == OpenClamAvatarPackageContract.canonicalFormat else {
             throw OpenClamAvatarPackageError.unsupportedFormat(manifest.format)
         }
-        guard manifest.version == OpenClamAvatarPackageContract.version else {
+        guard OpenClamAvatarPackageContract.supportedVersions.contains(manifest.version) else {
             throw OpenClamAvatarPackageError.unsupportedVersion(manifest.version)
         }
         guard manifest.variant == OpenClamAvatarPackageContract.variant else {
@@ -824,6 +1241,20 @@ struct OpenClamAvatarPackageStore: Sendable {
         guard Set(manifest.assets.keys)
                 == Set(OpenClamAvatarPackageContract.assetSpecificationsByKey.keys) else {
             throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+        }
+        if manifest.version == OpenClamAvatarPackageContract.legacyVersion,
+           manifest.motions != nil {
+            throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+        }
+        if let motions = manifest.motions {
+            guard manifest.version == OpenClamAvatarPackageContract.motionVersion,
+                  !motions.isEmpty,
+                  motions.count <= OpenClamAvatarMotionKind.allCases.count,
+                  Set(motions.keys).isSubset(
+                    of: Set(OpenClamAvatarPackageContract.motionSpecificationsByKey.keys)
+                  ) else {
+                throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+            }
         }
         try validateRig(manifest.rig)
 
@@ -854,6 +1285,50 @@ struct OpenClamAvatarPackageStore: Sendable {
                 throw OpenClamAvatarPackageError.mimeTypeMismatch(specification.key)
             }
             let addition = declaredTotal.addingReportingOverflow(UInt64(asset.byteCount))
+            guard !addition.overflow else {
+                throw OpenClamAvatarPackageError.packageContentsTooLarge
+            }
+            declaredTotal = addition.partialValue
+        }
+        for specification in OpenClamAvatarPackageContract.motionSpecifications {
+            guard let motion = manifest.motions?[specification.kind.rawValue] else {
+                continue
+            }
+            let roleKey = specification.kind.rawValue
+            guard motion.path == specification.path,
+                  OpenClamAvatarPackageContract.isSafeArchivePath(motion.path),
+                  paths.insert(motion.path).inserted else {
+                throw OpenClamAvatarPackageError.invalidAssetPath(roleKey)
+            }
+            guard motion.byteCount > 0,
+                  UInt64(motion.byteCount)
+                    <= OpenClamAvatarPackageContract.maximumAssetByteCount else {
+                throw OpenClamAvatarPackageError.invalidAssetSize(roleKey)
+            }
+            guard motion.sha256.range(
+                of: #"^[0-9a-f]{64}$"#,
+                options: .regularExpression
+            ) != nil else {
+                throw OpenClamAvatarPackageError.hashMismatch(roleKey)
+            }
+            guard motion.mediaType == "video/quicktime" else {
+                throw OpenClamAvatarPackageError.mimeTypeMismatch(roleKey)
+            }
+            guard (64 ... OpenClamAvatarPackageContract.maximumMotionDimension)
+                    .contains(motion.width),
+                  (64 ... OpenClamAvatarPackageContract.maximumMotionDimension)
+                    .contains(motion.height),
+                  UInt64(motion.width) * UInt64(motion.height)
+                    <= OpenClamAvatarPackageContract.maximumMotionPixelCount else {
+                throw OpenClamAvatarPackageError.dimensionMismatch(roleKey)
+            }
+            guard (
+                OpenClamAvatarPackageContract.minimumMotionDurationMilliseconds
+                    ... OpenClamAvatarPackageContract.maximumMotionDurationMilliseconds
+            ).contains(motion.durationMilliseconds) else {
+                throw OpenClamAvatarPackageError.motionDurationMismatch(roleKey)
+            }
+            let addition = declaredTotal.addingReportingOverflow(UInt64(motion.byteCount))
             guard !addition.overflow else {
                 throw OpenClamAvatarPackageError.packageContentsTooLarge
             }
@@ -979,6 +1454,87 @@ struct OpenClamAvatarPackageStore: Sendable {
             [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
         ) != nil else {
             throw OpenClamAvatarPackageError.invalidAssetImage(roleKey)
+        }
+    }
+
+    private func validateMotion(
+        _ motion: OpenClamAvatarPackageMotionAsset,
+        roleKey: String,
+        fileURL: URL
+    ) throws {
+        let values: URLResourceValues
+        do {
+            values = try fileURL.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            )
+        } catch {
+            throw OpenClamAvatarPackageError.missingAsset(roleKey)
+        }
+        guard values.isRegularFile == true,
+              values.isSymbolicLink != true else {
+            throw OpenClamAvatarPackageError.missingAsset(roleKey)
+        }
+        guard values.fileSize == motion.byteCount else {
+            throw OpenClamAvatarPackageError.invalidAssetSize(roleKey)
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+        } catch {
+            throw OpenClamAvatarPackageError.missingAsset(roleKey)
+        }
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard digest == motion.sha256 else {
+            throw OpenClamAvatarPackageError.hashMismatch(roleKey)
+        }
+
+        let asset = AVURLAsset(url: fileURL)
+        let videoTracks = asset.tracks(withMediaType: .video)
+        guard videoTracks.count == 1,
+              asset.tracks(withMediaType: .audio).isEmpty,
+              let track = videoTracks.first else {
+            throw OpenClamAvatarPackageError.invalidMotionMedia(roleKey)
+        }
+
+        let descriptions = track.formatDescriptions as! [CMFormatDescription]
+        let isTransparentHEVC = descriptions.contains { description in
+            guard CMFormatDescriptionGetMediaSubType(description)
+                    == kCMVideoCodecType_HEVC else {
+                return false
+            }
+            return CMFormatDescriptionGetExtension(
+                description,
+                extensionKey: kCMFormatDescriptionExtension_ContainsAlphaChannel
+            ) as? Bool == true
+        }
+        guard isTransparentHEVC else {
+            throw OpenClamAvatarPackageError.invalidMotionMedia(roleKey)
+        }
+
+        let transform = track.preferredTransform
+        let determinant = transform.a * transform.d - transform.b * transform.c
+        let displayedSize = track.naturalSize.applying(transform)
+        let width = Int(abs(displayedSize.width).rounded())
+        let height = Int(abs(displayedSize.height).rounded())
+        guard determinant > 0,
+              displayedSize.width.isFinite,
+              displayedSize.height.isFinite,
+              width == motion.width,
+              height == motion.height else {
+            throw OpenClamAvatarPackageError.dimensionMismatch(roleKey)
+        }
+
+        let durationSeconds = CMTimeGetSeconds(asset.duration)
+        guard durationSeconds.isFinite, durationSeconds > 0 else {
+            throw OpenClamAvatarPackageError.invalidMotionMedia(roleKey)
+        }
+        let actualMilliseconds = Int((durationSeconds * 1_000).rounded())
+        guard abs(actualMilliseconds - motion.durationMilliseconds)
+                <= OpenClamAvatarPackageContract.motionDurationToleranceMilliseconds else {
+            throw OpenClamAvatarPackageError.motionDurationMismatch(roleKey)
         }
     }
 

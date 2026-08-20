@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from fastapi import HTTPException
 
-from studio import motion
+from studio import export as runtime_export, motion, rig
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -589,6 +589,110 @@ class MotionServerTransactionTests(unittest.TestCase):
                     server_app._publish_runtime_atomic(slug, log=lambda _message: None)
             self.assertEqual(original, Path(live, "manifest.json").read_bytes())
             self.assertFalse(os.path.exists(os.path.join(avatar_dir, "runtime.previous")))
+
+    @staticmethod
+    def _legacy_upper_face_layers(runtime_dir):
+        """Build the minimal preserved sprite contract accepted by v17."""
+        layers = {}
+        for name, positions, values in (
+                ("eyes", "states", [0, 1]),
+                ("brow", "dys", [0, 1]),
+                ("eyebag", "ups", [0, 1])):
+            layer = {positions: values}
+            if name == "brow":
+                layer["sqs"] = [0]
+            for side in ("l", "r"):
+                filename = f"{name}_{side}.png"
+                Path(runtime_dir, filename).write_bytes(f"{name}-{side}".encode())
+                layer[side] = {
+                    "src": f"assets/{filename}", "box": [0, 0, 1, 1],
+                }
+            layers[name] = layer
+        return layers
+
+    def test_runtime_only_v16_refresh_migrates_normalized_under_eye_target(self):
+        """No-viseme refreshes must not keep copying a v16 face bundle.
+
+        Imported/runtime-only avatars legitimately have no retained visemes,
+        so the atomic publisher preserves their proven face strips and merely
+        refreshes Pet layers.  That path still needs the v17 control schema so
+        the independent under-eye target reaches the desktop renderer.
+        """
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "runtime-only"
+            live = os.path.join(avatar_dir, "runtime")
+            os.makedirs(live)
+            Path(live, "face-strip.png").write_bytes(b"preserved-face-bank")
+            layers = self._legacy_upper_face_layers(live)
+            Path(live, "manifest.json").write_text(json.dumps({
+                "v": 16,
+                "avatar": {"slug": slug, "name": "Runtime only"},
+                "motion": None,
+                **layers,
+                # This legacy profile predates the independent target.  Its
+                # existing tuning must survive and only safe new fields fill.
+                "rig_profile": {"brows": 7, "cheeks": 40},
+            }))
+            registry = FakeRegistry(avatar_dir, {
+                "slug": slug, "status": "ready", "name": "Runtime only",
+            })
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(runtime_export.reg, "adir", return_value=avatar_dir),
+                    mock.patch.object(runtime_export.reg, "read_manifest",
+                                      return_value=registry.manifest),
+                    mock.patch.object(runtime_export.cutout, "render",
+                                      return_value={"image": "assets/cutout.png"}),
+                    mock.patch.object(runtime_export, "_publish_motion", return_value=None)):
+                self.assertEqual(server_app.ensure_runtime(slug, log=lambda _line: None), live)
+
+            migrated = json.loads(Path(live, "manifest.json").read_text())
+            self.assertEqual(migrated["v"], server_app.RUNTIME_VERSION)
+            self.assertEqual(migrated["v"], runtime_export.RUNTIME_VERSION)
+            self.assertEqual(migrated["rig_profile"]["version"], rig.VERSION)
+            self.assertEqual(migrated["rig_profile"]["brows"], 7)
+            self.assertEqual(migrated["rig_profile"]["cheeks"], 40)
+            self.assertEqual(migrated["rig_profile"]["eyebags"],
+                             rig.PRESETS["natural"]["eyebags"])
+            self.assertEqual(Path(live, "face-strip.png").read_bytes(),
+                             b"preserved-face-bank")
+            self.assertFalse(os.path.exists(live + ".previous"))
+
+    def test_runtime_only_v16_missing_under_eye_stays_legacy(self):
+        """A preserved bank cannot claim v17 when its under-eye strip is gone."""
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "missing-under-eye"
+            live = os.path.join(avatar_dir, "runtime")
+            os.makedirs(live)
+            Path(live, "face-strip.png").write_bytes(b"preserved-face-bank")
+            layers = self._legacy_upper_face_layers(live)
+            layers.pop("eyebag")
+            Path(live, "manifest.json").write_text(json.dumps({
+                "v": 16,
+                "avatar": {"slug": slug, "name": "Missing under-eye"},
+                "motion": None,
+                **layers,
+            }))
+            original = Path(live, "manifest.json").read_bytes()
+            registry = FakeRegistry(avatar_dir, {
+                "slug": slug, "status": "ready", "name": "Missing under-eye",
+            })
+            logs = []
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(runtime_export.reg, "adir", return_value=avatar_dir),
+                    mock.patch.object(runtime_export.reg, "read_manifest",
+                                      return_value=registry.manifest),
+                    mock.patch.object(runtime_export.cutout, "render",
+                                      return_value={"image": "assets/cutout.png"}),
+                    mock.patch.object(runtime_export, "_publish_motion", return_value=None)):
+                self.assertEqual(server_app.ensure_runtime(slug, log=logs.append), live)
+
+            self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
+            self.assertFalse(os.path.exists(live + ".previous"))
+            self.assertTrue(any(
+                "runtime under-eye layer is missing; cannot migrate to v17" in line
+                for line in logs))
 
     def test_settings_resumes_and_tracks_the_reserved_job(self):
         settings = (ROOT / "web" / "settings.html").read_text()

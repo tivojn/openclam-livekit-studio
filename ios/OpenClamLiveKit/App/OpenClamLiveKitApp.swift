@@ -29,6 +29,9 @@ struct OpenClamLiveKitApp: App {
                     }
                 }
                 .onAppear {
+                    avatarLibrary.reconcileCommittedDeletions(
+                        configuration: aiConfiguration
+                    )
                     aiConfiguration.reconcileAvatarCatalog(avatarLibrary.identities)
                     keyboardDictationHost.configure(aiConfiguration: aiConfiguration)
                     model.restoreStagedCommand()

@@ -54,6 +54,7 @@ struct CaptainAyerAvatarStage: View {
                         controller.isSpeaking
                             || reactions.isAnimating
                             || reactions.isGazeAnimating
+                            || reactions.isAmbientAnimating
                             || faceMirror.isCapturing
                     )
                 )
@@ -88,10 +89,8 @@ struct CaptainAyerAvatarStage: View {
                             touchStart = value.startLocation
                             touchExceededTapSlop = false
                         }
-                        if hypot(
-                            value.location.x - value.startLocation.x,
-                            value.location.y - value.startLocation.y
-                        ) > 4 {
+                        if hypot(value.translation.width, value.translation.height)
+                            > CaptainAyerAvatarGesturePolicy.tapSlop {
                             touchExceededTapSlop = true
                         }
                         reactions.updateGaze(
@@ -117,7 +116,17 @@ struct CaptainAyerAvatarStage: View {
                                 for: value.location,
                                 stageSize: proxy.size
                             )
-                            reactions.react(atNormalizedFacePoint: point)
+                            let didReactToFace = reactions.react(
+                                atNormalizedFacePoint: point
+                            )
+                            if !didReactToFace {
+                                reactions.react(
+                                    atNormalizedBodyPoint: normalizedBodyPoint(
+                                        for: value.location,
+                                        stageSize: proxy.size
+                                    )
+                                )
+                            }
                         }
                         onInteraction()
                     }
@@ -137,10 +146,18 @@ struct CaptainAyerAvatarStage: View {
             reactions.flourish()
             onInteraction()
         }
+        .onAppear(perform: synchronizeAmbientMotion)
+        .onChange(of: reduceMotion) { _, _ in
+            synchronizeAmbientMotion()
+        }
+        .onChange(of: faceMirror.isCapturing) { _, _ in
+            synchronizeAmbientMotion()
+        }
         .onChange(of: allowsGazeTracking) { _, enabled in
             if !enabled { reactions.cancelGaze() }
         }
         .onDisappear {
+            reactions.stopAmbientMotion()
             reactions.cancelGaze()
         }
     }
@@ -189,6 +206,33 @@ struct CaptainAyerAvatarStage: View {
             x: (bodyPoint.x - faceBounds.minX) / faceBounds.width,
             y: (bodyPoint.y - faceBounds.minY) / faceBounds.height
         )
+    }
+
+    private func normalizedBodyPoint(
+        for location: CGPoint,
+        stageSize: CGSize
+    ) -> CGPoint {
+        let crop = presentation.crop
+        let scale = min(stageSize.width / crop.width, stageSize.height / crop.height)
+        guard scale.isFinite, scale > 0 else {
+            return CGPoint(x: -CGFloat.infinity, y: -CGFloat.infinity)
+        }
+        let origin = CGPoint(
+            x: (stageSize.width - crop.width * scale) / 2 - crop.minX * scale,
+            y: (stageSize.height - crop.height * scale) / 2 - crop.minY * scale
+        )
+        return CGPoint(
+            x: ((location.x - origin.x) / scale) / 941,
+            y: ((location.y - origin.y) / scale) / 1_672
+        )
+    }
+
+    private func synchronizeAmbientMotion() {
+        if reduceMotion || faceMirror.isCapturing {
+            reactions.stopAmbientMotion()
+        } else {
+            reactions.startAmbientMotion()
+        }
     }
 }
 

@@ -5,25 +5,25 @@ import XCTest
 
 @MainActor
 final class OpenClamAvatarStoreTests: XCTestCase {
-    func testFrozenProductionCatalogContractDecodesVivieenFirst() throws {
-        let document = try OpenClamAvatarStoreCatalogParser.decode(productionCatalogData())
+    func testSyntheticCatalogContractRemainsGenericAndStrict() throws {
+        let document = try OpenClamAvatarStoreCatalogParser.decode(syntheticCatalogData())
 
         XCTAssertEqual(document.schemaVersion, 1)
-        XCTAssertEqual(document.entries.map(\.id), ["vivieen"])
-        let vivieen = try XCTUnwrap(document.entries.first)
-        XCTAssertEqual(vivieen.name, "Vivieen")
-        XCTAssertEqual(vivieen.author, "OpenClam")
-        XCTAssertEqual(vivieen.version, 1)
-        XCTAssertEqual(vivieen.iosLight.bytes, 8_711_159)
+        XCTAssertEqual(document.entries.map(\.id), ["fixture-avatar"])
+        let fixture = try XCTUnwrap(document.entries.first)
+        XCTAssertEqual(fixture.name, "Fixture Avatar")
+        XCTAssertEqual(fixture.author, "Example Publisher")
+        XCTAssertEqual(fixture.version, 1)
+        XCTAssertEqual(fixture.iosLight.bytes, 10)
         XCTAssertEqual(
-            vivieen.iosLight.sha256,
-            "fda2776d0f6103f15298ccbb4171565eddc7f29df2482b124b646f02e46a43d9"
+            fixture.iosLight.sha256,
+            String(repeating: "1", count: 64)
         )
-        XCTAssertEqual(vivieen.iosLight.profile, "ios-light")
-        XCTAssertEqual(vivieen.variants.macOSFull.profile, "macos-full")
+        XCTAssertEqual(fixture.iosLight.profile, "ios-light")
+        XCTAssertEqual(fixture.variants.macOSFull.profile, "macos-full")
     }
 
-    func testCatalogRejectsUnknownOrMissingFieldsAndWrongFirstEntry() throws {
+    func testCatalogRejectsUnknownMissingAndDuplicateEntries() throws {
         var root = try catalogObject()
         root["tracking"] = true
         try assertCatalogError(.invalidShape, object: root)
@@ -41,10 +41,9 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         root = try catalogObject()
         entries = try XCTUnwrap(root["entries"] as? [[String: Any]])
         entry = entries[0]
-        entry["id"] = "someone-else"
-        entries[0] = entry
+        entries.append(entries[0])
         root["entries"] = entries
-        try assertCatalogError(.vivieenMustBeFirst, object: root)
+        try assertCatalogError(.duplicateIdentifier, object: root)
     }
 
     func testCatalogRejectsInvalidHashesSizesProfilesAndHosts() throws {
@@ -56,7 +55,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         try assertEntryMutationError(.invalidURL) { entry in
             var variants = try XCTUnwrap(entry["variants"] as? [String: Any])
             var package = try XCTUnwrap(variants["ios-light"] as? [String: Any])
-            package["url"] = "https://github.com/tivojn/other/releases/download/v1/avatar.avtr"
+            package["url"] = "https://github.com/other/repository/releases/download/v1/avatar.avtr"
             variants["ios-light"] = package
             entry["variants"] = variants
         }
@@ -67,29 +66,29 @@ final class OpenClamAvatarStoreTests: XCTestCase {
             variants["ios-light"] = package
             entry["variants"] = variants
         }
-        try assertEntryMutationError(.invalidEntry("vivieen")) { entry in
+        try assertEntryMutationError(.invalidEntry("fixture-avatar")) { entry in
             var thumbnail = try XCTUnwrap(entry["thumbnail"] as? [String: Any])
             thumbnail["width"] = 100_000
             entry["thumbnail"] = thumbnail
         }
-        try assertEntryMutationError(.invalidEntry("vivieen")) { entry in
-            entry["name"] = "Vivi\u{0000}een"
+        try assertEntryMutationError(.invalidEntry("fixture-avatar")) { entry in
+            entry["name"] = "Fixture\u{0000}Avatar"
         }
-        try assertEntryMutationError(.invalidEntry("vivieen")) { entry in
-            entry["author"] = "Another Publisher"
+        try assertEntryMutationError(.invalidEntry("fixture-avatar")) { entry in
+            entry["author"] = " Another Publisher"
         }
     }
 
     func testURLPolicyAllowsOnlyExactStoreOriginsAndOpaqueReleaseRedirect() throws {
         let packageURL = try XCTUnwrap(URL(string:
-            "https://github.com/tivojn/openclam-avatar-store/releases/download/avatars-v1.0.0/Vivieen-iPhone.avtr"
+            "https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/fixtures-v1/fixture-avatar-ios-light.avtr"
         ))
         let opaqueReleaseURL = try XCTUnwrap(URL(string:
             "https://release-assets.githubusercontent.com/github-production-release-asset/file?sp=r&sig=opaque"
         ))
         XCTAssertTrue(
             OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
-                OpenClamAvatarStoreURLPolicy.catalogURL
+                OpenClamAvatarStoreURLPolicy.syntheticCatalogURL
             )
         )
         XCTAssertTrue(
@@ -106,13 +105,13 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsRedirectOrFinalURL(
                 opaqueReleaseURL,
-                for: OpenClamAvatarStoreURLPolicy.catalogURL
+                for: OpenClamAvatarStoreURLPolicy.syntheticCatalogURL
             )
         )
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsPackageURL(
                 try XCTUnwrap(URL(string:
-                    "https://github.com/tivojn/openclam-avatar-store/releases/download/v1/avatar.avtr?token=leak"
+                    "https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/v1/avatar.avtr?token=leak"
                 ))
             )
         )
@@ -125,7 +124,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
                 try XCTUnwrap(URL(string:
-                    "https://raw.githubusercontent.com/tivojn/openclam-avatar-store/main/catalog/v1/catalog.json?changed=1"
+                    "https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/catalog.json?changed=1"
                 ))
             )
         )
@@ -170,13 +169,13 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         )
         XCTAssertNil(OpenClamAvatarStoreItemPhase.available.percentage)
 
-        let vivieenHalf = OpenClamAvatarStoreItemPhase.downloading(
-            received: 4_355_580,
-            total: 8_711_159
+        let fixtureHalf = OpenClamAvatarStoreItemPhase.downloading(
+            received: 5,
+            total: 10
         )
-        XCTAssertEqual(vivieenHalf.percentage, 50)
+        XCTAssertEqual(fixtureHalf.percentage, 50)
         XCTAssertEqual(
-            OpenClamAvatarStorePresentation.buttonTitle(for: vivieenHalf),
+            OpenClamAvatarStorePresentation.buttonTitle(for: fixtureHalf),
             "Cancel 50%"
         )
     }
@@ -234,7 +233,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
             .appendingPathComponent("OpenClamAvatarStoreTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let cache = OpenClamAvatarStoreCache(root: root)
-        let catalog = productionCatalogData()
+        let catalog = syntheticCatalogData()
         try cache.storeCatalog(catalog)
 
         XCTAssertEqual(cache.loadCatalogData(), catalog)
@@ -242,13 +241,13 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertNoThrow(try OpenClamAvatarStoreCatalogParser.decode(cache.loadCatalogData()!))
     }
 
-    func testVivieenProgressCancelRemovesPartialsAndRetryStartsFresh() async throws {
+    func testSyntheticProgressCancelRemovesPartialsAndRetryStartsFresh() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let cache = OpenClamAvatarStoreCache(
             root: root.appendingPathComponent("cache", isDirectory: true)
         )
-        let client = AvatarStoreScriptedTransferClient(catalogData: productionCatalogData())
+        let client = AvatarStoreScriptedTransferClient(catalogData: syntheticCatalogData())
         let suiteName = "OpenClamAvatarStoreTests.cancel.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -258,7 +257,8 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         let store = OpenClamAvatarStore(
             transferClient: client,
             cache: cache,
-            defaults: defaults
+            defaults: defaults,
+            remoteAccess: testRemoteAccess
         )
         store.load(library: library)
         await waitUntil { store.entries.count == 1 && store.catalogStatus == .current }
@@ -292,7 +292,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         let cache = OpenClamAvatarStoreCache(
             root: root.appendingPathComponent("cache", isDirectory: true)
         )
-        let client = AvatarStoreScriptedTransferClient(catalogData: productionCatalogData())
+        let client = AvatarStoreScriptedTransferClient(catalogData: syntheticCatalogData())
         let suiteName = "OpenClamAvatarStoreTests.offline.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -302,7 +302,8 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         let first = OpenClamAvatarStore(
             transferClient: client,
             cache: cache,
-            defaults: defaults
+            defaults: defaults,
+            remoteAccess: testRemoteAccess
         )
         first.load(library: library)
         await waitUntil { first.catalogStatus == .current }
@@ -312,10 +313,11 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         let offline = OpenClamAvatarStore(
             transferClient: client,
             cache: cache,
-            defaults: defaults
+            defaults: defaults,
+            remoteAccess: testRemoteAccess
         )
         offline.load(library: library)
-        XCTAssertEqual(offline.entries.map(\.id), ["vivieen"])
+        XCTAssertEqual(offline.entries.map(\.id), ["fixture-avatar"])
         await waitUntil {
             if case .cachedOffline = offline.catalogStatus { return true }
             return false
@@ -324,18 +326,81 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         await client.setMode(.online)
         offline.load(library: library)
         await waitUntil { offline.catalogStatus == .current }
-        XCTAssertEqual(offline.entries.map(\.id), ["vivieen"])
+        XCTAssertEqual(offline.entries.map(\.id), ["fixture-avatar"])
     }
 
-    private func productionCatalogData() -> Data {
+    func testReleaseStoreHasNoEndpointAndNeverReadsCacheOrCallsTransfer() async throws {
+        XCTAssertFalse(OpenClamAvatarStoreReleasePolicy.isAvailable)
+        XCTAssertNil(OpenClamAvatarStoreReleasePolicy.catalogURL)
+
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = OpenClamAvatarStoreCache(
+            root: root.appendingPathComponent("cache", isDirectory: true)
+        )
+        try cache.storeCatalog(syntheticCatalogData())
+        let client = AvatarStoreScriptedTransferClient(catalogData: syntheticCatalogData())
+        let library = OpenClamAvatarLibrary(
+            storageRoot: root.appendingPathComponent("library", isDirectory: true)
+        )
+        let store = OpenClamAvatarStore(transferClient: client, cache: cache)
+
+        store.load(library: library)
+        await Task.yield()
+
+        XCTAssertEqual(store.entries, [])
+        XCTAssertEqual(
+            store.catalogStatus,
+            .unavailable(OpenClamAvatarStoreReleasePolicy.unavailableMessage)
+        )
+        let releaseFetchRequests = await client.fetchRequestCount()
+        XCTAssertEqual(releaseFetchRequests, 0)
+    }
+
+    func testDisabledStoreLeavesDirectImportLibraryAndDeleteWorking() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = AvatarStoreScriptedTransferClient(catalogData: syntheticCatalogData())
+        let library = OpenClamAvatarLibrary(
+            storageRoot: root.appendingPathComponent("library", isDirectory: true)
+        )
+        let imported = try await library.importAvatar(from: goldenFixtureURL)
+        let store = OpenClamAvatarStore(transferClient: client)
+
+        store.load(library: library)
+        XCTAssertTrue(library.isImported(id: imported.id))
+        XCTAssertEqual(library.avatar(id: imported.id)?.displayName, imported.displayName)
+        let releaseFetchRequests = await client.fetchRequestCount()
+        XCTAssertEqual(releaseFetchRequests, 0)
+
+        try await library.deleteImportedAvatar(id: imported.id)
+        XCTAssertFalse(library.isImported(id: imported.id))
+    }
+
+    private var testRemoteAccess: OpenClamAvatarStoreRemoteAccess {
+        .testing(catalogURL: OpenClamAvatarStoreURLPolicy.syntheticCatalogURL)
+    }
+
+    private var goldenFixtureURL: URL {
+        get throws {
+            try XCTUnwrap(
+                Bundle(for: Self.self).url(
+                    forResource: "ios-light-golden",
+                    withExtension: "avtr"
+                )
+            )
+        }
+    }
+
+    private func syntheticCatalogData() -> Data {
         Data(
-            #"{"schemaVersion":1,"entries":[{"id":"vivieen","name":"Vivieen","author":"OpenClam","version":1,"thumbnail":{"url":"https://raw.githubusercontent.com/tivojn/openclam-avatar-store/main/catalog/v1/vivieen-thumbnail.png","sha256":"90b73228af6952947cbc0ef23044ae2f661632f1bb9498ce5597aface5c65940","bytes":908807,"mime":"image/png","width":1024,"height":1024},"variants":{"ios-light":{"url":"https://github.com/tivojn/openclam-avatar-store/releases/download/avatars-v1.0.0/Vivieen-iPhone.avtr","sha256":"fda2776d0f6103f15298ccbb4171565eddc7f29df2482b124b646f02e46a43d9","bytes":8711159,"format":"openclam-avatar","profile":"ios-light"},"macos-full":{"url":"https://github.com/tivojn/openclam-avatar-store/releases/download/avatars-v1.0.0/Vivieen-Mac.avtr","sha256":"1615d0fae457c16c36dd46497675e43e2c84e33cd08937c305ebdbba14490f41","bytes":225316946,"format":"openclam-avatar","profile":"macos-full"}}}]}"#.utf8
+            #"{"schemaVersion":1,"entries":[{"id":"fixture-avatar","name":"Fixture Avatar","author":"Example Publisher","version":1,"thumbnail":{"url":"https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/fixture-avatar-thumbnail.png","sha256":"0000000000000000000000000000000000000000000000000000000000000000","bytes":68,"mime":"image/png","width":1,"height":1},"variants":{"ios-light":{"url":"https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/fixtures-v1/fixture-avatar-ios-light.avtr","sha256":"1111111111111111111111111111111111111111111111111111111111111111","bytes":10,"format":"openclam-avatar","profile":"ios-light"},"macos-full":{"url":"https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/fixtures-v1/fixture-avatar-macos-full.avtr","sha256":"2222222222222222222222222222222222222222222222222222222222222222","bytes":20,"format":"openclam-avatar","profile":"macos-full"}}}]}"#.utf8
         )
     }
 
     private func catalogObject() throws -> [String: Any] {
         try XCTUnwrap(
-            JSONSerialization.jsonObject(with: productionCatalogData()) as? [String: Any]
+            JSONSerialization.jsonObject(with: syntheticCatalogData()) as? [String: Any]
         )
     }
 
@@ -415,6 +480,7 @@ private actor AvatarStoreScriptedTransferClient: OpenClamAvatarStoreTransferring
     private let catalogData: Data
     private var mode: Mode = .online
     private var archiveAttempts = 0
+    private var fetchRequests = 0
 
     init(catalogData: Data) {
         self.catalogData = catalogData
@@ -428,12 +494,17 @@ private actor AvatarStoreScriptedTransferClient: OpenClamAvatarStoreTransferring
         archiveAttempts
     }
 
+    func fetchRequestCount() -> Int {
+        fetchRequests
+    }
+
     func fetch(
         _ url: URL,
         maximumBytes: Int,
         expectedBytes: Int?,
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> OpenClamAvatarStoreTransferResult {
+        fetchRequests += 1
         if mode == .offline {
             throw URLError(.notConnectedToInternet)
         }
@@ -442,7 +513,7 @@ private actor AvatarStoreScriptedTransferClient: OpenClamAvatarStoreTransferring
         }
         if url.pathExtension.lowercased() == "avtr" {
             archiveAttempts += 1
-            progress(4_355_580, 8_711_159)
+            progress(5, 10)
             try await Task.sleep(nanoseconds: 30_000_000_000)
             throw URLError(.timedOut)
         }

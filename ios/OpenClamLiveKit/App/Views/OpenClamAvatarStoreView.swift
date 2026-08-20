@@ -82,12 +82,14 @@ struct OpenClamAvatarStoreView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("Try Again") {
-                        store.load(library: avatarLibrary)
+                    if OpenClamAvatarStoreReleasePolicy.isAvailable {
+                        Button("Try Again") {
+                            store.load(library: avatarLibrary)
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("openclam-avatar-store-retry-catalog")
                     }
-                    .buttonStyle(.bordered)
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("openclam-avatar-store-retry-catalog")
                 }
                 .padding(.vertical, 4)
             }

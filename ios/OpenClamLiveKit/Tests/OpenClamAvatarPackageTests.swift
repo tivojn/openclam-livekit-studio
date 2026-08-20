@@ -28,6 +28,7 @@ final class OpenClamAvatarPackageTests: XCTestCase {
 
         XCTAssertEqual(descriptor.id, "golden-guide")
         XCTAssertEqual(descriptor.displayName, "Golden Guide")
+        XCTAssertTrue(descriptor.motions.isEmpty)
         XCTAssertTrue(descriptor.compatibility.supportsFullLocalStage)
         XCTAssertEqual(
             Set(descriptor.assets.keys),
@@ -49,6 +50,157 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         let reloaded = store.loadInstalledDescriptors()
         XCTAssertEqual(reloaded.map(\.id), ["golden-guide"])
         XCTAssertEqual(reloaded.first?.geometry, descriptor.geometry)
+        XCTAssertTrue(reloaded.first?.motions.isEmpty == true)
+    }
+
+    func testMotionV3FixtureImportsValidatedOptionalClipsAndReloads() throws {
+        let root = try temporaryDirectory()
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        let descriptor = try store.installArchive(at: motionFixtureURL)
+
+        XCTAssertEqual(descriptor.id, "motion-guide")
+        XCTAssertEqual(descriptor.displayName, "Motion Guide")
+        XCTAssertEqual(Set(descriptor.motions.keys), [.edgeIdle, .moves])
+        XCTAssertNil(descriptor.motion(.walk))
+        for kind in [OpenClamAvatarMotionKind.edgeIdle, .moves] {
+            let motion = try XCTUnwrap(descriptor.motion(kind))
+            XCTAssertEqual(motion.pixelSize, OpenClamAvatarSize(width: 64, height: 96))
+            XCTAssertEqual(motion.durationMilliseconds, 500)
+            guard case let .installedFile(url) = motion.reference else {
+                return XCTFail("Every v3 motion must resolve to Application Support")
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        }
+
+        let reloaded = try XCTUnwrap(store.loadInstalledDescriptors().first)
+        XCTAssertEqual(reloaded.id, descriptor.id)
+        XCTAssertEqual(Set(reloaded.motions.keys), [.edgeIdle, .moves])
+    }
+
+    func testAuthorizedAraV3HandoffPassesValidationBeforeBundledIDGate() throws {
+        guard let path = ProcessInfo.processInfo.environment[
+            "OPENCLAM_AUTHORIZED_ARA_V3_PATH"
+        ], !path.isEmpty else {
+            throw XCTSkip(
+                "Set OPENCLAM_AUTHORIZED_ARA_V3_PATH for the local owned-package cross-import audit."
+            )
+        }
+
+        let root = try temporaryDirectory()
+        XCTAssertThrowsError(
+            try OpenClamAvatarPackageStore(storageRoot: root).installArchive(
+                at: URL(fileURLWithPath: path)
+            )
+        ) { error in
+            // The protected-ID check runs only after extraction, strict
+            // manifest validation, hashes, image decoding, and alpha-video
+            // probing. Reaching this error proves the handoff passed the full
+            // importer contract without installing over the bundled Ara.
+            XCTAssertEqual(
+                error as? OpenClamAvatarPackageError,
+                .bundledIdentifierCollision
+            )
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+
+    func testExactAuthorizedLegacyAraV2IsQuarantinedWithoutDeletion() throws {
+        guard let path = ProcessInfo.processInfo.environment[
+            "OPENCLAM_AUTHORIZED_ARA_V2_PATH"
+        ], !path.isEmpty else {
+            throw XCTSkip(
+                "Set OPENCLAM_AUTHORIZED_ARA_V2_PATH for the local owned-package migration audit."
+            )
+        }
+
+        let root = try temporaryDirectory()
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        _ = try store.installArchive(at: URL(fileURLWithPath: path))
+        XCTAssertEqual(store.loadInstalledDescriptors().map(\.id), ["ara-2"])
+
+        XCTAssertEqual(
+            store.quarantineOwnedLegacyDuplicates(),
+            [
+                .init(
+                    sourceID: "ara-2",
+                    targetID: "ara",
+                    targetDisplayName: "Ara"
+                ),
+            ]
+        )
+        XCTAssertTrue(store.loadInstalledDescriptors().isEmpty)
+        let quarantine = root.appendingPathComponent(
+            ".retired-owned-ara-2-to-ara-05b4747752bf",
+            isDirectory: true
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: quarantine.appendingPathComponent("manifest.json").path
+            ),
+            "Migration must retain the validated legacy package in a recoverable quarantine."
+        )
+        XCTAssertEqual(
+            store.quarantineOwnedLegacyDuplicates().map(\.sourceID),
+            ["ara-2"],
+            "The durable quarantine must make profile migration retry-safe after a crash."
+        )
+    }
+
+    func testNonmatchingAra2PackageRemainsInstalledAndIsNeverQuarantined() throws {
+        let root = try temporaryDirectory()
+        let arbitraryAra = try archiveByMutatingManifest { manifest in
+            manifest["id"] = "ara-2"
+            manifest["displayName"] = "Ara"
+        }
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        _ = try store.installArchive(at: arbitraryAra)
+
+        XCTAssertTrue(store.quarantineOwnedLegacyDuplicates().isEmpty)
+        XCTAssertEqual(store.loadInstalledDescriptors().map(\.id), ["ara-2"])
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("ara-2/manifest.json").path
+            )
+        )
+    }
+
+    func testMotionV3RejectsDurationMismatchAndCorruptTransparentVideo() throws {
+        let wrongDuration = try archiveByMutatingMotionManifest { manifest in
+            var motions = try XCTUnwrap(manifest["motions"] as? [String: Any])
+            var edgeIdle = try XCTUnwrap(motions["edgeIdle"] as? [String: Any])
+            edgeIdle["durationMilliseconds"] = 700
+            motions["edgeIdle"] = edgeIdle
+            manifest["motions"] = motions
+        }
+        try assertImportError(.motionDurationMismatch("edgeIdle"), archive: wrongDuration)
+
+        let corruptVideo = try archiveByMutatingMotionEntries { entries in
+            let videoIndex = try XCTUnwrap(
+                entries.firstIndex(where: { $0.path == "assets/motion-moves.mov" })
+            )
+            entries[videoIndex].data = Data("not a transparent QuickTime movie".utf8)
+
+            let manifestIndex = try XCTUnwrap(
+                entries.firstIndex(where: { $0.path == "manifest.json" })
+            )
+            var manifest = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: entries[manifestIndex].data)
+                    as? [String: Any]
+            )
+            var motions = try XCTUnwrap(manifest["motions"] as? [String: Any])
+            var moves = try XCTUnwrap(motions["moves"] as? [String: Any])
+            moves["byteCount"] = entries[videoIndex].data.count
+            moves["sha256"] = SHA256.hash(data: entries[videoIndex].data)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            motions["moves"] = moves
+            manifest["motions"] = motions
+            entries[manifestIndex].data = try JSONSerialization.data(
+                withJSONObject: manifest,
+                options: [.sortedKeys]
+            )
+        }
+        try assertImportError(.invalidMotionMedia("moves"), archive: corruptVideo)
     }
 
     func testRejectsLegacyFormatAlias() throws {
@@ -92,7 +244,10 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         XCTAssertThrowsError(
             try OpenClamAvatarPackageStore(storageRoot: root).installArchive(at: archive)
         ) { error in
-            XCTAssertEqual(error as? OpenClamAvatarPackageError, .tooManyFiles)
+            XCTAssertEqual(
+                error as? OpenClamAvatarPackageError,
+                .unexpectedArchivePath("assets/source-portrait.png")
+            )
         }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
     }
@@ -326,11 +481,75 @@ final class OpenClamAvatarPackageTests: XCTestCase {
 
         try store.deleteInstalledAvatar(id: "golden-guide")
         XCTAssertEqual(store.loadInstalledDescriptors(), [])
+        XCTAssertEqual(store.committedDeletionIDs(), ["golden-guide"])
+        store.acknowledgeCommittedDeletion(id: "golden-guide")
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
 
         XCTAssertThrowsError(try store.deleteInstalledAvatar(id: "captain-ayer")) { error in
-            XCTAssertEqual(error as? OpenClamAvatarPackageError, .deletionFailed)
+            XCTAssertEqual(error as? OpenClamAvatarPackageError, .protectedAvatar)
         }
+    }
+
+    func testInterruptedCommittedDeletePurgesExactTombstoneOnRestart() throws {
+        let root = try temporaryDirectory()
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        _ = try store.installArchive(at: goldenFixtureURL)
+        let installed = root.appendingPathComponent("golden-guide", isDirectory: true)
+        let tombstone = root.appendingPathComponent(
+            ".delete-golden-guide.\(UUID().uuidString.lowercased())",
+            isDirectory: true
+        )
+
+        // Simulate termination immediately after the atomic deletion rename,
+        // before best-effort recursive cleanup begins.
+        try FileManager.default.moveItem(at: installed, to: tombstone)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tombstone.path))
+
+        let restarted = OpenClamAvatarPackageStore(storageRoot: root)
+        XCTAssertEqual(restarted.loadInstalledDescriptors(), [])
+        XCTAssertEqual(restarted.committedDeletionIDs(), ["golden-guide"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tombstone.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: installed.path))
+        restarted.acknowledgeCommittedDeletion(id: "golden-guide")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+
+    func testRecoveryKeepsTombstoneWhenReceiptCannotBecomeRegularFile() throws {
+        let root = try temporaryDirectory()
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        _ = try store.installArchive(at: goldenFixtureURL)
+        let transactionID = UUID().uuidString.lowercased()
+        let installed = root.appendingPathComponent("golden-guide", isDirectory: true)
+        let tombstone = root.appendingPathComponent(
+            ".delete-golden-guide.\(transactionID)",
+            isDirectory: true
+        )
+        let blockedReceipt = root.appendingPathComponent(
+            ".delete-receipt-golden-guide.\(transactionID)",
+            isDirectory: true
+        )
+
+        try FileManager.default.moveItem(at: installed, to: tombstone)
+        // A damaged prior launch left a directory where the durable receipt
+        // file belongs. Recovery must retain the only committed-delete marker.
+        try FileManager.default.createDirectory(
+            at: blockedReceipt,
+            withIntermediateDirectories: false
+        )
+
+        let blockedRestart = OpenClamAvatarPackageStore(storageRoot: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tombstone.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: blockedReceipt.path))
+        XCTAssertEqual(blockedRestart.committedDeletionIDs(), [])
+
+        // Once the obstruction is repaired, the next launch creates a valid
+        // receipt, purges the tombstone, and exposes cleanup for reconciliation.
+        try FileManager.default.removeItem(at: blockedReceipt)
+        let retry = OpenClamAvatarPackageStore(storageRoot: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tombstone.path))
+        XCTAssertEqual(retry.committedDeletionIDs(), ["golden-guide"])
+        retry.acknowledgeCommittedDeletion(id: "golden-guide")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
     }
 
     @MainActor
@@ -350,6 +569,8 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         )
         model.reconcileAvatarCatalog(library.identities)
         model.activateAvatar(id: imported.id, displayName: imported.displayName)
+        let importedThreadID = UUID()
+        model.registerThread(importedThreadID, for: imported.id)
         XCTAssertEqual(model.activeAvatarID, "golden-guide")
 
         let restartedLibrary = OpenClamAvatarLibrary(storageRoot: root)
@@ -362,10 +583,284 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         XCTAssertEqual(restartedLibrary.avatar(id: "golden-guide")?.displayName, "Golden Guide")
         XCTAssertEqual(restartedModel.activeAvatarID, "golden-guide")
 
-        try await restartedLibrary.deleteImportedAvatar(id: "golden-guide")
-        restartedModel.removeImportedAvatarProfile(id: "golden-guide")
+        let descriptor = try XCTUnwrap(restartedLibrary.avatar(id: "golden-guide"))
+        let result = try await OpenClamAvatarDeletionCoordinator.perform(
+            decision: .confirm,
+            avatar: descriptor,
+            library: restartedLibrary,
+            configuration: restartedModel
+        )
         XCTAssertEqual(restartedModel.activeAvatarID, AvatarAgentIdentity.defaultID)
         XCTAssertNil(restartedLibrary.avatar(id: "golden-guide"))
+        XCTAssertNil(restartedModel.avatarAgentProfiles["golden-guide"])
+        XCTAssertNil(restartedModel.activeThreadID(for: "golden-guide"))
+        XCTAssertNil(restartedModel.avatarID(for: importedThreadID))
+        XCTAssertEqual(result?.fallbackIdentity?.id, AvatarAgentIdentity.defaultID)
+    }
+
+    @MainActor
+    func testCancelDeletionLeavesAvatarProfileThreadAndFilesUntouched() async throws {
+        let root = try temporaryDirectory()
+        let library = OpenClamAvatarLibrary(storageRoot: root)
+        let avatar = try await library.importAvatar(from: goldenFixtureURL)
+        let model = AIConfigurationModel(
+            defaults: try isolatedDefaults(),
+            storageKey: "avatar-delete-cancel",
+            credentialStore: AvatarPackageMemoryCredentialStore()
+        )
+        model.reconcileAvatarCatalog(library.identities)
+        model.activateAvatar(id: avatar.id, displayName: avatar.displayName)
+        let threadID = UUID()
+        model.registerThread(threadID, for: avatar.id)
+
+        let result = try await OpenClamAvatarDeletionCoordinator.perform(
+            decision: .cancel,
+            avatar: avatar,
+            library: library,
+            configuration: model
+        )
+
+        XCTAssertNil(result)
+        XCTAssertTrue(library.isImported(id: avatar.id))
+        XCTAssertEqual(model.activeAvatarID, avatar.id)
+        XCTAssertNotNil(model.avatarAgentProfiles[avatar.id])
+        XCTAssertEqual(model.activeThreadID(for: avatar.id), threadID)
+        XCTAssertEqual(model.avatarID(for: threadID), avatar.id)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(avatar.id).path
+            )
+        )
+    }
+
+    @MainActor
+    func testPrecommitDeletionFailureRollsBackLibraryAndSelections() async throws {
+        let root = try temporaryDirectory()
+        let library = OpenClamAvatarLibrary(
+            storageRoot: root,
+            deletionMoveItem: { _, _ in
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        )
+        let avatar = try await library.importAvatar(from: goldenFixtureURL)
+        let model = AIConfigurationModel(
+            defaults: try isolatedDefaults(),
+            storageKey: "avatar-delete-failure",
+            credentialStore: AvatarPackageMemoryCredentialStore()
+        )
+        model.reconcileAvatarCatalog(library.identities)
+        model.activateAvatar(id: avatar.id, displayName: avatar.displayName)
+        let threadID = UUID()
+        model.registerThread(threadID, for: avatar.id)
+
+        do {
+            _ = try await OpenClamAvatarDeletionCoordinator.perform(
+                decision: .confirm,
+                avatar: avatar,
+                library: library,
+                configuration: model
+            )
+            XCTFail("A failed atomic rename must not report successful deletion")
+        } catch {
+            XCTAssertEqual(error as? OpenClamAvatarPackageError, .deletionFailed)
+        }
+
+        XCTAssertFalse(library.isMutating)
+        XCTAssertTrue(library.isImported(id: avatar.id))
+        XCTAssertEqual(model.activeAvatarID, avatar.id)
+        XCTAssertNotNil(model.avatarAgentProfiles[avatar.id])
+        XCTAssertEqual(model.activeThreadID(for: avatar.id), threadID)
+        XCTAssertEqual(model.avatarID(for: threadID), avatar.id)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: root.path),
+            [avatar.id]
+        )
+    }
+
+    @MainActor
+    func testPostcommitCleanupFailureStaysDeletedAndPurgesOnRestart() async throws {
+        let root = try temporaryDirectory()
+        let library = OpenClamAvatarLibrary(
+            storageRoot: root,
+            deletionRemoveItem: { _ in
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        )
+        let avatar = try await library.importAvatar(from: goldenFixtureURL)
+        let model = AIConfigurationModel(
+            defaults: try isolatedDefaults(),
+            storageKey: "avatar-delete-cleanup",
+            credentialStore: AvatarPackageMemoryCredentialStore()
+        )
+        model.reconcileAvatarCatalog(library.identities)
+        model.activateAvatar(id: avatar.id, displayName: avatar.displayName)
+
+        let result = try await OpenClamAvatarDeletionCoordinator.perform(
+            decision: .confirm,
+            avatar: avatar,
+            library: library,
+            configuration: model
+        )
+
+        XCTAssertEqual(result?.deletedAvatarID, avatar.id)
+        XCTAssertFalse(library.isImported(id: avatar.id))
+        XCTAssertEqual(model.activeAvatarID, AvatarAgentIdentity.defaultID)
+        let residue = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertEqual(residue.count, 1)
+        XCTAssertTrue(residue[0].hasPrefix(".delete-\(avatar.id)."))
+
+        let restarted = OpenClamAvatarLibrary(storageRoot: root)
+        XCTAssertFalse(restarted.isImported(id: avatar.id))
+        XCTAssertEqual(restarted.pendingCommittedDeletionIDs, [avatar.id])
+        restarted.reconcileCommittedDeletions(configuration: model)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: root.path),
+            []
+        )
+    }
+
+    @MainActor
+    func testCommittedDeletionReceiptPreventsPersonaResurrectionAfterCrash() async throws {
+        let root = try temporaryDirectory()
+        let suiteName = "OpenClamAvatarPackageTests.receipt.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let storageKey = "avatar-delete-receipt"
+
+        let firstLibrary = OpenClamAvatarLibrary(storageRoot: root)
+        let imported = try await firstLibrary.importAvatar(from: goldenFixtureURL)
+        let firstModel = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: storageKey,
+            credentialStore: AvatarPackageMemoryCredentialStore()
+        )
+        firstModel.reconcileAvatarCatalog(firstLibrary.identities)
+        var personalized = firstModel.profile(for: imported.id)
+        personalized.systemPrompt = "A private persona that must not resurrect."
+        personalized.userPrompt = "A saved preference that must be removed."
+        try firstModel.updateAvatarProfile(personalized)
+        firstModel.activateAvatar(
+            id: imported.id,
+            displayName: imported.displayName
+        )
+        let threadID = UUID()
+        firstModel.registerThread(threadID, for: imported.id)
+
+        // Simulate termination after the atomic package commit, before the
+        // in-process coordinator can remove the persisted profile and threads.
+        try OpenClamAvatarPackageStore(storageRoot: root)
+            .deleteInstalledAvatar(id: imported.id)
+
+        let restartedLibrary = OpenClamAvatarLibrary(storageRoot: root)
+        let restartedModel = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: storageKey,
+            credentialStore: AvatarPackageMemoryCredentialStore()
+        )
+        XCTAssertEqual(
+            restartedLibrary.pendingCommittedDeletionIDs,
+            [imported.id]
+        )
+        XCTAssertEqual(
+            restartedModel.profile(for: imported.id).systemPrompt,
+            personalized.systemPrompt
+        )
+
+        restartedLibrary.reconcileCommittedDeletions(
+            configuration: restartedModel
+        )
+        restartedModel.reconcileAvatarCatalog(restartedLibrary.identities)
+
+        XCTAssertEqual(
+            restartedModel.activeAvatarID,
+            AvatarAgentIdentity.defaultID
+        )
+        XCTAssertNil(restartedModel.avatarAgentProfiles[imported.id])
+        XCTAssertNil(restartedModel.activeThreadID(for: imported.id))
+        XCTAssertNil(restartedModel.avatarID(for: threadID))
+        XCTAssertTrue(restartedLibrary.pendingCommittedDeletionIDs.isEmpty)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: root.path),
+            []
+        )
+
+        let reimported = try await restartedLibrary.importAvatar(
+            from: goldenFixtureURL
+        )
+        restartedModel.reconcileAvatarCatalog(restartedLibrary.identities)
+        XCTAssertEqual(reimported.id, imported.id)
+        XCTAssertEqual(restartedModel.profile(for: imported.id).systemPrompt, "")
+        XCTAssertEqual(restartedModel.profile(for: imported.id).userPrompt, "")
+    }
+
+    @MainActor
+    func testConcurrentDeleteTapIsRejectedWhileCommitIsInFlight() async throws {
+        let root = try temporaryDirectory()
+        let enteredCommit = expectation(description: "entered deletion commit")
+        let releaseCommit = DispatchSemaphore(value: 0)
+        let library = OpenClamAvatarLibrary(
+            storageRoot: root,
+            deletionMoveItem: { source, destination in
+                enteredCommit.fulfill()
+                guard releaseCommit.wait(timeout: .now() + 3) == .success else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try FileManager.default.moveItem(at: source, to: destination)
+            }
+        )
+        let avatar = try await library.importAvatar(from: goldenFixtureURL)
+        let firstDelete = Task { @MainActor in
+            try await library.deleteImportedAvatar(id: avatar.id)
+        }
+
+        await fulfillment(of: [enteredCommit], timeout: 3)
+        XCTAssertEqual(library.mutation, .deleting(avatar.id))
+        do {
+            try await library.deleteImportedAvatar(id: avatar.id)
+            XCTFail("A second delete tap must not start another filesystem transaction")
+        } catch {
+            XCTAssertEqual(
+                error as? OpenClamAvatarPackageError,
+                .avatarOperationInProgress
+            )
+        }
+
+        releaseCommit.signal()
+        try await firstDelete.value
+        XCTAssertFalse(library.isMutating)
+        XCTAssertFalse(library.isImported(id: avatar.id))
+    }
+
+    @MainActor
+    func testProtectedAvatarDeletionIsRejectedWithoutMutation() async throws {
+        let root = try temporaryDirectory()
+        let library = OpenClamAvatarLibrary(storageRoot: root)
+        let model = AIConfigurationModel(
+            defaults: try isolatedDefaults(),
+            storageKey: "avatar-delete-protected",
+            credentialStore: AvatarPackageMemoryCredentialStore()
+        )
+        model.reconcileAvatarCatalog(library.identities)
+        let protectedAvatar = try XCTUnwrap(
+            library.avatar(id: AvatarAgentIdentity.defaultID)
+        )
+
+        do {
+            _ = try await OpenClamAvatarDeletionCoordinator.perform(
+                decision: .confirm,
+                avatar: protectedAvatar,
+                library: library,
+                configuration: model
+            )
+            XCTFail("A bundled avatar must never be deletable")
+        } catch {
+            XCTAssertEqual(error as? OpenClamAvatarPackageError, .protectedAvatar)
+        }
+
+        XCTAssertEqual(model.activeAvatarID, AvatarAgentIdentity.defaultID)
+        XCTAssertNotNil(library.avatar(id: AvatarAgentIdentity.defaultID))
+        XCTAssertFalse(library.isMutating)
     }
 
     func testArchiveMetadataAcceptsOnlyTheExactSafeFileSet() throws {
@@ -484,6 +979,18 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         }
     }
 
+    private var motionFixtureURL: URL {
+        get throws {
+            try XCTUnwrap(
+                Bundle(for: Self.self).url(
+                    forResource: "ios-light-motion-v3-golden",
+                    withExtension: "avtr"
+                ),
+                "The generated ios-light v3 motion fixture must be in the test bundle."
+            )
+        }
+    }
+
     private var expectedAssetRoles: Set<OpenClamAvatarAssetRole> {
         Set(
             [
@@ -504,6 +1011,14 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         )
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
+    }
+
+    private func isolatedDefaults() throws -> UserDefaults {
+        let suite = "OpenClamAvatarPackageTests.defaults.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
     }
 
     private func assertManifestMutationRejected(
@@ -555,12 +1070,43 @@ final class OpenClamAvatarPackageTests: XCTestCase {
     }
 
     private func fixtureEntries() throws -> [FixtureEntry] {
-        let archive = try ZIPFoundation.Archive(url: goldenFixtureURL, accessMode: .read)
+        try fixtureEntries(from: goldenFixtureURL)
+    }
+
+    private func fixtureEntries(from fixtureURL: URL) throws -> [FixtureEntry] {
+        let archive = try ZIPFoundation.Archive(url: fixtureURL, accessMode: .read)
         return try archive.map { entry in
             var data = Data()
             _ = try archive.extract(entry) { data.append($0) }
             return FixtureEntry(path: entry.path, type: entry.type, data: data)
         }
+    }
+
+    private func archiveByMutatingMotionManifest(
+        _ mutate: (inout [String: Any]) throws -> Void
+    ) throws -> URL {
+        try archiveByMutatingMotionEntries { entries in
+            let index = try XCTUnwrap(
+                entries.firstIndex(where: { $0.path == "manifest.json" })
+            )
+            var manifest = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: entries[index].data)
+                    as? [String: Any]
+            )
+            try mutate(&manifest)
+            entries[index].data = try JSONSerialization.data(
+                withJSONObject: manifest,
+                options: [.sortedKeys]
+            )
+        }
+    }
+
+    private func archiveByMutatingMotionEntries(
+        _ mutate: (inout [FixtureEntry]) throws -> Void
+    ) throws -> URL {
+        var entries = try fixtureEntries(from: motionFixtureURL)
+        try mutate(&entries)
+        return try makeArchive(entries)
     }
 
     private func archiveByMutatingManifest(

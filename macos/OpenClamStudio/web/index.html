@@ -157,6 +157,7 @@
     .message { display: flex; align-items: flex-end; gap: 7px; margin: 4px 0; }
     .message.user { justify-content: flex-end; }
     .bubble {
+      min-width: 0;
       max-width: min(82%, 530px);
       padding: 9px 12px;
       border-radius: 14px;
@@ -165,6 +166,7 @@
       line-height: 1.45;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+      unicode-bidi: plaintext;
       user-select: text;
     }
 
@@ -172,7 +174,15 @@
     .message.user .bubble { background: #ef625f; color: #180c0c; border-bottom-right-radius: 5px; }
     .message.working .bubble { color: var(--muted); letter-spacing: .12em; }
 
-    .read-button {
+    .response-actions {
+      display: flex;
+      flex: none;
+      align-items: center;
+      align-self: flex-end;
+      gap: 1px;
+    }
+
+    .response-action {
       width: 28px;
       height: 28px;
       flex: none;
@@ -185,8 +195,46 @@
       cursor: pointer;
     }
 
-    .read-button:hover { color: white; background: rgba(255,255,255,.08); }
-    .read-button svg { width: 15px; height: 15px; fill: currentColor; }
+    .response-action:hover { color: white; background: rgba(255,255,255,.08); }
+    .response-action svg { width: 15px; height: 15px; fill: currentColor; }
+
+    #selectionActions {
+      position: absolute;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 4px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: rgba(35, 37, 42, .98);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .34);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity .12s ease, visibility .12s ease;
+    }
+
+    #selectionActions.show {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .selection-action {
+      min-height: 30px;
+      padding: 5px 9px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 560;
+      white-space: nowrap;
+    }
+
+    .selection-action:hover { background: rgba(255,255,255,.09); }
 
     .media-card { margin: 8px 0 4px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #080a0d; }
     .media-card img, .media-card video { width: 100%; max-height: 260px; display: block; object-fit: contain; }
@@ -218,6 +266,7 @@
       color: var(--ink);
       padding: 9px 7px;
       line-height: 1.42;
+      unicode-bidi: plaintext;
       user-select: text;
     }
 
@@ -482,9 +531,15 @@
       padding: 7px;
       border: 1px solid var(--codex-border);
       border-radius: var(--pet-surface-radius);
-      background: rgba(24, 24, 24, .97);
-      backdrop-filter: blur(18px);
-      box-shadow: 0 16px 48px rgba(0, 0, 0, .34);
+      /* Chromium's backdrop-filter backing surface is rectangular in a
+         transparent Electron window. It painted the large grey square seen
+         around this otherwise rounded dock. The near-opaque dock already has
+         sufficient contrast, so keep the rounded surface and remove only the
+         compositor halo. */
+      background: rgba(24, 24, 24, .985);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+      box-shadow: none;
       transform: translateY(12px);
     }
     html.chat-open #chatDock { transform: translateY(0); }
@@ -521,8 +576,15 @@
       background: var(--codex-control);
       color: var(--codex-text);
     }
-    .read-button { color: var(--codex-text-tertiary); border-radius: 8px; }
-    .read-button:hover { color: var(--codex-text); background: rgba(255, 255, 255, .08); }
+    .response-action { color: var(--codex-text-tertiary); border-radius: 8px; }
+    .response-action:hover { color: var(--codex-text); background: rgba(255, 255, 255, .08); }
+    #selectionActions {
+      border-color: var(--codex-border-heavy);
+      background: rgba(40, 40, 40, .99);
+      box-shadow: 0 12px 34px rgba(0, 0, 0, .42);
+    }
+    .selection-action { color: var(--codex-text); }
+    .selection-action:hover { background: rgba(255, 255, 255, .08); }
     .media-card { border-color: var(--codex-border); border-radius: 12px; background: var(--codex-under); }
 
     #composerRow {
@@ -737,11 +799,15 @@
       <span id="recordingClock">0:00.0</span>
     </div>
     <div id="conversation" role="log" aria-live="polite" aria-relevant="additions"></div>
+    <div id="selectionActions" role="toolbar" aria-label="Selected response actions" aria-hidden="true" inert>
+      <button id="selectionCopy" class="selection-action" type="button">Copy</button>
+      <button id="selectionAskAI" class="selection-action" type="button" aria-keyshortcuts="Meta+Shift+A Control+Shift+A">Ask AI</button>
+    </div>
     <div id="composerRow">
       <button id="pttButton" class="composer-button" type="button" aria-label="Hold to talk" title="Hold to talk · Space">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
       </button>
-      <textarea id="composer" rows="1" maxlength="12000" autocomplete="off" aria-label="Message" placeholder="Ask anything…"></textarea>
+      <textarea id="composer" rows="1" maxlength="12000" autocomplete="off" dir="auto" aria-label="Message" placeholder="Ask anything…"></textarea>
       <button id="sendButton" class="composer-button" type="button" aria-label="Send message" title="Send" disabled>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-7 8-1-8-1-3-7z"/></svg>
       </button>
@@ -787,6 +853,9 @@
     const settingsButton = document.getElementById('settingsButton');
     const chatDock = document.getElementById('chatDock');
     const conversation = document.getElementById('conversation');
+    const selectionActions = document.getElementById('selectionActions');
+    const selectionCopy = document.getElementById('selectionCopy');
+    const selectionAskAI = document.getElementById('selectionAskAI');
     const composer = document.getElementById('composer');
     const sendButton = document.getElementById('sendButton');
     const closeChatButton = document.getElementById('closeChatButton');
@@ -810,21 +879,29 @@
     let pixelRatio = 1;
     let shellState = { onBattery: false, pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
     let roamState = { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
+    let roamPresentationKey = '';
     let moveUntil = 0;
     let idleDocked = false;
+    let presentedMotionKey = '';
+    let paintedMotionKey = '';
     let avatarOnlyMotion = false;
     let composerFocusBeforeMotion = null;
     let lastActivity = performance.now();
     let lastFrame = 0;
     let lastControlReport = 0;
-    let pointer = { x: -1, y: -1, inside: false };
+    let pointer = { x: -1, y: -1, inside: false, seen: false, at: 0 };
     let avatarHit = false;
     let petHit = false;
     let lastHitSent = 0;
     let petEngaged = false;
     let dragging = false;
     let canvasGesture = null;
+    let avatarZoomGesture = null;
+    let avatarZoomSettleTimer = 0;
     let toastTimer = 0;
+    let emailReviewState = null;
+    let selectedFeedback = null;
+    let selectingFeedback = false;
     let turnController = null;
     let thinkingNode = null;
     let ptt = null;
@@ -842,6 +919,7 @@
     let speechTrackIndex = 0;
     let agentSpeaking = false;
     const history = [];
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
     const faceCanvas = document.createElement('canvas');
     const faceContext = faceCanvas.getContext('2d', { alpha: true });
@@ -856,6 +934,19 @@
     let blinkStartedAt = 0;
     let nextMicroExpression = performance.now() + 2800;
     let microExpression = { value: 0, started: 0, duration: 1 };
+    // Upper-face speech life is deliberately slower than the viseme bank.
+    // A held random target (rather than a new random number each frame) keeps
+    // brows and the infraorbital band alive without reading as jitter.
+    const speechExpressionState = {
+      mode: 'idle', started: 0, duration: 1, nextAt: 0,
+      from: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+      to: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+      value: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+    };
+    const gazeState = { x: 0, y: 0, at: 0 };
+    const bodyMotionState = { speechBlend: 0, at: 0 };
+    const LIVE_RIG_KEY = 'openclam-live-rig';
+    let liveRigOverride = {};
 
     const setStatus = (text, tone = '') => {
       statusText.textContent = text;
@@ -921,6 +1012,7 @@
 
     const closeChat = () => {
       if (ptt) return;
+      hideSelectionActions(true);
       root.classList.remove('chat-open');
       chatButton.setAttribute('aria-label', 'Open Chat and Push to Talk');
       chatButton.title = 'Open Chat and Push to Talk';
@@ -987,6 +1079,49 @@
       return best;
     };
 
+    const boundedRigTarget = (value, fallback) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric)
+        ? Math.max(0, Math.min(150, numeric)) : fallback;
+    };
+
+    const syncLiveRigOverride = raw => {
+      let candidate = {};
+      try {
+        const parsed = raw === undefined
+          ? JSON.parse(localStorage.getItem(LIVE_RIG_KEY) || 'null')
+          : JSON.parse(raw || 'null');
+        const activeSlug = String(manifest && manifest.avatar && manifest.avatar.slug || '');
+        if (parsed && typeof parsed === 'object' && activeSlug
+            && String(parsed.slug || '') === activeSlug) {
+          for (const key of ['brows', 'eyebags']) {
+            const value = Number(parsed[key]);
+            if (Number.isFinite(value)) candidate[key] = boundedRigTarget(value, 0);
+          }
+        }
+      } catch (_) { /* an old/corrupt settings draft never affects the avatar */ }
+      liveRigOverride = candidate;
+    };
+
+    const rigTarget = (key, fallback) => {
+      if (Object.prototype.hasOwnProperty.call(liveRigOverride, key)) {
+        return boundedRigTarget(liveRigOverride[key], fallback);
+      }
+      const profile = manifest && manifest.rig_profile;
+      return boundedRigTarget(profile && profile[key], fallback);
+    };
+
+    // The historical calibrated Brow 10% target is the natural talking
+    // reference, so its gain stays legible. The square-root curve keeps the
+    // zero position fully still while preventing experimental values from
+    // becoming theatrical at the top of the slider.
+    const rigExpressionGain = (key, fallback, reference, ceiling = 1.35) =>
+      Math.min(ceiling, Math.sqrt(rigTarget(key, fallback) / reference));
+
+    addEventListener('storage', event => {
+      if (event.key === LIVE_RIG_KEY) syncLiveRigOverride(event.newValue);
+    });
+
     const loadMotion = async kind => {
       const clip = manifest && manifest.motion && manifest.motion[kind];
       if (!clip) return;
@@ -994,7 +1129,11 @@
       if (kind !== 'walk' && clip.alpha_stream) {
         const video = document.createElement('video');
         video.muted = true;
-        video.loop = true;
+        // Edge Idle and Moves are authored one-shot clips. Looping Edge Idle
+        // crossed Ara's known last-to-first seam while the nine-second ledge
+        // hold was still active, and Chromium could expose a decoder gap on
+        // that seek. Freeze the final decoded frame until the next state.
+        video.loop = false;
         video.playsInline = true;
         video.preload = 'auto';
         video.src = `${clip.alpha_stream}?v=${assetRevision}`;
@@ -1005,6 +1144,10 @@
           video.load();
         });
         if (video.videoWidth) loaded.video = video;
+      }
+      if (clip.poster) {
+        const poster = await loadImage(clip.poster);
+        if (poster) loaded.posterImage = poster;
       }
       if (!loaded.video || kind === 'walk') {
         for (const sheet of clip.sheets || []) {
@@ -1042,6 +1185,7 @@
         if (!response.ok) throw new Error('missing avatar');
         manifest = await response.json();
         if (!manifest || !Array.isArray(manifest.visemes) || !manifest.frames) throw new Error('invalid avatar');
+        syncLiveRigOverride();
 
         const firstFrame = manifest.frames.sil || manifest.frames[manifest.visemes[0]];
         const first = await loadImage(firstFrame && (firstFrame.open || firstFrame.shut));
@@ -1147,6 +1291,8 @@
 
     /* track-stabiliser:start */
     const XFADE = .070;
+    const STANDBY_MAINTENANCE_MS = 250;
+    const STANDBY_GAZE_SETTLE_MS = 420;
     const MIN_POSE = .020;
     const VISUAL_LEAD = XFADE * .5;
     const LOCKED_POSES = new Set(['sil', 'PP']);
@@ -1358,7 +1504,16 @@
       return 'sil';
     };
 
-    const blinkAmount = now => {
+    const blinkAmount = (now, reduce = false) => {
+      // A blink and its dependent lower-lid/under-eye strip are decorative
+      // renderer motion.  Respect Reduced Motion immediately, including in
+      // the middle of a blink, and defer the next one until motion is allowed
+      // again instead of resuming an in-progress close.
+      if (reduce) {
+        blinkStartedAt = 0;
+        nextBlinkAt = Math.max(nextBlinkAt, now + 1000);
+        return 0;
+      }
       if (!blinkStartedAt && now >= nextBlinkAt) blinkStartedAt = now;
       if (!blinkStartedAt) return 0;
       const elapsed = now - blinkStartedAt;
@@ -1370,13 +1525,108 @@
       return 0;
     };
 
-    const microBrow = now => {
+    const microBrow = (now, reduce = false) => {
+      if (reduce) return 0;
       if (now >= nextMicroExpression) {
         microExpression = { value: Math.random() * 2 - 1, started: now, duration: 900 + Math.random() * 900 };
         nextMicroExpression = now + 2800 + Math.random() * 4300;
       }
       const phase = (now - microExpression.started) / microExpression.duration;
       return phase > 0 && phase < 1 ? microExpression.value * Math.sin(Math.PI * phase) : 0;
+    };
+
+    const speechExpressionAt = (now, speaking, state, reduce = false) => {
+      const zero = { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 };
+      const interpolate = (from, to, amount) => {
+        const t = Math.max(0, Math.min(1, amount));
+        const eased = t * t * (3 - 2 * t);
+        return Object.fromEntries(Object.keys(zero).map(key => [key,
+          Number(from[key] || 0) + (Number(to[key] || 0) - Number(from[key] || 0)) * eased,
+        ]));
+      };
+      if (reduce) {
+        state.mode = 'idle';
+        state.value = zero;
+        return zero;
+      }
+      if (!speaking) {
+        if (state.mode === 'speaking') {
+          state.from = { ...state.value };
+          state.to = zero;
+          state.started = now;
+          state.duration = 280;
+          state.mode = 'release';
+        }
+        if (state.mode !== 'release') return zero;
+        const value = interpolate(state.from, state.to,
+          (now - state.started) / Math.max(1, state.duration));
+        state.value = value;
+        if (now - state.started >= state.duration) state.mode = 'idle';
+        return value;
+      }
+      if (state.mode !== 'speaking' || now >= state.nextAt) {
+        state.from = { ...(state.value || zero) };
+        state.to = {
+          // Tiny semi-random phrases: a soft knit/raise and an under-eye
+          // bunch follow speech together, but never repeat on a metronome.
+          brow: .22 + Math.random() * .48,
+          underEye: .24 + Math.random() * .44,
+          squeeze: Math.random() < .28 ? 1.35 : 0,
+          asymmetry: (Math.random() * 2 - 1) * .14,
+        };
+        state.started = now;
+        state.duration = 480 + Math.random() * 540;
+        state.nextAt = now + state.duration + 120 + Math.random() * 260;
+        state.mode = 'speaking';
+      }
+      const value = interpolate(state.from, state.to,
+        (now - state.started) / Math.max(1, state.duration));
+      state.value = value;
+      return value;
+    };
+
+    // Cursor attention is measured from the avatar's eyes rather than from the
+    // centre of its transparent window. The tanh curve is lively nearby and
+    // asymptotically bounded to the calibrated atlas, so a cursor on another
+    // display still reads clearly without ever asking the eyes for an
+    // anatomically impossible pose.
+    const cursorGazeTarget = (point, anchor, ranges, viewport) => {
+      const eye = anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)
+        ? anchor : { x: 0, y: 0 };
+      const tracked = point && point.seen && Number.isFinite(point.x) && Number.isFinite(point.y)
+        ? point : eye;
+      const width = Math.max(1, Number(viewport && viewport.width) || 1);
+      const height = Math.max(1, Number(viewport && viewport.height) || 1);
+      const limitX = Math.max(0, Number(ranges && ranges.x) || 0);
+      const limitY = Math.max(0, Number(ranges && ranges.y) || 0);
+      const directionX = Math.tanh((tracked.x - eye.x) / Math.max(64, width * .12));
+      const directionY = Math.tanh((tracked.y - eye.y) / Math.max(84, height * .16));
+      return {
+        x: Math.max(-limitX, Math.min(limitX, directionX * limitX * .84)),
+        y: Math.max(-limitY, Math.min(limitY, directionY * limitY * .78)),
+      };
+    };
+
+    const smoothCursorGaze = (state, target, now, reduce = false) => {
+      const elapsed = state.at > 0 ? Math.max(1, Math.min(80, now - state.at)) : 16;
+      const response = reduce ? 1 : 1 - Math.exp(-elapsed / 72);
+      state.x += (target.x - state.x) * response;
+      state.y += (target.y - state.y) * response;
+      state.at = now;
+      return { x: state.x, y: state.y };
+    };
+
+    const avatarFaceAnchor = () => {
+      const geometry = lastBodyGeometry;
+      const face = geometry && geometry.metadata && geometry.metadata.alignment
+        && geometry.metadata.alignment.face_bounds;
+      if (!geometry || !Array.isArray(face) || face.length < 4) {
+        return { x: innerWidth * .5, y: innerHeight * .42 };
+      }
+      return {
+        x: geometry.fit.x + (Number(face[0]) + Number(face[2]) * .5) * geometry.fit.scale,
+        y: geometry.fit.y + (Number(face[1]) + Number(face[3]) * .5) * geometry.fit.scale,
+      };
     };
 
     const drawStripState = (target, image, geometry, values, value, row = 0) => {
@@ -1416,35 +1666,57 @@
         faceContext.globalAlpha = 1;
       }
 
-      const blink = blinkAmount(now);
-      const pointerX = pointer.inside ? pointer.x : innerWidth * .5;
-      const pointerY = pointer.inside ? pointer.y : innerHeight * .42;
+      const blink = blinkAmount(now, reducedMotion.matches);
       const gazeXValues = manifest.gaze && manifest.gaze.dxs || [0];
       const gazeYValues = manifest.gaze && manifest.gaze.dys || [0];
-      const gazeX = (pointerX / Math.max(1, innerWidth) - .5) * 2 * Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0);
-      const gazeY = (pointerY / Math.max(1, innerHeight) - .45) * 2 * Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0);
+      const gazeTarget = cursorGazeTarget(pointer, avatarFaceAnchor(), {
+        x: Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
+        y: Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0),
+      }, { width: innerWidth, height: innerHeight });
+      const gaze = smoothCursorGaze(gazeState, gazeTarget, now, reducedMotion.matches);
       const browValues = manifest.brow && manifest.brow.dys || [0];
       const browTop = Math.max(...browValues.map(value => Math.abs(Number(value))), 0);
-      const browValue = (agentSpeaking ? -.58 : -.18 * microBrow(now)) * browTop;
+      const liveAudioSpeaking = Boolean(
+        live && live.remoteAudioState && live.remoteAudioState.speaking);
+      const speaking = Boolean(agentSpeaking || speechSource || liveAudioSpeaking);
+      const upperFaceSpeaking = speaking && !reducedMotion.matches;
+      const expression = speechExpressionAt(now, upperFaceSpeaking,
+        speechExpressionState, reducedMotion.matches);
+      const browGain = rigExpressionGain('brows', 10, 10);
+      const eyebagGain = rigExpressionGain('eyebags', 35, 35);
+      const browValue = (upperFaceSpeaking
+        ? -(.24 + expression.brow * .48) * browGain
+        : -.18 * microBrow(now, reducedMotion.matches) * browGain) * browTop;
 
       if (manifest.brow) {
         const squeeze = manifest.brow.sqs || [0];
-        const row = nearestIndex(squeeze, agentSpeaking ? .25 : 0);
-        for (const key of ['l', 'r']) drawStripState(faceContext, layers.brow[key], manifest.brow[key], browValues, browValue, row);
+        const row = nearestIndex(squeeze, upperFaceSpeaking ? expression.squeeze : 0);
+        for (const key of ['l', 'r']) {
+          const side = key === 'l' ? 1 - expression.asymmetry : 1 + expression.asymmetry;
+          drawStripState(faceContext, layers.brow[key], manifest.brow[key], browValues,
+            browValue * side, row);
+        }
       }
       if (manifest.cheek) {
         const values = manifest.cheek.ups || [0];
-        const value = (agentSpeaking || speechSource) ? Number(values[values.length - 1] || 0) * .35 : 0;
+        const value = speaking ? Number(values[values.length - 1] || 0) * .35 : 0;
         for (const key of ['l', 'r']) drawStripState(faceContext, layers.cheek[key], manifest.cheek[key], values, value);
       }
       if (manifest.eyebag) {
         const values = manifest.eyebag.ups || [0];
-        const value = blink * Number(values[values.length - 1] || 0) * .3;
-        for (const key of ['l', 'r']) drawStripState(faceContext, layers.eyebag[key], manifest.eyebag[key], values, value);
+        const maximum = Number(values[values.length - 1] || 0);
+        const blinkValue = blink * maximum * .3;
+        const speechValue = upperFaceSpeaking
+          ? (.20 + expression.underEye * .42) * eyebagGain * maximum : 0;
+        for (const key of ['l', 'r']) {
+          const side = key === 'l' ? 1 - expression.asymmetry : 1 + expression.asymmetry;
+          drawStripState(faceContext, layers.eyebag[key], manifest.eyebag[key], values,
+            Math.max(blinkValue, speechValue * side));
+        }
       }
       if (manifest.gaze) {
-        const row = nearestIndex(gazeYValues, gazeY);
-        for (const key of ['l', 'r']) drawStripState(faceContext, layers.gaze[key], manifest.gaze[key], gazeXValues, gazeX, row);
+        const row = nearestIndex(gazeYValues, gaze.y);
+        for (const key of ['l', 'r']) drawStripState(faceContext, layers.gaze[key], manifest.gaze[key], gazeXValues, gaze.x, row);
       }
       if (manifest.eyes && Array.isArray(manifest.eyes.states)) {
         const states = manifest.eyes.states;
@@ -1484,6 +1756,20 @@
       }
     };
 
+    const motionPhaseAt = (state, clip, epochMs) => {
+      const wrapped = (((Number(state && state.phase) || 0) % 1) + 1) % 1;
+      if (!state || !state.enabled || state.mode !== 'walk') return wrapped;
+      const sampledAt = Number(state.sampledAt);
+      if (!Number.isFinite(sampledAt) || !Number.isFinite(epochMs)) return wrapped;
+      const cycleSeconds = Number(clip && clip.cycle_seconds)
+        || Math.max(.1, Number(clip && clip.frames || 1) / Math.max(1, Number(clip && clip.fps || 1)));
+      // Main owns screen travel and periodically phase-locks this clock. Fill
+      // only the short interval between IPC packets so a 24fps atlas follows
+      // the display clock instead of inheriting 16–67ms packet jitter.
+      const elapsedMs = Math.max(0, Math.min(100, epochMs - sampledAt));
+      return (wrapped + elapsedMs / (cycleSeconds * 1000)) % 1;
+    };
+
     const motionFrame = (clip, now, phase = null) => {
       if (!clip || !clip.frames || !clip.sheets || !clip.sheets.length) return null;
       const raw = phase === null
@@ -1500,19 +1786,49 @@
       };
     };
 
+    const clearStage = () => {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    };
+
+    const beginMotionPresentation = (kind, edge, clip) => {
+      const key = `${kind}:${edge || ''}`;
+      if (key === presentedMotionKey) return key;
+      presentedMotionKey = key;
+      paintedMotionKey = '';
+      for (const otherClip of Object.values(motion)) {
+        if (otherClip !== clip && otherClip.video && !otherClip.video.paused) otherClip.video.pause();
+      }
+      if (clip.video) {
+        clip.video.pause();
+        try { clip.video.currentTime = 0; } catch (_) { /* poster covers a pending seek */ }
+        clip.video.play().catch(() => {});
+      }
+      return key;
+    };
+
+    const endMotionPresentation = () => {
+      if (!presentedMotionKey) return;
+      presentedMotionKey = '';
+      paintedMotionKey = '';
+      for (const clip of Object.values(motion)) {
+        if (clip.video && !clip.video.paused) clip.video.pause();
+      }
+    };
+
     const drawMotion = (kind, now, edge = null) => {
       const clip = motion[kind];
       if (!clip) return false;
-      for (const [otherKind, otherClip] of Object.entries(motion)) {
-        if (otherKind !== kind && otherClip.video && !otherClip.video.paused) otherClip.video.pause();
-      }
+      const presentationKey = beginMotionPresentation(kind, edge, clip);
       const width = Number(clip.frame_width) || 720;
       const height = Number(clip.frame_height) || 1088;
       const fit = cameraFor({ bounds: clip.bounds || [0, 0, width, height] }, width, height, 'full');
       const direction = Number(roamState.direction) || 1;
       const freeIdle = kind === 'idle' && clip.anchor_mode === 'free';
       const mirror = kind === 'walk' ? direction < 0 : edge === 'right' && !freeIdle;
-      const frame = clip.video ? null : motionFrame(clip, now, kind === 'walk' && roamState.enabled ? roamState.phase : null);
+      const phase = kind === 'walk' && roamState.enabled
+        ? motionPhaseAt(roamState, clip, performance.timeOrigin + now) : null;
+      const frame = clip.video ? null : motionFrame(clip, now, phase);
       let x = fit.x;
       if (kind === 'idle' && edge && !freeIdle) {
         const anchors = clip.edge_anchors || {};
@@ -1522,23 +1838,65 @@
         x = edge === 'left' ? 3 - leftSupport * fit.scale : innerWidth - 3 - (width - leftSupport) * fit.scale;
       }
 
+      const videoReady = Boolean(clip.video && clip.video.readyState >= 2 && !clip.video.seeking);
+      const fallback = !videoReady && !frame ? clip.posterImage : null;
+      // A transient decoder state must hold the last valid transparent frame,
+      // never clear the stage and expose the standing plate for one refresh.
+      if (!videoReady && !frame && !fallback) return paintedMotionKey === presentationKey;
+
+      clearStage();
       context.save();
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * x, pixelRatio * fit.y);
       if (mirror) { context.translate(width, 0); context.scale(-1, 1); }
-      if (clip.video && clip.video.readyState >= 2) {
-        if (clip.video.paused) clip.video.play().catch(() => {});
+      if (videoReady) {
+        const frozen = roamState.enabled && roamState.mode === 'stand';
+        if (frozen && !clip.video.paused) clip.video.pause();
+        else if (!frozen && clip.video.paused && !clip.video.ended) clip.video.play().catch(() => {});
         context.drawImage(clip.video, 0, 0, width, height);
       } else if (frame) {
         context.drawImage(frame.sheet.image, frame.sx, frame.sy, width, height, 0, 0, width, height);
       } else {
-        context.restore();
-        return false;
+        context.drawImage(fallback, 0, 0, width, height);
       }
       context.restore();
+      paintedMotionKey = presentationKey;
       return true;
     };
 
+    // Speech should be carried by the mouth and expression bank, not by a
+    // metronomic full-body rock. Keep a small, slow counter-sway and breath so
+    // the plate remains alive; reduced-motion users get a completely stable
+    // silhouette while lip sync itself stays available.
+    const bodyMotionAt = (now, speaking, state, reduce = false) => {
+      const target = speaking ? 1 : 0;
+      if (reduce) {
+        state.speechBlend = target;
+        state.at = now;
+        return { sway: 0, breathe: 1 };
+      }
+      const elapsed = state.at > 0 ? Math.max(1, Math.min(80, now - state.at)) : 16;
+      const responseTime = target > state.speechBlend ? 260 : 420;
+      const response = 1 - Math.exp(-elapsed / responseTime);
+      state.speechBlend += (target - state.speechBlend) * response;
+      state.speechBlend = Math.max(0, Math.min(1, state.speechBlend));
+      state.at = now;
+      const idle = {
+        sway: Math.sin(now / 2200) * .0056,
+        breathe: 1 + Math.sin(now / 1250) * .0025,
+      };
+      const speech = {
+        sway: Math.sin(now / 1050) * .0011 + Math.sin(now / 2600) * .00025,
+        breathe: 1 + Math.sin(now / 1650) * .0009,
+      };
+      const blend = state.speechBlend;
+      return {
+        sway: idle.sway + (speech.sway - idle.sway) * blend,
+        breathe: idle.breathe + (speech.breathe - idle.breathe) * blend,
+      };
+    };
+
     const drawAvatar = now => {
+      clearStage();
       composeHead(now);
       const hasBody = Boolean(bodyImage && manifest.body);
       const image = hasBody ? bodyImage : faceCanvas;
@@ -1552,8 +1910,11 @@
       const bounds = metadata.bounds || [0, 0, width, height];
       const pivotX = bounds[0] + bounds[2] * .5;
       const pivotY = bounds[1] + bounds[3];
-      const sway = agentSpeaking || speechSource ? Math.sin(now / 360) * .004 : Math.sin(now / 2200) * .006;
-      const breathe = 1 + Math.sin(now / 1250) * .0025;
+      const liveAudioSpeaking = Boolean(
+        live && live.remoteAudioState && live.remoteAudioState.speaking);
+      const { sway, breathe } = bodyMotionAt(
+        now, Boolean(agentSpeaking || speechSource || liveAudioSpeaking),
+        bodyMotionState, reducedMotion.matches);
 
       context.save();
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * fit.x, pixelRatio * fit.y);
@@ -1581,6 +1942,14 @@
       return presented === 'walk' ? 'walk' : presented.startsWith('ledge-') ? 'idle' : null;
     };
 
+    const roamPresentationSignature = value => [
+      Boolean(value && value.enabled),
+      String(value && value.mode || ''),
+      String(value && value.presentationMode || ''),
+      Number(value && value.direction) || 1,
+      String(value && value.edge || ''),
+    ].join(':');
+
     const drawPresentedMotion = (kind, now, edge = null) => {
       const rendered = drawMotion(kind, now, edge);
       setAvatarOnlyMotion(rendered && (kind === 'walk' || kind === 'idle'));
@@ -1589,9 +1958,7 @@
 
     const paintFrame = now => {
       resizeCanvas();
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      if (!ready) { setAvatarOnlyMotion(false); return; }
+      if (!ready) { clearStage(); setAvatarOnlyMotion(false); return; }
 
       if (roamState.enabled) {
         // Intentional hover pauses the roam engine in `stand`. Keep the held
@@ -1615,23 +1982,84 @@
         idleDocked = false;
         if (shell && typeof shell.undockPet === 'function') shell.undockPet();
       }
-      for (const clip of Object.values(motion)) {
-        if (clip.video && !clip.video.paused) clip.video.pause();
-      }
+      endMotionPresentation();
       setAvatarOnlyMotion(false);
       drawAvatar(now);
     };
 
+    const motionFrameDelay = (clip, frozen = false) => {
+      if (frozen) return 250;
+      const fps = Math.max(1, Math.min(30, Number(clip && clip.fps) || 12));
+      return 1000 / fps;
+    };
+
+    const standbyFrameDelay = (now, state = {}, onBattery = false) => {
+      const pointerAt = Number(state.pointerAt);
+      const gazeAnimating = Number.isFinite(pointerAt)
+        && now - pointerAt >= 0 && now - pointerAt < STANDBY_GAZE_SETTLE_MS;
+      const facialAnimation = Boolean(state.blink || state.micro
+        || state.release || state.viseme || gazeAnimating);
+      // A still avatar only needs a low-rate maintenance paint. Blink, gaze,
+      // and release/crossfade windows temporarily return to conversational
+      // cadence, so the power saving never makes eyes or lips visibly step.
+      return facialAnimation ? (onBattery ? 50 : 32) : STANDBY_MAINTENANCE_MS;
+    };
+
     const frameDelay = now => {
-      const active = speechSource || hasAttachedAgentAudio() || agentSpeaking || ptt || dragging || roamState.enabled || now < moveUntil;
-      if (active) return shellState.onBattery ? 32 : 16;
-      return shellState.onBattery ? 50 : 33;
+      if (document.hidden || Number(shellState.pet && shellState.pet.opacity) <= .001) return 250;
+      if (roamState.enabled) {
+        const kind = roamMotionKind(roamState.mode, roamState.presentationMode);
+        const clip = kind && motion[kind];
+        const frozen = roamState.mode === 'stand'
+          || Boolean(clip && clip.video && clip.video.ended);
+        return motionFrameDelay(clip, frozen);
+      }
+      if (now < moveUntil) {
+        return motionFrameDelay(motion.move,
+          Boolean(motion.move && motion.move.video && motion.move.video.ended));
+      }
+      if (edgeIdleActive(now)) {
+        return motionFrameDelay(motion.idle,
+          Boolean(motion.idle && motion.idle.video && motion.idle.video.ended));
+      }
+      if (dragging || avatarZoomGesture) return 16;
+      const active = speechSource || hasAttachedAgentAudio() || agentSpeaking || ptt;
+      if (active) return shellState.onBattery ? 50 : 32;
+      const decorativeMotion = !reducedMotion.matches;
+      const microElapsed = now - Number(microExpression.started || 0);
+      return standbyFrameDelay(now, {
+        blink: decorativeMotion && Boolean(blinkStartedAt),
+        micro: decorativeMotion && microExpression.started > 0
+          && microElapsed >= 0 && microElapsed < microExpression.duration,
+        release: speechExpressionState.mode !== 'idle',
+        viseme: currentViseme !== previousViseme
+          && now - visemeChangedAt < XFADE * 1000,
+        pointerAt: decorativeMotion && pointer.seen
+          ? pointer.at : Number.NEGATIVE_INFINITY,
+      }, shellState.onBattery);
+    };
+
+    const advanceFrameClock = (previous, now, delay) => {
+      const interval = Math.max(1, Number(delay) || 1);
+      const elapsed = now - previous;
+      if (!(previous > 0) || elapsed < 0 || elapsed > interval * 4) {
+        return { due: true, next: now };
+      }
+      // Keep the fractional deadline instead of resetting to `now`. At 60Hz
+      // this yields the correct alternating 2/3-refresh holds for 24fps;
+      // resetting rounded 41.7ms up to three refreshes and silently made the
+      // source look like 20fps.
+      if (elapsed + .5 < interval) return { due: false, next: previous };
+      const steps = Math.max(1, Math.floor((elapsed + .5) / interval));
+      return { due: true, next: previous + steps * interval };
     };
 
     function renderLoop(now) {
       requestAnimationFrame(renderLoop);
-      if (!ready || now - lastFrame < frameDelay(now)) return;
-      lastFrame = now;
+      if (!ready) return;
+      const clock = advanceFrameClock(lastFrame, now, frameDelay(now));
+      if (!clock.due) return;
+      lastFrame = clock.next;
       if (audioAnalyser) {
         if (!audioTimeData || audioTimeData.length !== audioAnalyser.fftSize) audioTimeData = new Uint8Array(audioAnalyser.fftSize);
         if (!audioFrequencyData || audioFrequencyData.length !== audioAnalyser.frequencyBinCount) audioFrequencyData = new Uint8Array(audioAnalyser.frequencyBinCount);
@@ -1644,24 +2072,28 @@
         audioSignal = { rms: 0, relative: 0, low: 0, mid: 0, high: 0, centroid: 0, zcr: 0 };
       }
       if (live) syncLiveTalkAudioStatus(live, now);
+      if (ptt) updateRecordingMeter(now);
       paintFrame(now);
       updateHit(false);
       syncPetEngagement();
-      if (now - lastControlReport > 200) { lastControlReport = now; reportControlRects(); }
+      if (!avatarOnlyMotion && now - lastControlReport > 200) {
+        lastControlReport = now;
+        reportControlRects();
+      }
     }
 
     const pointInsideRect = (point, rectangle) => point.x >= rectangle.left && point.x <= rectangle.right && point.y >= rectangle.top && point.y <= rectangle.bottom;
 
     const controlElements = () => {
       if (avatarOnlyMotion) return [];
+      const draft = document.querySelector('.email-review');
+      if (draft) return [draft];
       const values = [liveButton, chatButton, settingsButton];
       for (const button of [movesButton, walkButton]) {
         const style = getComputedStyle(button);
         if (style.pointerEvents !== 'none' && Number(style.opacity) > .08) values.push(button);
       }
       if (root.classList.contains('chat-open')) values.push(chatDock);
-      const draft = document.querySelector('.email-review');
-      if (draft) values.push(draft);
       if (emptyState.classList.contains('show')) values.push(emptyState);
       return values;
     };
@@ -1672,17 +2104,27 @@
       return box.width > 0 && box.height > 0 && pointInsideRect(point, box);
     });
 
+    const paintedAvatarAt = point => {
+      if (!ready || !point || point.inside === false
+          || point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) return false;
+      try {
+        const alpha = context.getImageData(
+          Math.floor(point.x * pixelRatio), Math.floor(point.y * pixelRatio), 1, 1).data[3];
+        return alpha > 18;
+      } catch (_) {
+        return false;
+      }
+    };
+
     function updateHit(force) {
       if (!shell || typeof shell.setPetHit !== 'function') return;
       const chromeHit = overControls(pointer);
-      let figureHit = false;
-      if (!chromeHit && ready && pointer.inside && pointer.x >= 0 && pointer.y >= 0 && pointer.x < innerWidth && pointer.y < innerHeight) {
-        try {
-          const alpha = context.getImageData(Math.floor(pointer.x * pixelRatio), Math.floor(pointer.y * pixelRatio), 1, 1).data[3];
-          figureHit = alpha > 18;
-        } catch (_) { figureHit = false; }
-      }
-      const hit = dragging || Boolean(ptt) || chromeHit || figureHit;
+      const figureHit = !chromeHit && paintedAvatarAt(pointer);
+      // A live pinch owns interactivity until its end packet. Pinching inward
+      // can move the resized figure away from a stationary cursor; dropping
+      // the hit claim mid-stream would make Electron click through and lose
+      // the remaining wheel events before the gesture can settle or persist.
+      const hit = dragging || Boolean(ptt) || Boolean(avatarZoomGesture) || chromeHit || figureHit;
       avatarHit = figureHit;
       root.classList.toggle('avatar-hover', figureHit);
       if (hit) markActivity();
@@ -1706,6 +2148,210 @@
       petEngaged = engaged;
       shell.setPetEngaged(engaged);
     }
+
+    const safeUTF16Prefix = (value, maximum) => {
+      const text = String(value || '');
+      const limit = Math.max(0, Math.floor(Number(maximum) || 0));
+      if (text.length <= limit) return text;
+      let clipped = text.slice(0, limit);
+      const final = clipped.charCodeAt(clipped.length - 1);
+      if (final >= 0xD800 && final <= 0xDBFF) clipped = clipped.slice(0, -1);
+      return clipped;
+    };
+
+    const formatSelectedFeedback = (value, maximum = 12000) => {
+      const selected = String(value || '').replace(/\r\n?/g, '\n');
+      const limit = Math.max(0, Math.floor(Number(maximum) || 0));
+      const suffix = '\n\nAsk about this selection: ';
+      if (!selected.trim() || limit <= suffix.length + 4) {
+        return { text: '', truncated: Boolean(selected.trim()) };
+      }
+      const quoted = `> ${selected.replace(/\n/g, '\n> ')}`;
+      const budget = limit - suffix.length;
+      if (quoted.length <= budget) return { text: `${quoted}${suffix}`, truncated: false };
+      const marker = '\n> …';
+      const clipped = safeUTF16Prefix(quoted, Math.max(0, budget - marker.length))
+        .replace(/[\n\s>]+$/u, '');
+      return { text: `${clipped}${marker}${suffix}`, truncated: true };
+    };
+
+    const composeAskAIDraft = (current, selected, maximum = 12000) => {
+      const existing = String(current || '');
+      const limit = Math.max(0, Math.floor(Number(maximum) || 0));
+      const separator = existing
+        ? (existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n')
+        : '';
+      const room = limit - existing.length - separator.length;
+      const formatted = formatSelectedFeedback(selected, room);
+      if (!formatted.text) {
+        return { value: existing, inserted: false, truncated: formatted.truncated };
+      }
+      return {
+        value: `${existing}${separator}${formatted.text}`,
+        inserted: true,
+        truncated: formatted.truncated,
+      };
+    };
+
+    const selectionToolbarPoint = (selectionRect, toolbarSize, dockBounds) => {
+      const gutter = 8;
+      const width = Math.max(1, Number(toolbarSize && toolbarSize.width) || 1);
+      const height = Math.max(1, Number(toolbarSize && toolbarSize.height) || 1);
+      const boundsWidth = Math.max(width + gutter * 2, Number(dockBounds && dockBounds.width) || width);
+      const boundsHeight = Math.max(height + gutter * 2, Number(dockBounds && dockBounds.height) || height);
+      const left = Number(selectionRect && selectionRect.left) || 0;
+      const top = Number(selectionRect && selectionRect.top) || 0;
+      const right = Number(selectionRect && selectionRect.right) || left;
+      const bottom = Number(selectionRect && selectionRect.bottom) || top;
+      const dockLeft = Number(dockBounds && dockBounds.left) || 0;
+      const dockTop = Number(dockBounds && dockBounds.top) || 0;
+      const centered = (left + right) / 2 - dockLeft - width / 2;
+      const x = Math.max(gutter, Math.min(boundsWidth - width - gutter, centered));
+      const above = top - dockTop - height - gutter;
+      const below = bottom - dockTop + gutter;
+      const y = above >= gutter
+        ? above : Math.max(gutter, Math.min(boundsHeight - height - gutter, below));
+      return { x, y };
+    };
+
+    const feedbackSelectionCandidate = selection => {
+      if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return null;
+      const elementFor = node => node && (node.nodeType === 1 ? node : node.parentElement);
+      const start = elementFor(selection.anchorNode);
+      const end = elementFor(selection.focusNode);
+      const bubble = start && typeof start.closest === 'function'
+        ? start.closest('.message.assistant .bubble') : null;
+      if (!bubble || !end || !bubble.contains(selection.anchorNode)
+          || !bubble.contains(selection.focusNode) || !bubble.isConnected) return null;
+      const text = String(selection.toString() || '');
+      if (!text.trim()) return null;
+      const range = selection.getRangeAt(0);
+      const measured = range.getBoundingClientRect();
+      const rect = measured && (measured.width || measured.height)
+        ? measured : bubble.getBoundingClientRect();
+      return { bubble, text, rect };
+    };
+
+    const hideSelectionActions = (forget = false) => {
+      selectionActions.classList.remove('show');
+      selectionActions.setAttribute('aria-hidden', 'true');
+      selectionActions.inert = true;
+      if (forget) selectedFeedback = null;
+    };
+
+    const showSelectionActions = candidate => {
+      if (!candidate || avatarOnlyMotion || !root.classList.contains('chat-open')) {
+        hideSelectionActions(true);
+        return;
+      }
+      selectedFeedback = candidate;
+      selectionActions.inert = false;
+      selectionActions.setAttribute('aria-hidden', 'false');
+      selectionActions.classList.add('show');
+      const dock = chatDock.getBoundingClientRect();
+      const toolbar = selectionActions.getBoundingClientRect();
+      const point = selectionToolbarPoint(candidate.rect, toolbar, dock);
+      selectionActions.style.left = `${Math.round(point.x)}px`;
+      selectionActions.style.top = `${Math.round(point.y)}px`;
+    };
+
+    const refreshSelectionActions = () => {
+      if (selectingFeedback || selectionActions.matches(':focus-within')) return;
+      showSelectionActions(feedbackSelectionCandidate(getSelection()));
+    };
+
+    const writeClipboardText = async value => {
+      const text = String(value || '');
+      if (!text) return false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch (_) { /* the selection-preserving fallback remains available */ }
+      if (typeof document.execCommand !== 'function') return false;
+      const active = document.activeElement;
+      const activeSelection = active && typeof active.selectionStart === 'number'
+        ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+      const selection = getSelection();
+      const ranges = selection
+        ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange())
+        : [];
+      const field = document.createElement('textarea');
+      field.value = text;
+      field.readOnly = true;
+      field.setAttribute('aria-hidden', 'true');
+      Object.assign(field.style, { position: 'fixed', opacity: '0', pointerEvents: 'none' });
+      document.body.appendChild(field);
+      field.select();
+      let copied = false;
+      try { copied = Boolean(document.execCommand('copy')); } catch (_) { copied = false; }
+      field.remove();
+      if (active && typeof active.focus === 'function') {
+        active.focus({ preventScroll: true });
+        if (activeSelection && typeof active.setSelectionRange === 'function') {
+          active.setSelectionRange(...activeSelection);
+        }
+      }
+      if (selection) {
+        selection.removeAllRanges();
+        for (const range of ranges) selection.addRange(range);
+      }
+      return copied;
+    };
+
+    const copyFeedbackText = async (text, kind) => {
+      if (await writeClipboardText(text)) {
+        notify(kind === 'selection' ? 'Selected text copied.' : 'Response copied.');
+        return;
+      }
+      notify('Copy was unavailable. Select the text and press ⌘C.');
+    };
+
+    const askAIAboutSelectedFeedback = () => {
+      const selected = selectedFeedback && selectedFeedback.text;
+      if (!selected) return;
+      const drafted = composeAskAIDraft(
+        composer.value,
+        selected,
+        Number(composer.maxLength) || 12000,
+      );
+      if (!drafted.inserted) {
+        notify('The message draft is full. Copy the selection or shorten the draft first.');
+        return;
+      }
+      composer.value = drafted.value;
+      hideSelectionActions(true);
+      const selection = getSelection();
+      if (selection) selection.removeAllRanges();
+      resizeComposer();
+      openChat(false);
+      if (shell && typeof shell.focusPetWindow === 'function') shell.focusPetWindow();
+      requestAnimationFrame(() => {
+        composer.focus({ preventScroll: true });
+        composer.setSelectionRange(composer.value.length, composer.value.length);
+      });
+      notify(drafted.truncated
+        ? 'Selection shortened to fit. Add your question, then send.'
+        : 'Selection added. Add your question, then send.');
+    };
+
+    const responseActionButton = (label, title, pathData, handler) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'response-action';
+      button.setAttribute('aria-label', label);
+      button.title = title;
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('viewBox', '0 0 24 24');
+      icon.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', pathData);
+      icon.appendChild(path);
+      button.appendChild(icon);
+      button.addEventListener('click', handler);
+      return button;
+    };
 
     let lastControlPacket = '';
     function reportControlRects(force = false) {
@@ -1745,22 +2391,30 @@
       row.className = `message ${role}`;
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
+      bubble.dir = 'auto';
       bubble.textContent = String(text || '');
       row.appendChild(bubble);
       if (role === 'assistant' && text && options.readable !== false) {
-        const read = document.createElement('button');
-        read.type = 'button';
-        read.className = 'read-button';
-        read.setAttribute('aria-label', 'Read this response aloud');
-        read.title = 'Read aloud';
-        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        icon.setAttribute('viewBox', '0 0 24 24');
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('d', 'M3 9v6h4l5 4V5L7 9H3zm12.5 3a3.5 3.5 0 0 0-1.5-2.9v5.8a3.5 3.5 0 0 0 1.5-2.9zm0-7.1v2.2a6 6 0 0 1 0 9.8v2.2a8 8 0 0 0 0-14.2z');
-        icon.appendChild(path);
-        read.appendChild(icon);
-        read.addEventListener('click', () => readAloud(String(text)));
-        row.appendChild(read);
+        const actions = document.createElement('div');
+        actions.className = 'response-actions';
+        actions.setAttribute('role', 'group');
+        actions.setAttribute('aria-label', 'Response actions');
+        const copy = responseActionButton(
+          'Copy this response',
+          'Copy response',
+          'M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z',
+          () => copyFeedbackText(String(text), 'response'),
+        );
+        copy.classList.add('copy-button');
+        const read = responseActionButton(
+          'Read this response aloud',
+          'Read aloud',
+          'M3 9v6h4l5 4V5L7 9H3zm12.5 3a3.5 3.5 0 0 0-1.5-2.9v5.8a3.5 3.5 0 0 0 1.5-2.9zm0-7.1v2.2a6 6 0 0 1 0 9.8v2.2a8 8 0 0 0 0-14.2z',
+          () => readAloud(String(text)),
+        );
+        read.classList.add('read-button');
+        actions.append(copy, read);
+        row.appendChild(actions);
       }
       conversation.appendChild(row);
       conversation.scrollTop = conversation.scrollHeight;
@@ -2038,7 +2692,6 @@
         bar.style.height = `${Math.round(3 + level * 13 * shape)}px`;
       });
     };
-    (function recordingAnimation(now) { updateRecordingMeter(now); requestAnimationFrame(recordingAnimation); })(performance.now());
 
     const EMAIL_RPC = 'openclam.prepareEmailDraft.v1';
     const MAX_RPC_BYTES = 12000;
@@ -2099,11 +2752,38 @@
       return { request_id: rootValue.request_id, spoken_request: rootValue.spoken_request, recipient_name: values.recipient_name, subject: values.subject, body: values.body };
     };
 
+    const emailDraftText = (recipient, subject, body) => [
+      'Unsent email draft',
+      `To: ${String(recipient || '')}`,
+      `Subject: ${String(subject || '')}`,
+      '',
+      String(body || ''),
+    ].join('\n');
+
+    const retainEmailDraft = (historyEntries, recipient, subject, body, limit = 24) => {
+      const content = emailDraftText(recipient, subject, body);
+      historyEntries.push({ role: 'assistant', content });
+      if (historyEntries.length > limit) historyEntries.splice(0, historyEntries.length - limit);
+      return content;
+    };
+
     const closeEmailReview = () => {
-      const panel = document.querySelector('.email-review');
+      const state = emailReviewState;
+      const panel = state && state.panel ? state.panel : document.querySelector('.email-review');
       if (panel) panel.remove();
+      if (state) {
+        for (const entry of state.background) {
+          if (!entry.element.isConnected) continue;
+          entry.element.inert = entry.inert || (avatarOnlyMotion && motionChrome.includes(entry.element));
+        }
+      }
+      emailReviewState = null;
       if (live) live.pendingDraft = null;
       reportControlRects(true);
+      const previousFocus = state && state.previousFocus;
+      if (!avatarOnlyMotion && previousFocus && previousFocus.isConnected && !previousFocus.inert) {
+        requestAnimationFrame(() => previousFocus.focus({ preventScroll: true }));
+      }
     };
 
     const presentEmailReview = request => {
@@ -2113,9 +2793,10 @@
       panel.className = 'email-review';
       panel.setAttribute('role', 'dialog');
       panel.setAttribute('aria-modal', 'true');
-      panel.setAttribute('aria-label', 'Unsent email draft');
+      panel.setAttribute('aria-labelledby', 'emailReviewTitle');
       panel.inert = avatarOnlyMotion;
       const title = document.createElement('h2');
+      title.id = 'emailReviewTitle';
       title.textContent = 'Review email draft';
       const warning = document.createElement('div');
       warning.className = 'unsent';
@@ -2126,6 +2807,9 @@
         label.append(document.createTextNode(labelText));
         const input = document.createElement(multiline ? 'textarea' : 'input');
         input.value = value;
+        input.dir = 'auto';
+        input.autocomplete = 'off';
+        input.maxLength = multiline ? 6000 : labelText === 'Recipient' ? 320 : 240;
         label.append(input);
         panel.append(label);
         return input;
@@ -2138,7 +2822,13 @@
       const keep = document.createElement('button');
       keep.type = 'button';
       keep.textContent = 'Keep in chat';
-      keep.addEventListener('click', closeEmailReview);
+      keep.addEventListener('click', () => {
+        const retained = retainEmailDraft(history, recipient.value, subject.value, body.value);
+        closeEmailReview();
+        addMessage('assistant', retained);
+        openChat(false);
+        notify('Unsent draft kept in this conversation.');
+      });
       const copy = document.createElement('button');
       copy.type = 'button';
       copy.textContent = 'Copy draft';
@@ -2153,6 +2843,37 @@
       actions.append(keep, copy);
       panel.append(actions);
       document.body.append(panel);
+      const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const background = [...document.body.children]
+        .filter(element => element !== panel && element instanceof HTMLElement)
+        .map(element => ({ element, inert: element.inert }));
+      for (const entry of background) entry.element.inert = true;
+      emailReviewState = { panel, background, previousFocus };
+      panel.addEventListener('keydown', event => {
+        if (event.code === 'Space') event.stopPropagation();
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          closeEmailReview();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusable = [...panel.querySelectorAll('input, textarea, button:not([disabled])')]
+          .filter(element => !element.inert && element.getClientRects().length);
+        if (!focusable.length) { event.preventDefault(); return; }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
+      panel.addEventListener('keyup', event => {
+        if (event.code === 'Space') event.stopPropagation();
+      });
       if (live) live.pendingDraft = panel;
       reportControlRects(true);
       if (!avatarOnlyMotion) recipient.focus();
@@ -2528,9 +3249,115 @@
     const handleGlobalPointer = point => {
       if (!point) return;
       if (!dragging) {
-        pointer = { x: Number(point.x), y: Number(point.y), inside: Boolean(point.inside) };
+        const nextX = Number(point.x);
+        const nextY = Number(point.y);
+        const nextInside = Boolean(point.inside);
+        const nextSeen = Number.isFinite(nextX) && Number.isFinite(nextY);
+        const changed = nextSeen !== pointer.seen || nextInside !== pointer.inside
+          || (nextSeen && (Math.abs(nextX - pointer.x) >= .5
+            || Math.abs(nextY - pointer.y) >= .5));
+        pointer = {
+          x: nextX,
+          y: nextY,
+          inside: nextInside,
+          seen: nextSeen,
+          // Main's 250ms stationary heartbeat must not keep the renderer in
+          // its fast gaze-settling lane. Only real pointer motion renews it.
+          at: changed ? performance.now() : pointer.at,
+        };
+        if (changed) lastFrame = 0;
         updateHit(false);
+        // Frozen Edge Idle paints only on a low-rate maintenance cadence.
+        // Pointer IPC is already event-driven, so use it to engage/release a
+        // hovered avatar immediately instead of waiting for that maintenance
+        // frame.
+        syncPetEngagement();
       }
+    };
+
+    const PET_ZOOM_RANGES = Object.freeze({
+      stand: Object.freeze({ min: .25, max: 4 }),
+      roam: Object.freeze({ min: .5, max: 3 }),
+    });
+    const AVATAR_ZOOM_SETTLE_MS = 140;
+
+    const pinchZoomValue = (current, event, range, viewportHeight) => {
+      const value = Number(current);
+      const safe = Number.isFinite(value) && value > 0 ? value : 1;
+      if (!event || !event.ctrlKey) return safe;
+      const unit = event.deltaMode === 1 ? 16
+        : event.deltaMode === 2 ? Math.max(1, Number(viewportHeight) || 1) : 1;
+      const delta = Math.max(-90, Math.min(90, Number(event.deltaY || 0) * unit));
+      const next = safe * Math.exp(-delta * .0075);
+      return Math.max(range.min, Math.min(range.max, next));
+    };
+
+    const activeAvatarZoom = () => {
+      const pet = shellState.pet || {};
+      const range = pet.roam ? PET_ZOOM_RANGES.roam : PET_ZOOM_RANGES.stand;
+      const value = Number(pet.roam ? pet.roamZoom : pet.zoom);
+      return Math.max(range.min, Math.min(range.max,
+        Number.isFinite(value) && value > 0 ? value : 1));
+    };
+
+    const holdAvatarZoom = value => {
+      const pet = shellState.pet || (shellState.pet = {});
+      if (pet.roam) pet.roamZoom = value; else pet.zoom = value;
+    };
+
+    const publishAvatarZoom = phase => {
+      if (!shell || typeof shell.setPetZoomLive !== 'function') return;
+      shell.setPetZoomLive({
+        value: activeAvatarZoom(),
+        phase,
+        roam: Boolean(shellState.pet && shellState.pet.roam),
+      });
+    };
+
+    const finishAvatarZoom = () => {
+      if (!avatarZoomGesture) return;
+      cancelAnimationFrame(avatarZoomGesture.frame);
+      avatarZoomGesture = null;
+      clearTimeout(avatarZoomSettleTimer);
+      avatarZoomSettleTimer = 0;
+      publishAvatarZoom('end');
+      // Release the temporary interaction pin using the freshly resized
+      // canvas. This restores the ordinary alpha/click-through decision even
+      // when the cursor never moved during the gesture.
+      updateHit(true);
+    };
+
+    const handleAvatarPinch = event => {
+      const pet = shellState.pet || {};
+      // Chromium exposes a macOS trackpad pinch as a modifier-wheel stream.
+      // Ordinary wheel/scroll input is deliberately ignored.
+      if (!event.ctrlKey || !shell || typeof shell.setPetZoomLive !== 'function'
+          || pet.enabled === false || dragging) return;
+      event.preventDefault();
+      // A pinch may continue after the first resize moves the pixels under the
+      // cursor. Require an alpha hit only when the gesture starts.
+      const freshAvatarHit = avatarHit || paintedAvatarAt({
+        x: event.clientX, y: event.clientY, inside: true,
+      });
+      if (!avatarZoomGesture && !freshAvatarHit) return;
+      const range = pet.roam ? PET_ZOOM_RANGES.roam : PET_ZOOM_RANGES.stand;
+      const current = activeAvatarZoom();
+      const next = pinchZoomValue(current, event, range, innerHeight);
+      holdAvatarZoom(next);
+      markActivity();
+      if (!avatarZoomGesture) {
+        avatarZoomGesture = { frame: 0 };
+        updateHit(true);
+        publishAvatarZoom('start');
+      } else if (!avatarZoomGesture.frame) {
+        avatarZoomGesture.frame = requestAnimationFrame(() => {
+          if (!avatarZoomGesture) return;
+          avatarZoomGesture.frame = 0;
+          publishAvatarZoom('move');
+        });
+      }
+      clearTimeout(avatarZoomSettleTimer);
+      avatarZoomSettleTimer = setTimeout(finishAvatarZoom, AVATAR_ZOOM_SETTLE_MS);
     };
 
     const endCanvasGesture = event => {
@@ -2590,6 +3417,7 @@
     });
     canvas.addEventListener('pointerup', endCanvasGesture);
     canvas.addEventListener('pointercancel', endCanvasGesture);
+    canvas.addEventListener('wheel', handleAvatarPinch, { passive: false });
     canvas.addEventListener('dblclick', event => {
       markActivity();
       if (pointOnHead({ x: event.clientX, y: event.clientY })) toggleMove();
@@ -2611,6 +3439,35 @@
     document.getElementById('emptySettings').addEventListener('click', () => shell && shell.openSettings());
     closeChatButton.addEventListener('click', closeChat);
     sendButton.addEventListener('click', submitComposer);
+    conversation.addEventListener('pointerdown', event => {
+      selectingFeedback = Boolean(event.target && event.target.closest
+        && event.target.closest('.message.assistant .bubble'));
+      if (!selectingFeedback) hideSelectionActions(true);
+    });
+    conversation.addEventListener('pointerup', () => {
+      selectingFeedback = false;
+      requestAnimationFrame(refreshSelectionActions);
+    });
+    conversation.addEventListener('pointercancel', () => { selectingFeedback = false; });
+    conversation.addEventListener('contextmenu', event => {
+      const candidate = feedbackSelectionCandidate(getSelection());
+      if (!candidate) return;
+      event.preventDefault();
+      showSelectionActions(candidate);
+    });
+    conversation.addEventListener('scroll', () => hideSelectionActions(false), { passive: true });
+    selectionActions.addEventListener('pointerdown', event => event.preventDefault());
+    selectionCopy.addEventListener('click', () => {
+      const text = selectedFeedback && selectedFeedback.text;
+      if (text) copyFeedbackText(text, 'selection');
+    });
+    selectionAskAI.addEventListener('click', askAIAboutSelectedFeedback);
+    document.addEventListener('selectionchange', () => requestAnimationFrame(refreshSelectionActions));
+    document.addEventListener('pointerdown', event => {
+      if (!selectionActions.contains(event.target) && !conversation.contains(event.target)) {
+        hideSelectionActions(true);
+      }
+    }, true);
     composer.addEventListener('input', () => { resizeComposer(); markActivity(); });
     composer.addEventListener('pointerdown', () => {
       markActivity();
@@ -2633,13 +3490,23 @@
     addEventListener('keydown', event => {
       if (avatarOnlyMotion) return;
       const typing = document.activeElement === composer || document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'a') {
+        const candidate = feedbackSelectionCandidate(getSelection());
+        if (candidate) {
+          event.preventDefault();
+          selectedFeedback = candidate;
+          askAIAboutSelectedFeedback();
+          return;
+        }
+      }
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {
         event.preventDefault();
         if (shell) shell.openSettings();
         return;
       }
       if (event.key === 'Escape') {
-        if (document.querySelector('.email-review')) closeEmailReview();
+        if (selectionActions.classList.contains('show')) hideSelectionActions(true);
+        else if (document.querySelector('.email-review')) closeEmailReview();
         else if (live) stopLiveTalk('ended');
         else if (turnController) { turnController.abort(); turnController = null; removeWorking(); setStatus('Ready', 'good'); }
         else closeChat();
@@ -2655,9 +3522,13 @@
       const typing = document.activeElement === composer || document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
       if (event.code === 'Space' && !typing && ptt) { event.preventDefault(); stopRecording(false); }
     });
-    addEventListener('resize', () => { resizeCanvas(); reportControlRects(true); });
-    addEventListener('blur', () => { if (ptt) stopRecording(true); });
+    addEventListener('resize', () => { hideSelectionActions(false); resizeCanvas(); reportControlRects(true); });
+    addEventListener('blur', () => {
+      finishAvatarZoom();
+      if (ptt) stopRecording(true);
+    });
     addEventListener('beforeunload', () => {
+      finishAvatarZoom();
       if (live) stopLiveTalk('ended');
       if (ptt && ptt.stream) ptt.stream.getTracks().forEach(track => track.stop());
       stopSpeech();
@@ -2669,7 +3540,12 @@
       if (typeof shell.onState === 'function') shell.onState(applyShellState);
       if (typeof shell.onPetPointer === 'function') shell.onPetPointer(handleGlobalPointer);
       if (typeof shell.onPetRoamMotion === 'function') shell.onPetRoamMotion(value => {
-        roamState = value && typeof value === 'object' ? value : { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
+        const nextRoamState = value && typeof value === 'object'
+          ? value : { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
+        const nextPresentationKey = roamPresentationSignature(nextRoamState);
+        if (nextPresentationKey !== roamPresentationKey) lastFrame = 0;
+        roamPresentationKey = nextPresentationKey;
+        roamState = nextRoamState;
       });
       if (typeof shell.onPetMoves === 'function') shell.onPetMoves(toggleMove);
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));

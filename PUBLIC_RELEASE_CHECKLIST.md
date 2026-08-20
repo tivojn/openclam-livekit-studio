@@ -9,6 +9,9 @@
       data, caches, models, builds, logs, screenshots, recordings, and AVTR
       release packages.
 - [ ] Run `python3 scripts/public-release-audit.py .` and review every finding.
+- [ ] Write an external file/mode/SHA-256 manifest with `--write-manifest`,
+      require it with `--manifest`, and verify an extracted Git archive against
+      that same manifest.
 - [ ] Initialize new history only after the audit passes.
 - [ ] After the first commit, run
       `python3 scripts/public-release-audit.py --require-fresh-history .`.
@@ -24,14 +27,17 @@
 
 ## Avatar rights
 
-- [ ] Keep the synthetic `OpenClam Guide` as the only likeness-free avatar in
-      source.
-- [ ] Keep all human thumbnails and AVTR packages in the separate Avatar Store
-      release channel.
-- [ ] Require documented owner, license, model consent, allowed uses,
-      redistribution permission, source provenance, and immutable hashes.
-- [ ] Confirm neither the public source nor its history can reach a quarantined
-      portrait or package.
+- [ ] Confirm the only bundled avatar media are the reviewed Captain Ayer and
+      Ara runtime files listed by the provenance record and binary allowlist.
+- [ ] Confirm `AVATAR_ASSET_LICENSE.md` remains separate from the MIT software
+      license and grants no standalone media reuse.
+- [ ] Require documented ownership, model consent where applicable, allowed
+      uses, redistribution permission, source provenance, and immutable hashes
+      before adding or replacing any likeness media.
+- [ ] Confirm neither the public source nor its history can reach source
+      portraits, authoring projects, unapproved avatars, or release packages.
+- [ ] Confirm Avatar Store networking remains fail-closed for v1.0.1 while
+      local AVTR import and deletion still work.
 
 ## macOS binary release
 

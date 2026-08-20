@@ -464,6 +464,16 @@ body{padding-bottom:84px}
 .body-panel h4:first-child{margin-top:0}.body-provider{padding:12px 14px;border:1px solid var(--line);
   border-radius:8px;background:var(--panel-sub);font-size:13px}
 .body-provider strong{display:block;margin-top:7px}.body-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.body-edit-card{display:block;margin-top:12px;padding:14px;border:1px solid var(--accent-line);border-radius:10px;
+  background:linear-gradient(145deg,var(--accent-bg),var(--panel));box-shadow:var(--shadow-sm)}
+.body-edit-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.body-edit-head strong{font-size:13px;font-weight:650}.body-edit-head .pill{flex:none}
+.body-edit-card>p{margin:5px 0 12px;color:var(--dim);font-size:11.5px;line-height:1.5}
+.body-edit-card textarea{min-height:82px;resize:vertical}.body-edit-actions{display:flex;align-items:center;
+  gap:10px;flex-wrap:wrap;margin-top:9px}.body-edit-actions .note{flex:1;min-width:190px;margin:0}
+.body-edit-unavailable{margin-top:12px;padding:11px 13px;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel-sub);color:var(--dim);font-size:11.5px;line-height:1.5}
+.body-edit-unavailable b{display:block;margin-bottom:3px;color:var(--ink);font-size:12px}
 .body-progress{position:relative;margin-top:16px;padding:14px;border:1px solid var(--line);
   border-radius:8px;background:var(--panel-sub);scroll-margin:12px}
 .body-progress .jobhead{gap:8px}
@@ -609,6 +619,7 @@ body{padding-bottom:84px}
   #body-modal .body-empty-mark{width:72px;height:132px;margin-bottom:12px}
   #body-modal .body-panel{max-height:none;overflow:visible;padding:20px 24px 32px}
   #body-modal .body-progress.live{position:relative;top:auto}
+  #body-modal .body-edit-actions .btn{width:100%}
   .motion-cycle-card{grid-template-columns:1fr}.motion-asset-grid{grid-template-columns:1fr}
   .rig-grid{grid-template-columns:1fr}.rig-visual{border-right:0;border-bottom:1px solid var(--line)}
   .rig-panel{max-height:none}.rig-foot{position:sticky;bottom:0}.rig-legend{margin-left:0}}
@@ -846,7 +857,7 @@ document.documentElement.dataset.design='quiet';</script>
   <h1>OpenClam Studio<span>.</span></h1>
   <nav aria-label="Settings sections">
     <button type="button" data-tab="avatar" class="on" aria-current="page">Avatar Studio</button>
-    <button type="button" data-tab="store">Avatar Store</button>
+    <button type="button" data-tab="store" hidden disabled aria-hidden="true" tabindex="-1">Avatar Store</button>
     <button type="button" data-tab="models">AI &amp; Voice</button>
     <button type="button" data-tab="persona">Persona</button>
   </nav>
@@ -900,7 +911,7 @@ document.documentElement.dataset.design='quiet';</script>
 </section>
 
 <!-- ------------------------------------------------------------- STORE -->
-<section id="tab-store">
+<section id="tab-store" hidden aria-hidden="true">
   <div class="settings-intro">
     <div><h2>Avatar Store</h2><p>Discover complete avatars and add them to
       this Mac’s local library. Every download is checked against the
@@ -1179,6 +1190,26 @@ document.documentElement.dataset.design='quiet';</script>
       <aside class="body-panel">
         <h4>Image provider</h4>
         <div class="body-provider" id="body-provider">Reading the local image provider…</div>
+        <section class="body-edit-card hidden" id="body-edit-card"
+          aria-labelledby="body-edit-title" aria-busy="false">
+          <div class="body-edit-head">
+            <strong id="body-edit-title">Grok Edit</strong>
+            <span class="pill ok">xAI · Image 2.0</span>
+          </div>
+          <p>Describe a precise edit. OpenClam applies it across Front, Side, and Back, then reruns local background removal and Identity Lock.</p>
+          <div class="f">
+            <label for="body-edit-instruction">What should change?</label>
+            <textarea id="body-edit-instruction" maxlength="600" aria-describedby="body-edit-note" placeholder="For example: Change the blazer to fuchsia and remove the necklace; preserve everything else."></textarea>
+          </div>
+          <div class="body-edit-actions">
+            <p class="note" id="body-edit-note">Sends the three body plates and identity reference to xAI for 3 image edits. Your xAI sign-in or key stays in Keychain. Incompatible motion remains saved in the library but is removed from active use until regenerated.</p>
+            <button class="btn pri" id="body-edit-apply" type="button">Edit all 3 views</button>
+          </div>
+        </section>
+        <div class="body-edit-unavailable hidden" id="body-edit-unavailable" role="note">
+          <b>Grok Edit unavailable</b>
+          <span id="body-edit-unavailable-copy"></span>
+        </div>
         <h4>Art direction</h4>
         <div class="body-fields">
           <div class="f"><label for="body-style">Treatment</label><select id="body-style">
@@ -1216,7 +1247,7 @@ document.documentElement.dataset.design='quiet';</script>
           </div>
           <div class="bar" id="body-progress-track" role="progressbar"
                aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="body-progress-bar" style="width:0%"></i></div>
-          <div id="body-progress-line"></div>
+          <div id="body-progress-line" role="status" aria-live="polite"></div>
           <p class="body-progress-hint" id="body-progress-hint"></p>
         </div>
         <div class="motion-set-list hidden" id="body-set-list" role="group" aria-label="Generated full-body sets"></div>
@@ -1500,6 +1531,9 @@ function applyDesign() {
 }
 applyDesign();
 const SHELL = window.openclam;
+// v1.0.1 has no reviewed remote catalog. Keep the dormant generic renderer
+// code fail-closed even if a hidden control is invoked programmatically.
+const AVATAR_STORE_AVAILABLE = false;
 let CFG = null, CAT = null, ACTIVE = null, COMPANION = null, POLL = null;
 const MEDIA_CLEANUP_NOTES = {image: [], video: []};
 let RIG = null, RIG_SLUG = null, RIG_PROFILE = null, RIG_POSE = 'closed', RIG_WATCH = null;
@@ -1518,6 +1552,7 @@ const MOVE_STYLE_LABELS = {
 };
 let BODY_SLUG = null, BODY_STATE = null, BODY_WATCH = null, BODY_VIEW = 'front';
 let BODY_PROMPT_FILLED = '', BODY_PROMPT_BUSY = false;
+let BODY_EDIT_JOB_ID = null, BODY_EDIT_SLUG = null;
 let BODY_MODE = 'body', BODY_CYCLE = null;
 let BODY_WALK_STYLE = 'office', BODY_IDLE_POSE = 'back-heel', BODY_MOVE_STYLE = 'viral', BODY_BUSY = false;
 let STORE_LOADED = false, STORE_REFRESHING = false;
@@ -1531,6 +1566,7 @@ if (SHELL && SHELL.isElectron) {
 
 /* ---------------------------------------------------------------- tabs */
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  if (b.dataset.tab === 'store' && !AVATAR_STORE_AVAILABLE) return;
   document.querySelectorAll('nav button').forEach(x => {
     const selected = x === b;
     x.classList.toggle('on', selected);
@@ -2567,6 +2603,7 @@ function applyStoreThumbnail(identifier, dataUrl) {
 }
 
 async function loadStoreThumbnail(identifier) {
+  if (!AVATAR_STORE_AVAILABLE) return;
   if (STORE_THUMBNAILS.has(identifier)) {
     applyStoreThumbnail(identifier, STORE_THUMBNAILS.get(identifier));
     return;
@@ -2625,6 +2662,7 @@ function applyStoreProgress(update) {
 }
 
 async function loadAvatarStore(force = false) {
+  if (!AVATAR_STORE_AVAILABLE) return;
   if (STORE_REFRESHING) return;
   const list = $('#store-list');
   const refresh = $('#store-refresh');
@@ -2661,6 +2699,7 @@ async function loadAvatarStore(force = false) {
 }
 
 async function startStoreDownload(identifier) {
+  if (!AVATAR_STORE_AVAILABLE) return;
   if (!SHELL || typeof SHELL.downloadAvatarStoreItem !== 'function') return;
   applyStoreProgress({id: identifier, phase: 'preparing', percent: 0, error: ''});
   renderAvatarStore();
@@ -2694,6 +2733,7 @@ async function startStoreDownload(identifier) {
 }
 
 async function cancelStoreDownload(identifier) {
+  if (!AVATAR_STORE_AVAILABLE) return;
   const previous = {...(STORE_PROGRESS.get(identifier) || {})};
   if (!['preparing', 'downloading'].includes(previous.phase)) {
     applyStoreProgress({id: identifier, ...previous});
@@ -2714,8 +2754,10 @@ async function cancelStoreDownload(identifier) {
   }
 }
 
-$('#store-refresh').onclick = () => loadAvatarStore(true);
-if (SHELL && typeof SHELL.onAvatarStoreProgress === 'function') {
+$('#store-refresh').onclick = () => {
+  if (AVATAR_STORE_AVAILABLE) void loadAvatarStore(true);
+};
+if (AVATAR_STORE_AVAILABLE && SHELL && typeof SHELL.onAvatarStoreProgress === 'function') {
   SHELL.onAvatarStoreProgress(applyStoreProgress);
 }
 
@@ -3182,6 +3224,10 @@ const BODY_JOB_COPY = {
     work: 'Three full-body views are being rendered by the image provider.',
     wait: 'Expect roughly 1–3 minutes. Keep this window open — a bar that sits still is normal while the provider renders.'
   },
+  'body-edit': {
+    work: 'xAI is editing the matched Front, Side, and Back plates before OpenClam reruns local cutout and Identity Lock.',
+    wait: 'This uses three image edits and may take a few minutes. The original body remains saved as an undoable Body Set.'
+  },
   motion: {
     work: 'Image generation, then video generation, then alpha cutting — run one after another.',
     wait: 'Video generation is the slow stage: expect roughly 3–8 minutes. Keep this window open — a bar that sits still is normal while the provider renders.'
@@ -3192,6 +3238,7 @@ let BODY_POLL_MISSES = 0;
 
 function normaliseJobKind(kind) {
   const value = String(kind || '');
+  if (value === 'body-edit') return 'body-edit';
   return (value.startsWith('motion') || value === 'walk' || value === 'idle') ? 'motion' : 'body';
 }
 
@@ -3209,20 +3256,24 @@ function paintBodyHint() {
   const box = $('#body-progress'), hint = $('#body-progress-hint');
   if (!box || !hint) return;
   if (box.classList.contains('failed')) {
-    hint.innerHTML = '<span aria-hidden="true">⚠︎</span><span><b>Generation stopped.</b> ' +
-      'Read the line above, adjust the inputs, and run it again. Files already on disk were kept.</span>';
+    hint.innerHTML = BODY_JOB_KIND === 'body-edit'
+      ? '<span aria-hidden="true">⚠︎</span><span><b>Edit stopped.</b> Read the line above and adjust the instruction. The original body and active motion were kept.</span>'
+      : '<span aria-hidden="true">⚠︎</span><span><b>Generation stopped.</b> Read the line above, adjust the inputs, and run it again. Files already on disk were kept.</span>';
     return;
   }
   if (box.classList.contains('done')) {
-    hint.innerHTML = '<span aria-hidden="true">✓</span><span><b>Finished.</b> ' +
-      'Every retained production file is written to disk and listed in the motion library.</span>';
+    hint.innerHTML = BODY_JOB_KIND === 'body-edit'
+      ? '<span aria-hidden="true">✓</span><span><b>Edit finished.</b> The matched body set passed local cutout and Identity Lock; the prior set remains available for undo.</span>'
+      : '<span aria-hidden="true">✓</span><span><b>Finished.</b> Every retained production file is written to disk and listed in the motion library.</span>';
     return;
   }
   const copy = BODY_JOB_COPY[BODY_JOB_KIND] || BODY_JOB_COPY.body;
   const seconds = BODY_JOB_START ? (Date.now() - BODY_JOB_START) / 1000 : 0;
   const patience = seconds < 45 ? copy.wait
     : seconds < 240 ? 'Still running. ' + copy.wait
-    : 'Long render in progress — normal for video. The job is alive; the elapsed clock above is proof.';
+    : BODY_JOB_KIND === 'body-edit'
+      ? 'The three image edits and local identity checks are still running. The original body remains untouched until the new set passes every check.'
+      : 'Long render in progress — normal for video. The job is alive; the elapsed clock above is proof.';
   hint.innerHTML = '<span aria-hidden="true">⏳</span><span><b>This takes a while.</b> ' +
     copy.work + ' ' + patience + '</span>';
 }
@@ -3250,6 +3301,15 @@ function resetBodyProgress() {
 }
 
 let BODY_PIN_OBSERVER = null;
+
+/* qa:body-edit-provider-gate:start */
+function bodyEditAvailable(state) {
+  const provider = state && state.provider;
+  return Boolean(state && state.has_body && state.has_turnaround &&
+    state.body_edit_available === true && provider &&
+    provider.name === 'xai' && provider.model === 'grok-imagine-image-2.0');
+}
+/* qa:body-edit-provider-gate:end */
 
 /* Paint a curtain over the panel's top padding while the card is pinned, so
    content scrolling underneath never bleeds above it. */
@@ -3388,7 +3448,11 @@ function setBodyBusy(busy) {
   BODY_BUSY = busy;
   const hasBody = Boolean(BODY_STATE && BODY_STATE.has_body);
   const hasVideoProvider = Boolean(BODY_STATE && BODY_STATE.video_provider);
+  const canEdit = bodyEditAvailable(BODY_STATE);
+  $('#body-edit-card').setAttribute('aria-busy', busy ? 'true' : 'false');
   $('#body-generate').disabled = busy;
+  $('#body-edit-instruction').disabled = busy || !canEdit;
+  $('#body-edit-apply').disabled = busy || !canEdit;
   ['body-walk-generate', 'body-idle-generate', 'body-move-generate',
    'body-walk-recut', 'body-idle-recut', 'body-move-recut',
    'body-motion-fix', 'body-motion-dropframe', 'body-motion-frames'].forEach(id => {
@@ -3624,6 +3688,13 @@ function renderBodyPreview() {
   const hasBody = Boolean(BODY_STATE.has_body && records[BODY_VIEW]);
   if (!hasBody && BODY_MODE !== 'body') BODY_MODE = 'body';
   const showingBody = BODY_MODE === 'body';
+  const editAvailable = bodyEditAvailable(BODY_STATE);
+  $('#body-edit-card').classList.toggle(
+    'hidden', !showingBody || !hasBody || !editAvailable);
+  $('#body-edit-unavailable').classList.toggle(
+    'hidden', !showingBody || !hasBody || editAvailable);
+  $('#body-edit-unavailable-copy').textContent = BODY_STATE.body_edit_reason ||
+    'Choose xAI Grok Imagine Image 2.0 under AI & Voice → Image to edit this body.';
   const catalog = BODY_STATE.motion_assets || {};
   $('#body-mode-tabs').classList.toggle('hidden', !hasBody);
   $('#body-walk-file-count').textContent = String((catalog.walk || []).length);
@@ -3953,6 +4024,8 @@ async function tailorBodyPrompt(slug, { refresh = false, force = false } = {}) {
 
 async function openBody(slug) {
   BODY_SLUG = slug;
+  if (BODY_EDIT_SLUG !== slug) $('#body-edit-instruction').value = '';
+  BODY_EDIT_SLUG = slug;
   BODY_VIEW = 'front';
   BODY_MODE = 'body';
   stopBodyMotionCycle();
@@ -3972,6 +4045,12 @@ async function openBody(slug) {
     tailorBodyPrompt(slug);
   }
   const job = progressState.job || { done: true };
+  if (job.done && BODY_EDIT_JOB_ID) {
+    const completedOwnedEdit = Boolean(
+      job.id === BODY_EDIT_JOB_ID && normaliseJobKind(job.kind) === 'body-edit');
+    if (completedOwnedEdit && !job.error) $('#body-edit-instruction').value = '';
+    BODY_EDIT_JOB_ID = null;
+  }
   if (!job.done) {
     startBodyProgress(job.kind, true);
     setBodyBusy(true);
@@ -3991,10 +4070,23 @@ async function openBody(slug) {
 }
 
 function bodyProfile() {
+  const state = BODY_STATE || {};
+  const saved = (state.body || {}).options || {};
+  const traits = state.prompt_traits || {};
+  const presentation = ['feminine', 'masculine', 'androgynous'].includes(traits.presentation)
+    ? traits.presentation
+    : (['feminine', 'masculine', 'androgynous'].includes(saved.presentation)
+      ? saved.presentation : 'androgynous');
+  const medium = ['photograph', 'game art', 'anime', 'illustration', '3d render'].includes(traits.medium)
+    ? traits.medium
+    : (['photograph', 'game art', 'anime', 'illustration', '3d render'].includes(saved.medium)
+      ? saved.medium : 'photograph');
   return {
     style: $('#body-style').value,
     pose: $('#body-pose').value,
     prompt: $('#body-prompt').value.trim(),
+    presentation,
+    medium,
   };
 }
 
@@ -4023,6 +4115,51 @@ async function generateBody() {
     setBodyBusy(false);
     return;
   }
+  pollBody(response.job_id);
+}
+
+async function editBody() {
+  const field = $('#body-edit-instruction');
+  const instruction = field.value.trim();
+  if (!bodyEditAvailable(BODY_STATE)) {
+    alert((BODY_STATE && BODY_STATE.body_edit_reason) ||
+      'Choose xAI Grok Imagine Image 2.0 under AI & Voice → Image before editing.');
+    return;
+  }
+  if (instruction.length < 4) {
+    alert('Describe the full-body change in at least four characters.');
+    field.focus();
+    return;
+  }
+  if (!confirm(
+    'Apply this change to Front, Side, and Back?\n\n' +
+    'This uses 3 xAI image edits and creates a new Body Set. The current body stays saved. ' +
+    'Walk, Edge Idle, and Moves made for the old body may need regeneration.')) return;
+  setBodyBusy(true);
+  startBodyProgress('body-edit');
+  let response;
+  try {
+    response = await api('/api/avatar/body/edit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({slug: BODY_SLUG, instruction})
+    });
+  } catch (error) {
+    failBodyProgress('Could not reach the local OpenClam service. Reopen OpenClam Studio, then try again.');
+    setBodyBusy(false);
+    return;
+  }
+  if (!response.started && response.reason === 'already building') {
+    setBodyBusy(true);
+    pollBody(response.job_id);
+    return;
+  }
+  if (response.detail || !response.started) {
+    resetBodyProgress();
+    alert(response.detail || response.reason || 'Unable to start the xAI full-body edit.');
+    setBodyBusy(false);
+    return;
+  }
+  BODY_EDIT_JOB_ID = response.job_id;
   pollBody(response.job_id);
 }
 
@@ -4118,6 +4255,7 @@ async function pollBody(expectedJobId) {
       BODY_WATCH = null;
       $('#body-stage').textContent = 'Generation failed';
       $('#body-progress-line').textContent = String(lost.error).slice(0, 400);
+      if (BODY_EDIT_JOB_ID === expectedJobId) BODY_EDIT_JOB_ID = null;
       setBodyBusy(false);
       renderBodyStudio();
       return;
@@ -4141,10 +4279,14 @@ async function pollBody(expectedJobId) {
     BODY_WATCH = setTimeout(() => pollBody(expectedJobId), 1100);
     return;
   }
+  const completedBodyEdit = Boolean(
+    !job.error && BODY_EDIT_JOB_ID && expectedJobId === BODY_EDIT_JOB_ID);
   endBodyProgress(Boolean(job.error));
   BODY_WATCH = null;
   BODY_STATE = await api('/api/avatar/body?slug=' + encodeURIComponent(slug));
   if (BODY_SLUG !== slug) return;
+  if (completedBodyEdit) $('#body-edit-instruction').value = '';
+  if (BODY_EDIT_JOB_ID && expectedJobId === BODY_EDIT_JOB_ID) BODY_EDIT_JOB_ID = null;
   renderBodyStudio();
   setBodyBusy(false);
   if (job.error) return;
@@ -4170,6 +4312,7 @@ async function removeBody() {
 $('#body-close').onclick = closeBody;
 $('#body-cancel').onclick = closeBody;
 $('#body-generate').onclick = generateBody;
+$('#body-edit-apply').onclick = editBody;
 $('#body-remove').onclick = removeBody;
 $('#body-walk-generate').onclick = () => generateMotion('walk');
 $('#body-idle-generate').onclick = () => generateMotion('idle');
@@ -4454,11 +4597,11 @@ function drawRig() {
     if (keyframe && pose) {
       $('#rig-image').style.visibility = 'hidden';
       ctx.drawImage(keyframe, 0, 0, canvas.width, canvas.height);
-      ['cheeks', 'jaw', 'nasolabial', 'lips', 'nose', 'eyebags'].forEach(name => {
-        // the eyebag band rides the cheek envelope at runtime, so the
-        // panel answers the Cheeks slider there too
+      ['cheeks', 'eyebags', 'jaw', 'nasolabial', 'lips', 'nose'].forEach(name => {
+        // Under-eye bags are a separate, locally baked runtime layer. Keep
+        // their preview and overlay tied to their own target, never Cheeks.
         const weight = Math.max(0, Math.min(1,
-          (RIG_PROFILE[name === 'eyebags' ? 'cheeks' : name] || 0) / 100));
+          (RIG_PROFILE[name] || 0) / 100));
         if (!weight) return;
         (RIG.regions[name] || []).forEach(polygon => {
           ctx.save();
@@ -4479,7 +4622,7 @@ function drawRig() {
     ['forehead', 'brows', 'eyebags', 'cheeks', 'jaw', 'nasolabial', 'lips', 'nose', 'locked'].forEach(name => {
       const color = RIG_COLORS[name];
       const strength = name === 'locked' ? 1 :
-        (RIG_PROFILE[name === 'eyebags' ? 'cheeks' : name] || 0) / 100;
+        (RIG_PROFILE[name] || 0) / 100;
       (RIG.regions[name] || []).forEach(polygon => {
         rigPolygon(ctx, polygon, canvas.width, canvas.height);
         ctx.fillStyle = `rgba(${color.join(',')},${.045 + strength * .22})`;
@@ -4589,9 +4732,10 @@ function rigStatus(message = '', state = '', percent = null) {
     state = state || 'bad';
   }
   const brows = RIG_PROFILE.brows === undefined ? '' : ` · brows ${RIG_PROFILE.brows}%`;
+  const eyebags = RIG_PROFILE.eyebags === undefined ? '' : ` · under-eye ${RIG_PROFILE.eyebags}%`;
   const forehead = RIG_PROFILE.forehead === undefined ? '' : ` · forehead ${RIG_PROFILE.forehead}%`;
   const teeth = RIG_PROFILE.teeth === undefined ? '' : ` · teeth ${RIG_PROFILE.teeth}%`;
-  const targets = `Targets · lip ${RIG_PROFILE.lips}% · jaw ${RIG_PROFILE.jaw}% · cheeks ${RIG_PROFILE.cheeks}%${brows}${forehead} · folds ${RIG_PROFILE.nasolabial}% · nose ${RIG_PROFILE.nose}%${teeth}`;
+  const targets = `Targets · lip ${RIG_PROFILE.lips}% · jaw ${RIG_PROFILE.jaw}% · cheeks ${RIG_PROFILE.cheeks}%${eyebags}${brows}${forehead} · folds ${RIG_PROFILE.nasolabial}% · nose ${RIG_PROFILE.nose}%${teeth}`;
   const experimental = rigExperimentalKeys();
   const legacyBackend = Number(RIG.schema.version || 0) < 2;
   const guidance = experimental.length
@@ -4632,12 +4776,13 @@ function renderRigControls() {
       RIG_PROFILE[key] = Number(event.target.value);
       RIG_PROFILE.preset = 'custom';
       $('#rig-preset').value = 'custom';
-      // Eyebrows/Forehead are live runtime amplitudes: hand the dragged
-      // values straight to the desk avatar (same-origin storage event) so
-      // it answers WHILE the slider moves - no rebuild needed for these.
-      if (key === 'brows' || key === 'forehead') {
+      // These two locally baked expression layers are also live runtime
+      // amplitudes. Hand the dragged targets to the desk avatar through the
+      // same-origin storage event so their response is testable before a
+      // rebuild writes the profile into the runtime manifest.
+      if (key === 'brows' || key === 'eyebags') {
         localStorage.setItem('openclam-live-rig', JSON.stringify({
-          slug: RIG_SLUG, brows: RIG_PROFILE.brows, forehead: RIG_PROFILE.forehead
+          slug: RIG_SLUG, brows: RIG_PROFILE.brows, eyebags: RIG_PROFILE.eyebags
         }));
       }
       paintRigControl(key);

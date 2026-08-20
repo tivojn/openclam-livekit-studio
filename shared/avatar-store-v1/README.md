@@ -1,7 +1,13 @@
-# OpenClam avatar store v1
+# OpenClam avatar store v1 contract
 
-This directory owns the strict catalog contract and the offline release builder
-used by both OpenClam apps. The catalog root is exactly:
+Avatar Store is release-disabled in OpenClam v1.0.1. Neither shipped app has a
+catalog URL, loads a cached store catalog, or requests remote thumbnails or
+packages. Direct AVTR import, library use, export, and deletion are separate
+local workflows and remain available.
+
+This directory retains the strict catalog contract and a generic offline
+staging builder for a future, separately reviewed store. The catalog root is
+exactly:
 
 ```json
 {"schemaVersion": 1, "entries": []}
@@ -14,41 +20,48 @@ verify its declared byte count and SHA-256, then hand the file to the existing
 atomic AVTR v2 importer. A package for the other platform is never used as a
 fallback.
 
-## Vivieen v1 release layout
+## Generic staging layout
 
-The public catalog is fixed at:
-
-`https://raw.githubusercontent.com/tivojn/openclam-avatar-store/main/catalog/v1/catalog.json`
-
-`build_release.py` produces this unpublished staging layout:
+`build_release.py` has no production URL, identity, publisher, version, or
+filename defaults. All release identity and endpoint values must be supplied
+explicitly. For an identifier such as the clearly synthetic `fixture-avatar`,
+it produces this unpublished staging layout:
 
 ```text
 release-assets/
-  Vivieen-iPhone.avtr
-  Vivieen-iPhone.avtr.sha256
-  Vivieen-Mac.avtr
-  Vivieen-Mac.avtr.sha256
+  fixture-avatar-ios-light.avtr
+  fixture-avatar-ios-light.avtr.sha256
+  fixture-avatar-macos-full.avtr
+  fixture-avatar-macos-full.avtr.sha256
 catalog/v1/
   catalog.json
   catalog.json.sha256
   catalog.schema.json
-  vivieen-thumbnail.png
-  vivieen-thumbnail.png.sha256
+  fixture-avatar-thumbnail.png
+  fixture-avatar-thumbnail.png.sha256
 ```
 
-The two AVTR files are release assets for tag `avatars-v1.0.0`; the `catalog/`
-tree belongs on the repository's `main` branch. The builder performs no network
-operation and never publishes.
+The builder performs no network operation and never publishes. Its explicit
+URLs only populate the staged catalog; approving media, selecting a repository,
+and enabling either client require a separate release review.
 
-Run it against the approved Studio avatar directory:
+Synthetic example (these fixture endpoints are not a shipped store):
 
 ```sh
 python3 shared/avatar-store-v1/build_release.py \
-  --avatar-root "/path/to/OpenClam Studio/backend-data/avatars/vivieen" \
-  --output "/private/output/openclam-avatar-store-v1"
+  --avatar-root "/path/to/avatars/fixture-avatar" \
+  --output "/private/output/avatar-store-fixture" \
+  --identifier "fixture-avatar" \
+  --display-name "Fixture Avatar" \
+  --author "Example Publisher" \
+  --version 1 \
+  --catalog-url "https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/catalog.json" \
+  --release-url "https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/fixtures-v1" \
+  --thumbnail-url "https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/fixture-avatar-thumbnail.png"
 ```
 
-The source must be `ready` and must provide head, full body, walk, edge idle,
-and moves. Existing output is rejected rather than overwritten. ZIP order,
-timestamps, permissions, and compression are normalized so the same source
-bytes reproduce the same archives and checksums.
+The source manifest identity must match the explicit identifier and display
+name, must be `ready`, and must provide head, full body, walk, edge idle, and
+moves. Existing output is rejected rather than overwritten. ZIP order,
+timestamps, permissions, and compression are normalized so identical source
+bytes and arguments reproduce identical archives and checksums.

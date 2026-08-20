@@ -1,6 +1,6 @@
 {
   "name": "openclam-livekit-studio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "OpenClam contributors",
   "license": "MIT",
   "private": true,
@@ -53,6 +53,9 @@
     "files": [
       "electron/**/*",
       "package.json",
+      "!electron/native/**",
+      "!node_modules/**/src/**",
+      "!node_modules/**/*.map",
       "!node_modules/livekit-client/src/test/**",
       "!node_modules/livekit-client/src/**/__snapshots__/**",
       "!node_modules/livekit-client/src/**/*.test.ts",
@@ -156,7 +159,8 @@
           "live-talk-approved-tuples-v1.json",
           "avatar-package-v2/README.md",
           "avatar-package-v2/manifest.schema.json",
-          "avatar-package-v2/macos-full.schema.json"
+          "avatar-package-v2/macos-full.schema.json",
+          "avatar-package-v2/ios-light-v3.schema.json"
         ]
       },
       {
@@ -164,6 +168,7 @@
         "to": "backend/bin",
         "filter": [
           "ffmpeg",
+          "ffprobe",
           "LICENSE.LGPLv2.1.txt"
         ]
       },

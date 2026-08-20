@@ -48,6 +48,23 @@ def blank_frames(count, width=48, height=72):
     return [frame.copy() for _ in range(count)]
 
 
+def periodic_silhouette_frames(count, period, width=48, height=72):
+    """Visible bilateral gait whose true loop period is deterministic."""
+    frames = []
+    for index in range(count):
+        phase = 2 * math.pi * index / period
+        swing = int(round(3 * math.sin(phase)))
+        frame = np.zeros((height, width, 4), dtype=np.uint8)
+        frame[12:44, 20:28] = 255
+        # Contralateral arms and legs expose a bad half-cycle seam clearly.
+        frame[20:43, 13 + swing:18 + swing] = 255
+        frame[20:43, 30 - swing:35 - swing] = 255
+        frame[42:68, 17 - swing:23 - swing] = 255
+        frame[42:68, 25 + swing:31 + swing] = 255
+        frames.append(frame)
+    return frames
+
+
 class SourceGaitProfileTests(unittest.TestCase):
     def test_detects_dominant_period(self):
         for period in (24, 48, 72):
@@ -123,6 +140,49 @@ class LoopSelectionTests(unittest.TestCase):
                 frames, 24, 1.05, 0.85, 2.25,
                 poses=poses, require_pose_cycle=True)
         self.assertIn("cadence is too slow", str(raised.exception))
+
+    def test_relaxed_shipping_selects_a_closed_full_gait(self):
+        period = 48
+        frames = periodic_silhouette_frames(145, period)
+        poses = gait_poses(145, period)
+        selected, start, end, _alternates, method = (
+            motion._relaxed_walk_selection(
+                frames, poses, 24,
+                {"target": 1.05, "minimum": 0.85, "maximum": 3.4},
+                "office-gait",
+            )
+        )
+        self.assertEqual("closed full-gait selection", method)
+        self.assertEqual(end - start, len(selected))
+        self.assertGreaterEqual(end - start, round(period * 0.85))
+        quality = motion._pose_cycle_metrics(poses, start, end)
+        self.assertTrue(quality["valid"], quality["reason"])
+        masks = [frame[:, :, 3] > 12 for frame in selected]
+        seam_iou = float((masks[0] & masks[-1]).sum()) / float(
+            (masks[0] | masks[-1]).sum())
+        features = [motion._loop_feature(frame) for frame in selected]
+        transitions = [
+            float(np.mean(np.abs(a - b)))
+            for a, b in zip(features, features[1:])
+        ]
+        seam_delta = float(np.mean(np.abs(features[-1] - features[0])))
+        self.assertGreaterEqual(seam_iou, 0.82)
+        self.assertLessEqual(
+            seam_delta, max(0.025, 1.5 * float(np.percentile(transitions, 95))))
+
+    def test_relaxed_shipping_falls_back_without_a_measured_gait(self):
+        frames = blank_frames(145)
+        selected, start, end, alternates, method = (
+            motion._relaxed_walk_selection(
+                frames, None, 24,
+                {"target": 1.05, "minimum": 0.85, "maximum": 3.4},
+                "office-gait",
+            )
+        )
+        self.assertEqual((0, 72), (start, end))
+        self.assertEqual(72, len(selected))
+        self.assertEqual([], alternates)
+        self.assertEqual("first-half fallback", method)
 
 
 def treadmill_poses(count, period, stride=120.0, root_x=200.0):

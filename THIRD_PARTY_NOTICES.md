@@ -32,4 +32,6 @@ the locks change.
 Bundled or downloaded model weights may have terms separate from their runtime
 software. Cloud services also have provider terms independent of this source
 license. The MIT license for OpenClam does not grant rights to third-party
-models, service marks, a person's likeness, or user-provided content.
+models, service marks, a person's likeness, user-provided content, or the
+separately restricted Captain Ayer and Ara media described in
+[`AVATAR_ASSET_LICENSE.md`](AVATAR_ASSET_LICENSE.md).

@@ -44,8 +44,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot
-        CURRENT_PROJECT_VERSION: 20
-        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 22
+        MARKETING_VERSION: 1.0.1
         CODE_SIGN_ENTITLEMENTS: App/OpenClamLiveKit.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -119,8 +119,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-context-share
         PRODUCT_NAME: OpenClamLiveKitShareExtension
-        CURRENT_PROJECT_VERSION: 20
-        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 22
+        MARKETING_VERSION: 1.0.1
         INFOPLIST_FILE: ShareExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
@@ -141,8 +141,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget
         PRODUCT_NAME: OpenClamLiveKitScreenVoiceWidget
-        CURRENT_PROJECT_VERSION: 20
-        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 22
+        MARKETING_VERSION: 1.0.1
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
       configs:
@@ -171,8 +171,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.keyboard
         PRODUCT_NAME: OpenClamLiveKitKeyboard
-        CURRENT_PROJECT_VERSION: 20
-        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 22
+        MARKETING_VERSION: 1.0.1
         INFOPLIST_FILE: KeyboardExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: KeyboardExtension/OpenClamKeyboard.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
@@ -189,6 +189,8 @@ targets:
     sources:
       - path: Tests
       - path: ../../shared/avatar-package-v2/fixtures/ios-light-golden.avtr
+        buildPhase: resources
+      - path: ../../shared/avatar-package-v2/fixtures/ios-light-motion-v3-golden.avtr
         buildPhase: resources
     dependencies:
       - target: OpenClamLiveKit
@@ -232,5 +234,14 @@ schemes:
         OpenClamLiveKit: all
         OpenClamLiveKitUITests: [test]
     test:
+      debugEnabled: false
+      preActions:
+        - name: Verify UI audit launcher
+          settingsTarget: OpenClamLiveKit
+          script: |
+            set -eu
+            scheme_path="$SRCROOT/OpenClamLiveKit.xcodeproj/xcshareddata/xcschemes/OpenClamLiveKitUIAudit.xcscheme"
+            grep -Fq 'selectedDebuggerIdentifier = ""' "$scheme_path"
+            grep -Fq 'selectedLauncherIdentifier = "Xcode.IDEFoundation.Launcher.PosixSpawn"' "$scheme_path"
       targets:
         - OpenClamLiveKitUITests

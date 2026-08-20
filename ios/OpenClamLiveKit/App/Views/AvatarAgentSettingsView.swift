@@ -119,32 +119,32 @@ struct AvatarAgentSettingsView: View {
 
     var body: some View {
         List {
-            Section {
-                NavigationLink {
-                    OpenClamAvatarStoreView(
-                        configuration: configuration,
-                        onActivate: onActivate
-                    )
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "person.crop.square.filled.and.at.rectangle")
-                            .font(.title3)
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 32, height: 32)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Avatar Store")
-                                .font(.body.weight(.semibold))
-                            Text("Preview and download verified avatars")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            if OpenClamAvatarStoreReleasePolicy.isAvailable {
+                Section {
+                    NavigationLink {
+                        OpenClamAvatarStoreView(
+                            configuration: configuration,
+                            onActivate: onActivate
+                        )
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.square.filled.and.at.rectangle")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 32, height: 32)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Avatar Store")
+                                    .font(.body.weight(.semibold))
+                                Text("Preview and download verified avatars")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.vertical, 3)
                     }
-                    .padding(.vertical, 3)
+                    .accessibilityIdentifier("openclam-avatar-store-link")
                 }
-                .accessibilityIdentifier("openclam-avatar-store-link")
-            } footer: {
-                Text("Vivieen is the first downloadable avatar. Download progress and integrity checks stay visible in the Store.")
             }
 
             Section {
@@ -153,7 +153,7 @@ struct AvatarAgentSettingsView: View {
                 } label: {
                     Label("Import Avatar from Files", systemImage: "square.and.arrow.down")
                 }
-                .disabled(isImportingAvatar)
+                .disabled(isImportingAvatar || avatarLibrary.isMutating)
                 .accessibilityIdentifier("openclam-import-avatar")
 
                 if isImportingAvatar {
@@ -180,6 +180,22 @@ struct AvatarAgentSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.orange)
                 }
+
+                if let deletingID = avatarLibrary.deletingAvatarID,
+                   let deletingAvatar = avatarLibrary.avatar(id: deletingID) {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Deleting \(deletingAvatar.displayName)…")
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(
+                        "Deleting \(deletingAvatar.displayName)"
+                    )
+                    .accessibilityIdentifier(
+                        "openclam-avatar-delete-progress"
+                    )
+                }
             } header: {
                 Text("Avatar library")
             } footer: {
@@ -200,8 +216,12 @@ struct AvatarAgentSettingsView: View {
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if avatarLibrary.isImported(id: avatar.id) {
                             Button("Delete", role: .destructive) {
-                                pendingDeletion = avatar
+                                requestDeletion(of: avatar)
                             }
+                            .disabled(avatarLibrary.isMutating)
+                            .accessibilityLabel(
+                                "Delete \(avatar.displayName)"
+                            )
                             .accessibilityIdentifier(
                                 "openclam-delete-avatar-\(avatar.id)"
                             )
@@ -224,7 +244,8 @@ struct AvatarAgentSettingsView: View {
             onCompletion: handleAvatarFileSelection
         )
         .confirmationDialog(
-            "Delete imported avatar?",
+            pendingDeletion.map { "Delete \($0.displayName)?" }
+                ?? "Delete imported avatar?",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
@@ -235,11 +256,12 @@ struct AvatarAgentSettingsView: View {
             Button("Delete \(avatar.displayName)", role: .destructive) {
                 delete(avatar)
             }
+            .disabled(avatarLibrary.isMutating)
             Button("Cancel", role: .cancel) {
                 pendingDeletion = nil
             }
         } message: { avatar in
-            Text("This removes \(avatar.displayName) from this iPhone. Built-in avatars cannot be deleted.")
+            Text("This permanently removes \(avatar.displayName) from this iPhone. You can import or download it again later.")
         }
         .alert(item: $libraryNotice) { notice in
             Alert(
@@ -381,17 +403,26 @@ struct AvatarAgentSettingsView: View {
         }
     }
 
+    private func requestDeletion(of avatar: OpenClamAvatarDescriptor) {
+        guard avatarLibrary.isImported(id: avatar.id),
+              !avatarLibrary.isProtected(id: avatar.id),
+              !avatarLibrary.isMutating else {
+            return
+        }
+        pendingDeletion = avatar
+    }
+
     private func delete(_ avatar: OpenClamAvatarDescriptor) {
         pendingDeletion = nil
-        let wasActive = configuration.activeAvatarID == avatar.id
         Task { @MainActor in
             do {
-                try await avatarLibrary.deleteImportedAvatar(id: avatar.id)
-                configuration.removeImportedAvatarProfile(id: avatar.id)
-                if wasActive,
-                   let fallback = avatarLibrary.avatar(
-                       id: AvatarAgentIdentity.defaultID
-                   ) {
+                let result = try await OpenClamAvatarDeletionCoordinator.perform(
+                    decision: .confirm,
+                    avatar: avatar,
+                    library: avatarLibrary,
+                    configuration: configuration
+                )
+                if let fallback = result?.fallbackIdentity {
                     onActivate(fallback.id, fallback.displayName)
                 }
                 libraryNotice = .init(
@@ -415,6 +446,8 @@ private struct AvatarLibraryNotice: Identifiable {
 }
 
 struct AvatarAgentEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var avatarLibrary: OpenClamAvatarLibrary
     @ObservedObject var configuration: AIConfigurationModel
     let avatarID: String
     let onActivate: (String, String) -> Void
@@ -422,6 +455,9 @@ struct AvatarAgentEditorView: View {
     @State private var draft: AvatarAgentProfile
     @State private var notice: String?
     @State private var showsResetConfirmation = false
+    @State private var showsDeleteConfirmation = false
+    @State private var isDeletingAvatar = false
+    @State private var deletionNotice: AvatarLibraryNotice?
 
     init(
         configuration: AIConfigurationModel,
@@ -580,6 +616,47 @@ struct AvatarAgentEditorView: View {
                 }
             }
 
+            if avatarLibrary.isImported(id: avatarID) {
+                Section {
+                    Button(
+                        "Delete \(deletionDisplayName)",
+                        role: .destructive
+                    ) {
+                        showsDeleteConfirmation = true
+                    }
+                    .disabled(isDeletingAvatar || avatarLibrary.isMutating)
+                    .accessibilityLabel(
+                        "Delete avatar \(deletionDisplayName)"
+                    )
+                    .accessibilityHint(
+                        "Shows a confirmation before removing this avatar from the iPhone."
+                    )
+                    .accessibilityIdentifier(
+                        "openclam-avatar-editor-delete"
+                    )
+
+                    if isDeletingAvatar
+                        || avatarLibrary.deletingAvatarID == avatarID {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Deleting avatar…")
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(
+                            "Deleting avatar \(deletionDisplayName)"
+                        )
+                        .accessibilityIdentifier(
+                            "openclam-avatar-editor-delete-progress"
+                        )
+                    }
+                } header: {
+                    Text("Installed avatar")
+                } footer: {
+                    Text("This removes the imported avatar from this iPhone. Built-in avatars are protected and never show this option.")
+                }
+            }
+
             if let notice {
                 Section {
                     Text(notice)
@@ -592,6 +669,12 @@ struct AvatarAgentEditorView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save", action: save)
+                    .disabled(isDeletingAvatar || !isAvatarAvailable)
+            }
+        }
+        .onChange(of: avatarLibrary.avatars.map(\.id)) { _, availableIDs in
+            if !availableIDs.contains(avatarID), !isDeletingAvatar {
+                dismiss()
             }
         }
         .confirmationDialog(
@@ -605,6 +688,71 @@ struct AvatarAgentEditorView: View {
                 notice = "Reset to shared chat settings and LiveKit managed Live Talk."
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "Delete \(deletionDisplayName)?",
+            isPresented: $showsDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete \(deletionDisplayName)", role: .destructive) {
+                deleteImportedAvatar()
+            }
+            .disabled(isDeletingAvatar || avatarLibrary.isMutating)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes \(deletionDisplayName) from this iPhone. You can import or download it again later.")
+        }
+        .alert(item: $deletionNotice) { notice in
+            Alert(
+                title: Text(notice.title),
+                message: Text(notice.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    private var deletionDisplayName: String {
+        avatarLibrary.avatar(id: avatarID)?.displayName
+            ?? draft.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isAvatarAvailable: Bool {
+        avatarLibrary.avatar(id: avatarID) != nil
+    }
+
+    private func deleteImportedAvatar() {
+        guard !isDeletingAvatar,
+              !avatarLibrary.isMutating,
+              avatarLibrary.isImported(id: avatarID),
+              let avatar = avatarLibrary.avatar(id: avatarID) else {
+            return
+        }
+
+        isDeletingAvatar = true
+        Task { @MainActor in
+            defer { isDeletingAvatar = false }
+            do {
+                let result = try await OpenClamAvatarDeletionCoordinator.perform(
+                    decision: .confirm,
+                    avatar: avatar,
+                    library: avatarLibrary,
+                    configuration: configuration
+                )
+                if let fallback = result?.fallbackIdentity {
+                    // RootView stops speech output before switching the active
+                    // conversation and stage to this deterministic fallback.
+                    onActivate(fallback.id, fallback.displayName)
+                }
+                // Leave only after every disk, library, profile, and thread
+                // update succeeds. This prevents the stale editor draft from
+                // saving a deleted profile back into UserDefaults.
+                dismiss()
+            } catch {
+                deletionNotice = .init(
+                    title: "Couldn’t delete avatar",
+                    message: error.localizedDescription
+                )
+            }
         }
     }
 
@@ -1019,6 +1167,10 @@ struct AvatarAgentEditorView: View {
     }
 
     private func save() {
+        guard isAvatarAvailable else {
+            notice = "This avatar is no longer installed. Its old settings were not saved."
+            return
+        }
         do {
             _ = try LiveTalkConfigurationResolver.resolve(
                 profile: draft,

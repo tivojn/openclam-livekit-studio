@@ -13,12 +13,102 @@ positions per eye and the two eyes can be driven independently.
 """
 import os, json, shutil, subprocess
 import numpy as np, cv2
-from . import face, blink, expression, cutout, limbs, build as reg
+from . import face, blink, expression, cutout, limbs, rig, build as reg
+
+
+# The renderer version is not only an asset schema: it also tells the desktop
+# which calibrated runtime controls can be consumed safely.  Keep a runtime
+# bundle with preserved face strips current when its Pet layers are refreshed
+# without source visemes.
+RUNTIME_VERSION = 17
 
 # runtime viseme name -> studio shape name
 NAME_MAP = {"sil": "closed", "PP": "PP", "FF": "FF", "TH": "TH", "DD": "DD",
             "kk": "kk", "CH": "CH", "SS": "SS", "nn": "nn", "RR": "RR",
             "aa": "ah", "E": "eh", "ih": "ih", "oh": "oh", "ou": "oo"}
+
+
+def _runtime_version(value):
+    """Return a defensively parsed runtime version for a preserved bundle."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _runtime_rig_profile(source_manifest, preserved_runtime=None):
+    """Normalize current controls without discarding an old runtime-only rig.
+
+    A source manifest is authoritative after a rebuild.  Imported/runtime-only
+    avatars can have no persisted source profile, however, so preserve a valid
+    profile from their current runtime before falling back to natural defaults.
+    In either case ``rig.normalize`` adds newly introduced safe controls such
+    as the independent under-eye target.
+    """
+    source_manifest = source_manifest if isinstance(source_manifest, dict) else {}
+    preserved_runtime = (
+        preserved_runtime if isinstance(preserved_runtime, dict) else {})
+    for candidate in (
+            source_manifest.get("rig_profile"),
+            preserved_runtime.get("rig_profile")):
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            return rig.normalize(candidate)
+        except (TypeError, ValueError):
+            # An old or malformed draft must never block the asset-preserving
+            # migration; a later candidate/default remains safe to publish.
+            continue
+    return rig.normalize()
+
+
+def _runtime_face_asset(destination, reference, label):
+    """Validate an existing face-sprite reference before a schema upgrade."""
+    if not isinstance(reference, str) or not reference.startswith("assets/"):
+        raise ValueError(f"runtime {label} asset reference is missing")
+    root = os.path.abspath(destination)
+    asset = os.path.abspath(os.path.join(root, reference[len("assets/"):]))
+    if os.path.commonpath((root, asset)) != root:
+        raise ValueError(f"runtime {label} asset escapes its bundle")
+    if not os.path.isfile(asset) or os.path.getsize(asset) <= 0:
+        raise ValueError(f"runtime {label} asset is missing")
+
+
+def _validate_v17_face_layers(runtime, destination):
+    """Prove a preserved v16 bank can render every v17 upper-face layer.
+
+    ``publish_pet_assets`` intentionally does not regenerate face sprites.  A
+    v16 bank that lacks the under-eye strip must therefore remain legacy (and
+    ask for a source-backed rebuild) instead of being relabelled v17, where the
+    renderer would silently skip its independent target forever.
+    """
+    requirements = (
+        ("eyes", "states", "eyelid"),
+        ("brow", "dys", "brow"),
+        ("eyebag", "ups", "under-eye"),
+    )
+    for key, positions, label in requirements:
+        layer = runtime.get(key)
+        if not isinstance(layer, dict):
+            raise ValueError(f"runtime {label} layer is missing; cannot migrate to v{RUNTIME_VERSION}")
+        values = layer.get(positions)
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"runtime {label} metadata is missing; cannot migrate to v{RUNTIME_VERSION}")
+        for side in ("l", "r"):
+            sprite = layer.get(side)
+            if not isinstance(sprite, dict):
+                raise ValueError(f"runtime {label}_{side} metadata is missing; cannot migrate to v{RUNTIME_VERSION}")
+            box = sprite.get("box")
+            if not isinstance(box, list) or len(box) != 4:
+                raise ValueError(f"runtime {label}_{side} box is missing; cannot migrate to v{RUNTIME_VERSION}")
+            try:
+                box_values = [float(value) for value in box]
+            except (TypeError, ValueError):
+                raise ValueError(f"runtime {label}_{side} box is invalid; cannot migrate to v{RUNTIME_VERSION}")
+            if (not all(np.isfinite(value) for value in box_values)
+                    or box_values[2] <= 0 or box_values[3] <= 0):
+                raise ValueError(f"runtime {label}_{side} box is invalid; cannot migrate to v{RUNTIME_VERSION}")
+            _runtime_face_asset(destination, sprite.get("src"), f"{label}_{side}")
 
 
 def _runtime_body_metadata(source):
@@ -38,9 +128,22 @@ def _body_pose(body_dir, log=print):
     silhouette as one button. Head stays mask-exact and is not part of this.
     """
     cache = os.path.join(body_dir, "pose.json")
+    metadata = {}
+    try:
+        with open(os.path.join(body_dir, "body.json")) as handle:
+            metadata = json.load(handle) or {}
+    except (OSError, ValueError):
+        pass
+    front_source = os.path.basename(str(
+        ((((metadata.get("views") or {}).get("front") or {}).get("source"))
+         or "")))
+    candidates = [front_source, "source-front.png", "source.png"]
+    candidates.extend(
+        name for name in sorted(os.listdir(body_dir))
+        if name.startswith("source-front.") or name.startswith("source."))
     source = next((os.path.join(body_dir, name)
-                   for name in ("source-front.png", "source.png")
-                   if os.path.isfile(os.path.join(body_dir, name))), None)
+                   for name in candidates
+                   if name and os.path.isfile(os.path.join(body_dir, name))), None)
     if not source:
         return None
     if os.path.isfile(cache) and os.path.getmtime(cache) >= os.path.getmtime(source):
@@ -269,8 +372,18 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
             except FileNotFoundError:
                 pass
     motion_meta = _publish_motion(directory, destination, log)
+    # Face sprites are preserved on this no-viseme road.  Never declare the
+    # bundle current until the legacy bank proves it has the layers that v17
+    # actually drives, especially the independent under-eye strip.
+    if _runtime_version(runtime.get("v")) < RUNTIME_VERSION:
+        _validate_v17_face_layers(runtime, destination)
     runtime.update(
-        v=max(12, int(runtime.get("v", 0))),
+        # This branch preserves a proven face bank when an imported avatar no
+        # longer carries source visemes.  It must still cross the current
+        # runtime schema boundary: v16 otherwise kept being copied forever
+        # and never acquired the normalized ``rig_profile.eyebags`` control.
+        v=max(RUNTIME_VERSION, _runtime_version(runtime.get("v"))),
+        rig_profile=_runtime_rig_profile(source_manifest, runtime),
         cutout=cutout_meta,
         body=body_meta,
         motion=motion_meta,
@@ -382,13 +495,16 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
 
     timing = dict(close=blink.CLOSE, hold=blink.HOLD, open=blink.OPEN,
                   settle=blink.SETTLE, creep=blink.CREEP)
-    manifest = dict(v=16, w=W, h=H, avatar=dict(slug=slug, name=m["name"]),
+    # v17 adds the independent `eyebags` calibration target consumed by the
+    # desktop runtime. The strips already existed; versioning makes old
+    # bundles refresh so their normalized rig profile reaches the renderer.
+    manifest = dict(v=RUNTIME_VERSION, w=W, h=H, avatar=dict(slug=slug, name=m["name"]),
                     visemes=names, frames=frames, eyes=eyes, gaze=gaze, brow=brow,
                     cheek=cheek, eyebag=eyebag,
                     neck=expression.neck(klm), cutout=cutout_meta,
                     body=body_meta, motion=motion_meta, blink=timing,
                     built=m.get("updated"), quality=m.get("quality"),
-                    rig_profile=m.get("rig_profile"))
+                    rig_profile=_runtime_rig_profile(m))
     with open(os.path.join(dest, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)
     log(f"exported {len(names)} visemes, {states} lid states, "

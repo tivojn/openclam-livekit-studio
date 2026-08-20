@@ -156,6 +156,7 @@
 		EF29297FB4A72B0B249DED52 /* ScreenCaptureSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6A8127BFA3BF490416A34C7 /* ScreenCaptureSessionView.swift */; };
 		F1145ECCB80C3A9D8D33056E /* ScreenContextCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD952703730A5E7AA4EA5554 /* ScreenContextCaptureSession.swift */; };
 		F2BEB30751A127B6BEF7AB87 /* ScreenVoicePTTAnswerSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A4D4F5B6E5208752D3B541 /* ScreenVoicePTTAnswerSpeaker.swift */; };
+		F306CBDA496F13516404947B /* OpenClamAvatarUITestFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7DCAC2BFE7279AF19E5531 /* OpenClamAvatarUITestFixture.swift */; };
 		F36A18A2CEE1B1F0710DEA41 /* ScreenVoicePTTCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32BD90DF9FF7519393BF4A41 /* ScreenVoicePTTCoordinator.swift */; };
 		F370B6A50C541AA39AA48CCF /* ContactAgentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25EBB6E3936052DF20F1930 /* ContactAgentSession.swift */; };
 		F388C6464E6760A053F17D46 /* OpenClamKeyboardDictationHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74361CA754EBBB02CA5E1291 /* OpenClamKeyboardDictationHost.swift */; };
@@ -163,6 +164,7 @@
 		F5C6A2C1337DD425522FDB26 /* OpenClamSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D663B5E7DC24DE324579622 /* OpenClamSettingsView.swift */; };
 		F8987C234CD0492CA3AEED5D /* AgentToolLocalDataParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6D9FBA1E233281E1BC3F41 /* AgentToolLocalDataParser.swift */; };
 		FAA810FDC0314F33C181CBC1 /* MailComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DA90F40D3C0A945B22FBFB /* MailComposeView.swift */; };
+		FE5DCBD1FB2DB22AF3993A32 /* ios-light-motion-v3-golden.avtr in Resources */ = {isa = PBXBuildFile; fileRef = 3D2525F7F4E55E2A50853B05 /* ios-light-motion-v3-golden.avtr */; };
 		FED5E9C3CB4613E05D0FA327 /* ScreenContextInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */; };
 /* End PBXBuildFile section */
 
@@ -252,6 +254,7 @@
 		3A6B6E08BB2DEDCA5B756740 /* ProviderAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAPIClient.swift; sourceTree = "<group>"; };
 		3C3DC59E1C5FD604BD183C8B /* ScreenVoicePTTProgressReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTProgressReporter.swift; sourceTree = "<group>"; };
 		3C8ADEAC3CBF7AAF4D72B3CA /* AgentToolLocalDataParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentToolLocalDataParserTests.swift; sourceTree = "<group>"; };
+		3D2525F7F4E55E2A50853B05 /* ios-light-motion-v3-golden.avtr */ = {isa = PBXFileReference; path = "ios-light-motion-v3-golden.avtr"; sourceTree = "<group>"; };
 		3DE92840A8216A19696B4EDB /* CaptainAyerAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerAvatarTests.swift; sourceTree = "<group>"; };
 		3F84B37DE1C6BB0AB1FC248C /* CloudVoiceServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVoiceServiceTests.swift; sourceTree = "<group>"; };
 		3FC28AB4A5774A9C00E46718 /* ActivityRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityRecord.swift; sourceTree = "<group>"; };
@@ -312,6 +315,7 @@
 		8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextInbox.swift; sourceTree = "<group>"; };
 		8A9C4AD3022E2F0311264A57 /* ScreenVoicePTTModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTModels.swift; sourceTree = "<group>"; };
 		8AF0D82C2F3EC33A8DFE1C8E /* OpenAIResponsesTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesTypes.swift; sourceTree = "<group>"; };
+		8B7DCAC2BFE7279AF19E5531 /* OpenClamAvatarUITestFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarUITestFixture.swift; sourceTree = "<group>"; };
 		8BB08C2624C1E2C228E85FA0 /* OpenClamAvatarAssetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarAssetStore.swift; sourceTree = "<group>"; };
 		8BBC3FC29D1197887EF291B0 /* DeviceActionShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceActionShortcut.swift; sourceTree = "<group>"; };
 		8C7A2546723B5A45015AF9E7 /* CaptainAyerFaceReactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceReactionTests.swift; sourceTree = "<group>"; };
@@ -620,6 +624,7 @@
 			isa = PBXGroup;
 			children = (
 				5AA180F1AEB9A7B076AC4D13 /* ios-light-golden.avtr */,
+				3D2525F7F4E55E2A50853B05 /* ios-light-motion-v3-golden.avtr */,
 			);
 			path = fixtures;
 			sourceTree = "<group>";
@@ -671,6 +676,7 @@
 				3054355C14179FA7475846AA /* OpenClamAvatarLibrary.swift */,
 				D453FE069B2EEDD7F76D2B96 /* OpenClamAvatarPackage.swift */,
 				6EAAB33AAD7BE3F3FBC14557 /* OpenClamAvatarStore.swift */,
+				8B7DCAC2BFE7279AF19E5531 /* OpenClamAvatarUITestFixture.swift */,
 				58DD4CCEA8C8BBA467F90FA7 /* OpenClamCatalogAvatarStage.swift */,
 				4124A32A3274A523DD5F386B /* Resources */,
 			);
@@ -984,6 +990,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9FB2B5EEAF5AB520AFE0CC1B /* ios-light-golden.avtr in Resources */,
+				FE5DCBD1FB2DB22AF3993A32 /* ios-light-motion-v3-golden.avtr in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1139,6 +1146,7 @@
 				88E536DC8C6F113841EC935B /* OpenClamAvatarPackage.swift in Sources */,
 				D27ACDA474A63DA241096B59 /* OpenClamAvatarStore.swift in Sources */,
 				AD50D2A2C2F1B90226DEDB07 /* OpenClamAvatarStoreView.swift in Sources */,
+				F306CBDA496F13516404947B /* OpenClamAvatarUITestFixture.swift in Sources */,
 				E2E33456ABC9E3C2ECF8973A /* OpenClamCatalogAvatarStage.swift in Sources */,
 				35B7C636E5D877C76CA15C84 /* OpenClamKeyboardBridge.swift in Sources */,
 				F388C6464E6760A053F17D46 /* OpenClamKeyboardDictationHost.swift in Sources */,
@@ -1216,14 +1224,14 @@
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-context-share";
 				PRODUCT_NAME = OpenClamLiveKitShareExtension;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Share";
@@ -1301,13 +1309,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1319,14 +1327,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-context-share";
 				PRODUCT_NAME = OpenClamLiveKitShareExtension;
 				SDKROOT = iphoneos;
@@ -1392,14 +1400,14 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget";
 				PRODUCT_NAME = OpenClamLiveKitScreenVoiceWidget;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Widget";
@@ -1414,14 +1422,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.keyboard;
 				PRODUCT_NAME = OpenClamLiveKitKeyboard;
 				SDKROOT = iphoneos;
@@ -1454,14 +1462,14 @@
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.keyboard;
 				PRODUCT_NAME = OpenClamLiveKitKeyboard;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Keyboard";
@@ -1542,14 +1550,14 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget";
 				PRODUCT_NAME = OpenClamLiveKitScreenVoiceWidget;
 				SDKROOT = iphoneos;
@@ -1567,13 +1575,13 @@
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Main";
 				SDKROOT = iphoneos;

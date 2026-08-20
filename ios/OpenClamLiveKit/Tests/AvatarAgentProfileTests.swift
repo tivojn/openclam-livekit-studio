@@ -7,7 +7,14 @@ final class AvatarAgentProfileTests: XCTestCase {
         let configuration = makeConfiguration()
 
         XCTAssertEqual(configuration.activeAvatarID, "captain-ayer")
-        XCTAssertEqual(configuration.avatarAgentProfiles.count, 1)
+        XCTAssertEqual(
+            AvatarAgentIdentity.defaultPack,
+            [
+                .init(id: "captain-ayer", displayName: "Captain Ayer"),
+                .init(id: "ara", displayName: "Ara"),
+            ]
+        )
+        XCTAssertEqual(Set(configuration.avatarAgentProfiles.keys), ["captain-ayer", "ara"])
         XCTAssertNil(configuration.activeAvatarProfile.languageModelOverride)
         XCTAssertNil(configuration.activeAvatarProfile.voiceOverride)
         XCTAssertNil(configuration.activeAvatarProfile.speechRecognitionOverride)
@@ -51,9 +58,195 @@ final class AvatarAgentProfileTests: XCTestCase {
         XCTAssertEqual(configuration.activeAvatarProfile.displayName, "Vivieen")
     }
 
+    func testCatalogReconciliationDropsUnavailableAgentThreadSelections() {
+        let configuration = makeConfiguration()
+        let removedID = "removed-import"
+        let threadID = UUID()
+        configuration.activateAvatar(id: removedID, displayName: "Removed Import")
+        configuration.registerThread(threadID, for: removedID)
+
+        configuration.reconcileAvatarCatalog(AvatarAgentIdentity.defaultPack)
+
+        XCTAssertEqual(
+            configuration.activeAvatarID,
+            AvatarAgentIdentity.defaultID
+        )
+        XCTAssertNil(configuration.activeThreadID(for: removedID))
+        XCTAssertNil(configuration.avatarID(for: threadID))
+    }
+
+    func testCatalogMigrationRetiresOldBundledProfilesButKeepsInstalledAvatarState() throws {
+        let suite = "AvatarAgentProfileTests.retired-pack.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storageKey = "settings.\(UUID().uuidString)"
+        let importedID = "my-installed-avatar"
+        let retiredThread = UUID()
+        let importedThread = UUID()
+        let profiles = [
+            "vvn": AvatarAgentProfile(
+                id: "vvn",
+                displayName: "Vvn",
+                systemPrompt: "Retired bundled profile"
+            ),
+            "cleo": AvatarAgentProfile(
+                id: "cleo",
+                displayName: "Cleo",
+                userPrompt: "Retired bundled preference"
+            ),
+            importedID: AvatarAgentProfile(
+                id: importedID,
+                displayName: "My Installed Avatar",
+                systemPrompt: "Keep this user-authored persona"
+            ),
+        ]
+        let threads = AvatarAgentThreadMap(
+            activeThreadByAvatar: [
+                "vvn": retiredThread,
+                importedID: importedThread,
+            ],
+            avatarByThread: [
+                retiredThread: "vvn",
+                importedThread: importedID,
+            ]
+        )
+        defaults.set(
+            try JSONEncoder().encode(profiles),
+            forKey: storageKey + ".avatar-agents.v1"
+        )
+        defaults.set("vvn", forKey: storageKey + ".active-avatar.v1")
+        defaults.set(
+            try JSONEncoder().encode(threads),
+            forKey: storageKey + ".avatar-threads.v1"
+        )
+
+        let available = AvatarAgentIdentity.defaultPack + [
+            .init(id: importedID, displayName: "My Installed Avatar"),
+        ]
+        var configuration: AIConfigurationModel? = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: storageKey,
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        configuration!.reconcileAvatarCatalog(available)
+
+        XCTAssertEqual(
+            Set(configuration!.avatarAgentProfiles.keys),
+            ["captain-ayer", "ara", importedID]
+        )
+        XCTAssertNil(configuration!.avatarAgentProfiles["vvn"])
+        XCTAssertNil(configuration!.avatarAgentProfiles["cleo"])
+        XCTAssertEqual(
+            configuration!.avatarAgentProfiles[importedID]?.systemPrompt,
+            "Keep this user-authored persona"
+        )
+        XCTAssertEqual(configuration!.activeAvatarID, AvatarAgentIdentity.defaultID)
+        XCTAssertNil(configuration!.avatarID(for: retiredThread))
+        XCTAssertEqual(configuration!.avatarID(for: importedThread), importedID)
+        XCTAssertEqual(configuration!.activeThreadID(for: importedID), importedThread)
+
+        configuration = nil
+        let restarted = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: storageKey,
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        restarted.reconcileAvatarCatalog(available)
+        XCTAssertEqual(
+            Set(restarted.avatarAgentProfiles.keys),
+            ["captain-ayer", "ara", importedID]
+        )
+        XCTAssertEqual(
+            restarted.avatarAgentProfiles[importedID]?.systemPrompt,
+            "Keep this user-authored persona"
+        )
+    }
+
+    func testOwnedLegacyAraIdentityMigrationPreservesPersonaSelectionAndThreads() throws {
+        let suite = "AvatarAgentProfileTests.legacy-owned-ara.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storageKey = "settings.\(UUID().uuidString)"
+        let activeThread = UUID()
+        let historicalThread = UUID()
+        let unrelatedThread = UUID()
+        let legacy = AvatarAgentProfile(
+            id: "ara-2",
+            displayName: "Ara",
+            languageModelOverride: .init(provider: .xAI, model: "grok-4.5"),
+            systemPrompt: "Keep Ara's user-authored persona",
+            userPrompt: "Keep this user preference"
+        )
+        let unrelated = AvatarAgentProfile(
+            id: "my-installed-avatar",
+            displayName: "My Installed Avatar",
+            systemPrompt: "Never migrate this arbitrary avatar"
+        )
+        defaults.set(
+            try JSONEncoder().encode([
+                "ara-2": legacy,
+                "my-installed-avatar": unrelated,
+            ]),
+            forKey: storageKey + ".avatar-agents.v1"
+        )
+        defaults.set("ara-2", forKey: storageKey + ".active-avatar.v1")
+        defaults.set(
+            try JSONEncoder().encode(
+                AvatarAgentThreadMap(
+                    activeThreadByAvatar: [
+                        "ara-2": activeThread,
+                        "my-installed-avatar": unrelatedThread,
+                    ],
+                    avatarByThread: [
+                        activeThread: "ara-2",
+                        historicalThread: "ara-2",
+                        unrelatedThread: "my-installed-avatar",
+                    ]
+                )
+            ),
+            forKey: storageKey + ".avatar-threads.v1"
+        )
+
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: storageKey,
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        configuration.migrateAvatarIdentity(
+            from: "ara-2",
+            to: .init(id: "ara", displayName: "Ara")
+        )
+
+        XCTAssertEqual(configuration.activeAvatarID, "ara")
+        XCTAssertNil(configuration.avatarAgentProfiles["ara-2"])
+        XCTAssertEqual(
+            configuration.avatarAgentProfiles["ara"]?.systemPrompt,
+            "Keep Ara's user-authored persona"
+        )
+        XCTAssertEqual(
+            configuration.avatarAgentProfiles["ara"]?.userPrompt,
+            "Keep this user preference"
+        )
+        XCTAssertEqual(
+            configuration.avatarAgentProfiles["ara"]?.languageModelOverride,
+            legacy.languageModelOverride
+        )
+        XCTAssertEqual(configuration.activeThreadID(for: "ara"), activeThread)
+        XCTAssertEqual(configuration.avatarID(for: activeThread), "ara")
+        XCTAssertEqual(configuration.avatarID(for: historicalThread), "ara")
+        XCTAssertEqual(
+            configuration.avatarAgentProfiles["my-installed-avatar"]?.systemPrompt,
+            "Never migrate this arbitrary avatar"
+        )
+        XCTAssertEqual(
+            configuration.activeThreadID(for: "my-installed-avatar"),
+            unrelatedThread
+        )
+    }
+
     func testActiveAvatarOverridesModelSpeakingVoiceAndSpeechRecognition() throws {
         let configuration = makeConfiguration()
-        var profile = configuration.profile(for: "octavia")
+        var profile = configuration.profile(for: "ara")
         profile.languageModelOverride = .init(provider: .xAI, model: "grok-4.5")
         profile.voiceOverride = .init(
             provider: .soniox,
@@ -65,7 +258,7 @@ final class AvatarAgentProfileTests: XCTestCase {
             model: "grok-transcribe"
         )
         try configuration.updateAvatarProfile(profile)
-        configuration.activateAvatar(id: "octavia", displayName: "Octavia")
+        configuration.activateAvatar(id: "ara", displayName: "Ara")
 
         XCTAssertEqual(configuration.effectiveSettings.llm, profile.languageModelOverride)
         XCTAssertEqual(configuration.effectiveSettings.textToSpeech, profile.voiceOverride)
@@ -103,7 +296,7 @@ final class AvatarAgentProfileTests: XCTestCase {
             storageKey: storageKey,
             providerVault: InMemoryProviderCredentialVault()
         )
-        var profile = first!.profile(for: "cleo")
+        var profile = first!.profile(for: "ara")
         profile.systemPrompt = "Speak like a careful historian."
         profile.userPrompt = "Use short bullet points."
         profile.speechRecognitionOverride = .init(
@@ -116,7 +309,7 @@ final class AvatarAgentProfileTests: XCTestCase {
             tts: .managed
         )
         try first!.updateAvatarProfile(profile)
-        first!.activateAvatar(id: "cleo", displayName: "Cleo")
+        first!.activateAvatar(id: "ara", displayName: "Ara")
         first = nil
 
         let restored = AIConfigurationModel(
@@ -124,7 +317,7 @@ final class AvatarAgentProfileTests: XCTestCase {
             storageKey: storageKey,
             providerVault: InMemoryProviderCredentialVault()
         )
-        XCTAssertEqual(restored.activeAvatarID, "cleo")
+        XCTAssertEqual(restored.activeAvatarID, "ara")
         XCTAssertEqual(restored.activeAvatarProfile.systemPrompt, profile.systemPrompt)
         XCTAssertEqual(restored.activeAvatarProfile.userPrompt, profile.userPrompt)
         XCTAssertEqual(
@@ -231,19 +424,25 @@ final class AvatarAgentProfileTests: XCTestCase {
     func testThreadsRemainScopedToTheirAvatar() {
         let configuration = makeConfiguration()
         let captainThread = UUID()
-        let cleoThread = UUID()
+        let importedThread = UUID()
 
         configuration.registerThread(captainThread, for: "captain-ayer")
-        configuration.registerThread(cleoThread, for: "cleo")
+        configuration.registerThread(importedThread, for: "my-installed-avatar")
 
         XCTAssertEqual(configuration.activeThreadID(for: "captain-ayer"), captainThread)
-        XCTAssertEqual(configuration.activeThreadID(for: "cleo"), cleoThread)
+        XCTAssertEqual(
+            configuration.activeThreadID(for: "my-installed-avatar"),
+            importedThread
+        )
         XCTAssertEqual(configuration.avatarID(for: captainThread), "captain-ayer")
-        XCTAssertEqual(configuration.avatarID(for: cleoThread), "cleo")
+        XCTAssertEqual(
+            configuration.avatarID(for: importedThread),
+            "my-installed-avatar"
+        )
 
-        configuration.removeThread(cleoThread)
-        XCTAssertNil(configuration.activeThreadID(for: "cleo"))
-        XCTAssertNil(configuration.avatarID(for: cleoThread))
+        configuration.removeThread(importedThread)
+        XCTAssertNil(configuration.activeThreadID(for: "my-installed-avatar"))
+        XCTAssertNil(configuration.avatarID(for: importedThread))
     }
 
     func testPersonaIsAppendedAfterSafetyBoundary() {

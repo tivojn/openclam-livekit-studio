@@ -37,6 +37,42 @@ enum ConversationReviewRevealPolicy {
     }
 }
 
+enum ConversationComposerLayout {
+    // The rounded composer already provides ten points around its children.
+    // These are the text editor's own insets, keeping the insertion point and
+    // placeholder away from that outer edge without moving the controls row.
+    static let textHorizontalInset: CGFloat = 12
+    static let textVerticalInset: CGFloat = 8
+    static let minimumExpandedTextHeight: CGFloat = 62
+}
+
+struct ConversationComposerTextInsets: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, ConversationComposerLayout.textHorizontalInset)
+            .padding(.vertical, ConversationComposerLayout.textVerticalInset)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct AvatarOverlayInteractionShape: Shape {
+    // Assistant response actions occupy the compact leading lane. The avatar and its
+    // controls remain interactive across the larger trailing portion of the stage.
+    private static let leadingPassThroughFraction: CGFloat = 0.34
+
+    func path(in rect: CGRect) -> Path {
+        let leadingWidth = rect.width * Self.leadingPassThroughFraction
+        return Path(
+            CGRect(
+                x: rect.minX + leadingWidth,
+                y: rect.minY,
+                width: rect.width - leadingWidth,
+                height: rect.height
+            )
+        )
+    }
+}
+
 struct ConversationView: View {
     @EnvironmentObject private var commandModel: AssistantModel
     @EnvironmentObject private var conversation: ConversationModel
@@ -63,6 +99,7 @@ struct ConversationView: View {
     @State private var modelSelectionError: String?
     @State private var suppressesSpeechError = false
     @State private var expandsComposerForEditing = false
+    @State private var readAloudMessageID: UUID?
     @State private var assistantReplyDeliveryBoundary = AssistantReplyDeliveryBoundary()
     @State private var activeSessionImagePreviews: [UUID: UIImage] = [:]
     @State private var activeSessionImagePreviewOrder: [UUID] = []
@@ -240,6 +277,11 @@ struct ConversationView: View {
             avatarOverlay
                 .zIndex(2)
                 .ignoresSafeArea()
+                // The avatar stage supports pinch and vertical-opacity gestures, but its
+                // transparent full-screen bounds must not swallow the assistant actions on
+                // the leading side of the conversation. Keep the visible avatar/right rail
+                // interactive while allowing ordinary chat controls to receive real taps.
+                .contentShape(.interaction, AvatarOverlayInteractionShape())
         }
         .navigationTitle(conversation.currentThreadTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -284,6 +326,11 @@ struct ConversationView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     dismissKeyboard()
+                    if let reason = ConversationLiveTalkNavigationPolicy
+                        .sidebarBlockReason(liveTalkPhase: liveTalk.phase) {
+                        liveTalkPTTNotice = reason
+                        return
+                    }
                     onShowSettings()
                 } label: {
                     Label("Settings", systemImage: "gearshape")
@@ -339,6 +386,11 @@ struct ConversationView: View {
         }
         .onChange(of: conversation.pendingEmail) { _, _ in
             commandModel.synchronizeStagedMailDraft(with: conversation.emailCommand())
+        }
+        .onChange(of: conversation.isSpeechOutputActive) { _, isActive in
+            if !isActive {
+                readAloudMessageID = nil
+            }
         }
         .onChange(of: conversation.pendingShortcutPrompt) { _, prompt in
             receivePendingShortcutPrompt(prompt)
@@ -408,17 +460,22 @@ struct ConversationView: View {
     private func messageBubble(_ message: ConversationMessage) -> some View {
         HStack(alignment: .top) {
             if message.role == .user { Spacer(minLength: 52) }
-            messageContent(message)
-                .foregroundStyle(.primary)
-                .padding(.horizontal, message.role == .user ? 14 : 2)
-                .padding(.vertical, message.role == .user ? 10 : 6)
-                .background(
-                    message.role == .user
-                        ? AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
-                        : AnyShapeStyle(Color.clear),
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-                )
-                .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 2) {
+                messageContent(message)
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, message.role == .user ? 14 : 2)
+                    .padding(.vertical, message.role == .user ? 10 : 6)
+                    .background(
+                        message.role == .user
+                            ? AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
+                            : AnyShapeStyle(Color.clear),
+                        in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    )
+
+                if ConversationMessageInteractionPolicy.supportsAssistantActions(message) {
+                    assistantMessageActions(message)
+                }
+            }
             if message.role == .assistant { Spacer(minLength: 18) }
         }
         .accessibilityElement(children: .contain)
@@ -431,14 +488,79 @@ struct ConversationView: View {
            isFreshConversation,
            message.role == .assistant,
            message.id == conversation.messages.first?.id {
-            Text("Ask anything. Actions stay visible for confirmation.")
-                .fixedSize(horizontal: false, vertical: true)
+            SelectableMessageText(
+                attributedText: AttributedString(
+                    "Ask anything. Actions stay visible for confirmation."
+                ),
+                textStyle: .body,
+                onAskAI: { selectedText in
+                    stageSelectedTextForAI(selectedText)
+                }
+            )
         } else {
             MarkdownMessageView(
                 message: message,
-                localImagePreviews: activeSessionImagePreviews
+                localImagePreviews: activeSessionImagePreviews,
+                onAskAISelection: message.role == .assistant
+                    ? { selectedText in stageSelectedTextForAI(selectedText) }
+                    : nil
             )
         }
+    }
+
+    private func assistantMessageActions(_ message: ConversationMessage) -> some View {
+        let isReadingThisMessage = conversation.isSpeechOutputActive
+            && readAloudMessageID == message.id
+        let isReadingAnotherMessage = conversation.isSpeechOutputActive
+            && !isReadingThisMessage
+        let readAloudHint: String
+        if isReadingThisMessage {
+            readAloudHint = "Stops this response"
+        } else if liveTalk.phase.isSessionActive {
+            readAloudHint = "Hang up Live Talk first"
+        } else {
+            readAloudHint = "Reads this complete response using the selected voice"
+        }
+
+        return HStack(spacing: 0) {
+            Button {
+                copyAssistantMessage(message)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Copy assistant response")
+            .accessibilityHint("Copies this complete response")
+            .accessibilityIdentifier("openclam-copy-assistant-response-\(message.id.uuidString)")
+
+            Button {
+                toggleAssistantMessageReadAloud(message)
+            } label: {
+                Image(systemName: isReadingThisMessage ? "stop.fill" : "speaker.wave.2")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .disabled(
+                liveTalk.phase.isSessionActive
+                    || speech.isListening
+                    || speech.isTranscribing
+                    || isChatTransitioning
+                    || isReadingAnotherMessage
+            )
+            .accessibilityLabel(
+                isReadingThisMessage
+                    ? "Stop speaking"
+                    : "Read assistant response aloud"
+            )
+            .accessibilityHint(readAloudHint)
+            .accessibilityIdentifier("openclam-read-assistant-response-\(message.id.uuidString)")
+        }
+        .font(.body.weight(.medium))
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("openclam-assistant-response-actions-\(message.id.uuidString)")
     }
 
     private var workingRow: some View {
@@ -1389,7 +1511,10 @@ struct ConversationView: View {
         VStack(alignment: .leading, spacing: 8) {
             composerStatus
             composerTextField(placeholder: composerPlaceholder, lineLimit: 2 ... 5)
-                .frame(minHeight: 62, alignment: .topLeading)
+                .frame(
+                    minHeight: ConversationComposerLayout.minimumExpandedTextHeight,
+                    alignment: .topLeading
+                )
 
             if dynamicTypeSize.isAccessibilitySize {
                 modelSelectionMenu(expandsToWidth: true)
@@ -1438,6 +1563,7 @@ struct ConversationView: View {
         )
         .lineLimit(lineLimit)
         .textFieldStyle(.plain)
+        .modifier(ConversationComposerTextInsets())
         .submitLabel(.send)
         .onSubmit { sendInput() }
         .focused($isComposerFocused)
@@ -2008,6 +2134,56 @@ struct ConversationView: View {
             return "About \(Int(meters.rounded())) m away"
         }
         return String(format: "About %.1f km away", meters / 1_000)
+    }
+
+    private func copyAssistantMessage(_ message: ConversationMessage) {
+        guard let text = ConversationMessageInteractionPolicy.wholeEntryText(for: message) else {
+            return
+        }
+        UIPasteboard.general.string = text
+        AccessibilityNotification.Announcement("Assistant response copied.").post()
+    }
+
+    private func toggleAssistantMessageReadAloud(_ message: ConversationMessage) {
+        if conversation.isSpeechOutputActive, readAloudMessageID == message.id {
+            conversation.stopSpeechOutput()
+            readAloudMessageID = nil
+            return
+        }
+
+        guard !liveTalk.phase.isSessionActive,
+              !speech.isListening,
+              !speech.isTranscribing,
+              let text = ConversationMessageInteractionPolicy.wholeEntryText(for: message) else {
+            return
+        }
+        readAloudMessageID = message.id
+        conversation.readAssistantReplyAloud(text, using: aiConfiguration)
+        if !conversation.isSpeechOutputActive {
+            readAloudMessageID = nil
+        }
+    }
+
+    private func stageSelectedTextForAI(_ selectedText: String) {
+        guard let draft = ConversationMessageInteractionPolicy.askAIDraft(
+            selectedText: selectedText,
+            existingDraft: input
+        ) else { return }
+
+        // A partial-selection action explicitly transitions ordinary tap-to-talk back to an
+        // editable draft. Continuous Live Talk remains untouched; the existing input-change
+        // boundary also avoids interrupting its remote audio session.
+        if speech.isListening || speech.isTranscribing {
+            speech.cancel()
+        }
+        input = draft
+        expandsComposerForEditing = true
+        DispatchQueue.main.async {
+            isComposerFocused = true
+            AccessibilityNotification.Announcement(
+                "Selected text is ready in the composer. Review it, then tap Send."
+            ).post()
+        }
     }
 
     private func sendInput() {

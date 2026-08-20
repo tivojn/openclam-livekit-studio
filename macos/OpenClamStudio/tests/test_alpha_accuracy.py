@@ -1,0 +1,407 @@
+"""Synthetic alpha regressions for cavities, crisp edges, and thin details."""
+import json
+import os
+import tempfile
+import types
+import unittest
+from unittest import mock
+
+import cv2
+import numpy as np
+
+from studio import cutout, motion
+
+
+def _pose(left_ankle=(52, 130), right_ankle=(104, 130)):
+    points = {
+        "nose": (78, 20),
+        "neck": (78, 38),
+        "root": (78, 78),
+        "left_hip": (62, 78),
+        "right_hip": (94, 78),
+        "left_knee": (56, 104),
+        "right_knee": (100, 104),
+        "left_ankle": left_ankle,
+        "right_ankle": right_ankle,
+    }
+    return {
+        "width": 160,
+        "height": 180,
+        "joints": {
+            name: {"x": x, "y": y, "confidence": 0.9}
+            for name, (x, y) in points.items()
+        },
+    }
+
+
+def _tight_render(image):
+    """Run the Python tight-cutout cleanup around a synthetic helper result."""
+    with tempfile.TemporaryDirectory() as directory:
+        source = os.path.join(directory, "source.png")
+        destination = os.path.join(directory, "cutout.png")
+        source_image = np.full(image.shape[:2] + (3,), 255, np.uint8)
+        visible = image[:, :, 3] > 0
+        source_image[visible] = image[:, :, :3][visible]
+        if not cv2.imwrite(source, source_image):
+            raise AssertionError("could not write synthetic source")
+        if not cv2.imwrite(destination, image):
+            raise AssertionError("could not write synthetic cutout")
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(cutout, "helper_path", return_value="helper"), \
+                mock.patch.object(
+                    cutout.subprocess, "run", return_value=completed):
+            result = cutout.render(
+                source, destination, log=lambda _message: None, tight=True)
+        rendered = cv2.imread(destination, cv2.IMREAD_UNCHANGED)
+    return result, rendered
+
+
+def _rising_crossing(profile, threshold):
+    """Return the interpolated first rising threshold crossing of a row."""
+    above = np.flatnonzero(profile >= threshold)
+    if above.size == 0:
+        return np.nan
+    right = int(above[0])
+    if right == 0:
+        return 0.0
+    left_value = float(profile[right - 1])
+    right_value = float(profile[right])
+    if right_value <= left_value:
+        return float(right)
+    fraction = (float(threshold) - left_value) / (right_value - left_value)
+    return float(right - 1) + min(1.0, max(0.0, fraction))
+
+
+def _rising_edge_metrics(alpha, rows):
+    """Measure 50% edge position and 10%-to-90% transition width."""
+    positions = []
+    widths = []
+    for row in rows:
+        profile = alpha[row].astype(np.float32)
+        low = _rising_crossing(profile, 0.1 * 255.0)
+        middle = _rising_crossing(profile, 0.5 * 255.0)
+        high = _rising_crossing(profile, 0.9 * 255.0)
+        if np.isfinite(low) and np.isfinite(middle) and np.isfinite(high):
+            positions.append(middle)
+            widths.append(high - low)
+    return np.asarray(positions), np.asarray(widths)
+
+
+def _dominant_component(labels, region):
+    values = labels[region]
+    values = values[values > 0]
+    if values.size == 0:
+        return 0
+    return int(np.bincount(values).argmax())
+
+
+def _thin_detail_fixture(stem_width):
+    """Create one-pixel hair cores and an anti-aliased high-heel stem."""
+    image = np.zeros((76, 80, 4), np.uint8)
+    alpha = image[:, :, 3]
+
+    # A compact person/shoe mass anchors every thin feature to one component.
+    alpha[10:44, 28:52] = 255
+    alpha[36:46, 28:58] = 255
+
+    stem_x = 51
+    stem_rows = slice(45, 67)
+    alpha[stem_rows, stem_x:stem_x + stem_width] = 255
+
+    hair_core = np.zeros_like(alpha)
+    strands = (
+        np.array(((29, 14), (25, 12), (21, 9), (17, 7), (12, 8))),
+        np.array(((29, 19), (25, 18), (21, 17), (17, 15), (13, 13))),
+    )
+    for strand in strands:
+        cv2.polylines(
+            hair_core, [strand.astype(np.int32)], False, 255, 1, cv2.LINE_8)
+    alpha[hair_core > 0] = 255
+
+    # Explicit fractional side samples model anti-aliasing without a blur.
+    detail_core = np.zeros_like(alpha)
+    detail_core[stem_rows, stem_x:stem_x + stem_width] = 255
+    detail_core[hair_core > 0] = 255
+    side_samples = (
+        cv2.dilate(detail_core, np.ones((3, 3), np.uint8)) > 0
+    ) & (alpha == 0)
+    alpha[side_samples] = 64
+
+    image[:, :, :3][alpha >= 128] = (35, 55, 105)
+    image[:, :, :3][(alpha > 0) & (alpha < 128)] = (230, 235, 240)
+    return image, stem_x, stem_rows
+
+
+class AlphaAccuracy(unittest.TestCase):
+    def test_native_accurate_mask_is_not_expanded_or_reblurred(self):
+        source = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "electron", "native", "person_cutout.swift",
+        )
+        with open(source, encoding="utf-8") as handle:
+            swift = handle.read()
+        self.assertIn("request.qualityLevel = .accurate", swift)
+        self.assertNotIn('applyingFilter("CIMorphologyMaximum"', swift)
+        self.assertNotIn('applyingFilter("CIGaussianBlur"', swift)
+
+    def test_tight_cutout_keeps_antialiased_edge_position_and_width(self):
+        """Cleanup must neither soften nor pull in an already-correct edge."""
+        image = np.zeros((64, 72, 4), np.uint8)
+        alpha = image[:, :, 3]
+        for row in range(10, 54):
+            phase = (row % 3) * 8
+            alpha[row, 17] = 4
+            alpha[row, 18] = 48 + phase
+            alpha[row, 19] = 176 + phase
+            alpha[row, 20:50] = 255
+            alpha[row, 50] = 176 + phase
+            alpha[row, 51] = 48 + phase
+            alpha[row, 52] = 4
+        image[:, :, :3][alpha >= 128] = (35, 55, 105)
+        image[:, :, :3][(alpha > 0) & (alpha < 128)] = (245, 245, 245)
+
+        result, rendered = _tight_render(image)
+
+        self.assertIsNotNone(result)
+        self.assertIsNotNone(rendered)
+        before_positions, before_widths = _rising_edge_metrics(
+            alpha, range(10, 54))
+        after_alpha = rendered[:, :, 3]
+        after_positions, after_widths = _rising_edge_metrics(
+            after_alpha, range(10, 54))
+
+        self.assertLessEqual(
+            float(np.percentile(np.abs(after_positions - before_positions), 95)),
+            0.25,
+        )
+        self.assertLessEqual(
+            float(np.percentile(after_widths - before_widths, 95)), 0.25)
+        self.assertLessEqual(float(np.percentile(after_widths, 95)), 2.5)
+
+        visible_before = alpha >= 8
+        visible_after = after_alpha >= 8
+        self.assertEqual(0, int(np.count_nonzero(
+            visible_after & ~visible_before)))
+        fractional_before = int(np.count_nonzero((alpha >= 8) & (alpha < 247)))
+        fractional_after = int(np.count_nonzero(
+            (after_alpha >= 8) & (after_alpha < 247)))
+        self.assertGreaterEqual(fractional_after, int(0.98 * fractional_before))
+        opaque_before = int(np.count_nonzero(alpha >= 247))
+        opaque_after = int(np.count_nonzero(after_alpha >= 247))
+        self.assertGreaterEqual(opaque_after, int(0.995 * opaque_before))
+
+    def test_tight_cutout_preserves_connected_heel_and_hair_details(self):
+        """One-to-three-pixel stems and hair cores must retain reach and width."""
+        for stem_width in (1, 2, 3):
+            with self.subTest(stem_width=stem_width):
+                image, stem_x, stem_rows = _thin_detail_fixture(stem_width)
+                source_alpha = image[:, :, 3]
+                result, rendered = _tight_render(image)
+
+                self.assertIsNotNone(result)
+                self.assertIsNotNone(rendered)
+                output_alpha = rendered[:, :, 3]
+                source_core = source_alpha >= 128
+                output_core = output_alpha >= 128
+                _, source_labels = cv2.connectedComponents(
+                    source_core.astype(np.uint8), connectivity=8)
+                _, output_labels = cv2.connectedComponents(
+                    output_core.astype(np.uint8), connectivity=8)
+                body_region = np.s_[20:36, 32:48]
+                hair_region = np.s_[4:22, 8:29]
+                heel_tip_region = np.s_[64:68, stem_x - 1:stem_x + stem_width + 1]
+                source_component = _dominant_component(
+                    source_labels, body_region)
+                output_component = _dominant_component(
+                    output_labels, body_region)
+
+                source_hair = int(np.count_nonzero(
+                    source_labels[hair_region] == source_component))
+                output_hair = int(np.count_nonzero(
+                    output_labels[hair_region] == output_component))
+                output_tip = int(np.count_nonzero(
+                    output_labels[heel_tip_region] == output_component))
+                self.assertGreater(source_component, 0)
+                self.assertGreater(output_component, 0)
+                self.assertGreater(output_tip, 0)
+                self.assertGreaterEqual(output_hair, int(0.98 * source_hair))
+
+                stem_window = np.s_[
+                    stem_rows, stem_x - 2:stem_x + stem_width + 2]
+                source_widths = source_core[stem_window].sum(axis=1)
+                output_widths = output_core[stem_window].sum(axis=1)
+                self.assertGreaterEqual(
+                    float(np.median(output_widths)),
+                    float(np.median(source_widths)) - 0.25,
+                )
+                self.assertLessEqual(
+                    float(np.percentile(output_widths, 95)),
+                    float(np.percentile(source_widths, 95)) + 0.25,
+                )
+
+                source_hair_points = np.argwhere(
+                    source_core & (np.indices(source_core.shape)[1] < 28))
+                output_hair_points = np.argwhere(
+                    output_core & (np.indices(output_core.shape)[1] < 28))
+                self.assertLessEqual(
+                    int(output_hair_points[:, 1].min()),
+                    int(source_hair_points[:, 1].min()) + 1,
+                )
+                self.assertEqual(0, int(np.count_nonzero(
+                    (output_alpha >= 8) & ~(source_alpha >= 8))))
+
+    def test_motion_cache_version_covers_source_aware_matte(self):
+        self.assertGreaterEqual(motion.MOTION_VERSION, 11)
+
+    def test_white_plate_refinement_does_not_reblur_a_crisp_boundary(self):
+        source = np.full((72, 80, 3), 255, np.uint8)
+        source[12:62, 24:58] = (35, 55, 105)
+        rgba = np.zeros((72, 80, 4), np.uint8)
+        rgba[:, :, :3] = source
+        rgba[10:64, 21:61, 3] = 255
+        rgba[9:65, 20, 3] = 72
+        rgba[9:65, 61, 3] = 72
+
+        refined = motion._refine_white_matte(source, rgba)
+        alpha = refined[:, :, 3]
+
+        self.assertEqual(0, int(np.count_nonzero(alpha[:, :24])))
+        self.assertEqual(0, int(np.count_nonzero(alpha[:, 58:])))
+        self.assertTrue(np.all(alpha[14:60, 26:56] == 255))
+        positions, widths = _rising_edge_metrics(alpha, range(14, 60))
+        self.assertLessEqual(float(np.percentile(widths, 95)), 1.25)
+        self.assertLessEqual(
+            float(np.percentile(np.abs(positions - 23.5), 95)), 0.5)
+
+    def test_current_white_plate_veto_removes_temporal_double_heel(self):
+        def frame(stem_x):
+            alpha = np.zeros((180, 160), np.uint8)
+            alpha[24:132, 62:98] = 255
+            alpha[124:143, 58:108] = 255
+            alpha[141:169, stem_x:stem_x + 2] = 255
+            rgba = np.zeros((180, 160, 4), np.uint8)
+            rgba[:, :, 3] = alpha
+            rgba[:, :, :3][alpha > 0] = (25, 40, 75)
+            return rgba
+
+        previous = frame(58)
+        current = frame(72)
+        following = frame(58)
+        sources = []
+        for stem_x in (58, 72, 58):
+            source = np.full((180, 160, 3), 255, np.uint8)
+            source[24:132, 62:98] = (25, 40, 75)
+            source[124:143, 58:108] = (25, 40, 75)
+            source[141:169, stem_x:stem_x + 2] = (25, 40, 75)
+            sources.append(source)
+
+        repaired = motion._stabilise_segmented(
+            [previous, current, following], source_frames=sources)[1]
+
+        self.assertEqual(0, int(np.count_nonzero(repaired[145:168, 58:60, 3])))
+        self.assertTrue(np.all(repaired[145:168, 72:74, 3] == 255))
+        self.assertEqual(0, int(np.count_nonzero(
+            repaired[:, :, 3][motion._white_plate_confidence(sources[1]) > 0.93]
+        )))
+
+    def test_source_aware_cavity_keeps_white_calf_gap_transparent(self):
+        alpha = np.zeros((160, 120), np.uint8)
+        alpha[10:150, 30:90] = 255
+        alpha[85:115, 58:64] = 0
+
+        source = np.full((160, 120, 3), 255, np.uint8)
+        source[alpha > 0] = (45, 55, 75)
+        source[104:114, 61] = (18, 24, 38)
+
+        source_unknown = motion._fill_lower_body_alpha_holes(alpha)
+        repaired = motion._fill_lower_body_alpha_holes(alpha, source)
+
+        self.assertEqual(0, int(source_unknown[92, 60]))
+        self.assertEqual(0, int(repaired[92, 60]))
+        self.assertEqual(255, int(repaired[110, 61]))
+
+    def test_pose_guided_source_recovery_restores_thin_heel_only(self):
+        alpha = np.zeros((180, 160), np.uint8)
+        alpha[55:137, 99:106] = 255
+        alpha[132:141, 91:110] = 255
+        current = np.zeros((180, 160, 4), np.uint8)
+        current[:, :, 3] = alpha
+        current[:, :, :3][alpha > 0] = (70, 90, 120)
+
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[alpha > 0] = (70, 90, 120)
+        source[140:146, 108:110] = (20, 35, 65)
+
+        repaired = motion._recover_source_ankles(
+            current, alpha, source, _pose())
+
+        self.assertEqual(255, int(repaired[144, 108]))
+        self.assertEqual((20, 35, 65), tuple(current[144, 108, :3]))
+        self.assertEqual(0, int(repaired[144, 94]))
+
+    def test_full_stabiliser_preserves_calf_gap_and_repairs_real_dropout(self):
+        alpha = np.zeros((160, 120), np.uint8)
+        alpha[10:150, 30:90] = 255
+        alpha[96:126, 56:63] = 0
+        source = np.full((160, 120, 3), 255, np.uint8)
+        source[alpha > 0] = (35, 60, 120)
+        # One dark source-supported strand inside an otherwise white cavity
+        # represents a real thin structure that the semantic mask omitted.
+        source[111:125, 61] = (18, 24, 38)
+        rgba = np.dstack((source.copy(), alpha))
+
+        repaired = motion._stabilise_segmented(
+            [rgba], source_frames=[source])[0]
+
+        self.assertEqual(0, int(repaired[104, 59, 3]))
+        self.assertGreaterEqual(int(repaired[118, 61, 3]), 24)
+        self.assertEqual((18, 24, 38), tuple(repaired[118, 61, :3]))
+
+    def test_segment_frames_uses_loose_vision_mask_and_one_final_cleanup(self):
+        frame = np.full((64, 48, 3), 255, np.uint8)
+        frame[12:58, 18:30] = (40, 55, 90)
+        rgba = np.dstack((frame, np.where(
+            np.any(frame < 240, axis=2), 255, 0).astype(np.uint8)))
+        pose = _pose(left_ankle=(20, 52), right_ankle=(28, 52))
+        render_calls = []
+
+        def render(_source, destination, **kwargs):
+            render_calls.append(kwargs)
+            cv2.imwrite(destination, rgba)
+            with open(kwargs["pose_destination"], "w") as handle:
+                json.dump(pose, handle)
+            return {"ok": True}
+
+        def stabilise(segmented, poses, source_frames=None):
+            self.assertIs(frame, source_frames[0])
+            return segmented
+
+        with tempfile.TemporaryDirectory() as workspace:
+            with (
+                mock.patch.object(motion, "_is_green_screen", return_value=False),
+                mock.patch.object(motion, "_rvm_matte", return_value=None),
+                mock.patch.object(motion.cutout, "render", side_effect=render),
+                mock.patch.object(
+                    motion, "_stabilise_segmented", side_effect=stabilise),
+                mock.patch.object(
+                    motion.cutout, "_decontaminate_edges",
+                    side_effect=lambda image: image) as decontaminate,
+                mock.patch.object(
+                    motion, "_color_fidelity_quality", return_value={"valid": True}),
+            ):
+                repaired, _poses, method, _quality = motion._segment_frames(
+                    [frame], workspace, lambda _message: None)
+
+        self.assertEqual("macos-vision-person-segmentation", method)
+        self.assertEqual(1, len(repaired))
+        self.assertIs(False, render_calls[0]["tight"])
+        self.assertEqual(1, decontaminate.call_count)
+
+    def test_stabiliser_rejects_mismatched_source_sequence(self):
+        rgba = np.zeros((16, 16, 4), np.uint8)
+        with self.assertRaisesRegex(ValueError, "frame counts differ"):
+            motion._stabilise_segmented([rgba], source_frames=[])
+
+
+if __name__ == "__main__":
+    unittest.main()

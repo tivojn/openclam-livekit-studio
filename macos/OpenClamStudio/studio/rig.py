@@ -6,7 +6,7 @@ import numpy as np
 
 from . import face
 
-VERSION = 3
+VERSION = 4
 # Owner calibration on the live desktop (2026-08-01): the canonical defaults
 # were so conservative that every avatar needed a hand rebuild at ~100% to
 # read as a normal human face. The owner's proven profile IS the default
@@ -25,6 +25,15 @@ CONTROLS = {
     "cheeks": dict(label="Cheeks", minimum=0, maximum=150,
                    safe_minimum=0, safe_maximum=110, step=1,
                    default=100, help="Speech-coupled cheek movement."),
+    # The lower-lid/infraorbital band is a separately baked runtime layer. It
+    # used to be silently slaved to the cheek slider, so a calibration rebuild
+    # discarded the owner's under-eye target and the band only moved during a
+    # blink. Keep it deliberately quieter than cheeks: it is a warmth and
+    # articulation cue, never a cosmetic wrinkle effect.
+    "eyebags": dict(label="Under-eye bags", minimum=0, maximum=150,
+                    safe_minimum=0, safe_maximum=60, step=1,
+                    default=35, help="Subtle speech motion in the lower-lid and "
+                                     "under-eye band. Applied live by the runtime."),
     "brows": dict(label="Eyebrows", minimum=0, maximum=150,
                   safe_minimum=5, safe_maximum=85, step=1,
                   default=10, help="Speech-coupled eyebrow gestures. "
@@ -60,11 +69,11 @@ DENTAL_DONORS = {
     "lower": LOWER_TEETH_DONORS,
 }
 PRESETS = {
-    "natural": dict(lips=100, jaw=97, cheeks=100, brows=10, forehead=100,
+    "natural": dict(lips=100, jaw=97, cheeks=100, eyebags=35, brows=10, forehead=100,
                     nasolabial=100, nose=100),
-    "subtle": dict(lips=92, jaw=70, cheeks=60, brows=6, forehead=60,
+    "subtle": dict(lips=92, jaw=70, cheeks=60, eyebags=18, brows=6, forehead=60,
                    nasolabial=60, nose=30),
-    "expressive": dict(lips=120, jaw=115, cheeks=120, brows=20, forehead=120,
+    "expressive": dict(lips=120, jaw=115, cheeks=120, eyebags=55, brows=20, forehead=120,
                        nasolabial=120, nose=110),
 }
 REGION_GROUPS = {

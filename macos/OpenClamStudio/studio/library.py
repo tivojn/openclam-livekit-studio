@@ -151,7 +151,9 @@ def _body_source_name(body_metadata, kind):
     if name:
         return name
     view = "side" if kind == "walk" else "front"
-    return f"source-{view}.png"
+    record = ((body_metadata or {}).get("views") or {}).get(view) or {}
+    return os.path.basename(
+        str(record.get("source") or f"source-{view}.png"))
 
 
 def body_source_sha(avatar_dir, kind):
@@ -481,10 +483,18 @@ def archive_body(avatar_dir):
         body_dir, os.path.basename(str(metadata.get("image") or "body.png")))
     if not os.path.isfile(front):
         return None
-    content_sha = _sha256(front)
+    content_sha = _body_content_sha(body_dir, metadata)
     existing = None
     for record in _body_set_records(avatar_dir):
-        if record.get("content_sha") == content_sha:
+        set_dir = os.path.join(_body_set_root(avatar_dir), record["id"])
+        archived = _read_json(os.path.join(set_dir, "body.json")) or {}
+        archived_sha = record.get("turnaround_sha")
+        if not archived_sha and isinstance(archived, dict):
+            try:
+                archived_sha = _body_content_sha(set_dir, archived)
+            except (OSError, ValueError):
+                archived_sha = None
+        if archived_sha == content_sha:
             existing = record["id"]
             break
     options = metadata.get("options") or {}
@@ -503,7 +513,11 @@ def archive_body(avatar_dir):
             "id": set_id,
             "label": label,
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
-            "content_sha": content_sha,
+            # ``content_sha`` was historically the front composited plate.
+            # Keep it for old readers while turnaround_sha prevents a side or
+            # back edit from overwriting the prior body set.
+            "content_sha": _sha256(front),
+            "turnaround_sha": content_sha,
             "options": {
                 "style": options.get("style"),
                 "pose": options.get("pose"),
@@ -517,6 +531,36 @@ def archive_body(avatar_dir):
             shutil.rmtree(stage, ignore_errors=True)
     _set_active(avatar_dir, "body", set_id)
     return set_id
+
+
+def _body_content_sha(body_dir, metadata):
+    """Stable identity of every authored member of a full-body turnaround."""
+    names = []
+
+    def add(value):
+        name = os.path.basename(str(value or ""))
+        if name and name not in names:
+            names.append(name)
+
+    add(metadata.get("image") or "body.png")
+    add(metadata.get("head_mask") or "head-mask.png")
+    views = metadata.get("views") or {}
+    for view in ("front", "side", "back"):
+        record = views.get(view) or {}
+        add(record.get("image"))
+        add(record.get("source"))
+    digest = hashlib.sha256()
+    found = 0
+    for name in names:
+        path = os.path.join(body_dir, name)
+        if not os.path.isfile(path):
+            continue
+        found += 1
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(bytes.fromhex(_sha256(path)))
+    if not found:
+        raise ValueError("body set has no authored files")
+    return digest.hexdigest()
 
 
 def _body_set_records(avatar_dir):

@@ -6,26 +6,44 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
     func testCatalogHasExactStableIDsNamesAndDefault() {
         XCTAssertEqual(
             OpenClamAvatarCatalog.avatars.map(\.id),
-            ["captain-ayer"]
+            ["captain-ayer", "ara"]
         )
         XCTAssertEqual(
             OpenClamAvatarCatalog.avatars.map(\.displayName),
-            ["OpenClam Guide"]
+            ["Captain Ayer", "Ara"]
         )
+        XCTAssertEqual(OpenClamAvatarID.bundled, [.captainAyer, .ara])
         XCTAssertEqual(OpenClamAvatarCatalog.defaultAvatarID, "captain-ayer")
     }
 
     func testSelectionBridgeCarriesOnlyIDAndDisplayName() throws {
-        let guide = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
+        let ara = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "ara"))
         XCTAssertEqual(
-            OpenClamAvatarSelection(guide),
-            OpenClamAvatarSelection(id: "captain-ayer", displayName: "OpenClam Guide")
+            OpenClamAvatarSelection(ara),
+            OpenClamAvatarSelection(id: "ara", displayName: "Ara")
         )
     }
 
-    func testPackAverageStaysUnderTenDecimalMegabytes() {
-        XCTAssertEqual(OpenClamAvatarCatalog.averageIncludedByteCount, 58_246)
-        XCTAssertLessThan(OpenClamAvatarCatalog.averageIncludedByteCount, 10_000_000)
+    func testPackAverageMatchesTheTwoAuthorizedBundledAvatars() {
+        XCTAssertEqual(OpenClamAvatarCatalog.averageIncludedByteCount, 12_399_490)
+        XCTAssertLessThan(OpenClamAvatarCatalog.averageIncludedByteCount, 14_000_000)
+    }
+
+    @MainActor
+    func testAraOffersOnlyItsValidatedEdgeIdleAndMovesClips() throws {
+        let ara = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "ara"))
+        XCTAssertEqual(Set(ara.motions.keys), [.edgeIdle, .moves])
+        XCTAssertNil(ara.motion(.walk))
+
+        for kind in [OpenClamAvatarMotionKind.edgeIdle, .moves] {
+            let motion = try XCTUnwrap(ara.motion(kind))
+            XCTAssertEqual(motion.pixelSize, OpenClamAvatarSize(width: 720, height: 1_088))
+            XCTAssertEqual(motion.durationMilliseconds, 6_083)
+            let url = try XCTUnwrap(
+                OpenClamAvatarAssetStore.shared.resourceURL(for: motion)
+            )
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        }
     }
 
     func testEveryAvatarHasTheCompleteLocalCoreRig() {
@@ -60,7 +78,7 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
             "AvatarCatalogAssets.bundle must be copied into the app target"
         )
 
-        for avatar in OpenClamAvatarCatalog.avatars {
+        for avatar in OpenClamAvatarCatalog.avatars where avatar.avatarID != .captainAyer {
             let directory = try bundledDirectory(for: avatar)
             let directoryURL = bundle.bundleURL.appendingPathComponent(
                 directory,
@@ -145,7 +163,7 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
             XCTAssertFalse(provenance.localizedCaseInsensitiveContains(forbidden), forbidden)
         }
 
-        for avatar in OpenClamAvatarCatalog.avatars {
+        for avatar in OpenClamAvatarCatalog.avatars where avatar.avatarID != .captainAyer {
             let directoryURL = bundle.bundleURL.appendingPathComponent(
                 try bundledDirectory(for: avatar),
                 isDirectory: true

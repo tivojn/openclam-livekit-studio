@@ -348,6 +348,8 @@ ICON_ICNS_SHA='5bec8b8a81778d5713864c32044eb163613d22c91a5eb56f1aa8bb16fecebd3c'
 RINGTONE_SHA='471bc3d821be0bffaaddc089347c7006d31215d20ff4d5eb5da2440d67edcea4'
 LIVEKIT_CLIENT_SHA='a77a2f4c363e93099d7c135721c9ec81d6c5bacc691796dad799222e33cbfb31'
 LIVEKIT_TUPLES_SHA='ea285d07a250275c543a02647227f0dbf1890d099f245c0b90fac0d4515b8daf'
+AVATAR_CONTRACT_README_SHA='82e74fda47bb45bca89a02d40fe7a5c39374440692a4b7873bb176cdd815b2b1'
+AVATAR_IOS_V3_SCHEMA_SHA='0c42b9f0fc3922b60fff371e3d211a2c493610c83885339f547a75568a2e68bc'
 
 require_sha256 assets/openclam-app-icon.png "$ICON_PNG_SHA" 'canonical iOS icon'
 require_sha256 assets/icon.png "$ICON_PNG_SHA" 'Electron icon PNG'
@@ -360,6 +362,10 @@ require_sha256 web/vendor/livekit-client.umd.js \
   "$LIVEKIT_CLIENT_SHA" 'staged LiveKit client'
 require_sha256 contracts/live-talk-approved-tuples-v1.json \
   "$LIVEKIT_TUPLES_SHA" 'approved LiveKit tuple contract'
+require_sha256 contracts/avatar-package-v2/README.md \
+  "$AVATAR_CONTRACT_README_SHA" 'portable avatar contract documentation'
+require_sha256 contracts/avatar-package-v2/ios-light-v3.schema.json \
+  "$AVATAR_IOS_V3_SCHEMA_SHA" 'iPhone-light v3 motion contract'
 SOURCE_ASSETS_VERIFIED=1
 
 npm run fetch:model
@@ -388,41 +394,44 @@ npm run build:native
 npm run stage:backend
 
 require_exact_directory_files "$PROJECT_ROOT/.electron-ffmpeg" \
-  'staged FFmpeg directory' ffmpeg LICENSE.LGPLv2.1.txt
+  'staged FFmpeg directory' ffmpeg ffprobe LICENSE.LGPLv2.1.txt
 
 "$AUDIT_PYTHON" scripts/audit-macos-deployment-targets.py \
   .electron-python-runtime .electron-site-packages .electron-ffmpeg .electron-native \
   --max 14.0
 
 FFMPEG_PATH="$PROJECT_ROOT/.electron-ffmpeg/ffmpeg"
+FFPROBE_PATH="$PROJECT_ROOT/.electron-ffmpeg/ffprobe"
 CUTOUT_PATH="$PROJECT_ROOT/.electron-native/person-cutout"
 NATIVE_PATH_AUDIT="$PROJECT_ROOT/scripts/audit-native-build-paths.py"
 FFMPEG_LICENSE_SHA='246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30'
 require_sha256 "$PROJECT_ROOT/.electron-ffmpeg/LICENSE.LGPLv2.1.txt" \
   "$FFMPEG_LICENSE_SHA" 'staged FFmpeg LGPL license'
-for binary in "$FFMPEG_PATH" "$CUTOUT_PATH"; do
+for binary in "$FFMPEG_PATH" "$FFPROBE_PATH" "$CUTOUT_PATH"; do
   [[ -x "$binary" ]] || fail "staged executable is missing: $binary"
   [[ "$(/usr/bin/lipo -archs "$binary")" == 'arm64' ]] \
     || fail "staged executable is not arm64-only: $binary"
 done
 
 "$AUDIT_PYTHON" "$NATIVE_PATH_AUDIT" \
-  "$FFMPEG_PATH" "$PROJECT_ROOT/.electron-site-packages/cv2" \
+  "$FFMPEG_PATH" "$FFPROBE_PATH" "$PROJECT_ROOT/.electron-site-packages/cv2" \
   "$PROJECT_ROOT/.electron-native"
 STAGED_NATIVE_PATHS_VERIFIED=1
 
-FFMPEG_DEPENDENCIES="$(/usr/bin/otool -L "$FFMPEG_PATH")"
-while IFS= read -r dependency_line; do
-  [[ "$dependency_line" == "$FFMPEG_PATH:" ]] && continue
-  dependency="${dependency_line#"${dependency_line%%[![:space:]]*}"}"
-  dependency="${dependency%% *}"
-  [[ -z "$dependency" ]] && continue
-  case "$dependency" in
-    /usr/lib/*|/System/Library/*) ;;
-    *) fail "staged FFmpeg has a non-system dependency: $dependency" ;;
-  esac
-done <<< "$FFMPEG_DEPENDENCIES"
-unset FFMPEG_DEPENDENCIES
+for media_binary in "$FFMPEG_PATH" "$FFPROBE_PATH"; do
+  FFMPEG_DEPENDENCIES="$(/usr/bin/otool -L "$media_binary")"
+  while IFS= read -r dependency_line; do
+    [[ "$dependency_line" == "$media_binary:" ]] && continue
+    dependency="${dependency_line#"${dependency_line%%[![:space:]]*}"}"
+    dependency="${dependency%% *}"
+    [[ -z "$dependency" ]] && continue
+    case "$dependency" in
+      /usr/lib/*|/System/Library/*) ;;
+      *) fail "staged FFmpeg tool has a non-system dependency: $dependency" ;;
+    esac
+  done <<< "$FFMPEG_DEPENDENCIES"
+done
+unset FFMPEG_DEPENDENCIES media_binary
 
 FFMPEG_CONFIGURATION="$("$FFMPEG_PATH" -buildconf 2>&1)"
 for required_option in \
@@ -460,13 +469,13 @@ require_ffmpeg_component() {
 }
 
 FFMPEG_ENCODERS="$("$FFMPEG_PATH" -hide_banner -encoders 2>/dev/null)"
-for component in h264_videotoolbox pcm_s16le; do
+for component in h264_videotoolbox hevc_videotoolbox pcm_s16le; do
   require_ffmpeg_component "$FFMPEG_ENCODERS" "$component" 'encoder'
 done
 unset FFMPEG_ENCODERS
 
 FFMPEG_DEMUXERS="$("$FFMPEG_PATH" -hide_banner -demuxers 2>/dev/null)"
-for component in aiff flac image2 matroska,webm mov,mp4,m4a,3gp,3g2,mj2 mp3 ogg wav; do
+for component in aiff flac image2 matroska,webm mov,mp4,m4a,3gp,3g2,mj2 mp3 ogg rawvideo wav; do
   require_ffmpeg_component "$FFMPEG_DEMUXERS" "$component" 'demuxer'
 done
 unset FFMPEG_DEMUXERS
@@ -475,16 +484,23 @@ FFMPEG_DECODERS="$("$FFMPEG_PATH" -hide_banner -decoders 2>/dev/null)"
 for component in \
   aac alac flac mjpeg mp3 opus pcm_f32be pcm_f32le pcm_f64be pcm_f64le \
   pcm_s8 pcm_s16be pcm_s16le pcm_s24be pcm_s24le pcm_s32be pcm_s32le \
-  pcm_u8 png vorbis; do
+  pcm_u8 png vorbis hevc prores rawvideo; do
   require_ffmpeg_component "$FFMPEG_DECODERS" "$component" 'decoder'
 done
 unset FFMPEG_DECODERS
 
 FFMPEG_MUXERS="$("$FFMPEG_PATH" -hide_banner -muxers 2>/dev/null)"
-for component in mp4 s16le wav; do
+for component in mov mp4 null s16le wav; do
   require_ffmpeg_component "$FFMPEG_MUXERS" "$component" 'muxer'
 done
 unset FFMPEG_MUXERS
+
+FFMPEG_BSFS="$("$FFMPEG_PATH" -hide_banner -bsfs 2>/dev/null)"
+case "$FFMPEG_BSFS" in
+  *trace_headers*) ;;
+  *) fail 'staged FFmpeg is missing required bitstream filter: trace_headers' ;;
+esac
+unset FFMPEG_BSFS
 NATIVE_ARTIFACTS_VERIFIED=1
 
 "$AUDIT_PYTHON" qa/staged_runtime_qa.py "$PROJECT_ROOT"
@@ -507,7 +523,7 @@ verify_bundle_metadata "$APP_PATH" "$PACKAGE_VERSION" 'built-app'
 
 APP_RESOURCES="$APP_PATH/Contents/Resources"
 require_exact_directory_files "$APP_RESOURCES/backend/bin" \
-  'packaged FFmpeg directory' ffmpeg LICENSE.LGPLv2.1.txt
+  'packaged FFmpeg directory' ffmpeg ffprobe LICENSE.LGPLv2.1.txt
 require_sha256 "$APP_RESOURCES/backend/bin/LICENSE.LGPLv2.1.txt" \
   "$FFMPEG_LICENSE_SHA" 'packaged FFmpeg LGPL license'
 BUNDLE_ICON_NAME="$(/usr/bin/plutil -extract CFBundleIconFile raw -o - \
@@ -524,6 +540,10 @@ require_sha256 "$APP_RESOURCES/backend/web/vendor/livekit-client.umd.js" \
   "$LIVEKIT_CLIENT_SHA" 'packaged LiveKit client'
 require_sha256 "$APP_RESOURCES/backend/contracts/live-talk-approved-tuples-v1.json" \
   "$LIVEKIT_TUPLES_SHA" 'packaged LiveKit tuple contract'
+require_sha256 "$APP_RESOURCES/backend/contracts/avatar-package-v2/README.md" \
+  "$AVATAR_CONTRACT_README_SHA" 'packaged avatar contract documentation'
+require_sha256 "$APP_RESOURCES/backend/contracts/avatar-package-v2/ios-light-v3.schema.json" \
+  "$AVATAR_IOS_V3_SCHEMA_SHA" 'packaged iPhone-light v3 motion contract'
 require_sha256 "$APP_RESOURCES/backend/models/face_landmarker.task" \
   "$FACE_MODEL_SHA" 'packaged MediaPipe face model'
 require_sha256 "$APP_RESOURCES/backend/models/LICENSE.Apache-2.0.txt" \
@@ -541,6 +561,7 @@ PACKAGED_ASSETS_VERIFIED=1
 
 "$AUDIT_PYTHON" "$NATIVE_PATH_AUDIT" \
   "$APP_RESOURCES/backend/bin/ffmpeg" \
+  "$APP_RESOURCES/backend/bin/ffprobe" \
   "$APP_RESOURCES/python/lib/python3.12/site-packages/cv2" \
   "$APP_RESOURCES/native"
 PACKAGED_NATIVE_PATHS_VERIFIED=1

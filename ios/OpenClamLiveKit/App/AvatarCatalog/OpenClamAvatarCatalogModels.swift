@@ -6,10 +6,10 @@ import Foundation
 /// compile-time enum.
 struct OpenClamAvatarID: RawRepresentable, Codable, Hashable, Identifiable, Sendable {
     static let captainAyer = Self(unchecked: "captain-ayer")
-    static let vivieen = Self(unchecked: "vivieen")
+    static let ara = Self(unchecked: "ara")
 
     static let bundled: [Self] = [
-        .captainAyer,
+        .captainAyer, .ara,
     ]
 
     let rawValue: String
@@ -83,6 +83,35 @@ enum OpenClamAvatarAssetReference: Hashable, Sendable {
     case catalogBundle(directory: String, filename: String)
     /// A validated file installed in this app's Application Support directory.
     case installedFile(URL)
+}
+
+/// Optional transparent motion clips carried by an ios-light v3 package.
+/// Playback behavior is deliberately part of the role rather than package
+/// metadata so an imported archive cannot request arbitrary runtime behavior.
+enum OpenClamAvatarMotionKind: String, CaseIterable, Codable, Hashable, Sendable {
+    case walk
+    case edgeIdle
+    case moves
+
+    var loops: Bool {
+        switch self {
+        case .walk, .edgeIdle:
+            true
+        case .moves:
+            false
+        }
+    }
+}
+
+enum OpenClamAvatarMotionReference: Equatable, Hashable, Sendable {
+    case catalogBundle(directory: String, filename: String)
+    case installedFile(URL)
+}
+
+struct OpenClamAvatarMotionAsset: Equatable, Hashable, Sendable {
+    let reference: OpenClamAvatarMotionReference
+    let pixelSize: OpenClamAvatarSize
+    let durationMilliseconds: Int
 }
 
 struct OpenClamAvatarPoint: Codable, Equatable, Hashable, Sendable {
@@ -207,12 +236,39 @@ struct OpenClamAvatarDescriptor: Identifiable, Equatable, Sendable {
     let geometry: OpenClamAvatarRigGeometry
     let compatibility: OpenClamAvatarRigCompatibility
     let assets: [OpenClamAvatarAssetRole: OpenClamAvatarAssetReference]
+    let motions: [OpenClamAvatarMotionKind: OpenClamAvatarMotionAsset]
+
+    init(
+        avatarID: OpenClamAvatarID,
+        displayName: String,
+        sourceSlug: String,
+        sourceRelativeRuntimePath: String,
+        includedByteCount: Int,
+        geometry: OpenClamAvatarRigGeometry,
+        compatibility: OpenClamAvatarRigCompatibility,
+        assets: [OpenClamAvatarAssetRole: OpenClamAvatarAssetReference],
+        motions: [OpenClamAvatarMotionKind: OpenClamAvatarMotionAsset] = [:]
+    ) {
+        self.avatarID = avatarID
+        self.displayName = displayName
+        self.sourceSlug = sourceSlug
+        self.sourceRelativeRuntimePath = sourceRelativeRuntimePath
+        self.includedByteCount = includedByteCount
+        self.geometry = geometry
+        self.compatibility = compatibility
+        self.assets = assets
+        self.motions = motions
+    }
 
     var id: String { avatarID.rawValue }
     var includedMegabytes: Double { Double(includedByteCount) / 1_000_000 }
 
     func asset(_ role: OpenClamAvatarAssetRole) -> OpenClamAvatarAssetReference? {
         assets[role]
+    }
+
+    func motion(_ kind: OpenClamAvatarMotionKind) -> OpenClamAvatarMotionAsset? {
+        motions[kind]
     }
 }
 

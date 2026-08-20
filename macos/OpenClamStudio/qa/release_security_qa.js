@@ -16,11 +16,44 @@ const opencvSourceSanitizer = read('scripts/sanitize-opencv-source-build-paths.p
 const deploymentAudit = read('scripts/audit-macos-deployment-targets.py');
 const credentials = read('server/credentials.py');
 const xaiOauth = read('server/xai_oauth.py');
+const serverApp = read('server/app.py');
+const bodyAuthoring = read('studio/body.py');
+const settings = read('web/settings.html');
 const main = read('electron/main.cjs');
 const avatarStore = read('electron/avatar-store.cjs');
 const readme = read('README.md');
 const privacy = read('PRIVACY.md');
 const security = read('SECURITY.md');
+
+for (const required of [
+  'XAI_EDIT_PROVIDER = "xai"',
+  'XAI_EDIT_MODEL = "grok-imagine-image-2.0"',
+  'if not supports_xai_edit(provider):',
+  'instruction_sha256',
+  'keep_previous=True',
+  'def restore_previous(avatar_dir):',
+]) assert.ok(bodyAuthoring.includes(required),
+  `Full-body xAI edit trust boundary is missing ${required}`);
+for (const required of [
+  '@app.post("/api/avatar/body/edit")',
+  'if not body.supports_xai_edit(provider):',
+  '_reserve_job(\n        request.slug, "body-edit"',
+  '_BODY_EDIT_TRANSACTION_DIRNAME = ".body-edit-transaction"',
+  'def _begin_body_edit_transaction(slug):',
+  'def _recover_body_edit_transaction(slug, log=print):',
+  '_restore_tree_snapshot(',
+  '_restore_file_snapshot(',
+  '_publish_runtime_atomic(slug, log=writer, keep_previous=True)',
+  '_set_body_edit_transaction_phase(slug, "committed")',
+  '_finish_committed_body_edit(slug, log=writer)',
+]) assert.ok(serverApp.includes(required),
+  `Full-body edit route is missing ${required}`);
+assert.ok(
+  serverApp.indexOf('_publish_runtime_atomic(slug, log=writer, keep_previous=True)') <
+  serverApp.indexOf('_finish_committed_body_edit(slug, log=writer)'),
+  'Edited body archival/cleanup must follow successful runtime publication');
+assert.ok(settings.includes("provider.name === 'xai' && provider.model === 'grok-imagine-image-2.0'"));
+assert.ok(settings.includes("api('/api/avatar/body/edit'"));
 
 assert.equal(pkg.scripts.dist, 'scripts/release-macos.sh');
 assert.equal(pkg.build.forceCodeSigning, true);
@@ -28,9 +61,22 @@ assert.equal(pkg.build.mac.identity, 'THE GREAT LIONHEART PTE. LTD. (X7R8N6MMSU)
 assert.equal(pkg.build.mac.notarize, false);
 assert.deepEqual(pkg.build.mac.target, ['dmg']);
 assert.equal(pkg.build.dmg.artifactName, 'OpenClam-Studio-${version}-${arch}.${ext}');
-assert.match(avatarStore,
-  /const CATALOG_URL = 'https:\/\/raw\.githubusercontent\.com\/tivojn\/openclam-avatar-store\/main\/catalog\/v1\/catalog\.json';/,
-  'Avatar Store catalog must stay pinned to the reviewed repository path');
+for (const excluded of [
+  '!electron/native/**',
+  '!node_modules/**/src/**',
+  '!node_modules/**/*.map',
+]) {
+  assert.ok(pkg.build.files.includes(excluded),
+    `packaging must exclude source-only artifact ${excluded}`);
+}
+assert.match(avatarStore, /const AVATAR_STORE_AVAILABLE = false;/,
+  'The v1.0.1 Avatar Store release gate must stay closed');
+assert.match(avatarStore, /const RELEASE_ENDPOINT_POLICY = null;/,
+  'A disabled release must not contain a production catalog endpoint');
+assert.doesNotMatch(avatarStore, /tivojn\/openclam-avatar-store|const CATALOG_URL\s*=/,
+  'The removed store repository must not remain reachable from production code');
+assert.match(avatarStore, /function requireEndpointPolicy\(endpointPolicy\)/,
+  'Every dormant generic store operation must require an explicit endpoint policy');
 for (const host of [
   "const RAW_HOST = 'raw.githubusercontent.com';",
   "const RELEASE_HOST = 'github.com';",
@@ -41,13 +87,13 @@ assert.doesNotMatch(avatarStore, /\*\.githubusercontent\.com|endsWith\(['"]githu
   'Avatar Store must never trust a wildcard GitHub content host');
 assert.match(avatarStore, /redirect: 'manual'/,
   'Every Avatar Store redirect must be inspected by the app');
-assert.match(avatarStore, /kind === 'thumbnail' && isRawRepoUrl\(parsed\)/,
+assert.match(avatarStore, /kind === 'thumbnail' && isRawRepoUrl\(parsed, endpoints\)/,
   'A Mac AVTR redirect must not be allowed to become an arbitrary raw file');
 assert.match(avatarStore, /RELEASE_REDIRECT_HOSTS\.has\(parsed\.hostname\)/,
   'Release asset redirects must use the exact reviewed object hosts');
 for (const required of [
   "value.format !== 'openclam-avatar'",
-  "value.author !== 'OpenClam'",
+  "safeText(value.author, 'avatar publisher')",
   "value.schemaVersion !== CATALOG_SCHEMA_VERSION",
   "variants['macos-full']",
   "digest.digest('hex') !== variant.sha256",
@@ -55,13 +101,33 @@ for (const required of [
   "mode: 0o700",
   "mode: 0o600",
 ]) assert.ok(avatarStore.includes(required), `Avatar Store trust gate is missing ${required}`);
+for (const handler of [
+  'async function avatarStoreCatalog(',
+  'async function avatarStoreThumbnail(',
+  'async function downloadAvatarStoreItem(',
+]) {
+  const start = main.indexOf(handler);
+  const end = main.indexOf('\n}', start);
+  const body = main.slice(start, end);
+  assert.match(body, /if \(!AVATAR_STORE_AVAILABLE\)/,
+    `${handler} must fail closed before any store or backend request`);
+}
 assert.match(main, /fs\.openAsBlob\(file, \{type: 'application\/vnd\.openclam\.avatar\+zip'\}\)/);
 assert.match(main, /fetch\(`\$\{baseUrl\(\)\}\/api\/avatar\/import`/,
   'Verified Store bytes must still pass through the existing AVTR importer');
 const ffmpegResource = pkg.build.extraResources.find(
   (resource) => resource.from === '.electron-ffmpeg');
 assert.deepEqual(ffmpegResource && ffmpegResource.filter,
-  ['ffmpeg', 'LICENSE.LGPLv2.1.txt']);
+  ['ffmpeg', 'ffprobe', 'LICENSE.LGPLv2.1.txt']);
+const contractResource = pkg.build.extraResources.find(
+  (resource) => resource.from === 'contracts');
+for (const contract of [
+  'avatar-package-v2/README.md',
+  'avatar-package-v2/manifest.schema.json',
+  'avatar-package-v2/macos-full.schema.json',
+  'avatar-package-v2/ios-light-v3.schema.json',
+]) assert.ok(contractResource && contractResource.filter.includes(contract),
+  `packaging must include portable avatar contract ${contract}`);
 const sitePackagesResource = pkg.build.extraResources.find(
   (resource) => resource.from === '.electron-site-packages');
 const studioResource = pkg.build.extraResources.find(
@@ -108,10 +174,14 @@ for (const excluded of [
 
 const packagedRuntimeQa = read('qa/packaged_runtime_qa.py');
 const stagedRuntimeQa = read('qa/staged_runtime_qa.py');
+const alphaRuntimeQa = read('qa/ffmpeg_alpha_runtime_qa.py');
 for (const required of [
   'require_clean_packaged_asar',
   'asar.listPackage',
   'asar.extractAll',
+  "atOrBelow(entry, '/electron/native')",
+  '/^\\/node_modules\\/(?:@[^/]+\\/)?[^/]+\\/src(?:\\/|$)/.test(entry)',
+  "entry.endsWith('.map')",
   'livekit-client',
   '@livekit/mutex',
   'rxjs/testing',
@@ -136,6 +206,16 @@ for (const required of [
   assert.ok(packagedRuntimeQa.includes(required),
     `packaged runtime QA is missing test-artifact gate ${required}`);
 }
+for (const runtimeQa of [packagedRuntimeQa, stagedRuntimeQa]) {
+  assert.ok(runtimeQa.includes('ffprobe'), 'runtime QA must require packaged ffprobe');
+  assert.ok(runtimeQa.includes('verify_alpha_runtime'),
+    'runtime QA must exercise provider-free HEVC-alpha conversion');
+}
+for (const required of [
+  'hevc_videotoolbox', 'alpha_quality', 'trace_headers',
+  'Alpha Channel Information', 'codec_tag_string',
+]) assert.ok(alphaRuntimeQa.includes(required),
+  `HEVC-alpha runtime QA is missing ${required}`);
 
 for (const forbidden of [
   'import subprocess', 'subprocess.run', 'SECURITY_TOOL',
@@ -261,8 +341,8 @@ for (const required of [
   "/usr/lib/*|/System/Library/*",
   "*'--enable-gpl'*|*'--enable-nonfree'*",
   'GNU Lesser General Public',
-  'h264_videotoolbox pcm_s16le',
-  'aiff flac image2 matroska,webm mov,mp4,m4a,3gp,3g2,mj2 mp3 ogg wav',
+  'h264_videotoolbox hevc_videotoolbox pcm_s16le',
+  'aiff flac image2 matroska,webm mov,mp4,m4a,3gp,3g2,mj2 mp3 ogg rawvideo wav',
   'aac alac flac mjpeg mp3 opus pcm_f32be',
   'SOURCE_CHECKS_VERIFIED=1',
   'NATIVE_ARTIFACTS_VERIFIED=1',
@@ -287,9 +367,9 @@ for (const required of [
   'STAGED_NATIVE_PATHS_VERIFIED=1',
   'PACKAGED_NATIVE_PATHS_VERIFIED=1',
   'scripts/audit-native-build-paths.py',
-  '"$FFMPEG_PATH" "$PROJECT_ROOT/.electron-site-packages/cv2"',
+  '"$FFMPEG_PATH" "$FFPROBE_PATH" "$PROJECT_ROOT/.electron-site-packages/cv2"',
   '"$PROJECT_ROOT/.electron-native"',
-  '"$APP_RESOURCES/backend/bin/ffmpeg"',
+  '"$APP_RESOURCES/backend/bin/ffprobe"',
   '"$APP_RESOURCES/python/lib/python3.12/site-packages/cv2"',
   '"$APP_RESOURCES/native"',
   "WHISPER_WEIGHTS_SHA='ca6659298fe7550468ff0fc49dea7442615d9a53d1ce087aaded1b7627451998'",
@@ -298,12 +378,16 @@ for (const required of [
   assert.ok(release.includes(required), `missing mandatory release gate: ${required}`);
 }
 for (const required of [
-  '--enable-muxer=mp4,pcm_s16le,wav',
-  '"-muxers": {"mp4", "s16le", "wav"}',
-  '"-encoders": {"h264_videotoolbox", "pcm_s16le"}',
-  '"-demuxers": {"aiff", "flac", "image2", "matroska", "mov", "mp3", "ogg", "wav"}',
+  '--enable-ffprobe',
+  '--enable-muxer=mov,mp4,null,pcm_s16le,wav',
+  '--enable-bsf=hevc_metadata,trace_headers',
+  '"-muxers": {"mov", "mp4", "null", "s16le", "wav"}',
+  '"-encoders": {"h264_videotoolbox", "hevc_videotoolbox", "pcm_s16le"}',
+  '"-demuxers": {',
+  '"-bsfs": {"trace_headers"}',
   'if verify_ffmpeg; then',
-  'expected = {"ffmpeg", "LICENSE.LGPLv2.1.txt"}',
+  '"$ROOT/qa/ffmpeg_alpha_runtime_qa.py" "$OUT_DIR"',
+  'expected = {"ffmpeg", "ffprobe", "LICENSE.LGPLv2.1.txt"}',
   'LICENSE_EXPECTED="246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"',
   'rm -rf -- "$OUT_DIR"',
   'CLEAR_PREFIX="/opt/openclam/ffmpeg-$VERSION"',

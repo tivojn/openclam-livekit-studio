@@ -81,8 +81,15 @@ def render(source, destination, log=print, tight=False, pose_destination=None):
         return None
     if tight:
         image = _decontaminate_edges(image)
-        alpha = cv2.erode(image[:, :, 3], np.ones((3, 3), np.uint8), iterations=1)
-        image[:, :, 3] = cv2.GaussianBlur(alpha, (0, 0), 0.55)
+        # Vision already expands and softens its semantic mask in the native
+        # helper.  A second, unconditional 3x3 erosion used to remove the pale
+        # rim, but it also erased genuine one-to-three-pixel structures such as
+        # stiletto stems and narrow shoe straps.  Edge colour cleanup is enough;
+        # discard only numerically empty fringe pixels and preserve confident
+        # alpha exactly as Vision produced it.
+        alpha = image[:, :, 3]
+        alpha[alpha < 8] = 0
+        image[:, :, :3][alpha == 0] = 0
         cv2.imwrite(destination, image)
     alpha = image[:, :, 3]
     points = cv2.findNonZero((alpha > 8).astype("uint8"))

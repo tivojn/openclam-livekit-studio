@@ -60,7 +60,6 @@ enum OpenClamAvatarStoreCatalogError: LocalizedError, Equatable {
     case invalidHash
     case unsupportedMediaType
     case unsupportedPackage
-    case vivieenMustBeFirst
 
     var errorDescription: String? {
         switch self {
@@ -86,19 +85,45 @@ enum OpenClamAvatarStoreCatalogError: LocalizedError, Equatable {
             "The Avatar Store thumbnail type is not supported."
         case .unsupportedPackage:
             "The Avatar Store package is not an OpenClam iPhone avatar."
-        case .vivieenMustBeFirst:
-            "The first Avatar Store entry must be Vivieen."
         }
     }
 }
 
+/// v1.0.1 ships without a reviewed remote catalog. Keeping the release
+/// endpoint optional makes the privacy boundary explicit: no production URL
+/// exists for the store to request, and cached remote entries are not exposed.
+enum OpenClamAvatarStoreReleasePolicy {
+    static let catalogURL: URL? = nil
+    static let unavailableMessage =
+        "Avatar Store isn’t available in this release. You can still import .avtr files from Files."
+
+    static var isAvailable: Bool { catalogURL != nil }
+}
+
+struct OpenClamAvatarStoreRemoteAccess: Sendable {
+    fileprivate let catalogURL: URL?
+
+    static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)
+
+#if DEBUG
+    /// Unit tests exercise the dormant generic store engine against synthetic
+    /// endpoints and an injected transfer client. Release UI always uses
+    /// `release`, whose endpoint is nil.
+    static func testing(catalogURL: URL) -> Self {
+        Self(catalogURL: catalogURL)
+    }
+#endif
+
+    var isEnabled: Bool { catalogURL != nil }
+}
+
 enum OpenClamAvatarStoreURLPolicy {
-    static let catalogURL = URL(
-        string: "https://raw.githubusercontent.com/tivojn/openclam-avatar-store/main/catalog/v1/catalog.json"
+    static let syntheticCatalogURL = URL(
+        string: "https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/catalog.json"
     )!
 
-    private static let owner = "tivojn"
-    private static let repository = "openclam-avatar-store"
+    private static let owner = "openclam-fixtures"
+    private static let repository = "avatar-store-fixtures"
 
     static func allowsCatalogURL(_ url: URL) -> Bool {
         guard hasSafeHTTPSComponents(url),
@@ -264,10 +289,6 @@ enum OpenClamAvatarStoreCatalogParser {
         guard document.entries.count <= maximumEntryCount else {
             throw OpenClamAvatarStoreCatalogError.tooManyEntries
         }
-        guard document.entries.first?.id == "vivieen" else {
-            throw OpenClamAvatarStoreCatalogError.vivieenMustBeFirst
-        }
-
         var identifiers = Set<String>()
         for entry in document.entries {
             guard identifiers.insert(entry.id).inserted else {
@@ -280,7 +301,7 @@ enum OpenClamAvatarStoreCatalogParser {
     private static func validate(_ entry: OpenClamAvatarStoreEntry) throws {
         guard OpenClamAvatarID.isValid(entry.id),
               isSafeCatalogText(entry.name, maximumCount: 64),
-              entry.author == "OpenClam",
+              isSafeCatalogText(entry.author, maximumCount: 64),
               entry.version >= 1,
               entry.version <= 1_000_000 else {
             throw OpenClamAvatarStoreCatalogError.invalidEntry(entry.id)
@@ -373,6 +394,7 @@ protocol OpenClamAvatarStoreTransferring: Sendable {
 }
 
 enum OpenClamAvatarStoreTransferError: LocalizedError, Equatable {
+    case storeUnavailable
     case cancelled
     case untrustedRedirect
     case invalidResponse
@@ -382,6 +404,8 @@ enum OpenClamAvatarStoreTransferError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .storeUnavailable:
+            OpenClamAvatarStoreReleasePolicy.unavailableMessage
         case .cancelled:
             "Download cancelled."
         case .untrustedRedirect:
@@ -402,8 +426,13 @@ final class OpenClamAvatarStoreURLSessionClient: OpenClamAvatarStoreTransferring
     @unchecked Sendable
 {
     private let configuration: URLSessionConfiguration
+    private let remoteAccess: OpenClamAvatarStoreRemoteAccess
 
-    init(configuration: URLSessionConfiguration = .ephemeral) {
+    init(
+        configuration: URLSessionConfiguration = .ephemeral,
+        remoteAccess: OpenClamAvatarStoreRemoteAccess = .release
+    ) {
+        self.remoteAccess = remoteAccess
         self.configuration = configuration.copy() as? URLSessionConfiguration ?? .ephemeral
         self.configuration.urlCache = nil
         self.configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -419,6 +448,9 @@ final class OpenClamAvatarStoreURLSessionClient: OpenClamAvatarStoreTransferring
         expectedBytes: Int?,
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> OpenClamAvatarStoreTransferResult {
+        guard remoteAccess.isEnabled else {
+            throw OpenClamAvatarStoreTransferError.storeUnavailable
+        }
         guard OpenClamAvatarStoreURLPolicy.allowsCatalogURL(url)
                 || OpenClamAvatarStoreURLPolicy.allowsThumbnailURL(url)
                 || OpenClamAvatarStoreURLPolicy.allowsPackageURL(url) else {
@@ -842,6 +874,7 @@ final class OpenClamAvatarStore: ObservableObject {
     private let cache: OpenClamAvatarStoreCache
     private let defaults: UserDefaults
     private let installedHashesKey: String
+    private let remoteAccess: OpenClamAvatarStoreRemoteAccess
     private var catalogTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var downloadTasks: [String: Task<Void, Never>] = [:]
@@ -852,12 +885,17 @@ final class OpenClamAvatarStore: ObservableObject {
         transferClient: any OpenClamAvatarStoreTransferring = OpenClamAvatarStoreURLSessionClient(),
         cache: OpenClamAvatarStoreCache = .init(),
         defaults: UserDefaults = .standard,
-        installedHashesKey: String = "openclam.avatar-store.installed-hashes.v1"
+        installedHashesKey: String = "openclam.avatar-store.installed-hashes.v1",
+        remoteAccess: OpenClamAvatarStoreRemoteAccess = .release
     ) {
         self.transferClient = transferClient
         self.cache = cache
         self.defaults = defaults
         self.installedHashesKey = installedHashesKey
+        self.remoteAccess = remoteAccess
+        if !remoteAccess.isEnabled {
+            catalogStatus = .unavailable(OpenClamAvatarStoreReleasePolicy.unavailableMessage)
+        }
     }
 
     deinit {
@@ -868,6 +906,19 @@ final class OpenClamAvatarStore: ObservableObject {
 
     func load(library: OpenClamAvatarLibrary) {
         catalogTask?.cancel()
+        guard let catalogURL = remoteAccess.catalogURL else {
+            thumbnailTasks.values.forEach { $0.cancel() }
+            downloadTasks.values.forEach { $0.cancel() }
+            thumbnailTasks.removeAll()
+            downloadTasks.removeAll()
+            downloadGenerations.removeAll()
+            phasesBeforeDownload.removeAll()
+            entries = []
+            phases = [:]
+            thumbnails = [:]
+            catalogStatus = .unavailable(OpenClamAvatarStoreReleasePolicy.unavailableMessage)
+            return
+        }
         if let cachedData = cache.loadCatalogData(),
            let cached = try? OpenClamAvatarStoreCatalogParser.decode(cachedData) {
             apply(cached, library: library)
@@ -879,7 +930,7 @@ final class OpenClamAvatarStore: ObservableObject {
         catalogTask = Task { [weak self, transferClient, cache] in
             do {
                 let result = try await transferClient.fetch(
-                    OpenClamAvatarStoreURLPolicy.catalogURL,
+                    catalogURL,
                     maximumBytes: OpenClamAvatarStoreCatalogParser.maximumCatalogBytes,
                     expectedBytes: nil,
                     progress: { _, _ in }
@@ -887,7 +938,7 @@ final class OpenClamAvatarStore: ObservableObject {
                 try Task.checkCancellation()
                 guard OpenClamAvatarStoreURLPolicy.allowsRedirectOrFinalURL(
                     result.responseURL,
-                    for: OpenClamAvatarStoreURLPolicy.catalogURL
+                    for: catalogURL
                 ) else {
                     throw OpenClamAvatarStoreTransferError.untrustedRedirect
                 }
@@ -918,6 +969,7 @@ final class OpenClamAvatarStore: ObservableObject {
     }
 
     func primaryAction(for entry: OpenClamAvatarStoreEntry, library: OpenClamAvatarLibrary) {
+        guard remoteAccess.isEnabled else { return }
         switch phases[entry.id] ?? restingPhase(for: entry, library: library) {
         case .downloading:
             cancel(entry)
@@ -931,6 +983,7 @@ final class OpenClamAvatarStore: ObservableObject {
     }
 
     func redownload(_ entry: OpenClamAvatarStoreEntry, library: OpenClamAvatarLibrary) {
+        guard remoteAccess.isEnabled else { return }
         downloadAndInstall(entry, library: library, forceDownload: true)
     }
 
@@ -965,6 +1018,7 @@ final class OpenClamAvatarStore: ObservableObject {
     }
 
     private func loadThumbnail(for entry: OpenClamAvatarStoreEntry) {
+        guard remoteAccess.isEnabled else { return }
         thumbnailTasks[entry.id]?.cancel()
         if let data = cache.loadThumbnailData(for: entry),
            let image = OpenClamAvatarStoreFileVerifier.verifiedThumbnail(
@@ -1010,6 +1064,7 @@ final class OpenClamAvatarStore: ObservableObject {
         library: OpenClamAvatarLibrary,
         forceDownload: Bool
     ) {
+        guard remoteAccess.isEnabled else { return }
         guard downloadTasks[entry.id] == nil else { return }
         if library.isImported(id: entry.id),
            let installed = installedRecord(for: entry),

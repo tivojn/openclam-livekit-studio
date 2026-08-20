@@ -189,6 +189,18 @@ class MotionSetTests(SetLibraryFixture):
 
 
 class BodySetTests(SetLibraryFixture):
+    def test_side_only_change_archives_a_distinct_undoable_body_set(self):
+        first = library.archive_body(str(self.avatar))
+        (self.avatar / "body" / "source-side.png").write_bytes(b"side-plate-edited")
+        (self.avatar / "body" / "body-side.png").write_bytes(b"side-cut-edited")
+        second = library.archive_body(str(self.avatar))
+        self.assertNotEqual(first, second)
+        self.assertEqual(len(library.list_body_sets(str(self.avatar))), 2)
+        library.activate_body(str(self.avatar), first)
+        self.assertEqual(
+            (self.avatar / "body" / "source-side.png").read_bytes(),
+            b"side-plate-v1")
+
     def test_archive_and_switch_bodies_reconciles_motion(self):
         first_body = library.archive_body(str(self.avatar))
         first_walk = library.archive_motion(str(self.avatar), "walk")

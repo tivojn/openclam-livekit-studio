@@ -4,7 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomBytes } = require('node:crypto');
 
-const CATALOG_URL = 'https://raw.githubusercontent.com/tivojn/openclam-avatar-store/main/catalog/v1/catalog.json';
+// v1.0.1 has no reviewed remote catalog. A null release policy means the
+// shipped app has no catalog URL to request, even if stale cache files exist.
+const AVATAR_STORE_AVAILABLE = false;
+const RELEASE_ENDPOINT_POLICY = null;
 const CATALOG_SCHEMA_VERSION = 1;
 const CATALOG_MAX_BYTES = 256 * 1024;
 const THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024;
@@ -12,7 +15,6 @@ const AVTR_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 const NETWORK_TIMEOUT_MS = 15_000;
 const AVTR_DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000;
 const CATALOG_MEMORY_TTL_MS = 5 * 60 * 1000;
-const REPO = 'tivojn/openclam-avatar-store';
 const RAW_HOST = 'raw.githubusercontent.com';
 const RELEASE_HOST = 'github.com';
 const RELEASE_REDIRECT_HOSTS = new Set([
@@ -30,6 +32,29 @@ class AvatarStoreError extends Error {
     this.name = 'AvatarStoreError';
     this.code = code;
   }
+}
+
+function createGithubEndpointPolicy({owner, repository}) {
+  const component = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+  if (!component.test(String(owner || '')) || !component.test(String(repository || ''))) {
+    throw new TypeError('Avatar Store endpoint identity is invalid');
+  }
+  const repo = `${owner}/${repository}`;
+  return Object.freeze({
+    repo,
+    catalogUrl: `https://${RAW_HOST}/${repo}/main/catalog/v1/catalog.json`,
+  });
+}
+
+function requireEndpointPolicy(endpointPolicy) {
+  if (!endpointPolicy || typeof endpointPolicy.catalogUrl !== 'string'
+      || typeof endpointPolicy.repo !== 'string') {
+    throw new AvatarStoreError(
+      'store_unavailable',
+      'Avatar Store is not available in this release. Import local .avtr files in Avatar Studio.',
+    );
+  }
+  return endpointPolicy;
 }
 
 function plainObject(value) {
@@ -65,30 +90,31 @@ function safeHttpsUrl(value, label) {
   return parsed;
 }
 
-function isRawRepoUrl(parsed) {
+function isRawRepoUrl(parsed, endpointPolicy) {
   return parsed.hostname === RAW_HOST
-    && parsed.pathname.startsWith(`/${REPO}/`)
+    && parsed.pathname.startsWith(`/${endpointPolicy.repo}/`)
     && !parsed.search;
 }
 
-function isReleaseRepoUrl(parsed) {
+function isReleaseRepoUrl(parsed, endpointPolicy) {
   return parsed.hostname === RELEASE_HOST
-    && parsed.pathname.startsWith(`/${REPO}/releases/download/`)
+    && parsed.pathname.startsWith(`/${endpointPolicy.repo}/releases/download/`)
     && !parsed.search;
 }
 
-function assertInitialUrl(value, kind) {
+function assertInitialUrl(value, kind, endpointPolicy) {
+  const endpoints = requireEndpointPolicy(endpointPolicy);
   const parsed = safeHttpsUrl(value, kind);
   if (kind === 'catalog') {
-    if (parsed.href !== CATALOG_URL) {
+    if (parsed.href !== endpoints.catalogUrl) {
       throw new AvatarStoreError('catalog_invalid', 'catalog URL is not pinned');
     }
   } else if (kind === 'thumbnail') {
-    if (!isRawRepoUrl(parsed) && !isReleaseRepoUrl(parsed)) {
+    if (!isRawRepoUrl(parsed, endpoints) && !isReleaseRepoUrl(parsed, endpoints)) {
       throw new AvatarStoreError('catalog_invalid', 'thumbnail is outside the avatar store repository');
     }
   } else if (kind === 'package') {
-    if (!isReleaseRepoUrl(parsed)) {
+    if (!isReleaseRepoUrl(parsed, endpoints)) {
       throw new AvatarStoreError('catalog_invalid', 'avatar package is outside the release repository');
     }
   } else {
@@ -97,16 +123,17 @@ function assertInitialUrl(value, kind) {
   return parsed;
 }
 
-function assertRedirectUrl(value, kind, releaseChain) {
+function assertRedirectUrl(value, kind, releaseChain, endpointPolicy) {
+  const endpoints = requireEndpointPolicy(endpointPolicy);
   const parsed = safeHttpsUrl(value, kind);
   if (kind === 'catalog') {
-    if (parsed.href !== CATALOG_URL) {
+    if (parsed.href !== endpoints.catalogUrl) {
       throw new AvatarStoreError('network_refused', 'catalog redirected outside its pinned location');
     }
     return parsed;
   }
-  if (kind === 'thumbnail' && isRawRepoUrl(parsed)) return parsed;
-  if (isReleaseRepoUrl(parsed)) return parsed;
+  if (kind === 'thumbnail' && isRawRepoUrl(parsed, endpoints)) return parsed;
+  if (isReleaseRepoUrl(parsed, endpoints)) return parsed;
   if (releaseChain && RELEASE_REDIRECT_HOSTS.has(parsed.hostname)) return parsed;
   throw new AvatarStoreError('network_refused', `${kind} redirected outside GitHub release storage`);
 }
@@ -118,7 +145,7 @@ function positiveInteger(value, maximum, label) {
   return value;
 }
 
-function validateVariant(value, profile) {
+function validateVariant(value, profile, endpointPolicy) {
   exactKeys(value, ['url', 'sha256', 'bytes', 'format', 'profile'], `${profile} variant`);
   if (value.format !== 'openclam-avatar' || value.profile !== profile) {
     throw new AvatarStoreError('catalog_invalid', `invalid ${profile} package identity`);
@@ -127,7 +154,7 @@ function validateVariant(value, profile) {
     throw new AvatarStoreError('catalog_invalid', `invalid ${profile} package hash`);
   }
   positiveInteger(value.bytes, AVTR_MAX_BYTES, `${profile} package size`);
-  assertInitialUrl(value.url, 'package');
+  assertInitialUrl(value.url, 'package', endpointPolicy);
   return Object.freeze({
     url: value.url,
     sha256: value.sha256,
@@ -137,7 +164,7 @@ function validateVariant(value, profile) {
   });
 }
 
-function validateThumbnail(value) {
+function validateThumbnail(value, endpointPolicy) {
   exactKeys(value, ['url', 'sha256', 'bytes', 'mime', 'width', 'height'], 'thumbnail');
   if (typeof value.sha256 !== 'string' || !HASH_RE.test(value.sha256)) {
     throw new AvatarStoreError('catalog_invalid', 'invalid thumbnail hash');
@@ -148,7 +175,7 @@ function validateThumbnail(value) {
   if (value.mime !== THUMBNAIL_MIME) {
     throw new AvatarStoreError('catalog_invalid', 'unsupported thumbnail type');
   }
-  assertInitialUrl(value.url, 'thumbnail');
+  assertInitialUrl(value.url, 'thumbnail', endpointPolicy);
   return Object.freeze({
     url: value.url,
     sha256: value.sha256,
@@ -159,15 +186,13 @@ function validateThumbnail(value) {
   });
 }
 
-function validateEntry(value) {
+function validateEntry(value, endpointPolicy) {
   exactKeys(value, ['id', 'name', 'author', 'version', 'thumbnail', 'variants'], 'catalog entry');
   if (typeof value.id !== 'string' || !ID_RE.test(value.id)) {
     throw new AvatarStoreError('catalog_invalid', 'invalid avatar identifier');
   }
   const name = safeText(value.name, 'avatar name');
-  if (value.author !== 'OpenClam') {
-    throw new AvatarStoreError('catalog_invalid', 'invalid avatar publisher');
-  }
+  const author = safeText(value.author, 'avatar publisher');
   positiveInteger(value.version, Number.MAX_SAFE_INTEGER, 'avatar version');
   if (!plainObject(value.variants)) {
     throw new AvatarStoreError('catalog_invalid', 'invalid avatar variants');
@@ -179,19 +204,20 @@ function validateEntry(value) {
   }
   const variants = {};
   for (const profile of variantNames) {
-    variants[profile] = validateVariant(value.variants[profile], profile);
+    variants[profile] = validateVariant(value.variants[profile], profile, endpointPolicy);
   }
   return Object.freeze({
     id: value.id,
     name,
-    author: value.author,
+    author,
     version: value.version,
-    thumbnail: validateThumbnail(value.thumbnail),
+    thumbnail: validateThumbnail(value.thumbnail, endpointPolicy),
     variants: Object.freeze(variants),
   });
 }
 
-function validateCatalog(value) {
+function validateCatalog(value, endpointPolicy) {
+  const endpoints = requireEndpointPolicy(endpointPolicy);
   exactKeys(value, ['schemaVersion', 'entries'], 'catalog');
   if (value.schemaVersion !== CATALOG_SCHEMA_VERSION || !Array.isArray(value.entries)
       || value.entries.length < 1 || value.entries.length > 200) {
@@ -199,7 +225,7 @@ function validateCatalog(value) {
   }
   const seen = new Set();
   const entries = value.entries.map((item) => {
-    const entry = validateEntry(item);
+    const entry = validateEntry(item, endpoints);
     if (seen.has(entry.id)) throw new AvatarStoreError('catalog_invalid', 'duplicate avatar identifier');
     seen.add(entry.id);
     return entry;
@@ -208,8 +234,9 @@ function validateCatalog(value) {
 }
 
 async function secureFetch(fetchImpl, initialUrl, kind, options = {}) {
-  let current = assertInitialUrl(initialUrl, kind);
-  const releaseChain = isReleaseRepoUrl(current);
+  const endpoints = requireEndpointPolicy(options.endpointPolicy);
+  let current = assertInitialUrl(initialUrl, kind, endpoints);
+  const releaseChain = isReleaseRepoUrl(current, endpoints);
   for (let redirect = 0; redirect <= 5; redirect += 1) {
     const response = await fetchImpl(current.href, {
       method: 'GET',
@@ -225,10 +252,11 @@ async function secureFetch(fetchImpl, initialUrl, kind, options = {}) {
       if (redirect === 5) throw new AvatarStoreError('network_refused', 'too many download redirects');
       const location = response.headers.get('location');
       if (!location) throw new AvatarStoreError('network_refused', 'download redirect had no destination');
-      current = assertRedirectUrl(new URL(location, current).href, kind, releaseChain);
+      current = assertRedirectUrl(
+        new URL(location, current).href, kind, releaseChain, endpoints);
       continue;
     }
-    assertRedirectUrl(current.href, kind, releaseChain);
+    assertRedirectUrl(current.href, kind, releaseChain, endpoints);
     if (!response.ok) {
       throw new AvatarStoreError('network_failed', `GitHub answered HTTP ${response.status}`);
     }
@@ -326,11 +354,17 @@ function validPngThumbnail(bytes, specification) {
 }
 
 class AvatarStore {
-  constructor({cacheRoot, fetchImpl = globalThis.fetch, now = () => Date.now()}) {
+  constructor({
+    cacheRoot,
+    fetchImpl = globalThis.fetch,
+    now = () => Date.now(),
+    endpointPolicy = RELEASE_ENDPOINT_POLICY,
+  }) {
     if (!cacheRoot || typeof fetchImpl !== 'function') throw new TypeError('AvatarStore needs cacheRoot and fetch');
     this.cacheRoot = path.resolve(cacheRoot);
     this.fetchImpl = fetchImpl;
     this.now = now;
+    this.endpointPolicy = endpointPolicy;
     this.memoryCatalog = null;
     this.catalogLoadedAt = 0;
     this.installationWrite = Promise.resolve();
@@ -347,6 +381,7 @@ class AvatarStore {
   }
 
   async cachedCatalog() {
+    const endpoints = requireEndpointPolicy(this.endpointPolicy);
     try {
       const bytes = await fs.promises.readFile(this.catalogPath());
       if (bytes.length > CATALOG_MAX_BYTES) throw new AvatarStoreError('catalog_invalid', 'cached catalog is too large');
@@ -354,7 +389,7 @@ class AvatarStore {
       try { decoded = JSON.parse(bytes.toString('utf8')); } catch {
         throw new AvatarStoreError('catalog_invalid', 'cached catalog is not valid JSON');
       }
-      return validateCatalog(decoded);
+      return validateCatalog(decoded, endpoints);
     } catch (error) {
       if (error instanceof AvatarStoreError) throw error;
       throw new AvatarStoreError('catalog_unavailable', 'No saved avatar catalog is available.');
@@ -362,6 +397,7 @@ class AvatarStore {
   }
 
   async catalog({force = false, signal} = {}) {
+    const endpoints = requireEndpointPolicy(this.endpointPolicy);
     if (!force && this.memoryCatalog
         && this.now() - this.catalogLoadedAt < CATALOG_MEMORY_TTL_MS) {
       return {catalog: this.memoryCatalog, source: 'memory', warning: ''};
@@ -369,13 +405,18 @@ class AvatarStore {
     let networkError = null;
     const timed = timeoutSignal(signal);
     try {
-      const response = await secureFetch(this.fetchImpl, CATALOG_URL, 'catalog', {signal: timed.signal});
+      const response = await secureFetch(
+        this.fetchImpl,
+        endpoints.catalogUrl,
+        'catalog',
+        {signal: timed.signal, endpointPolicy: endpoints},
+      );
       const bytes = await readBounded(response, CATALOG_MAX_BYTES, timed.signal);
       let decoded;
       try { decoded = JSON.parse(bytes.toString('utf8')); } catch {
         throw new AvatarStoreError('catalog_invalid', 'catalog is not valid JSON');
       }
-      const parsed = validateCatalog(decoded);
+      const parsed = validateCatalog(decoded, endpoints);
       await atomicWrite(this.catalogPath(), Buffer.from(JSON.stringify(parsed)));
       this.memoryCatalog = parsed;
       this.catalogLoadedAt = this.now();
@@ -407,6 +448,7 @@ class AvatarStore {
   }
 
   async entry(identifier) {
+    requireEndpointPolicy(this.endpointPolicy);
     if (typeof identifier !== 'string' || !ID_RE.test(identifier)) {
       throw new AvatarStoreError('catalog_invalid', 'Invalid avatar selection.');
     }
@@ -417,6 +459,7 @@ class AvatarStore {
   }
 
   async packageCached(entry) {
+    requireEndpointPolicy(this.endpointPolicy);
     const variant = entry.variants['macos-full'];
     return verifiedFile(this.packagePath(entry), variant.bytes, variant.sha256);
   }
@@ -434,7 +477,10 @@ class AvatarStore {
       const timed = timeoutSignal(signal);
       try {
         const response = await secureFetch(
-          this.fetchImpl, entry.thumbnail.url, 'thumbnail', {signal: timed.signal});
+          this.fetchImpl, entry.thumbnail.url, 'thumbnail', {
+            signal: timed.signal,
+            endpointPolicy: this.endpointPolicy,
+          });
         bytes = await readBounded(response, entry.thumbnail.bytes, timed.signal);
         if (bytes.length !== entry.thumbnail.bytes
             || createHash('sha256').update(bytes).digest('hex') !== entry.thumbnail.sha256) {
@@ -471,7 +517,10 @@ class AvatarStore {
     const timed = timeoutSignal(signal, AVTR_DOWNLOAD_TIMEOUT_MS);
     let handle = null;
     try {
-      const response = await secureFetch(this.fetchImpl, variant.url, 'package', {signal: timed.signal});
+      const response = await secureFetch(this.fetchImpl, variant.url, 'package', {
+        signal: timed.signal,
+        endpointPolicy: this.endpointPolicy,
+      });
       const declared = Number(response.headers.get('content-length') || 0);
       if (declared && declared !== variant.bytes) {
         throw new AvatarStoreError('integrity_failed', 'The avatar download size did not match the catalog.');
@@ -557,12 +606,14 @@ class AvatarStore {
 
 module.exports = {
   AVTR_MAX_BYTES,
+  AVATAR_STORE_AVAILABLE,
   AvatarStore,
   AvatarStoreError,
   CATALOG_SCHEMA_VERSION,
-  CATALOG_URL,
+  RELEASE_ENDPOINT_POLICY,
   assertInitialUrl,
   assertRedirectUrl,
+  createGithubEndpointPolicy,
   normalizeError,
   secureFetch,
   validateCatalog,

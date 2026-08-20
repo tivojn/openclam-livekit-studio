@@ -60,6 +60,14 @@ assert.match(source, /#emptyState \{[\s\S]{0,220}inset: 8px;[\s\S]{0,220}border-
   'The final empty-avatar surface must be rounded inside the transparent pet window');
 assert.match(source, /#chatDock \{[\s\S]{0,320}right: var\(--pet-rail-reserve\);[\s\S]{0,320}border-radius: var\(--pet-surface-radius\);/,
   'Conversation shell must reserve the rail and expose one rounded outer surface');
+const opaqueChatDockRule = [...source.matchAll(/#chatDock\s*\{([^}]+)\}/g)]
+  .map(match => match[1])
+  .find(rule => rule.includes('rgba(24, 24, 24, .985)'));
+assert.ok(opaqueChatDockRule, 'final chat dock surface rule must remain identifiable');
+assert.match(opaqueChatDockRule, /-webkit-backdrop-filter:\s*none;/);
+assert.match(opaqueChatDockRule, /backdrop-filter:\s*none;/);
+assert.match(opaqueChatDockRule, /box-shadow:\s*none;/,
+  'transparent Electron windows must not draw a square filter or shadow halo around the rounded dock');
 assert.match(source, /#conversation \{[\s\S]{0,140}max-height: min\(31dvh, 280px, calc\(100dvh - 152px\)\);/,
   'Conversation history must use a compact content-driven cap with internal scrolling');
 assert.match(source, /@media \(max-width: 520px\) \{[\s\S]{0,440}#emptyState \{[\s\S]{0,160}padding: 14px calc\(var\(--pet-rail-reserve\) - 6px\) 12px 12px;/,
@@ -276,6 +284,94 @@ assert.match(source, /Hang up Live Talk before sending a regular chat message/);
 assert.match(source, /Hang up Live Talk before playing a separate read-aloud voice/);
 assert.match(source, /sendButton\.disabled = !composer\.value\.trim\(\) \|\| Boolean\(turnController\) \|\| Boolean\(live\)/);
 
+// Agent feedback is first-class Mac text: native selection remains enabled,
+// every complete response exposes whole-entry Copy and Read Aloud, and a
+// partial selection can be copied or quoted into the existing composer. Ask
+// AI must prepare a draft only; it never starts a turn on the user's behalf.
+assert.match(source, /\.bubble \{[\s\S]{0,360}unicode-bidi: plaintext;[\s\S]{0,120}user-select: text;/);
+assert.match(source, /id="composer"[^>]*maxlength="12000"[^>]*dir="auto"/);
+assert.match(source, /id="selectionActions" role="toolbar" aria-label="Selected response actions"/);
+assert.match(source, /id="selectionCopy"[^>]*>Copy<\/button>/);
+assert.match(source, /id="selectionAskAI"[^>]*aria-keyshortcuts="Meta\+Shift\+A Control\+Shift\+A">Ask AI<\/button>/);
+assert.match(source, /role === 'assistant' && text && options\.readable !== false[\s\S]{0,1500}'Copy this response'[\s\S]{0,1500}'Read this response aloud'/);
+assert.match(source, /conversation\.addEventListener\('contextmenu',[\s\S]{0,220}feedbackSelectionCandidate\(getSelection\(\)\)[\s\S]{0,220}showSelectionActions\(candidate\)/);
+assert.match(source, /navigator\.clipboard[\s\S]{0,180}navigator\.clipboard\.writeText\(text\)/);
+assert.match(source, /document\.execCommand\('copy'\)/,
+  'copy must retain a selection-preserving fallback when Clipboard permission is unavailable');
+assert.match(source, /Selected text copied\./);
+assert.match(source, /Selection added\. Add your question, then send\./);
+
+const responseDraftSource = inline[1].match(
+  /(const safeUTF16Prefix =[\s\S]*?const selectionToolbarPoint =[\s\S]*?\n    \};)\n\n    const feedbackSelectionCandidate/,
+);
+assert.ok(responseDraftSource, 'selected-response draft helpers must remain independently testable');
+const responseDraft = new Function(
+  `'use strict'; ${responseDraftSource[1]}; return { `
+    + 'safeUTF16Prefix, formatSelectedFeedback, composeAskAIDraft, selectionToolbarPoint };',
+)();
+
+const multilingualSelection = '第一行：保留中文。\nمرحبا بالعالم 👩🏽‍💻';
+assert.deepEqual(
+  responseDraft.formatSelectedFeedback(multilingualSelection),
+  {
+    text: '> 第一行：保留中文。\n> مرحبا بالعالم 👩🏽‍💻\n\nAsk about this selection: ',
+    truncated: false,
+  },
+  'CJK, RTL, emoji, and line boundaries must survive quoting exactly',
+);
+const preservedDraft = responseDraft.composeAskAIDraft(
+  'Keep my existing draft.', multilingualSelection, 12000,
+);
+assert.equal(preservedDraft.inserted, true);
+assert.equal(preservedDraft.truncated, false);
+assert.ok(preservedDraft.value.startsWith('Keep my existing draft.\n\n> 第一行'));
+assert.ok(preservedDraft.value.endsWith('Ask about this selection: '));
+assert.ok(responseDraft.composeAskAIDraft('Existing\n\n', 'selected').value
+  .startsWith('Existing\n\n> selected'),
+  'an existing paragraph break must not grow every time Ask AI is used');
+
+const longSelection = `${'内容🙂مرحبا '.repeat(2000)}final`;
+const boundedDraft = responseDraft.composeAskAIDraft('Existing', longSelection, 256);
+assert.equal(boundedDraft.inserted, true);
+assert.equal(boundedDraft.truncated, true);
+assert.ok(boundedDraft.value.length <= 256,
+  'the quoted selection must respect the real textarea maxlength');
+assert.match(boundedDraft.value, /\n> …\n\nAsk about this selection: $/);
+assert.doesNotMatch(boundedDraft.value, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+  'long selection clipping must never leave a broken UTF-16 surrogate');
+assert.deepEqual(
+  responseDraft.composeAskAIDraft('x'.repeat(12000), 'selected', 12000),
+  { value: 'x'.repeat(12000), inserted: false, truncated: true },
+  'a full draft must remain byte-for-byte unchanged instead of silently deleting text',
+);
+
+assert.deepEqual(
+  responseDraft.selectionToolbarPoint(
+    { left: 120, right: 180, top: 100, bottom: 120 },
+    { width: 100, height: 30 },
+    { left: 50, top: 50, width: 300, height: 200 },
+  ),
+  { x: 50, y: 12 },
+);
+assert.deepEqual(
+  responseDraft.selectionToolbarPoint(
+    { left: -200, right: -100, top: 52, bottom: 70 },
+    { width: 100, height: 30 },
+    { left: 50, top: 50, width: 300, height: 200 },
+  ),
+  { x: 8, y: 28 },
+  'the contextual toolbar must stay inside a compact pet window',
+);
+
+const askSelectedSource = inline[1].match(
+  /(const askAIAboutSelectedFeedback = \(\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(askSelectedSource, 'Ask AI selection behavior must remain inspectable');
+assert.match(askSelectedSource[1], /composer\.value = drafted\.value/);
+assert.match(askSelectedSource[1], /composer\.setSelectionRange\(composer\.value\.length, composer\.value\.length\)/);
+assert.doesNotMatch(askSelectedSource[1], /submitTurn|submitComposer|postJSON|dispatchEvent/,
+  'Ask AI may fill and focus the composer but must never send automatically');
+
 // The calibrated face bank, body transform, pointer-aware gaze, and all three
 // motion clips are consumed directly from the current runtime manifest.
 for (const capability of [
@@ -291,6 +387,76 @@ for (const capability of [
 ]) {
   assert.ok(source.includes(capability), `missing avatar runtime capability: ${capability}`);
 }
+
+// Brows and the infraorbital band must be speech-coupled independently of
+// lip sync. The motion scheduler picks held, eased random targets rather than
+// frame-by-frame noise, and it collapses to a stable face for reduced motion.
+const speechExpressionSource = inline[1].match(
+  /(const speechExpressionAt = \(now, speaking, state, reduce = false\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(speechExpressionSource,
+  'upper-face speech scheduler must remain independently testable');
+const randomValues = [.1, .3, .7, .2, .8, .4, .6, .5];
+let randomIndex = 0;
+const deterministicMath = Object.create(Math);
+deterministicMath.random = () => randomValues[randomIndex++ % randomValues.length];
+const speechExpressionAt = new Function(
+  'Math',
+  `'use strict'; ${speechExpressionSource[1]}; return speechExpressionAt;`,
+)(deterministicMath);
+const upperFaceState = {
+  mode: 'idle', started: 0, duration: 1, nextAt: 0,
+  from: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+  to: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+  value: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+};
+assert.deepEqual(
+  speechExpressionAt(0, true, upperFaceState, true),
+  { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+  'reduced motion must hold upper-face layers still even during speech',
+);
+speechExpressionAt(0, true, upperFaceState, false);
+const firstUpperFace = speechExpressionAt(420, true, upperFaceState, false);
+assert.ok(firstUpperFace.brow > 0 && firstUpperFace.underEye > 0,
+  'speech must animate both brow and under-eye targets');
+speechExpressionAt(1100, true, upperFaceState, false);
+const laterUpperFace = speechExpressionAt(1200, true, upperFaceState, false);
+assert.notEqual(laterUpperFace.brow, firstUpperFace.brow,
+  'upper-face phrase targets must vary instead of looping mechanically');
+speechExpressionAt(1600, false, upperFaceState, false);
+assert.deepEqual(
+  speechExpressionAt(2000, false, upperFaceState, false),
+  { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+  'upper-face speech motion must settle back to a still idle state',
+);
+assert.match(source, /const LIVE_RIG_KEY = 'openclam-live-rig';/,
+  'the calibration panel must be able to preview live brow/under-eye targets');
+assert.match(source, /for \(const key of \['brows', 'eyebags'\]\)/);
+assert.match(source, /const eyebagGain = rigExpressionGain\('eyebags', 35, 35\);/);
+assert.match(source, /const upperFaceSpeaking = speaking && !reducedMotion\.matches;/);
+
+// Reduced Motion covers the decorative blink path as well as speech targets:
+// otherwise the blink-fed under-eye strip continues animating even though the
+// speech scheduler is correctly still.  The next blink stays deferred while
+// the preference is active, so opting back in cannot resume half a blink.
+const blinkAmountSource = inline[1].match(
+  /(const blinkAmount = \(now, reduce = false\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(blinkAmountSource, 'blink helper must expose a reduced-motion gate');
+const blinkProbe = new Function(
+  'Math',
+  `'use strict'; let blinkStartedAt = 0; let nextBlinkAt = 0; ${blinkAmountSource[1]};`
+    + 'return { blinkAmount, state: () => ({ blinkStartedAt, nextBlinkAt }) };',
+)(deterministicMath);
+assert.equal(blinkProbe.blinkAmount(100, true), 0,
+  'Reduced Motion must suppress a pending eyelid/under-eye blink');
+assert.equal(blinkProbe.state().blinkStartedAt, 0);
+assert.ok(blinkProbe.state().nextBlinkAt >= 1100,
+  'Reduced Motion must defer rather than preserve an in-progress blink');
+assert.equal(blinkProbe.blinkAmount(200, true), 0);
+assert.ok(blinkProbe.state().nextBlinkAt >= 1200);
+assert.match(source, /const blink = blinkAmount\(now, reducedMotion\.matches\);/,
+  'the face compositor must pass the preference into the blink/under-eye path');
 
 // Horizon Walk and either Edge Idle road are avatar-only presentation states.
 // A rendered frame is the authority: missing assets/failures restore the UI,
@@ -321,14 +487,63 @@ assert.deepEqual(presentationStates, [true, true, false, false],
 // Exercise a real sprite-backed Horizon Walk frame rather than accepting a
 // stubbed true result as evidence. The main process phase chooses a different
 // atlas cell and a successfully painted walk frame activates pure-alpha mode.
+const motionPhaseAtSource = inline[1].match(
+  /(const motionPhaseAt = \(state, clip, epochMs\) => \{[\s\S]*?\n    \};)/,
+);
 const motionFrameSource = inline[1].match(
   /(const motionFrame = \(clip, now, phase = null\) => \{[\s\S]*?\n    \};)/,
+);
+const beginMotionPresentationSource = inline[1].match(
+  /(const beginMotionPresentation = \(kind, edge, clip\) => \{[\s\S]*?\n    \};)/,
 );
 const drawMotionSource = inline[1].match(
   /(const drawMotion = \(kind, now, edge = null\) => \{[\s\S]*?\n    \};)/,
 );
+assert.ok(motionPhaseAtSource, 'Walk phase clock must remain independently testable');
 assert.ok(motionFrameSource, 'sprite frame selector must remain independently testable');
+assert.ok(beginMotionPresentationSource, 'motion entry/reset helper must remain independently testable');
 assert.ok(drawMotionSource, 'motion painter must remain independently testable');
+const motionPhaseAt = new Function(
+  `'use strict'; ${motionPhaseAtSource[1]}; return motionPhaseAt;`,
+)();
+const cadenceClip = {frames: 72, fps: 24, cycle_seconds: 3};
+const cadenceState = {enabled: true, mode: 'walk', phase: 0, sampledAt: 1000};
+assert.equal(Math.floor(motionPhaseAt(cadenceState, cadenceClip, 1042) * 72), 1);
+assert.equal(Math.floor(motionPhaseAt(cadenceState, cadenceClip, 1084) * 72), 2,
+  'the renderer must advance a 24fps Walk between IPC phase packets');
+assert.equal(motionPhaseAt({...cadenceState, mode: 'stand'}, cadenceClip, 1084), 0,
+  'hover pause must freeze the exact held Walk phase');
+assert.ok(Math.abs(motionPhaseAt(
+  {...cadenceState, phase: .99}, cadenceClip, 1200) - (7 / 300)) < 1e-9,
+  'phase extrapolation must wrap and cap stale IPC packets safely');
+
+// With phase packets arriving only every 32ms, the local clock must still
+// present every atlas cell in order at a 60Hz display cadence. A 24fps frame
+// naturally occupies two or three display refreshes—never one or four.
+const cadenceFrames = [];
+for (let refresh = 0; refresh <= 180; refresh += 1) {
+  const epoch = 1000 + refresh * (1000 / 60);
+  const packetAt = 1000 + Math.floor((epoch - 1000) / 32) * 32;
+  const state = {
+    enabled: true, mode: 'walk', sampledAt: packetAt,
+    phase: ((packetAt - 1000) / 3000) % 1,
+  };
+  cadenceFrames.push(Math.floor(motionPhaseAt(state, cadenceClip, epoch) * 72) % 72);
+}
+for (let index = 1; index < cadenceFrames.length; index += 1) {
+  const delta = (cadenceFrames[index] - cadenceFrames[index - 1] + 72) % 72;
+  assert.ok(delta === 0 || delta === 1,
+    `Walk frame sequence must never reverse or skip (delta ${delta})`);
+}
+const completeRuns = [];
+for (let index = 0; index < cadenceFrames.length;) {
+  let end = index + 1;
+  while (end < cadenceFrames.length && cadenceFrames[end] === cadenceFrames[index]) end += 1;
+  if (index > 0 && end < cadenceFrames.length) completeRuns.push(end - index);
+  index = end;
+}
+assert.ok(completeRuns.every(length => length === 2 || length === 3),
+  `24fps frame holds at 60Hz must be 2–3 refreshes, got ${completeRuns}`);
 const paintedFrames = [];
 const paintContext = {
   save() {}, restore() {}, setTransform() {}, translate() {}, scale() {},
@@ -343,9 +558,11 @@ const walkMotion = {
 };
 const spritePainter = new Function(
   'motion', 'cameraFor', 'roamState', 'context', 'pixelRatio', 'innerWidth',
-  `'use strict'; ${motionFrameSource[1]}; ${drawMotionSource[1]}; return drawMotion;`,
+  'motionPhaseAt', 'beginMotionPresentation', 'clearStage',
+  `'use strict'; let paintedMotionKey = ''; ${motionFrameSource[1]}; ${drawMotionSource[1]}; return drawMotion;`,
 )(walkMotion, () => ({ x: 0, y: 0, scale: 1 }),
-  { enabled: true, mode: 'walk', direction: 1, phase: 0.5 }, paintContext, 1, 200);
+  { enabled: true, mode: 'walk', direction: 1, phase: 0.5, sampledAt: performance.timeOrigin },
+  paintContext, 1, 200, motionPhaseAt, kind => `${kind}:`, () => {});
 assert.equal(spritePainter('walk', 0), true);
 assert.equal(paintedFrames.length, 1);
 assert.deepEqual(paintedFrames[0].slice(1, 5), [0, 30, 20, 30],
@@ -358,6 +575,128 @@ const successfulWalk = new Function(
 assert.equal(successfulWalk('walk', 0), true);
 assert.deepEqual(successfulWalkChrome, [true],
   'a successfully painted Horizon Walk frame must suppress the chrome');
+
+// Edge Idle and Moves are one-shot presentations: each entry seeks to zero,
+// ended media holds its decoded final frame, and a poster covers an initial
+// seek without ever replaying the bad last-to-first asset seam.
+assert.match(source, /video\.loop = false;/);
+assert.match(drawMotionSource[1], /clip\.video\.paused && !clip\.video\.ended/,
+  'ended one-shot media must never auto-replay');
+assert.match(drawMotionSource[1], /roamState\.enabled && roamState\.mode === 'stand'/,
+  'hovering a ledge must freeze its decoded Edge Idle frame');
+assert.match(drawMotionSource[1], /clip\.posterImage/,
+  'a decoded poster must cover presentation-entry seek latency');
+const resetCalls = [];
+const idleVideo = {
+  paused: false,
+  pause() { this.paused = true; resetCalls.push('pause'); },
+  play() { this.paused = false; resetCalls.push('play'); return Promise.resolve(); },
+  set currentTime(value) { this._currentTime = value; resetCalls.push(`seek:${value}`); },
+  get currentTime() { return this._currentTime || 0; },
+};
+const idleClip = {video: idleVideo};
+const presentationEntry = new Function(
+  'motion',
+  `'use strict'; let presentedMotionKey = ''; let paintedMotionKey = 'old'; `
+    + `${beginMotionPresentationSource[1]}; return { beginMotionPresentation, state: () => ({presentedMotionKey, paintedMotionKey}) };`,
+)({idle: idleClip});
+presentationEntry.beginMotionPresentation('idle', 'left', idleClip);
+presentationEntry.beginMotionPresentation('idle', 'left', idleClip);
+assert.deepEqual(resetCalls, ['pause', 'seek:0', 'play'],
+  'the same ledge must not restart Edge Idle on every paint');
+presentationEntry.beginMotionPresentation('idle', 'right', idleClip);
+assert.deepEqual(resetCalls, ['pause', 'seek:0', 'play', 'pause', 'seek:0', 'play'],
+  'a new ledge presentation must deterministically restart from frame zero');
+let replayCalls = 0;
+const endedVideo = {
+  readyState: 4, seeking: false, paused: true, ended: true,
+  play() { replayCalls += 1; return Promise.resolve(); },
+  pause() {},
+};
+const endedPaints = [];
+const endedContext = {
+  save() {}, restore() {}, setTransform() {}, translate() {}, scale() {},
+  drawImage(...args) { endedPaints.push(args); },
+};
+const endedPainter = new Function(
+  'motion', 'cameraFor', 'roamState', 'context', 'pixelRatio', 'innerWidth',
+  'motionPhaseAt', 'beginMotionPresentation', 'clearStage',
+  `'use strict'; let paintedMotionKey = ''; ${motionFrameSource[1]}; ${drawMotionSource[1]}; return drawMotion;`,
+)(
+  {idle: {video: endedVideo, fps: 12, frames: 73, frame_width: 20, frame_height: 30, bounds: [0, 0, 20, 30]}},
+  () => ({x: 0, y: 0, scale: 1}),
+  {enabled: true, mode: 'ledge-left', direction: 1}, endedContext, 1, 200,
+  motionPhaseAt, () => 'idle:left', () => {},
+);
+assert.equal(endedPainter('idle', 7000, 'left'), true);
+assert.equal(endedPaints.length, 1, 'the final decoded Edge Idle frame must remain visible');
+assert.equal(replayCalls, 0, 'the final decoded Edge Idle frame must never restart its bad seam');
+
+const motionFrameDelaySource = inline[1].match(
+  /(const motionFrameDelay = \(clip, frozen = false\) => \{[\s\S]*?\n    \};)/,
+);
+const standbyFrameDelaySource = inline[1].match(
+  /(const standbyFrameDelay = \(now, state = \{\}, onBattery = false\) => \{[\s\S]*?\n    \};)/,
+);
+const advanceFrameClockSource = inline[1].match(
+  /(const advanceFrameClock = \(previous, now, delay\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(motionFrameDelaySource, 'source-frame cadence policy must remain independently testable');
+assert.ok(standbyFrameDelaySource, 'standing cadence policy must remain independently testable');
+assert.ok(advanceFrameClockSource, 'fractional render clock must remain independently testable');
+const motionFrameDelay = new Function(
+  `'use strict'; ${motionFrameDelaySource[1]}; return motionFrameDelay;`,
+)();
+const standbyFrameDelay = new Function(
+  'STANDBY_GAZE_SETTLE_MS', 'STANDBY_MAINTENANCE_MS',
+  `'use strict'; ${standbyFrameDelaySource[1]}; return standbyFrameDelay;`,
+)(420, 250);
+const advanceFrameClock = new Function(
+  `'use strict'; ${advanceFrameClockSource[1]}; return advanceFrameClock;`,
+)();
+assert.ok(Math.abs(motionFrameDelay({fps: 24}) - (1000 / 24)) < 1e-9,
+  'Horizon Walk must paint at its 24fps source cadence, not duplicate at 60fps');
+assert.ok(Math.abs(motionFrameDelay({fps: 12}) - (1000 / 12)) < 1e-9,
+  'Edge Idle must paint at its 12fps source cadence, not duplicate at 60fps');
+assert.equal(motionFrameDelay({fps: 12}, true), 250,
+  'an ended Edge Idle must reduce to a low-rate maintenance frame');
+assert.equal(standbyFrameDelay(1000), 250,
+  'a truly still standing avatar must paint at only 4fps');
+assert.equal(standbyFrameDelay(1000, {blink: true}), 32,
+  'an active blink must immediately restore smooth AC cadence');
+assert.equal(standbyFrameDelay(1000, {blink: true}, true), 50,
+  'an active blink must retain smooth battery cadence');
+assert.equal(standbyFrameDelay(1000, {pointerAt: 700}), 32,
+  'moving gaze must stay smooth during its settling window');
+assert.equal(standbyFrameDelay(1120, {pointerAt: 700}), 250,
+  'a settled stationary gaze must return to 4fps maintenance');
+for (const state of [{micro: true}, {release: true}, {viseme: true}]) {
+  assert.equal(standbyFrameDelay(1000, state), 32,
+    'short facial transitions must retain conversational cadence');
+}
+let renderDeadline = 1000;
+let dueFrames = 1;
+for (let refresh = 1; refresh < 60; refresh += 1) {
+  const tick = advanceFrameClock(renderDeadline, 1000 + refresh * (1000 / 60), 1000 / 24);
+  if (tick.due) { dueFrames += 1; renderDeadline = tick.next; }
+}
+assert.equal(dueFrames, 24,
+  'fractional 24fps cadence on a 60Hz display must not round down to 20fps');
+let standbyDeadline = 1000;
+let standbyFrames = 1;
+for (let refresh = 1; refresh < 60; refresh += 1) {
+  const tick = advanceFrameClock(standbyDeadline,
+    1000 + refresh * (1000 / 60), standbyFrameDelay(1000));
+  if (tick.due) { standbyFrames += 1; standbyDeadline = tick.next; }
+}
+assert.equal(standbyFrames, 4,
+  'an unchanged standing avatar must schedule exactly four paints per second');
+assert.match(source, /at: changed \? performance\.now\(\) : pointer\.at,/,
+  'stationary pointer heartbeats must not renew the fast gaze lane');
+assert.match(source, /if \(changed\) lastFrame = 0;/,
+  'real pointer motion must make its gaze paint due on the next refresh');
+assert.doesNotMatch(source, /recordingAnimation/,
+  'the recording meter must share the renderer clock instead of owning a second perpetual rAF');
 
 // A real hover pauses screen travel in `stand`, but it remains part of the
 // Horizon Walk presentation: hold the current atlas frame and keep chrome
@@ -379,6 +718,23 @@ assert.equal(roamMotionKind('stand', 'ledge-right'), 'idle',
 assert.equal(roamMotionKind('ledge-left'), 'idle');
 assert.equal(roamMotionKind('ledge-right'), 'idle');
 assert.equal(roamMotionKind('idle'), null);
+const roamPresentationSignatureSource = inline[1].match(
+  /(const roamPresentationSignature = value => \[[\s\S]*?\n    \]\.join\(':'\);)/,
+);
+assert.ok(roamPresentationSignatureSource,
+  'roam presentation changes must remain independently classifiable');
+const roamPresentationSignature = new Function(
+  `'use strict'; ${roamPresentationSignatureSource[1]}; return roamPresentationSignature;`,
+)();
+assert.notEqual(
+  roamPresentationSignature({enabled: true, mode: 'walk', direction: 1}),
+  roamPresentationSignature({enabled: true, mode: 'ledge-right', direction: 1, edge: 'right'}),
+);
+assert.match(source,
+  /if \(nextPresentationKey !== roamPresentationKey\) lastFrame = 0;/,
+  'walk/ledge handoffs must make the render clock due immediately');
+assert.equal(advanceFrameClock(0, 1200, 1000 / 24).due, true,
+  'a reset transition clock must paint on the next display refresh');
 assert.match(source, /if \(roamState\.enabled\) \{[\s\S]{0,360}const kind = roamMotionKind\(roamState\.mode, roamState\.presentationMode\);[\s\S]{0,220}drawPresentedMotion\(kind, now, roamState\.edge \|\| side\)/,
   'every enabled roam mode must pass through the avatar-only motion presenter');
 
@@ -415,7 +771,7 @@ const hitClassifier = new Function(
   'shell', 'overControls', 'pointer', 'ready', 'innerWidth', 'innerHeight',
   'context', 'pixelRatio', 'root', 'markActivity', 'performance',
   `'use strict'; let dragging = false; let ptt = null; let avatarHit = false; `
-    + `let petHit = false; let lastHitSent = 0; ${updateHitSource[1]}; `
+    + `let petHit = false; let lastHitSent = 0; let avatarZoomGesture = null; ${updateHitSource[1]}; `
     + 'return { updateHit, avatar: () => avatarHit };',
 )(
   { setPetHit: value => hitCalls.push(value) }, () => true,
@@ -429,7 +785,32 @@ assert.deepEqual(hitCalls, [true], 'visible chrome must remain clickable');
 assert.equal(hitClassifier.avatar(), false,
   'hovering a rail/composer control must not masquerade as avatar engagement');
 assert.deepEqual(hoverClasses, [['avatar-hover', false]]);
-assert.match(source, /if \(!ready\) \{ setAvatarOnlyMotion\(false\); return; \}/);
+
+// Resizing around a stationary cursor can move the figure away from that
+// cursor. A live pinch therefore pins the Electron hit claim until release,
+// then immediately re-runs ordinary alpha classification without waiting for
+// another cursor movement or heartbeat.
+const zoomHitCalls = [];
+const zoomHitLifecycle = new Function(
+  'shell', 'overControls', 'pointer', 'paintedAvatarAt', 'root', 'markActivity', 'performance',
+  `'use strict'; let dragging = false; let ptt = null; let avatarHit = false; `
+    + `let petHit = false; let lastHitSent = 0; let avatarZoomGesture = { frame: 0 }; `
+    + `${updateHitSource[1]}; `
+    + `return { update: () => updateHit(true), release: () => { avatarZoomGesture = null; updateHit(true); } };`,
+)(
+  { setPetHit: value => zoomHitCalls.push(value) }, () => false,
+  { x: 50, y: 50, inside: true }, () => false,
+  { classList: { toggle() {} } }, () => {}, { now: () => 1000 },
+);
+zoomHitLifecycle.update();
+zoomHitLifecycle.release();
+assert.deepEqual(zoomHitCalls, [true, false],
+  'pinch must stay interactive after alpha moves away, then refresh to click-through on release');
+assert.match(source, /avatarZoomGesture = \{ frame: 0 \};\n        updateHit\(true\);\n        publishAvatarZoom\('start'\);/,
+  'the interaction pin must reach Electron before the first resize packet');
+assert.match(source, /avatarZoomGesture = null;[\s\S]{0,260}publishAvatarZoom\('end'\);[\s\S]{0,320}updateHit\(true\);/,
+  'ending a pinch must release its pin and refresh alpha hit testing');
+assert.match(source, /if \(!ready\) \{ clearStage\(\); setAvatarOnlyMotion\(false\); return; \}/);
 assert.match(source, /setAvatarOnlyMotion\(false\);\n      drawAvatar\(now\);/,
   'manual stop, natural end, and failed motion must return to the regular avatar surface');
 assert.match(source, /if \(avatarOnlyMotion\) return \[\];/,
@@ -496,6 +877,155 @@ assert.equal(composerDraft.value, 'unfinished draft');
 assert.match(source, /if \(avatarOnlyMotion\) \{ event\.preventDefault\(\); return; \}/);
 assert.match(source, /async function startRecording\(\) \{\n      if \(avatarOnlyMotion \|\| ptt \|\| live \|\| turnController\) return;/);
 
+// Cursor attention uses the full desktop feed, but saturates before the edge
+// of the calibrated iris atlas and eases there rather than teleporting. The
+// alpha hit flag is intentionally absent from this math: it still governs
+// interaction, while off-window coordinates are allowed to govern gaze.
+const cursorGazeTargetSource = inline[1].match(
+  /(const cursorGazeTarget = \(point, anchor, ranges, viewport\) => \{[\s\S]*?\n    \};)/,
+);
+const smoothCursorGazeSource = inline[1].match(
+  /(const smoothCursorGaze = \(state, target, now, reduce = false\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(cursorGazeTargetSource, 'bounded cursor-gaze geometry must remain independently testable');
+assert.ok(smoothCursorGazeSource, 'cursor-gaze easing must remain independently testable');
+const cursorGazeTarget = new Function(
+  `'use strict'; ${cursorGazeTargetSource[1]}; return cursorGazeTarget;`,
+)();
+const smoothCursorGaze = new Function(
+  `'use strict'; ${smoothCursorGazeSource[1]}; return smoothCursorGaze;`,
+)();
+const gazeAnchor = { x: 100, y: 100 };
+const gazeRanges = { x: 2, y: 1 };
+const gazeViewport = { width: 500, height: 700 };
+assert.deepEqual(
+  cursorGazeTarget({ seen: false, x: -900, y: 900 }, gazeAnchor, gazeRanges, gazeViewport),
+  { x: 0, y: 0 },
+  'the face must hold centre until a real cursor sample arrives',
+);
+const nearbyGaze = cursorGazeTarget(
+  { seen: true, x: 164, y: 212 }, gazeAnchor, gazeRanges, gazeViewport);
+assert.ok(nearbyGaze.x > 1.2 && nearbyGaze.y > .5,
+  'a nearby cursor must produce an obvious glance, not a sub-atlas twitch');
+const farGaze = cursorGazeTarget(
+  { seen: true, x: -10_000, y: 10_000 }, gazeAnchor, gazeRanges, gazeViewport);
+assert.ok(farGaze.x >= -2 && farGaze.x <= 2 && farGaze.y >= -1 && farGaze.y <= 1,
+  'a cursor on another display must remain anatomically atlas-bounded');
+const easedGazeState = { x: 0, y: 0, at: 0 };
+const firstGaze = smoothCursorGaze(easedGazeState, nearbyGaze, 16, false);
+assert.ok(firstGaze.x > 0 && firstGaze.x < nearbyGaze.x,
+  'cursor gaze must start promptly but cannot teleport');
+for (let frame = 2; frame <= 30; frame += 1) {
+  smoothCursorGaze(easedGazeState, nearbyGaze, frame * 16, false);
+}
+assert.ok(Math.abs(easedGazeState.x - nearbyGaze.x) < .01,
+  'cursor gaze must settle cleanly on its target');
+const reducedGaze = smoothCursorGaze({ x: 0, y: 0, at: 1 }, nearbyGaze, 17, true);
+assert.deepEqual(reducedGaze, nearbyGaze,
+  'reduced motion must remove autonomous easing without disabling cursor control');
+assert.match(source, /Coordinates are sent even outside the window|point\.seen/);
+
+// Speaking motion is deliberately quieter than idle life. Lip sync and face
+// composition remain separate, so calming the body cannot flatten the mouth.
+const bodyMotionSource = inline[1].match(
+  /(const bodyMotionAt = \(now, speaking, state, reduce = false\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(bodyMotionSource, 'body-motion envelope must remain independently testable');
+const bodyMotionAt = new Function(
+  `'use strict'; ${bodyMotionSource[1]}; return bodyMotionAt;`,
+)();
+let speakingSway = 0;
+let speakingBreath = 0;
+let idleSway = 0;
+const steadySpeechState = { speechBlend: 1, at: 1 };
+const steadyIdleState = { speechBlend: 0, at: 1 };
+for (let time = 25; time <= 20_000; time += 25) {
+  const speaking = bodyMotionAt(time, true, steadySpeechState, false);
+  const idle = bodyMotionAt(time, false, steadyIdleState, false);
+  speakingSway = Math.max(speakingSway, Math.abs(speaking.sway));
+  speakingBreath = Math.max(speakingBreath, Math.abs(speaking.breathe - 1));
+  idleSway = Math.max(idleSway, Math.abs(idle.sway));
+}
+assert.ok(speakingSway <= .001351, `speaking sway is too large: ${speakingSway}`);
+assert.ok(speakingBreath <= .000901, `speaking breath is too large: ${speakingBreath}`);
+assert.ok(idleSway > speakingSway * 4,
+  'speech must be substantially calmer than the avatar\'s unhurried idle life');
+let transitionSnap = 0;
+for (let start = 500; start <= 20_000; start += 25) {
+  const transitionState = { speechBlend: 0, at: start };
+  const idleState = { speechBlend: 0, at: start };
+  const transition = bodyMotionAt(start + 16, true, transitionState, false);
+  const idle = bodyMotionAt(start + 16, false, idleState, false);
+  transitionSnap = Math.max(transitionSnap, Math.abs(transition.sway - idle.sway));
+}
+assert.ok(transitionSnap < .00043,
+  `speech onset must crossfade instead of phase-snapping the silhouette: ${transitionSnap}`);
+const transitionState = { speechBlend: 0, at: 1000 };
+bodyMotionAt(1016, true, transitionState, false);
+assert.ok(transitionState.speechBlend > 0 && transitionState.speechBlend < .08,
+  'speech attack must begin promptly without jumping directly to its envelope');
+for (let frame = 2; frame <= 100; frame += 1) {
+  bodyMotionAt(1000 + frame * 16, true, transitionState, false);
+}
+assert.ok(transitionState.speechBlend > .99, 'speech envelope must settle fully');
+bodyMotionAt(2616, false, transitionState, false);
+assert.ok(transitionState.speechBlend > .9 && transitionState.speechBlend < 1,
+  'speech release must ease back to idle instead of snapping');
+const reducedBodyState = { speechBlend: 0, at: 0 };
+assert.deepEqual(
+  bodyMotionAt(1234, true, reducedBodyState, true),
+  { sway: 0, breathe: 1 },
+);
+assert.equal(reducedBodyState.speechBlend, 1);
+assert.match(source, /liveAudioSpeaking = Boolean\(\n        live && live\.remoteAudioState && live\.remoteAudioState\.speaking\)/,
+  'the authoritative Live Talk audio meter must select the quiet speech envelope');
+assert.match(source, /Boolean\(agentSpeaking \|\| speechSource \|\| liveAudioSpeaking\)/);
+assert.match(source, /bodyMotionState, reducedMotion\.matches\)/);
+assert.match(source, /composeHead\(now\);/,
+  'calming the silhouette must not bypass reactive face and lip composition');
+
+// Electron reports a macOS trackpad pinch as Ctrl+wheel. Only that modifier
+// path changes size; ordinary scrolling is left alone. Values use the same
+// canonical stand/roam bounds as the persisted main-process geometry.
+const pinchZoomSource = inline[1].match(
+  /(const pinchZoomValue = \(current, event, range, viewportHeight\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(pinchZoomSource, 'pinch zoom transform must remain independently testable');
+const pinchZoomValue = new Function(
+  `'use strict'; ${pinchZoomSource[1]}; return pinchZoomValue;`,
+)();
+assert.equal(pinchZoomValue(1, { ctrlKey: false, deltaY: -30 }, { min: .25, max: 4 }, 800), 1,
+  'ordinary wheel input must never resize the avatar');
+assert.ok(pinchZoomValue(1, { ctrlKey: true, deltaY: -20, deltaMode: 0 }, { min: .25, max: 4 }, 800) > 1);
+assert.ok(pinchZoomValue(1, { ctrlKey: true, deltaY: 20, deltaMode: 0 }, { min: .25, max: 4 }, 800) < 1);
+assert.equal(pinchZoomValue(3, { ctrlKey: true, deltaY: -100, deltaMode: 2 }, { min: .25, max: 4 }, 800), 4);
+assert.equal(pinchZoomValue(.6, { ctrlKey: true, deltaY: 100, deltaMode: 2 }, { min: .5, max: 3 }, 800), .5);
+assert.match(source, /if \(!event\.ctrlKey \|\| !shell \|\| typeof shell\.setPetZoomLive !== 'function'/,
+  'the renderer must accept only Chromium\'s pinch-shaped modifier wheel');
+const paintedAvatarSource = inline[1].match(
+  /(const paintedAvatarAt = point => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(paintedAvatarSource, 'fresh alpha acceptance must remain independently testable');
+const sampledPixels = [];
+const paintedAvatarAt = new Function(
+  'ready', 'innerWidth', 'innerHeight', 'context', 'pixelRatio',
+  `'use strict'; ${paintedAvatarSource[1]}; return paintedAvatarAt;`,
+)(true, 100, 100, {
+  getImageData: (...args) => { sampledPixels.push(args); return { data: [0, 0, 0, 19] }; },
+}, 2);
+assert.equal(paintedAvatarAt({ x: 10.5, y: 20.5, inside: true }), true);
+assert.deepEqual(sampledPixels, [[21, 41, 1, 1]],
+  'pinch acceptance must sample the current device-pixel under the cursor');
+assert.equal(paintedAvatarAt({ x: -1, y: 20, inside: true }), false);
+assert.equal(paintedAvatarAt({ x: 10, y: 20, inside: false }), false);
+assert.match(source, /const freshAvatarHit = avatarHit \|\| paintedAvatarAt\(/);
+assert.match(source, /if \(!avatarZoomGesture && !freshAvatarHit\) return;/,
+  'pinch sizing must begin only over a cached or freshly sampled avatar pixel');
+assert.match(source, /publishAvatarZoom\('start'\)/);
+assert.match(source, /publishAvatarZoom\('move'\)/);
+assert.match(source, /publishAvatarZoom\('end'\)/);
+assert.match(source, /canvas\.addEventListener\('wheel', handleAvatarPinch, \{ passive: false \}\)/);
+
 // Transparent-window behavior stays explicit and bounded to local shell APIs.
 for (const bridge of [
   'onPetPointer',
@@ -508,6 +1038,7 @@ for (const bridge of [
   'movePetDrag',
   'endPetDrag',
   'showPetMenu',
+  'setPetZoomLive',
 ]) {
   assert.ok(source.includes(bridge), `missing desktop shell bridge: ${bridge}`);
 }
@@ -526,6 +1057,46 @@ assert.match(source, /warning\.textContent = 'Unsent/);
 assert.match(source, /keep\.textContent = 'Keep in chat'/);
 assert.match(source, /copy\.textContent = 'Copy draft'/);
 assert.doesNotMatch(source, /prepareEmailDraft[\s\S]{0,9000}(openURL|sendMail|sendEmail|mailClient)/i);
+
+// Keeping an edited draft must append the exact unsent content to the real
+// conversation/history pair. It must not invoke the reply route, and modal
+// keyboard handling must remain isolated from global push-to-talk behavior.
+const draftPersistenceSource = inline[1].match(
+  /(const emailDraftText = \(recipient, subject, body\) => \[[\s\S]*?const retainEmailDraft = \(historyEntries, recipient, subject, body, limit = 24\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(draftPersistenceSource, 'email-draft persistence must remain independently testable');
+const draftPersistence = new Function(
+  `'use strict'; ${draftPersistenceSource[1]}; return { emailDraftText, retainEmailDraft };`,
+)();
+const draftHistory = Array.from({ length: 24 }, (_, index) => ({ role: 'user', content: `old-${index}` }));
+const retainedDraft = draftPersistence.retainEmailDraft(
+  draftHistory,
+  '陈女士 <chen@example.invalid>',
+  'مرحبا — 项目更新',
+  '第一行 👩🏽‍💻\nالسطر الثاني',
+);
+assert.equal(draftHistory.length, 24, 'draft retention must respect the existing bounded history');
+assert.deepEqual(draftHistory.at(-1), { role: 'assistant', content: retainedDraft });
+assert.equal(
+  retainedDraft,
+  'Unsent email draft\nTo: 陈女士 <chen@example.invalid>\nSubject: مرحبا — 项目更新\n\n第一行 👩🏽‍💻\nالسطر الثاني',
+  'draft retention must preserve edited CJK, RTL, emoji, and line breaks exactly',
+);
+assert.match(source, /keep\.addEventListener\('click', \(\) => \{[\s\S]{0,260}retainEmailDraft\(history, recipient\.value, subject\.value, body\.value\)[\s\S]{0,180}addMessage\('assistant', retained\)/,
+  'Keep in chat must append the edited draft to history and the visible conversation');
+assert.match(source, /notify\('Unsent draft kept in this conversation\.'\)/,
+  'draft retention must provide friendly confirmation');
+assert.match(source, /panel\.setAttribute\('aria-labelledby', 'emailReviewTitle'\)/);
+assert.match(source, /const background = \[\.\.\.document\.body\.children\][\s\S]{0,260}entry\.element\.inert = true/,
+  'the modal must make its background inert');
+assert.match(source, /entry\.element\.inert = entry\.inert \|\| \(avatarOnlyMotion && motionChrome\.includes\(entry\.element\)\)/,
+  'closing the modal must restore prior inert state without undoing avatar-only motion');
+assert.match(source, /event\.key !== 'Tab'[\s\S]{0,560}last\.focus\(\)[\s\S]{0,220}first\.focus\(\)/,
+  'Tab and Shift-Tab must remain trapped within the email review');
+assert.match(source, /panel\.addEventListener\('keydown',[\s\S]{0,120}event\.code === 'Space'\) event\.stopPropagation\(\)/,
+  'Space inside the draft must never start global push to talk');
+assert.match(source, /previousFocus\.focus\(\{ preventScroll: true \}\)/,
+  'closing the review must restore the prior keyboard focus');
 
 // Exercise the renderer's own fail-closed wording policy instead of copying it
 // into this test. Quoted, negated, and reported requests cannot stage a draft.

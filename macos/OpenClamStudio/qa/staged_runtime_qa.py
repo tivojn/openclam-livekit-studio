@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from ffmpeg_alpha_runtime_qa import verify_alpha_runtime
+
 
 ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parents[1]).resolve()
 PYTHON_RUNTIME = ROOT / ".electron-python-runtime"
@@ -15,10 +17,11 @@ PYTHON = PYTHON_RUNTIME / "bin/python"
 SITE_PACKAGES = ROOT / ".electron-site-packages"
 MODELS = ROOT / ".electron-models"
 FFMPEG = ROOT / ".electron-ffmpeg/ffmpeg"
+FFPROBE = ROOT / ".electron-ffmpeg/ffprobe"
 CUTOUT = ROOT / ".electron-native/person-cutout"
 NATIVE_PATH_AUDIT = ROOT / "scripts/audit-native-build-paths.py"
 
-for required in (PYTHON, FFMPEG, CUTOUT):
+for required in (PYTHON, FFMPEG, FFPROBE, CUTOUT):
     if not required.is_file() or not os.access(required, os.X_OK):
         raise SystemExit(f"staged executable is missing: {required}")
 if not SITE_PACKAGES.is_dir() or not MODELS.is_dir():
@@ -29,6 +32,7 @@ native_path_audit = subprocess.run(
         sys.executable,
         str(NATIVE_PATH_AUDIT),
         str(FFMPEG),
+        str(FFPROBE),
         str(SITE_PACKAGES / "cv2"),
         str(CUTOUT),
     ],
@@ -41,6 +45,7 @@ if native_path_audit.returncode:
         (native_path_audit.stderr or native_path_audit.stdout or "native path audit failed")[-4000:]
     )
 print(native_path_audit.stdout.strip())
+verify_alpha_runtime(FFMPEG, FFPROBE, "staged FFmpeg")
 
 
 def generated_bytecode(root: Path) -> list[Path]:

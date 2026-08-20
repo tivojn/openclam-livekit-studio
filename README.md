@@ -17,26 +17,40 @@ LiveKit broker and agent used for continuous cloud voice.
 | `agent` | Optional LiveKit voice agent that consumes those leases |
 
 The iPhone and Mac apps are independent. They do not pair or synchronize
-histories, credentials, settings, or avatars. AVTR export/import and Avatar
-Store downloads are explicit file transfers.
+histories, credentials, settings, or avatars. AVTR export/import is an explicit
+file transfer; Avatar Store networking is disabled in v1.0.1.
 
 ## Privacy-safe source tree
 
 This public tree contains no provider keys, signing credentials, deployment
-state, user conversations, recordings, source portraits, generated human
-avatars, or acceptance screenshots. The bundled `OpenClam Guide` is a tiny,
-deterministic synthetic fixture used to keep the avatar catalog buildable and
-testable without redistributing a person's likeness.
+state, user conversations, recordings, source portraits, authoring projects,
+or acceptance screenshots. The iOS app bundles exactly two reviewed avatars:
+Captain Ayer and Ara. Their immutable runtime assets are covered by the narrow
+distribution permission in [`AVATAR_ASSET_LICENSE.md`](AVATAR_ASSET_LICENSE.md)
+and the exact path/hash allowlist in `scripts/public-release-audit.py`; the
+bundled provenance record identifies their rights basis. They are not
+MIT-licensed.
 
-Human-likeness avatar packages and thumbnails belong in the separate Avatar
-Store release channel only after the publisher has documented ownership,
-model consent, and redistribution rights. They must never be copied into this
-source repository or its Git history.
+No other human-likeness avatar package or thumbnail may enter this repository
+or its Git history without an equivalent ownership, consent, redistribution,
+provenance, and immutable-hash review. Avatar Store networking is disabled in
+v1.0.1; local AVTR import and deletion remain available.
 
 Run the repository audit before every public commit or release:
 
 ```sh
 python3 scripts/public-release-audit.py .
+```
+
+For a release, write the exact file/mode/SHA-256 manifest outside the source
+tree, then require the same manifest when auditing the source tree and its
+extracted Git archive:
+
+```sh
+python3 scripts/public-release-audit.py \
+  --write-manifest /tmp/openclam-source-manifest.json .
+python3 scripts/public-release-audit.py \
+  --manifest /tmp/openclam-source-manifest.json .
 ```
 
 For the first public commit, also require fresh one-commit history:
@@ -100,5 +114,6 @@ and account-level rate limiting before opening the broker to untrusted clients.
 - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) routes component notices.
 - [`PUBLIC_RELEASE_CHECKLIST.md`](PUBLIC_RELEASE_CHECKLIST.md) is the release gate.
 
-The source is available under the [MIT License](LICENSE). Third-party packages,
+The software source is available under the [MIT License](LICENSE). The bundled
+Captain Ayer and Ara media are separately restricted, and third-party packages,
 models, and services retain their own licenses and terms.

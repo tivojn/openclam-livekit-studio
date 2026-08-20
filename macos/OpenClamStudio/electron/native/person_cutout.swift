@@ -96,10 +96,14 @@ func writeCutout(inputPath: String, outputPath: String, poseOutputPath: String?)
     let scaleX = source.extent.width / rawMask.extent.width
     let scaleY = source.extent.height / rawMask.extent.height
     let scaledMask = rawMask.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+    // Vision's .accurate person-segmentation result is already a refined,
+    // anti-aliased matte. Expanding and then blurring it again doubled the
+    // meaningful soft-edge band on retained production frames and made thin
+    // heels look eroded or doubled after temporal repair. Preserve Vision's
+    // probabilities exactly; the white-plate-aware Python pass is the only
+    // place where source pixels are allowed to sharpen the boundary.
     let mask = scaledMask
         .clampedToExtent()
-        .applyingFilter("CIMorphologyMaximum", parameters: ["inputRadius": 0.75])
-        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 0.85])
         .cropped(to: source.extent)
     let clear = CIImage(color: .clear).cropped(to: source.extent)
     guard let composited = CIFilter(

@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import tempfile
 import types
@@ -27,7 +28,7 @@ def route_test_application():
     fake_rig.CONTROLS = {
         name: {"default": 0, "minimum": 0, "maximum": 150}
         for name in (
-            "lips", "jaw", "cheeks", "brows", "forehead",
+            "lips", "jaw", "cheeks", "eyebags", "brows", "forehead",
             "nasolabial", "nose", "teeth",
         )
     }
@@ -165,11 +166,545 @@ class StandaloneRouteTests(unittest.TestCase):
             "/reply", "/say", "/stt", "/stt/stream",
             "/api/livekit/catalog", "/api/livekit/config",
             "/api/livekit/session", "/api/avatars", "/api/avatar/upload",
-            "/api/avatar/body/generate", "/api/avatar/motion/generate",
+            "/api/avatar/body/generate", "/api/avatar/body/edit",
+            "/api/avatar/motion/generate",
             "/api/avatar/activate", "/api/avatar/companion",
             "/api/avatar/export", "/api/avatar/import",
         }
         self.assertTrue(expected.issubset(self.routes), expected - self.routes.keys())
+
+    def test_already_running_reports_the_current_job_kind(self):
+        with patch.object(self.application, "_jobs", {
+            "captain": {
+                "id": "edit-job-1",
+                "kind": "body-edit",
+                "done": False,
+            },
+        }):
+            result = self.application._already_running("captain")
+        self.assertEqual(result, {
+            "started": False,
+            "reason": "already building",
+            "job_id": "edit-job-1",
+            "kind": "body-edit",
+        })
+
+    def test_body_edit_thread_redacts_provider_echo_before_persistence(self):
+        instruction = 'Change "jacket" to coral'
+        job_id = "edit-redaction"
+        logs = []
+        with self.application._jlock:
+            self.application._jobs["captain"] = {
+                "id": job_id,
+                "kind": "body-edit",
+                "done": False,
+                "error": "",
+                "log": [],
+            }
+            self.application._failures.pop(("captain", "body-edit"), None)
+        try:
+            echoed = json.dumps(instruction, ensure_ascii=False)[1:-1]
+            with patch.object(
+                    self.application, "_body_edit_stage",
+                    side_effect=RuntimeError(
+                        f"xAI rejected {instruction}; escaped={echoed}")), \
+                 patch.object(self.application, "jlog",
+                              return_value=logs.append), \
+                 patch.object(self.application, "_build_log_write"):
+                self.application._body_edit_thread(
+                    "captain", instruction, job_id)
+
+            with self.application._jlock:
+                stored_job = copy.deepcopy(
+                    self.application._jobs["captain"])
+                stored_failure = copy.deepcopy(
+                    self.application._failures[("captain", "body-edit")])
+            persisted = json.dumps(
+                {"job": stored_job, "failure": stored_failure, "logs": logs},
+                ensure_ascii=False,
+            )
+            self.assertNotIn(instruction, persisted)
+            self.assertNotIn(echoed, persisted)
+            self.assertIn("[full-body edit instruction redacted]", persisted)
+        finally:
+            with self.application._jlock:
+                self.application._jobs.pop("captain", None)
+                self.application._failures.pop(
+                    ("captain", "body-edit"), None)
+
+    def test_body_edit_availability_requires_all_three_source_plates(self):
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_library = types.ModuleType("studio.library")
+        fake_wardrobe = types.ModuleType("studio.wardrobe")
+        provider = {
+            "name": "xai",
+            "model": "grok-imagine-image-2.0",
+            "title": "xAI Grok Imagine Image 2.0",
+        }
+        fake_body.default_provider = lambda: provider
+        fake_body.default_video_provider = lambda: {
+            "name": "xai", "model": "grok-imagine-video-1.5"}
+        fake_body.supports_xai_edit = lambda selected: selected == provider
+        fake_body.public_body_metadata = lambda metadata: metadata
+        fake_body.BODY_VIEWS = ("front", "side", "back")
+        fake_body._body_metadata = lambda directory: json.loads(
+            Path(directory, "body", "body.json").read_text(encoding="utf-8"))
+
+        def body_source(directory, metadata, view):
+            name = ((metadata.get("views") or {}).get(view) or {}).get("source")
+            path = Path(directory, "body", str(name or ""))
+            if not name or not path.is_file():
+                raise RuntimeError(f"the current {view} source plate is missing")
+            return str(path)
+
+        fake_body._body_source = body_source
+        fake_library.sync_canonical = lambda _directory: None
+        fake_library.list_body_sets = lambda _directory: []
+        fake_library.list_motion_sets = lambda _directory, _kind: []
+        fake_wardrobe.cached_prompt = lambda _directory: None
+        fake_wardrobe.preset_prompt = lambda: "Neutral full-body prompt"
+        fake_studio.body = fake_body
+        fake_studio.library = fake_library
+        fake_studio.wardrobe = fake_wardrobe
+
+        with tempfile.TemporaryDirectory() as directory:
+            body_dir = Path(directory, "body")
+            body_dir.mkdir()
+            views = {
+                view: {
+                    "image": f"body-{view}.png",
+                    "source": f"source-{view}.png",
+                }
+                for view in ("front", "side", "back")
+            }
+            for view in views:
+                Path(body_dir, views[view]["image"]).write_bytes(b"rgba")
+            Path(body_dir, "body.json").write_text(
+                json.dumps({"views": views}), encoding="utf-8")
+            # A complete preview is not sufficient: the provider edits the
+            # retained opaque sources, and Side is deliberately missing here.
+            Path(body_dir, "source-front.png").write_bytes(b"front")
+            Path(body_dir, "source-back.png").write_bytes(b"back")
+            manifest = {
+                "status": "ready",
+                "body": {"views": views},
+            }
+
+            class Registry:
+                @staticmethod
+                def read_manifest(_slug):
+                    return copy.deepcopy(manifest)
+
+                @staticmethod
+                def adir(_slug):
+                    return directory
+
+            modules = {
+                "studio": fake_studio,
+                "studio.body": fake_body,
+                "studio.library": fake_library,
+                "studio.wardrobe": fake_wardrobe,
+            }
+            with patch.dict(sys.modules, modules), \
+                 patch.object(self.application, "reg", return_value=Registry()):
+                unavailable = asyncio.run(self.application.api_body("captain"))
+                Path(body_dir, "source-side.png").write_bytes(b"side")
+                available = asyncio.run(self.application.api_body("captain"))
+
+        self.assertFalse(unavailable["body_edit_available"])
+        self.assertIn("source", unavailable["body_edit_reason"].lower())
+        self.assertTrue(available["body_edit_available"])
+        self.assertEqual(available["body_edit_reason"], "")
+
+    def test_body_status_does_not_archive_a_live_edit_before_commit(self):
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_library = types.ModuleType("studio.library")
+        fake_wardrobe = types.ModuleType("studio.wardrobe")
+        fake_body.default_provider = lambda: {
+            "name": "xai", "model": "grok-imagine-image-2.0"}
+        fake_body.default_video_provider = lambda: {
+            "name": "xai", "model": "grok-imagine-video-1.5"}
+        fake_body.supports_xai_edit = lambda _provider: True
+        fake_body.public_body_metadata = lambda metadata: metadata
+        fake_body.BODY_VIEWS = ("front", "side", "back")
+        fake_body._body_metadata = lambda _directory: (_ for _ in ()).throw(
+            RuntimeError("sources are not ready"))
+        sync_events = []
+        fake_library.sync_canonical = lambda _directory: sync_events.append("sync")
+        fake_library.list_body_sets = lambda _directory: []
+        fake_library.list_motion_sets = lambda _directory, _kind: []
+        fake_wardrobe.cached_prompt = lambda _directory: None
+        fake_wardrobe.preset_prompt = lambda: "Neutral full-body prompt"
+        fake_studio.body = fake_body
+        fake_studio.library = fake_library
+        fake_studio.wardrobe = fake_wardrobe
+
+        class Registry:
+            @staticmethod
+            def read_manifest(_slug):
+                return {"status": "ready", "body": {"views": {}}}
+
+            @staticmethod
+            def adir(_slug):
+                return "/private/avatar"
+
+        modules = {
+            "studio": fake_studio,
+            "studio.body": fake_body,
+            "studio.library": fake_library,
+            "studio.wardrobe": fake_wardrobe,
+        }
+        with patch.dict(sys.modules, modules), \
+             patch.object(self.application, "reg", return_value=Registry()):
+            with self.application._jlock:
+                self.application._jobs["captain"] = {
+                    "id": "live-edit", "kind": "body-edit", "done": False,
+                    "log": [], "error": "", "phase": "editing",
+                    "progress": {"stage": "editing", "value": .5},
+                }
+            try:
+                result = asyncio.run(self.application.api_body("captain"))
+            finally:
+                with self.application._jlock:
+                    self.application._jobs.pop("captain", None)
+
+        self.assertEqual(sync_events, [])
+        self.assertEqual(result["job"]["kind"], "body-edit")
+
+    def test_body_edit_repeats_exact_xai_model_gate_before_reserving_a_job(self):
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_body.default_provider = lambda: {
+            "name": "openai", "model": "gpt-image-1"}
+        fake_body.supports_xai_edit = lambda _provider: False
+        fake_studio.body = fake_body
+
+        class Registry:
+            @staticmethod
+            def read_manifest(_slug):
+                return {"status": "ready"}
+
+        request = self.application.BodyEditRequest(
+            slug="captain", instruction="Change the blazer to coral")
+        with patch.dict(sys.modules, {
+            "studio": fake_studio, "studio.body": fake_body,
+        }), patch.object(self.application, "reg", return_value=Registry()), \
+             patch.object(self.application, "_recover_body_edit_transaction"), \
+             patch.object(self.application, "_reserve_job") as reserve:
+            with self.assertRaises(self.application.HTTPException) as caught:
+                asyncio.run(self.application.api_body_edit(request))
+        self.assertEqual(caught.exception.status_code, 409)
+        reserve.assert_not_called()
+
+    def test_body_edit_transaction_snapshots_restore_state_byte_for_byte(self):
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_body.commit_previous = lambda directory: shutil.rmtree(
+            Path(directory, "body.previous"), ignore_errors=True)
+        fake_studio.body = fake_body
+
+        with tempfile.TemporaryDirectory() as directory:
+            avatar = Path(directory)
+            body_dir = avatar / "body"
+            motion_dir = avatar / "motion"
+            library_dir = avatar / "library"
+            runtime_dir = avatar / "runtime"
+            body_dir.mkdir()
+            motion_dir.mkdir()
+            library_dir.mkdir()
+            runtime_dir.mkdir()
+            (body_dir / "old-body.bin").write_bytes(b"old body")
+            old_manifest = b'{\n "updated": "before-edit",\n "body": "old"\n}\n'
+            old_index = b'{\n "active": {"body": "old", "walk": "walk-1"}\n}\n'
+            old_motion_metadata = b'{\n "walk": {"sheets": [{"image": "walk-0.png"}]}\n}\n'
+            (avatar / "manifest.json").write_bytes(old_manifest)
+            (library_dir / "library.json").write_bytes(old_index)
+            (motion_dir / "motion.json").write_bytes(old_motion_metadata)
+            (motion_dir / "walk-0.png").write_bytes(b"old motion pixels")
+
+            class Registry:
+                @staticmethod
+                def adir(_slug):
+                    return directory
+
+            with patch.dict(sys.modules, {
+                "studio": fake_studio, "studio.body": fake_body,
+            }), patch.object(self.application, "reg", return_value=Registry()):
+                journal = self.application._begin_body_edit_transaction("captain")
+                self.assertEqual(journal["phase"], "prepared")
+
+                os.replace(body_dir, avatar / "body.previous")
+                body_dir.mkdir()
+                (body_dir / "new-body.bin").write_bytes(b"new body")
+                shutil.rmtree(motion_dir)
+                motion_dir.mkdir()
+                (motion_dir / "motion.json").write_bytes(b'{"idle": {}}')
+                (motion_dir / "idle-0.png").write_bytes(b"new motion pixels")
+                (avatar / "manifest.json").write_bytes(b'{"body": "new"}')
+                (library_dir / "library.json").write_bytes(
+                    b'{"active": {"body": "new"}}')
+                self.application._set_body_edit_transaction_phase(
+                    "captain", "state-written")
+
+                outcome = self.application._recover_body_edit_transaction(
+                    "captain", log=lambda _message: None)
+
+            self.assertEqual(outcome, "rolled-back")
+            self.assertEqual((avatar / "manifest.json").read_bytes(), old_manifest)
+            self.assertEqual((library_dir / "library.json").read_bytes(), old_index)
+            self.assertEqual(
+                (motion_dir / "motion.json").read_bytes(), old_motion_metadata)
+            self.assertEqual(
+                (motion_dir / "walk-0.png").read_bytes(), b"old motion pixels")
+            self.assertFalse((motion_dir / "idle-0.png").exists())
+            self.assertEqual((body_dir / "old-body.bin").read_bytes(), b"old body")
+            self.assertFalse((body_dir / "new-body.bin").exists())
+            self.assertFalse((avatar / "body.previous").exists())
+            self.assertFalse((avatar / ".body-edit-transaction").exists())
+
+    def test_uncommitted_body_edit_crash_restores_previous_body_and_runtime(self):
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_body.commit_previous = lambda directory: shutil.rmtree(
+            Path(directory, "body.previous"), ignore_errors=True)
+        fake_studio.body = fake_body
+
+        with tempfile.TemporaryDirectory() as directory:
+            avatar = Path(directory)
+            for name, payload in (
+                ("body/new.bin", b"new body"),
+                ("body.previous/old.bin", b"old body"),
+                ("runtime/new.bin", b"new runtime"),
+                ("runtime.previous/old.bin", b"old runtime"),
+            ):
+                path = avatar / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+            transaction = avatar / ".body-edit-transaction"
+            transaction.mkdir()
+            (transaction / "transaction.json").write_text(json.dumps({
+                "v": 1,
+                "slug": "captain",
+                "phase": "state-written",
+                "manifest_existed": False,
+                "motion_existed": False,
+                "library_index_existed": False,
+                "runtime_existed": True,
+            }), encoding="utf-8")
+
+            class Registry:
+                @staticmethod
+                def adir(_slug):
+                    return directory
+
+            with patch.dict(sys.modules, {
+                "studio": fake_studio, "studio.body": fake_body,
+            }), patch.object(self.application, "reg", return_value=Registry()):
+                outcome = self.application._recover_body_edit_transaction(
+                    "captain", log=lambda _message: None)
+
+            self.assertEqual(outcome, "rolled-back")
+            self.assertEqual((avatar / "body" / "old.bin").read_bytes(), b"old body")
+            self.assertFalse((avatar / "body" / "new.bin").exists())
+            self.assertEqual(
+                (avatar / "runtime" / "old.bin").read_bytes(), b"old runtime")
+            self.assertFalse((avatar / "runtime" / "new.bin").exists())
+            self.assertFalse((avatar / "body.previous").exists())
+            self.assertFalse((avatar / "runtime.previous").exists())
+            self.assertFalse(transaction.exists())
+
+    def test_committed_body_edit_crash_keeps_new_state_and_finishes_cleanup(self):
+        events = []
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_library = types.ModuleType("studio.library")
+        fake_body.commit_previous = lambda directory: (
+            events.append("body-backup-removed"),
+            shutil.rmtree(Path(directory, "body.previous"), ignore_errors=True),
+        )
+        fake_library.archive_body = lambda _directory: (
+            events.append("archived") or "new-body")
+        fake_studio.body = fake_body
+        fake_studio.library = fake_library
+
+        with tempfile.TemporaryDirectory() as directory:
+            avatar = Path(directory)
+            for name, payload in (
+                ("body/new.bin", b"new body"),
+                ("body.previous/old.bin", b"old body"),
+                ("runtime/new.bin", b"new runtime"),
+                ("runtime.previous/old.bin", b"old runtime"),
+            ):
+                path = avatar / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+            transaction = avatar / ".body-edit-transaction"
+            transaction.mkdir()
+            (avatar / "manifest.json").write_bytes(b'{"body":"new"}')
+            (avatar / "motion").mkdir()
+            (avatar / "motion" / "new-motion.bin").write_bytes(b"new motion")
+            (avatar / "library").mkdir()
+            (avatar / "library" / "library.json").write_bytes(
+                b'{"active":{"body":"new"}}')
+            (transaction / "manifest.json").write_bytes(b'{"body":"old"}')
+            (transaction / "motion").mkdir()
+            (transaction / "motion" / "old-motion.bin").write_bytes(b"old motion")
+            (transaction / "library.json").write_bytes(
+                b'{"active":{"body":"old"}}')
+            (transaction / "transaction.json").write_text(json.dumps({
+                "v": 1,
+                "slug": "captain",
+                "phase": "committed",
+                "manifest_existed": True,
+                "motion_existed": True,
+                "library_index_existed": True,
+                "runtime_existed": True,
+            }), encoding="utf-8")
+
+            class Registry:
+                @staticmethod
+                def adir(_slug):
+                    return directory
+
+            modules = {
+                "studio": fake_studio,
+                "studio.body": fake_body,
+                "studio.library": fake_library,
+            }
+            with patch.dict(sys.modules, modules), \
+                 patch.object(self.application, "reg", return_value=Registry()):
+                outcome = self.application._recover_body_edit_transaction(
+                    "captain", log=lambda _message: None)
+
+            self.assertEqual(outcome, "committed")
+            self.assertEqual((avatar / "body" / "new.bin").read_bytes(), b"new body")
+            self.assertEqual(
+                (avatar / "runtime" / "new.bin").read_bytes(), b"new runtime")
+            self.assertEqual(
+                (avatar / "manifest.json").read_bytes(), b'{"body":"new"}')
+            self.assertTrue((avatar / "motion" / "new-motion.bin").is_file())
+            self.assertEqual(
+                (avatar / "library" / "library.json").read_bytes(),
+                b'{"active":{"body":"new"}}')
+            self.assertFalse((avatar / "body.previous").exists())
+            self.assertFalse((avatar / "runtime.previous").exists())
+            self.assertFalse(transaction.exists())
+            self.assertEqual(events, ["archived", "body-backup-removed"])
+
+    def test_body_edit_publish_failure_runs_exact_recovery_without_archiving(self):
+        events = []
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_library = types.ModuleType("studio.library")
+        fake_body.edit = lambda *_args, **_kwargs: (
+            events.append("edited") or {"image": "new-body.png"})
+        fake_body.commit_previous = lambda _directory: events.append("committed")
+        fake_library.sync_canonical = lambda _directory: events.append("synced")
+        fake_library.archive_body = lambda _directory: (
+            events.append("archived-new") or "new-body")
+        fake_library.reconcile_motion_with_body = lambda _directory: (
+            events.append("reconciled") or None)
+        fake_studio.body = fake_body
+        fake_studio.library = fake_library
+        previous = {"status": "ready", "body": {"image": "old-body.png"},
+                    "motion": {"walk": {"sheets": [{}]}}}
+        writes = []
+
+        class Registry:
+            @staticmethod
+            def adir(_slug):
+                return "/private/avatar"
+
+            @staticmethod
+            def read_manifest(_slug):
+                return copy.deepcopy(previous)
+
+            @staticmethod
+            def write_manifest(_slug, manifest):
+                writes.append(copy.deepcopy(manifest))
+
+        with patch.dict(sys.modules, {
+            "studio": fake_studio,
+            "studio.body": fake_body,
+            "studio.library": fake_library,
+        }), patch.object(self.application, "reg", return_value=Registry()), \
+             patch.object(self.application, "_begin_body_edit_transaction",
+                          side_effect=lambda _slug: events.append("snapshot")), \
+             patch.object(self.application, "_set_body_edit_transaction_phase",
+                          side_effect=lambda _slug, phase: events.append(phase)), \
+             patch.object(self.application, "_recover_body_edit_transaction",
+                          side_effect=lambda _slug, **_kwargs: events.append("recovered")) as recover, \
+             patch.object(self.application, "_publish_runtime_atomic",
+                          side_effect=RuntimeError("publish failed")):
+            with self.assertRaisesRegex(RuntimeError, "publish failed"):
+                self.application._body_edit_stage(
+                    "captain", "Change the blazer to coral",
+                    lambda _line: None, lambda *_args: None)
+        self.assertEqual(recover.call_count, 2)
+        self.assertEqual(events[-1], "recovered")
+        self.assertNotIn("committed", events)
+        self.assertNotIn("archived-new", events)
+        self.assertEqual(writes[-1]["body"], {"image": "new-body.png"})
+
+    def test_body_edit_archives_only_after_runtime_is_committed(self):
+        events = []
+        fake_studio = types.ModuleType("studio")
+        fake_studio.__path__ = []
+        fake_body = types.ModuleType("studio.body")
+        fake_library = types.ModuleType("studio.library")
+        fake_body.edit = lambda *_args, **_kwargs: (
+            events.append("edited") or {"image": "new-body.png"})
+        fake_body.commit_previous = lambda _directory: events.append("committed")
+        fake_library.sync_canonical = lambda _directory: events.append("synced")
+        fake_library.reconcile_motion_with_body = lambda _directory: (
+            events.append("reconciled") or None)
+        fake_library.archive_body = lambda _directory: (
+            events.append("archived-new") or "new-body")
+        fake_studio.body = fake_body
+        fake_studio.library = fake_library
+
+        class Registry:
+            @staticmethod
+            def adir(_slug):
+                return "/private/avatar"
+
+            @staticmethod
+            def read_manifest(_slug):
+                return {"status": "ready", "body": {"image": "old-body.png"}}
+
+            @staticmethod
+            def write_manifest(_slug, _manifest):
+                events.append("manifest-written")
+
+        def publish(_slug, **_kwargs):
+            events.append("runtime-published")
+
+        with patch.dict(sys.modules, {
+            "studio": fake_studio,
+            "studio.body": fake_body,
+            "studio.library": fake_library,
+        }), patch.object(self.application, "reg", return_value=Registry()), \
+             patch.object(self.application, "_recover_body_edit_transaction"), \
+             patch.object(self.application, "_begin_body_edit_transaction"), \
+             patch.object(self.application, "_set_body_edit_transaction_phase"), \
+             patch.object(self.application, "_publish_runtime_atomic",
+                          side_effect=publish):
+            self.application._body_edit_stage(
+                "captain", "Change the blazer to coral",
+                lambda _line: None, lambda *_args: None)
+
+        self.assertLess(
+            events.index("runtime-published"), events.index("archived-new"))
+        self.assertLess(events.index("archived-new"), events.index("committed"))
 
     def test_retired_coupling_and_direct_realtime_routes_are_absent(self):
         retired = {
@@ -197,6 +732,8 @@ class StandaloneRouteTests(unittest.TestCase):
 
         with patch.object(self.application, "reg", return_value=Registry()), \
              patch.object(self.application, "active_slug", return_value="captain"), \
+             patch.object(
+                 self.application, "_recover_body_edit_transaction_if_idle"), \
              patch.object(self.application, "_publish_runtime") as publish:
             result = asyncio.run(self.application.api_companion(
                 self.application.CompanionRequest(slug="emma")

@@ -195,14 +195,14 @@ assert.ok(roamMotionStateSource, 'roam motion payload helper must remain indepen
 const roamMotionState = new Function(
   `'use strict'; ${roamMotionStateSource[1]}; return roamMotionState;`,
 )();
-assert.deepEqual(roamMotionState({ mode: 'stand', resumeMode: 'walk', direction: -1, stride: 1.25 }), {
-  enabled: true, mode: 'stand', presentationMode: 'walk', direction: -1, phase: .25, edge: null,
+assert.deepEqual(roamMotionState({ mode: 'stand', resumeMode: 'walk', direction: -1, stride: 1.25, lastAt: 1234 }), {
+  enabled: true, mode: 'stand', presentationMode: 'walk', direction: -1, phase: .25, sampledAt: 1234, edge: null,
 });
-assert.deepEqual(roamMotionState({ mode: 'stand', resumeMode: 'ledge-left', direction: 1, stride: .4 }), {
-  enabled: true, mode: 'stand', presentationMode: 'ledge-left', direction: 1, phase: .4, edge: 'left',
+assert.deepEqual(roamMotionState({ mode: 'stand', resumeMode: 'ledge-left', direction: 1, stride: .4, lastAt: 2345 }), {
+  enabled: true, mode: 'stand', presentationMode: 'ledge-left', direction: 1, phase: .4, sampledAt: 2345, edge: 'left',
 });
-assert.deepEqual(roamMotionState({ mode: 'stand', resumeMode: 'ledge-right', direction: -1, stride: .6 }), {
-  enabled: true, mode: 'stand', presentationMode: 'ledge-right', direction: -1, phase: .6, edge: 'right',
+assert.deepEqual(roamMotionState({ mode: 'stand', resumeMode: 'ledge-right', direction: -1, stride: .6, lastAt: 3456 }), {
+  enabled: true, mode: 'stand', presentationMode: 'ledge-right', direction: -1, phase: .6, sampledAt: 3456, edge: 'right',
 });
 assert.match(main, /function sendPetRoamMotion[\s\S]{0,240}roamMotionState\(petRoamRuntime\)/,
   'the active avatar must send preserved stand presentation metadata');
@@ -210,6 +210,74 @@ assert.match(main, /function sendBuddyRoamMotion[\s\S]{0,240}roamMotionState\(bu
   'the second avatar must preserve the same stand presentation semantics');
 assert.match(main, /petRoamRuntime\.resumeMode = petRoamRuntime\.mode\.startsWith\('ledge-'\)[\s\S]{0,320}petRoamRuntime\.mode = 'stand'/,
   'engaging at a ledge must preserve that ledge as the resume/presentation origin');
+
+// Motion metadata is authoritative. Long, smooth loops must not be squeezed
+// into the old 2.5-second shell default or lose the tail of their trajectory.
+const normalizeMotionProfileSource = main.match(
+  /(function normalizeMotionProfile\(value, current\) \{[\s\S]*?\n\})\n\nfunction setPetMotionReady/,
+);
+assert.ok(normalizeMotionProfileSource,
+  'motion profile normalization must remain independently testable');
+const normalizeMotionProfile = new Function(
+  'PET_ROAM_MIN_SPEED', 'PET_ROAM_MAX_SPEED',
+  'PET_ROAM_MAX_CYCLE_SECONDS', 'PET_ROAM_MAX_PROFILE_FRAMES',
+  `'use strict'; ${normalizeMotionProfileSource[1]}; return normalizeMotionProfile;`,
+)(42, 150, 6, 160);
+const currentProfile = { walkSpeed: 64, cycleSeconds: 1.1, cycleDistance: 70.4, travelOffsets: [] };
+const threeSecond = normalizeMotionProfile({
+  ready: true, walkSpeed: 48.9, cycleSeconds: 3,
+  cycleDistance: 146.7, travelOffsets: Array.from({length: 72}, (_, index) => index * 2),
+}, currentProfile).profile;
+assert.equal(threeSecond.cycleSeconds, 3,
+  'a 72-frame 24fps Walk must remain a three-second cycle');
+assert.equal(threeSecond.cycleDistance, 146.7);
+assert.equal(threeSecond.travelOffsets.length, 72);
+const longCycle = normalizeMotionProfile({
+  cycleSeconds: 5.2, walkSpeed: 80, cycleDistance: 400,
+  travelOffsets: Array.from({length: 125}, (_, index) => index * 3),
+}, currentProfile).profile;
+assert.equal(longCycle.cycleSeconds, 5.2);
+assert.equal(longCycle.travelOffsets.length, 125,
+  'a supported 5.2-second traversal must retain its complete phase profile');
+assert.equal(normalizeMotionProfile({cycleSeconds: 99}, currentProfile).profile.cycleSeconds, 6,
+  'hostile cycle metadata must remain bounded');
+
+// Walk keeps native-window travel at display cadence, while stationary ledge
+// and hover states sleep. Renderer phase IPC is independently throttled to
+// 32ms and state transitions still publish immediately.
+const roamMotionSignatureSource = main.match(
+  /(function roamMotionSignature\(value\) \{[\s\S]*?\n\})\n\n(function shouldSendRoamMotion\(runtime, value, now = Date\.now\(\), force = false\) \{[\s\S]*?\n\})/,
+);
+const roamTickDelaySource = main.match(
+  /(function roamTickDelay\(runtime, now = Date\.now\(\)\) \{[\s\S]*?\n\})\n\nfunction sendPetRoamMotion/,
+);
+assert.ok(roamMotionSignatureSource, 'roam IPC gate must remain independently testable');
+assert.ok(roamTickDelaySource, 'roam timer cadence must remain independently testable');
+const roamPower = new Function(
+  'PET_ROAM_TICK_MS', 'PET_ROAM_REST_TICK_MS', 'PET_ROAM_IPC_MS',
+  `'use strict'; ${roamMotionSignatureSource[1]}\n${roamMotionSignatureSource[2]}\n`
+    + `${roamTickDelaySource[1]}; return { shouldSendRoamMotion, roamTickDelay };`,
+)(16, 250, 32);
+const delivery = {motionSignature: '', motionSentAt: 0};
+const walkingPacket = {enabled: true, mode: 'walk', presentationMode: 'walk', direction: 1, edge: null};
+assert.equal(roamPower.shouldSendRoamMotion(delivery, walkingPacket, 1000), true);
+assert.equal(roamPower.shouldSendRoamMotion(delivery, walkingPacket, 1016), false,
+  'duplicate 60Hz walk IPC must be collapsed');
+assert.equal(roamPower.shouldSendRoamMotion(delivery, walkingPacket, 1032), true,
+  'the local phase clock must still receive a 32ms correction');
+const ledgePacket = {enabled: true, mode: 'ledge-right', presentationMode: 'ledge-right', direction: 1, edge: 'right'};
+assert.equal(roamPower.shouldSendRoamMotion(delivery, ledgePacket, 1048), true,
+  'entering Edge Idle must publish immediately');
+assert.equal(roamPower.shouldSendRoamMotion(delivery, ledgePacket, 5000), false,
+  'a stationary ledge must not stream redundant IPC indefinitely');
+assert.equal(roamPower.roamTickDelay({mode: 'walk'}, 1000), 16);
+assert.equal(roamPower.roamTickDelay({mode: 'ledge-right', holdUntil: 9000}, 1000), 250);
+assert.equal(roamPower.roamTickDelay({mode: 'ledge-right', holdUntil: 9010}, 9000), 16,
+  'the sleeping ledge timer must wake near its transition deadline');
+assert.match(main, /petRoamTimer = setTimeout\(\(\) => \{[\s\S]{0,120}tickPetRoam\(\)/);
+assert.match(main, /buddyRoamTimer = setTimeout\(\(\) => \{[\s\S]{0,120}tickBuddyRoam\(\)/);
+assert.doesNotMatch(main, /setInterval\(tick(?:Pet|Buddy)Roam/,
+  'stationary roam states must not retain the old 60Hz interval');
 
 // Renderer bridges expose only the OpenClam app-local control surface.
 assert.match(preload, /exposeInMainWorld\('openclam', api\)/);

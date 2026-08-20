@@ -212,6 +212,107 @@ class FullBodyDirectWiringTests(unittest.TestCase):
         self.assertEqual(list(metadata["views"]), ["front", "side", "back"])
         self.assertEqual([len(references) for references in calls], [1, 2, 2])
 
+    def test_xai_edit_rebuilds_all_views_locally_and_keeps_private_rollback(self):
+        try:
+            import cv2
+            import numpy as np
+            from studio import body
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"packaged avatar runtime is unavailable: {exc}")
+
+        secret = "xai-body-edit-private-test-key"
+        config = {"provider": "xai", "model": "grok-imagine-image-2.0",
+                  "api_key": secret}
+        public = {"name": "xai", "title": "xAI Grok Imagine Image 2.0",
+                  "model": "grok-imagine-image-2.0",
+                  "route": "direct:xai", "direct": True}
+        calls = []
+
+        def edit(prompt, references, lane, **options):
+            self.assertEqual(lane["api_key"], secret)
+            self.assertIn("Precisely edit", prompt)
+            calls.append(tuple(references))
+            path = os.path.join(options["output_dir"], options["file_name"] + ".jpg")
+            cv2.imwrite(path, np.full((360, 240, 3), 120 + len(calls), np.uint8))
+            return path
+
+        def cut(_source, destination, **_options):
+            rgba = np.zeros((360, 240, 4), np.uint8)
+            rgba[10:350, 40:200, :3] = 150
+            rgba[10:350, 40:200, 3] = 255
+            return bool(cv2.imwrite(destination, rgba))
+
+        def head_mask(_image, _landmarks, destination):
+            rgba = np.zeros((360, 240, 4), np.uint8)
+            rgba[20:120, 70:170, 3] = 255
+            cv2.imwrite(destination, rgba)
+
+        with tempfile.TemporaryDirectory() as directory:
+            keyframe = np.full((256, 256, 3), 127, np.uint8)
+            cv2.imwrite(os.path.join(directory, "keyframe.png"), keyframe)
+            cv2.imwrite(os.path.join(directory, "head.png"), keyframe)
+            body_dir = Path(directory, "body")
+            body_dir.mkdir()
+            views = {}
+            for index, view in enumerate(body.BODY_VIEWS):
+                source = body_dir / f"source-{view}.png"
+                cv2.imwrite(str(source), np.full((360, 240, 3), 60 + index, np.uint8))
+                cv2.imwrite(str(body_dir / f"body-{view}.png"),
+                            np.full((360, 240, 4), 90 + index, np.uint8))
+                views[view] = {"source": source.name,
+                               "image": f"body-{view}.png"}
+            cv2.imwrite(str(body_dir / "body.png"),
+                        np.full((360, 240, 4), 91, np.uint8))
+            cv2.imwrite(str(body_dir / "head-mask.png"),
+                        np.full((360, 240, 4), 255, np.uint8))
+            Path(body_dir, "body.json").write_text(json.dumps({
+                "v": 3, "image": "body.png", "head_mask": "head-mask.png",
+                "views": views, "options": {"style": "editorial", "pose": "formal"},
+            }))
+            original_front = Path(body_dir, "source-front.png").read_bytes()
+            landmarks = np.zeros((478, 2), np.float32)
+            with mock.patch.object(
+                    body, "image_provider_selection", return_value=(config, public)), \
+                 mock.patch.object(
+                    body.media_gen, "generate_image_edit_sync", side_effect=edit), \
+                 mock.patch.object(body.cutout, "render", side_effect=cut), \
+                 mock.patch.object(
+                    body, "_face_transform",
+                    return_value=(np.array([[1, 0, 0], [0, 1, 0]], np.float32),
+                                  {"scale": 1.0}, landmarks)), \
+                 mock.patch.object(body, "_head_mask", side_effect=head_mask), \
+                 mock.patch.object(body, "_seam_tone_match"):
+                metadata = body.edit(
+                    directory, "Change the blazer to fuchsia and preserve the tailoring",
+                    log=lambda _message: None)
+            receipt = Path(directory, "body", "body.json").read_text(encoding="utf-8")
+            self.assertTrue(Path(directory, "body.previous").is_dir())
+            self.assertEqual([len(references) for references in calls], [2, 3, 3])
+            self.assertEqual(metadata["edit"]["scope"], "front+side+back")
+            self.assertIn("instruction_sha256", metadata["edit"])
+            self.assertNotIn("Change the blazer", receipt)
+            self.assertNotIn(secret, receipt)
+            self.assertEqual(metadata["views"]["front"]["source"], "source-front.jpg")
+            self.assertTrue(body.restore_previous(directory))
+            self.assertEqual(
+                Path(directory, "body", "source-front.png").read_bytes(),
+                original_front)
+
+    def test_body_edit_rejects_non_xai_before_any_provider_call(self):
+        try:
+            from studio import body
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"packaged avatar runtime is unavailable: {exc}")
+        public = {"name": "openai", "title": "OpenAI Images",
+                  "model": "gpt-image-1", "direct": True}
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(
+                 body, "image_provider_selection", return_value=({}, public)), \
+             mock.patch.object(body.media_gen, "generate_image_edit_sync") as generate:
+            with self.assertRaisesRegex(RuntimeError, "requires xAI"):
+                body.edit(directory, "Change the jacket to coral")
+        generate.assert_not_called()
+
 
 class HeadAndVisemeDirectWiringTests(unittest.TestCase):
     def test_head_and_viseme_bank_share_the_selected_direct_image_lane(self):
@@ -558,6 +659,44 @@ class CurrentImageProviderContractTests(unittest.IsolatedAsyncioTestCase):
             "quality": "low",
             "response_format": "b64_json",
         })
+
+    async def test_xai_image_2_rejects_oversized_utf8_prompts_before_network(self):
+        config = {
+            "provider": "xai", "model": "grok-imagine-image-2.0",
+            "api_key": "xai-private-test-key",
+        }
+        boundary = "x" * (8 * 1024)
+        self.assertEqual(len(boundary.encode("utf-8")), 8 * 1024)
+        media_gen._require_image_prompt_limit(
+            boundary, "xai", "grok-imagine-image-2.0")
+
+        # Multibyte text proves that the provider constraint is bytes rather
+        # than Python characters.  No client or auth resolver is reached.
+        too_large = "界" * 2731
+        self.assertLess(len(too_large), 8 * 1024)
+        self.assertGreater(len(too_large.encode("utf-8")), 8 * 1024)
+        _Client.init_kwargs = None
+        with mock.patch.object(media_gen, "_providers", return_value=self.helper), \
+             mock.patch.object(media_gen.httpx, "AsyncClient", _Client), \
+             mock.patch.object(
+                 media_gen, "_xai_api_auth",
+                 new=mock.AsyncMock(side_effect=AssertionError("network auth"))), \
+             self.assertRaisesRegex(RuntimeError, "8,192 UTF-8 bytes"):
+            await media_gen.generate_image(too_large, config)
+        self.assertIsNone(_Client.init_kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory, "reference.png")
+            reference.write_bytes(PNG_BYTES)
+            with mock.patch.object(media_gen, "_providers", return_value=self.helper), \
+                 mock.patch.object(media_gen.httpx, "AsyncClient", _Client), \
+                 mock.patch.object(
+                     media_gen, "_xai_api_auth",
+                     new=mock.AsyncMock(side_effect=AssertionError("network auth"))), \
+                 self.assertRaisesRegex(RuntimeError, "8,192 UTF-8 bytes"):
+                await media_gen.generate_image_edit(
+                    too_large, [reference], config, output_dir=directory)
+        self.assertIsNone(_Client.init_kwargs)
 
     async def test_gpt_image_2_edit_omits_input_fidelity(self):
         _Client.response = self._response()

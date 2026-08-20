@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ import sys
 
 ALLOWED_TOP_LEVEL = {
     ".gitignore",
+    "AVATAR_ASSET_LICENSE.md",
     "CONTRIBUTING.md",
     "LICENSE",
     "PRIVACY.md",
@@ -39,6 +41,7 @@ ALLOWED_TOP_LEVEL = {
 
 REQUIRED_FILES = {
     Path(".gitignore"),
+    Path("AVATAR_ASSET_LICENSE.md"),
     Path("CONTRIBUTING.md"),
     Path("LICENSE"),
     Path("PRIVACY.md"),
@@ -55,9 +58,11 @@ REQUIRED_FILES = {
     Path("macos/OpenClamStudio/package-lock.json"),
     Path("macos/OpenClamStudio/package.json"),
     Path("shared/avatar-package-v2/fixtures/ios-light-golden.avtr"),
+    Path("shared/avatar-package-v2/fixtures/ios-light-motion-v3-golden.avtr"),
 }
 
 DENIED_DIR_NAMES = {
+    ".git",
     ".electron-ffmpeg",
     ".electron-models",
     ".electron-python-runtime",
@@ -143,7 +148,7 @@ DENIED_SUFFIXES = {
 
 # Every public binary is an explicit path-and-hash decision. Any new image,
 # sound, archive, model, or executable must receive a separate rights review.
-ALLOWED_BINARY_HASHES = {
+BRANDING_AND_RUNTIME_BINARY_HASHES = {
     Path("ios/OpenClamLiveKit/App/Assets.xcassets/AppIcon.appiconset/AppIcon.png"):
         "d1e65d2fa4658d8c13559b78cae3339f3286e4d59433b261148e8f6b1928ec2f",
     Path("ios/OpenClamLiveKit/App/Assets.xcassets/OpenClamMark.imageset/OpenClamMark.png"):
@@ -160,6 +165,116 @@ ALLOWED_BINARY_HASHES = {
         "a3ac4054d207db07a947c4bd02bdb024823a895531bc6652279d05a1a6feec4b",
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/live-talk-connection.wav"):
         "471bc3d821be0bffaaddc089347c7006d31215d20ff4d5eb5da2440d67edcea4",
+    Path("macos/OpenClamStudio/assets/icon.icns"):
+        "5bec8b8a81778d5713864c32044eb163613d22c91a5eb56f1aa8bb16fecebd3c",
+    Path("macos/OpenClamStudio/assets/icon.png"):
+        "d1e65d2fa4658d8c13559b78cae3339f3286e4d59433b261148e8f6b1928ec2f",
+    Path("macos/OpenClamStudio/assets/live-talk-connection.wav"):
+        "471bc3d821be0bffaaddc089347c7006d31215d20ff4d5eb5da2440d67edcea4",
+    Path("macos/OpenClamStudio/assets/openclam-app-icon.png"):
+        "d1e65d2fa4658d8c13559b78cae3339f3286e4d59433b261148e8f6b1928ec2f",
+    Path("macos/OpenClamStudio/electron/tray-icon.png"):
+        "b3c4c8feda8e99023280b61e5cf8fbf508c6cf60e51452dc9d5da26332d397c9",
+    Path("macos/OpenClamStudio/electron/tray-icon@2x.png"):
+        "e1c524968ad7b7252f462143b95f0764668370dcfb04da240b2b2f7aac80f712",
+    Path("macos/OpenClamStudio/electron/tray-icon@3x.png"):
+        "f7c01e384bb20625640b18fb2ba83ee3f0b8e75e5f31bb65c5933c86e9303e3b",
+}
+
+CAPTAIN_AYER_BINARY_HASHES = {
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerBody.imageset/CaptainAyerBody.png"):
+        "7e38b08b90f06fdd816d728fa3a093de62408164cc99dcfcfb28e86fd98e1375",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerBrowLeft.imageset/CaptainAyerBrowLeft.png"):
+        "807e175875a7a49aeb6ee3b71f13d6d7ac97b07c772f5e74eaeeb86ca3e85900",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerBrowRight.imageset/CaptainAyerBrowRight.png"):
+        "e77496e8008a6026591c5da510072d5e1bb85dfffb10e3353fc1c66f584dbb0d",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerEyeLeft.imageset/CaptainAyerEyeLeft.png"):
+        "d7194d7e2a3023798f980dc198fce698b8279dc5b39a4a3839fe5a5eb34efcf6",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerEyeRight.imageset/CaptainAyerEyeRight.png"):
+        "898d8ae06bf9d79c8c54d4a7dfdd6696863c15e4a49b0a657d6f5f77eba22a1d",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerGazeLeftAtlas.imageset/CaptainAyerGazeLeftAtlas.png"):
+        "c7abacbe22c25493fc7f7ac8b1d0d3f2d73073f90947276166c057797f9e5974",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerGazeRightAtlas.imageset/CaptainAyerGazeRightAtlas.png"):
+        "898a5b6a85ed7fb66f2691993ca4192a0f6dd7557655a06ee364cf6dbe9f9700",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerHeadMask.imageset/CaptainAyerHeadMask.png"):
+        "b3d8b6baf850cb4fdac8d1a2d9a16b9415da08aa81479aa8d1bf04fc7f3e03c8",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerKeyframe.imageset/CaptainAyerKeyframe.png"):
+        "a227ea77f89be7f669d7d54a8e828bfc160c1b6951b463f1a09ef83453ada6cd",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeAA.imageset/CaptainAyerVisemeAA.jpg"):
+        "ec98cdfaadeb445746a55ff3d3eb2bddaf5c526e37bf445e7986a3f190d221af",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeE.imageset/CaptainAyerVisemeE.jpg"):
+        "98a4b58dfefef38fc9274067f7864693598efa41797fdf53ead279134b881dcd",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeFF.imageset/CaptainAyerVisemeFF.jpg"):
+        "8e823738fc97a2f78b9e87365071528ee30377bcb698e91c52c9843a49499182",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeIH.imageset/CaptainAyerVisemeIH.jpg"):
+        "026f5ff983773ec92d591fcf36e7bd8d7b5f37b8dee0870096cb406b36d75bfd",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeNN.imageset/CaptainAyerVisemeNN.jpg"):
+        "06649204b31a6e9c8c0e2a9c2c8be2ce15f70cd8bc68f08d4b8f49ef5a96d69f",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeOU.imageset/CaptainAyerVisemeOU.jpg"):
+        "5f9287a7f8faa9b95b22ea63ad4126d32e51ad0de531179ff4c0cfda73149b2c",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeRR.imageset/CaptainAyerVisemeRR.jpg"):
+        "8e6cca2c202ff88a39f9816862368ee6200b0e04c5263debd1bbd85937c0cfa3",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeSil.imageset/CaptainAyerVisemeSil.jpg"):
+        "bc534373f3a2c82c11548307b69c43faf76c73d662d15104c56743812dc4680d",
+    Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerVisemeTH.imageset/CaptainAyerVisemeTH.jpg"):
+        "4d5f8df80fc45343673d36f03d841f102a328ab2b2ec49af1e1cacaf2efef45a",
+}
+
+ARA_BINARY_HASHES = {
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/body.png"):
+        "3850b113b8181a3c18c497d33de91dd16a42c47d701e48c6c89a9a29b7921432",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-left.png"):
+        "4978b71be5e65582f4b943bcc5a7b3ccf89782f6a0b5ddbf029e736ab81d2566",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-right.png"):
+        "7fbd6cbddebc2f2ba20239c5ff4c560417ce1cd8dc0802e19faa74d0f50e01d4",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/eye-left.png"):
+        "06bfebd924fe5c1c9a4766b9b80efaa7b2810d7b9a1f7e927bdc7d10e3f2c05c",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/eye-right.png"):
+        "8728eb8f965571ea7eaf066cffd23fd1de69f1260c78bdfe529d10d07dbf30b7",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/gaze-left-atlas.png"):
+        "407daf03ed613a6a3e074718e8efd9c7403c626e8a51e5f202c4b66a4b49a9b4",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/gaze-right-atlas.png"):
+        "be12bf910f6d61b1c1abe24abe2fa83d49ac4ce7fa22d69e0d1a9fc832d5d162",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/head-mask.png"):
+        "69f6209d005a1fcd1bc2e1ece340cf75352aee3fae180cd0b80288470a2825ed",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/motion-edge-idle.mov"):
+        "242a2873de568ee9e9d579291e0eeb1c39b8d6a862688d59bc9dd6ed1e8b6bc5",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/motion-moves.mov"):
+        "575cdbd9d3eb7b9f9dad11ef86be9c903a7fde596ff3bdd63c3d5430b7308dc5",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/thumbnail.jpg"):
+        "d208eacbb8e50363fbc4ce4429924e944ec01814d4a5e8dfd528fdc560c3d032",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-E.jpg"):
+        "ba610571cbf71479572776451ce346a3fd40e255a6cb6b9049ec198dcbbc5908",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-FF.jpg"):
+        "5747c766d9a0d4e44dbb60b233e4f80486f82851b882caec7d8218503ff084b7",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-RR.jpg"):
+        "2b3abb89b7d3bd7ef9b8d55500e9d2433a2da178518a16b9e1445d0c6ddea14c",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-TH.jpg"):
+        "d691caec3cf16aceda3ca23ebdbae38d45c2dc3f207455643f464d1d0ae8fb53",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-aa.jpg"):
+        "8891cefc2ab4fa834b0b45a26edb49bfc09279d0d609732215e94113540ed89e",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-ih.jpg"):
+        "74250e43223e48197570a90af304fd84c23c9095e379e56e7b893643c47dcf34",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-nn.jpg"):
+        "cb12409434a20ae87cd8a90ae0c2eb857409c0d75314cf5ddeb6fc828d8975bf",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-ou.jpg"):
+        "271339f71da95141a844f1ffc19fe6ec0735b7c4ffcf8ef355af173c66beef1c",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-sil.jpg"):
+        "32023cdddc2b1d24e9ed47bdf092b0cb1d8edec0f69fe7b8584c837eb72b02e7",
+}
+
+DETERMINISTIC_FIXTURE_BINARY_HASHES = {
+    Path("shared/avatar-package-v2/fixtures/ios-light-golden.avtr"):
+        "20f46ca9f3160a0d5934202ef5908085f6246e492f8298582e0e12f7411d78cb",
+    Path("shared/avatar-package-v2/fixtures/ios-light-motion-v3-golden.avtr"):
+        "bb62a3561c7078721eea922ed7c2a45c910f8c9f87045b69a2378800ea0f6ed3",
+}
+
+# v1.0.0 contained this deterministic, likeness-free test guide. v1.0.1
+# removes it from the shipped tree, but the descendant release necessarily
+# retains the exact old blobs in reachable history. No current-tree exception
+# is granted, so reintroducing any of these paths still fails closed.
+HISTORICAL_SYNTHETIC_GUIDE_HASHES = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/public-guide/body.png"):
         "259a8fd460ec81bbd33b92e800277f5a227a3278cca833f8b76b1d2979a60e0a",
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/public-guide/brow-left.png"):
@@ -196,23 +311,62 @@ ALLOWED_BINARY_HASHES = {
         "8b60a213ed4d82e4738f3db16a168f193a609e2a476208d17af2e51bcba9cac4",
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/public-guide/viseme-sil.png"):
         "655c32ad576de349568fb3bbcbee71f47d8118bb83e02dc781e92e72e14cd381",
-    Path("macos/OpenClamStudio/assets/icon.icns"):
-        "5bec8b8a81778d5713864c32044eb163613d22c91a5eb56f1aa8bb16fecebd3c",
-    Path("macos/OpenClamStudio/assets/icon.png"):
-        "d1e65d2fa4658d8c13559b78cae3339f3286e4d59433b261148e8f6b1928ec2f",
-    Path("macos/OpenClamStudio/assets/live-talk-connection.wav"):
-        "471bc3d821be0bffaaddc089347c7006d31215d20ff4d5eb5da2440d67edcea4",
-    Path("macos/OpenClamStudio/assets/openclam-app-icon.png"):
-        "d1e65d2fa4658d8c13559b78cae3339f3286e4d59433b261148e8f6b1928ec2f",
-    Path("macos/OpenClamStudio/electron/tray-icon.png"):
-        "b3c4c8feda8e99023280b61e5cf8fbf508c6cf60e51452dc9d5da26332d397c9",
-    Path("macos/OpenClamStudio/electron/tray-icon@2x.png"):
-        "e1c524968ad7b7252f462143b95f0764668370dcfb04da240b2b2f7aac80f712",
-    Path("macos/OpenClamStudio/electron/tray-icon@3x.png"):
-        "f7c01e384bb20625640b18fb2ba83ee3f0b8e75e5f31bb65c5933c86e9303e3b",
-    Path("shared/avatar-package-v2/fixtures/ios-light-golden.avtr"):
-        "20f46ca9f3160a0d5934202ef5908085f6246e492f8298582e0e12f7411d78cb",
 }
+
+REQUIRED_AVATAR_BINARY_HASHES = {
+    **CAPTAIN_AYER_BINARY_HASHES,
+    **ARA_BINARY_HASHES,
+}
+AUTHORIZED_AVATAR_LEDGER_SHA256 = (
+    "33273896e003a63252d6bd44f257b2c45519933c20cd6329d75f8ff3dbfc2d8b"
+)
+ALLOWED_BINARY_HASHES = {
+    **BRANDING_AND_RUNTIME_BINARY_HASHES,
+    **REQUIRED_AVATAR_BINARY_HASHES,
+    **DETERMINISTIC_FIXTURE_BINARY_HASHES,
+}
+
+CAPTAIN_AYER_CONTENTS_FILES = {
+    path.with_name("Contents.json") for path in CAPTAIN_AYER_BINARY_HASHES
+}
+
+REQUIRED_STORE_DISABLED_SNIPPETS = {
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/OpenClamAvatarStore.swift"): (
+        b"static let catalogURL: URL? = nil",
+        b"static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)",
+        b"guard remoteAccess.isEnabled else",
+    ),
+    Path("macos/OpenClamStudio/electron/avatar-store.cjs"): (
+        b"const AVATAR_STORE_AVAILABLE = false;",
+        b"const RELEASE_ENDPOINT_POLICY = null;",
+    ),
+    Path("macos/OpenClamStudio/electron/main.cjs"): (
+        b"if (!AVATAR_STORE_AVAILABLE)",
+    ),
+}
+
+AVATAR_CATALOG_ASSET_ROOT = Path(
+    "ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle"
+)
+ALLOWED_AVATAR_CATALOG_ROOT_FILES = {
+    AVATAR_CATALOG_ASSET_ROOT / "Info.plist",
+    AVATAR_CATALOG_ASSET_ROOT / "live-talk-connection.wav",
+    AVATAR_CATALOG_ASSET_ROOT / "provenance.json",
+}
+UNAPPROVED_LIKENESS_PATH_MARKERS = {
+    "cleo",
+    "emma",
+    "octavia",
+    "samantha",
+    "vivieen",
+    "vvn",
+}
+
+# macOS 26 attaches this system provenance marker to every file materialized
+# by the local execution service and immediately recreates it after deletion.
+# Git does not serialize it, so it cannot enter an archive or repository blob.
+# Every other extended attribute remains a release blocker.
+NON_TRANSPORTED_PLATFORM_XATTRS = {"com.apple.provenance"}
 
 PRIVATE_PATH_PATTERNS = {
     "personal home path": re.compile(
@@ -288,65 +442,161 @@ def git_root(root: Path) -> Path | None:
     return discovered if discovered == root else None
 
 
-def denied_directory_findings(root: Path) -> list[str]:
-    findings: list[str] = []
-    for current, directories, _ in os.walk(root, topdown=True, followlinks=False):
-        current_path = Path(current)
-        kept: list[str] = []
-        for name in directories:
-            path = current_path / name
-            relative = path.relative_to(root)
-            if name == ".git":
-                continue
-            if name == "build" and relative != Path("macos/OpenClamStudio/build"):
-                findings.append(f"generated/private directory: {relative}")
-            elif name in DENIED_DIR_NAMES or name.startswith("dist-"):
-                findings.append(f"generated/private directory: {relative}")
-            else:
-                kept.append(name)
-        directories[:] = kept
-    return findings
+def source_tree_entries(root: Path) -> list[tuple[Path, os.stat_result]]:
+    """Enumerate every non-.git entry without following links.
+
+    This intentionally does not consult ignore rules. A private file must not
+    disappear from the release audit merely because .gitignore knows about it.
+    """
+    entries: list[tuple[Path, os.stat_result]] = []
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        with os.scandir(current) as scanned:
+            for entry in scanned:
+                path = Path(entry.path)
+                relative = path.relative_to(root)
+                if relative == Path(".git"):
+                    continue
+                metadata = entry.stat(follow_symlinks=False)
+                entries.append((relative, metadata))
+                if stat.S_ISDIR(metadata.st_mode):
+                    pending.append(path)
+    return sorted(entries, key=lambda item: item[0].as_posix())
 
 
-def candidate_files(root: Path) -> list[Path]:
-    if git_root(root) is not None:
+def git_reviewable_files(root: Path) -> set[Path] | None:
+    if git_root(root) is None:
+        return None
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    return {
+        Path(os.fsdecode(value))
+        for value in result.stdout.split(b"\0")
+        if value
+    }
+
+
+def extended_attributes(path: Path) -> list[str]:
+    listxattr = getattr(os, "listxattr", None)
+    if listxattr is not None:
+        try:
+            return listxattr(path, follow_symlinks=False)
+        except OSError:
+            return ["<unreadable>"]
+    try:
         result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "ls-files",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "-z",
-            ],
+            ["xattr", "-s", str(path)],
             capture_output=True,
-            check=True,
+            check=False,
         )
-        return [
-            Path(os.fsdecode(value))
-            for value in result.stdout.split(b"\0")
-            if value
-        ]
+    except OSError:
+        return ["<unreadable>"]
+    if result.returncode != 0:
+        return ["<unreadable>"]
+    return [os.fsdecode(name) for name in result.stdout.splitlines() if name]
 
-    files: list[Path] = []
-    for current, directories, names in os.walk(root, topdown=True, followlinks=False):
-        current_path = Path(current)
-        directories[:] = [
-            name
-            for name in directories
-            if name != ".git"
-            and name not in DENIED_DIR_NAMES
-            and not name.startswith("dist-")
-            and not (
-                name == "build"
-                and (current_path / name).relative_to(root)
-                != Path("macos/OpenClamStudio/build")
-            )
-        ]
-        files.extend((current_path / name).relative_to(root) for name in names)
-    return files
+
+def manifest_file_record(root: Path, relative: Path) -> dict[str, str]:
+    path = root / relative
+    metadata = path.lstat()
+    return {
+        "path": relative.as_posix(),
+        "mode": f"{metadata.st_mode:06o}",
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+def manifest_records(root: Path) -> list[dict[str, str]]:
+    return [
+        manifest_file_record(root, relative)
+        for relative, metadata in source_tree_entries(root)
+        if stat.S_ISREG(metadata.st_mode)
+    ]
+
+
+def write_manifest(root: Path, output: Path) -> None:
+    resolved_output = output.resolve()
+    try:
+        resolved_output.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("manifest output must be outside the audited tree")
+    document = {
+        "format": 1,
+        "files": manifest_records(root),
+    }
+    resolved_output.write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def manifest_findings(root: Path, manifest_path: Path) -> list[str]:
+    findings: list[str] = []
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ["release manifest is unreadable or invalid"]
+    if not isinstance(document, dict) or document.get("format") != 1:
+        return ["release manifest has an unsupported format"]
+    raw_files = document.get("files")
+    if not isinstance(raw_files, list):
+        return ["release manifest has no file list"]
+
+    expected: dict[Path, tuple[str, str]] = {}
+    for item in raw_files:
+        if not isinstance(item, dict) or set(item) != {"path", "mode", "sha256"}:
+            findings.append("release manifest has an invalid file record")
+            continue
+        raw_path = item.get("path")
+        mode = item.get("mode")
+        digest = item.get("sha256")
+        if not isinstance(raw_path, str) or not raw_path or "\0" in raw_path:
+            findings.append("release manifest has an invalid path")
+            continue
+        relative = Path(raw_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            findings.append("release manifest has an unsafe path")
+            continue
+        if relative in expected:
+            findings.append(f"release manifest repeats path: {relative}")
+            continue
+        if not isinstance(mode, str) or not re.fullmatch(r"100(?:644|755)", mode):
+            findings.append(f"release manifest has invalid mode: {relative}")
+            continue
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            findings.append(f"release manifest has invalid hash: {relative}")
+            continue
+        expected[relative] = (mode, digest)
+
+    actual = {
+        Path(record["path"]): (record["mode"], record["sha256"])
+        for record in manifest_records(root)
+    }
+    for relative in sorted(actual.keys() - expected.keys()):
+        findings.append(f"unexpected path not in release manifest: {relative}")
+    for relative in sorted(expected.keys() - actual.keys()):
+        findings.append(f"release manifest path missing: {relative}")
+    for relative in sorted(actual.keys() & expected.keys()):
+        if actual[relative][0] != expected[relative][0]:
+            findings.append(f"release manifest mode mismatch: {relative}")
+        if actual[relative][1] != expected[relative][1]:
+            findings.append(f"release manifest hash mismatch: {relative}")
+    return findings
 
 
 def denied_path_reason(relative: Path) -> str | None:
@@ -363,6 +613,7 @@ def denied_path_reason(relative: Path) -> str | None:
             return None
         return "generated/private directory"
     lower_name = relative.name.lower()
+    lowered_parts = tuple(part.lower() for part in relative.parts)
     if relative.name in DENIED_NAMES or (
         lower_name.startswith(".env.")
         and lower_name not in {".env.example", ".dev.vars.example"}
@@ -371,13 +622,27 @@ def denied_path_reason(relative: Path) -> str | None:
     if lower_name.endswith(".local.xcconfig"):
         return "runtime/private file"
     lowered = relative.as_posix().lower()
-    if "captainayer" in lowered and ".imageset/" in lowered:
-        return "quarantined human portrait asset"
-    if re.search(
-        r"avatarcatalogassets\.bundle/(?:vvn|octavia|cleo|emma)(?:/|$)",
-        lowered,
-    ):
-        return "quarantined human portrait asset"
+    if any(marker in lowered_parts for marker in UNAPPROVED_LIKENESS_PATH_MARKERS):
+        return "unapproved likeness path"
+    if AVATAR_CATALOG_ASSET_ROOT == relative:
+        return None
+    try:
+        avatar_catalog_relative = relative.relative_to(AVATAR_CATALOG_ASSET_ROOT)
+    except ValueError:
+        avatar_catalog_relative = None
+    if avatar_catalog_relative is not None:
+        if relative in ALLOWED_AVATAR_CATALOG_ROOT_FILES:
+            return None
+        if avatar_catalog_relative == Path("ara"):
+            return None
+        if relative not in ARA_BINARY_HASHES:
+            return "unapproved bundled avatar asset"
+    if any(
+        part.lower().startswith("captainayer") and part.lower().endswith(".imageset")
+        for part in relative.parts
+    ) and relative not in CAPTAIN_AYER_BINARY_HASHES \
+            and relative not in CAPTAIN_AYER_CONTENTS_FILES:
+        return "unapproved Captain Ayer asset path"
     if any(
         marker in lowered
         for marker in (
@@ -390,6 +655,29 @@ def denied_path_reason(relative: Path) -> str | None:
     suffix = relative.suffix.lower()
     if suffix in DENIED_SUFFIXES and relative not in ALLOWED_BINARY_HASHES:
         return "generated/private or unreviewed binary"
+    return None
+
+
+def denied_directory_reason(relative: Path) -> str | None:
+    if not relative.parts:
+        return "invalid empty path"
+    if relative.parts[0] not in ALLOWED_TOP_LEVEL:
+        return "unreviewed top-level path"
+    if any(part in DENIED_DIR_NAMES or part.startswith("dist-") for part in relative.parts):
+        return "generated/private directory"
+    if "build" in relative.parts and relative != Path("macos/OpenClamStudio/build"):
+        return "generated/private directory"
+    lowered_parts = tuple(part.lower() for part in relative.parts)
+    if any(marker in lowered_parts for marker in UNAPPROVED_LIKENESS_PATH_MARKERS):
+        return "unapproved likeness path"
+    try:
+        avatar_catalog_relative = relative.relative_to(AVATAR_CATALOG_ASSET_ROOT)
+    except ValueError:
+        avatar_catalog_relative = None
+    if avatar_catalog_relative is not None \
+            and avatar_catalog_relative != Path(".") \
+            and avatar_catalog_relative.parts[0] != "ara":
+        return "unapproved bundled avatar directory"
     return None
 
 
@@ -453,30 +741,110 @@ def audit_bytes(relative: Path, raw: bytes) -> list[str]:
     return findings
 
 
+def audit_history_bytes(relative: Path, raw: bytes) -> list[str]:
+    historical_hash = HISTORICAL_SYNTHETIC_GUIDE_HASHES.get(relative)
+    if historical_hash is None:
+        return audit_bytes(relative, raw)
+    if hashlib.sha256(raw).hexdigest() != historical_hash:
+        return [f"historical synthetic fixture hash mismatch: {relative}"]
+    return []
+
+
+def avatar_rights_findings(root: Path) -> list[str]:
+    findings: list[str] = []
+    ledger = b"".join(
+        f"{digest}  {relative.as_posix()}\n".encode("utf-8")
+        for relative, digest in sorted(
+            REQUIRED_AVATAR_BINARY_HASHES.items(),
+            key=lambda item: item[0].as_posix(),
+        )
+    )
+    if hashlib.sha256(ledger).hexdigest() != AUTHORIZED_AVATAR_LEDGER_SHA256:
+        findings.append("authorized avatar path/hash ledger mismatch")
+
+    provenance_path = AVATAR_CATALOG_ASSET_ROOT / "provenance.json"
+    try:
+        provenance = json.loads((root / provenance_path).read_text(encoding="utf-8"))
+        avatars = provenance["avatars"]
+        avatar_ids = [avatar["id"] for avatar in avatars]
+        rights = [avatar["rights_basis"] for avatar in avatars]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        findings.append("bundled avatar provenance is unreadable or incomplete")
+    else:
+        if avatar_ids != ["captain-ayer", "ara"]:
+            findings.append("bundled avatar provenance identity set mismatch")
+        if rights != [
+            "user-confirmed-owned-and-authorized",
+            "user-confirmed-owned-and-authorized",
+        ]:
+            findings.append("bundled avatar provenance rights basis mismatch")
+    return findings
+
+
+def store_release_policy_findings(root: Path) -> list[str]:
+    findings: list[str] = []
+    for relative, snippets in REQUIRED_STORE_DISABLED_SNIPPETS.items():
+        try:
+            raw = (root / relative).read_bytes()
+        except OSError:
+            findings.append(f"store-disabled policy file missing: {relative}")
+            continue
+        for snippet in snippets:
+            if snippet not in raw:
+                findings.append(f"store-disabled policy marker missing: {relative}")
+                break
+    return findings
+
+
 def audit_current_tree(root: Path) -> tuple[list[str], int]:
-    findings = denied_directory_findings(root)
-    candidates = sorted(set(candidate_files(root)))
+    findings: list[str] = []
+    entries = source_tree_entries(root)
+    reviewable_files = git_reviewable_files(root)
     for required in sorted(REQUIRED_FILES):
         if not (root / required).is_file():
             findings.append(f"required public file missing: {required}")
+    for required in sorted(
+        set(REQUIRED_AVATAR_BINARY_HASHES)
+        | set(DETERMINISTIC_FIXTURE_BINARY_HASHES)
+    ):
+        if not (root / required).is_file():
+            findings.append(f"required approved binary missing: {required}")
 
-    for relative in candidates:
+    inspected = 0
+    for relative, metadata in entries:
         path = root / relative
+        unexpected_xattrs = (
+            set(extended_attributes(path)) - NON_TRANSPORTED_PLATFORM_XATTRS
+        )
+        if unexpected_xattrs:
+            findings.append(f"extended attributes not allowed: {relative}")
+        if stat.S_ISLNK(metadata.st_mode):
+            findings.append(f"symlink not allowed in public source: {relative}")
+            continue
+        if stat.S_ISDIR(metadata.st_mode):
+            reason = denied_directory_reason(relative)
+            if reason is not None:
+                findings.append(f"{reason}: {relative}")
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            findings.append(f"non-regular source entry: {relative}")
+            continue
+        inspected += 1
+        if reviewable_files is not None and relative not in reviewable_files:
+            findings.append(f"ignored path present in public tree: {relative}")
         reason = denied_path_reason(relative)
         if reason is not None:
             findings.append(f"{reason}: {relative}")
             continue
-        if path.is_symlink():
-            findings.append(f"symlink not allowed in public source: {relative}")
-            continue
-        if not path.is_file():
-            findings.append(f"non-regular source entry: {relative}")
-            continue
-        mode = stat.S_IMODE(path.stat().st_mode)
+        if metadata.st_nlink != 1:
+            findings.append(f"hard-linked source file not allowed: {relative}")
+        mode = stat.S_IMODE(metadata.st_mode)
         if mode & 0o022:
             findings.append(f"group/world-writable source file: {relative}")
         findings.extend(audit_bytes(relative, path.read_bytes()))
-    return findings, len(candidates)
+    findings.extend(avatar_rights_findings(root))
+    findings.extend(store_release_policy_findings(root))
+    return findings, inspected
 
 
 def reachable_objects(root: Path) -> tuple[dict[str, set[Path]], list[str]]:
@@ -540,6 +908,8 @@ def history_findings(root: Path, require_fresh: bool) -> list[str]:
         if not raw_name:
             continue
         relative = Path(os.fsdecode(raw_name).strip("\n"))
+        if relative in HISTORICAL_SYNTHETIC_GUIDE_HASHES:
+            continue
         reason = denied_path_reason(relative)
         if reason is not None:
             findings.append(f"reachable history {reason}: {relative}")
@@ -570,7 +940,7 @@ def history_findings(root: Path, require_fresh: bool) -> list[str]:
         for relative in paths_by_oid.get(oid, set()):
             findings.extend(
                 f"reachable history {finding}"
-                for finding in audit_bytes(relative, content)
+                for finding in audit_history_bytes(relative, content)
             )
     return findings
 
@@ -581,6 +951,17 @@ def parse_args() -> argparse.Namespace:
         "--require-fresh-history",
         action="store_true",
         help="require exactly one root commit (for the first public push)",
+    )
+    manifest = parser.add_mutually_exclusive_group()
+    manifest.add_argument(
+        "--manifest",
+        type=Path,
+        help="require an exact file/mode/SHA-256 match to this release manifest",
+    )
+    manifest.add_argument(
+        "--write-manifest",
+        type=Path,
+        help="write an exact file/mode/SHA-256 manifest outside the audited tree",
     )
     parser.add_argument("root", nargs="?", default=".")
     return parser.parse_args()
@@ -594,6 +975,8 @@ def main() -> int:
         return 2
 
     current, inspected = audit_current_tree(root)
+    if args.manifest is not None:
+        current.extend(manifest_findings(root, args.manifest.resolve()))
     history = history_findings(root, args.require_fresh_history)
     findings = sorted(set(current + history))
     if findings:
@@ -601,8 +984,19 @@ def main() -> int:
         for finding in findings:
             print(f"- {finding}", file=sys.stderr)
         return 1
+    if args.write_manifest is not None:
+        try:
+            write_manifest(root, args.write_manifest)
+        except (OSError, ValueError) as error:
+            print(f"Public release manifest failed: {error}", file=sys.stderr)
+            return 2
+        print(f"Release manifest written: {args.write_manifest.resolve()}")
     history_label = " and reachable history" if git_root(root) is not None else ""
-    print(f"Public release audit passed ({inspected} files{history_label} inspected).")
+    manifest_label = " with exact manifest" if args.manifest is not None else ""
+    print(
+        f"Public release audit passed "
+        f"({inspected} files{history_label}{manifest_label} inspected)."
+    )
     return 0
 
 

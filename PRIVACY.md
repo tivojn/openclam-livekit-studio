@@ -23,8 +23,8 @@ Users who want complete removal must delete those records separately.
   instructions submitted for that operation.
 - Live Talk sends microphone audio through LiveKit and the selected model and
   speech services.
-- Avatar Store requests its public catalog, thumbnails, and packages from the
-  configured GitHub release origin after an explicit user action.
+- Avatar Store networking is disabled in v1.0.1. Users may still import a local
+  AVTR package explicitly from Files.
 
 Provider terms and retention policies apply. Local system voices and bundled
 offline speech recognition keep their respective inference traffic on-device.
@@ -45,9 +45,10 @@ without the key leaving the device.
 
 AVTR export and import are explicit. Runtime packages exclude credentials,
 conversations, application settings, and build diagnostics. The public source
-tree includes only a deterministic synthetic guide. Human-likeness avatars and
-thumbnails may be distributed through the separate Avatar Store only after
-rights and consent are documented.
+tree bundles only the reviewed Captain Ayer and Ara runtime assets. Their exact
+paths and hashes are pinned by the public release audit, and their media license
+is separate from the MIT software license. No source portraits or
+avatar-authoring projects are shipped.
 
 The macOS-specific detail is in
 [`macos/OpenClamStudio/PRIVACY.md`](macos/OpenClamStudio/PRIVACY.md).

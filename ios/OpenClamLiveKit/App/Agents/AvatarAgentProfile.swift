@@ -5,7 +5,8 @@ struct AvatarAgentIdentity: Identifiable, Codable, Equatable, Sendable {
     let displayName: String
 
     static let defaultPack: [Self] = [
-        .init(id: "captain-ayer", displayName: "OpenClam Guide"),
+        .init(id: "captain-ayer", displayName: "Captain Ayer"),
+        .init(id: "ara", displayName: "Ara"),
     ]
 
     static let defaultID = "captain-ayer"

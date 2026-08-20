@@ -34,6 +34,339 @@ enum CaptainAyerFaceHitMap {
     }
 }
 
+enum CaptainAyerBodyRegion: Equatable, Sendable {
+    case head
+    case leadingHand
+    case trailingHand
+    case heart
+    case torso
+    case lowerBody
+    case feet
+}
+
+/// Broad, forgiving hit zones in normalized full-body coordinates. The hand
+/// ellipses are intentionally larger than the visible fingers so a tap still
+/// feels direct on a phone-sized avatar without stealing vertical drags.
+enum CaptainAyerBodyHitMap {
+    static func region(at point: CGPoint) -> CaptainAyerBodyRegion? {
+        guard point.x.isFinite, point.y.isFinite,
+              point.x >= 0, point.x <= 1,
+              point.y >= 0, point.y <= 1 else { return nil }
+
+        if point.x >= 0.28, point.x <= 0.72, point.y <= 0.20 {
+            return .head
+        }
+        if ellipseContains(point, center: CGPoint(x: 0.30, y: 0.53), radii: CGSize(width: 0.105, height: 0.105)) {
+            return .leadingHand
+        }
+        if ellipseContains(point, center: CGPoint(x: 0.70, y: 0.53), radii: CGSize(width: 0.105, height: 0.105)) {
+            return .trailingHand
+        }
+        if ellipseContains(point, center: CGPoint(x: 0.44, y: 0.275), radii: CGSize(width: 0.11, height: 0.085)) {
+            return .heart
+        }
+        if point.x >= 0.30, point.x <= 0.70,
+           point.y >= 0.18, point.y < 0.58 {
+            return .torso
+        }
+        if point.x >= 0.31, point.x <= 0.69,
+           point.y >= 0.58, point.y < 0.88 {
+            return .lowerBody
+        }
+        if point.x >= 0.31, point.x <= 0.69, point.y >= 0.88 {
+            return .feet
+        }
+        return nil
+    }
+
+    private static func ellipseContains(
+        _ point: CGPoint,
+        center: CGPoint,
+        radii: CGSize
+    ) -> Bool {
+        let x = (point.x - center.x) / radii.width
+        let y = (point.y - center.y) / radii.height
+        return x * x + y * y <= 1
+    }
+}
+
+enum CaptainAyerAvatarDragIntent: Equatable, Sendable {
+    case pending
+    case gaze
+    case opacity
+}
+
+/// One intent classifier is shared by the stage and its tests so the
+/// zero-distance gaze gesture cannot consume a deliberate opacity swipe.
+enum CaptainAyerAvatarGesturePolicy {
+    static let tapSlop: CGFloat = 8
+    static let opacityThreshold: CGFloat = 18
+    static let verticalDominance: CGFloat = 1.18
+
+    static func dragIntent(
+        translation: CGSize,
+        supportsOpacity: Bool
+    ) -> CaptainAyerAvatarDragIntent {
+        guard translation.width.isFinite, translation.height.isFinite else {
+            return .pending
+        }
+        let horizontal = abs(translation.width)
+        let vertical = abs(translation.height)
+        if supportsOpacity,
+           vertical >= horizontal * verticalDominance {
+            // Keep a vertically dominant touch undecided until it clears the
+            // opacity threshold. This prevents a slow opacity swipe from
+            // briefly steering the irises before the user's intent resolves.
+            return vertical >= opacityThreshold ? .opacity : .pending
+        }
+        if hypot(horizontal, vertical) > tapSlop {
+            return .gaze
+        }
+        return .pending
+    }
+}
+
+enum CaptainAyerAvatarDragCompletion: Equatable, Sendable {
+    case tap
+    case gaze
+    case opacity
+}
+
+struct CaptainAyerAvatarDragSession: Equatable, Sendable {
+    private(set) var intent: CaptainAyerAvatarDragIntent = .pending
+    private(set) var exceededTapSlop = false
+
+    mutating func update(translation: CGSize, supportsOpacity: Bool) {
+        let proposed = CaptainAyerAvatarGesturePolicy.dragIntent(
+            translation: translation,
+            supportsOpacity: supportsOpacity
+        )
+        if proposed == .opacity {
+            intent = .opacity
+        } else if intent == .pending, proposed == .gaze {
+            intent = .gaze
+        }
+        if hypot(translation.width, translation.height)
+            > CaptainAyerAvatarGesturePolicy.tapSlop {
+            exceededTapSlop = true
+        }
+    }
+
+    var completion: CaptainAyerAvatarDragCompletion {
+        if intent == .opacity { return .opacity }
+        return exceededTapSlop ? .gaze : .tap
+    }
+}
+
+enum CaptainAyerEyeSide: Equatable, Sendable {
+    case left
+    case right
+}
+
+struct CaptainAyerAmbientBlinkPlan: Equatable, Sendable {
+    let delay: TimeInterval
+    let duration: TimeInterval
+    let followingEyeDelay: TimeInterval
+    let leadingEye: CaptainAyerEyeSide
+    let leftPeakClosure: Double
+    let rightPeakClosure: Double
+
+    var totalDuration: TimeInterval { duration + followingEyeDelay }
+
+    func event(startingAt date: Date) -> CaptainAyerAmbientBlinkEvent {
+        let leftDelay = leadingEye == .left ? 0 : followingEyeDelay
+        let rightDelay = leadingEye == .right ? 0 : followingEyeDelay
+        // Slightly different durations keep the lids coordinated without
+        // making their extrema land on the same frame.
+        return CaptainAyerAmbientBlinkEvent(
+            leftStart: date.addingTimeInterval(leftDelay),
+            rightStart: date.addingTimeInterval(rightDelay),
+            leftDuration: duration * (leadingEye == .left ? 1 : 0.96),
+            rightDuration: duration * (leadingEye == .right ? 1 : 0.96),
+            leftPeakClosure: leftPeakClosure,
+            rightPeakClosure: rightPeakClosure
+        )
+    }
+}
+
+struct CaptainAyerAmbientBlinkEvent: Equatable, Sendable {
+    let leftStart: Date
+    let rightStart: Date
+    let leftDuration: TimeInterval
+    let rightDuration: TimeInterval
+    let leftPeakClosure: Double
+    let rightPeakClosure: Double
+
+    func closure(for eye: CaptainAyerEyeSide, at date: Date) -> Double {
+        switch eye {
+        case .left:
+            return Self.closure(
+                at: date,
+                start: leftStart,
+                duration: leftDuration,
+                peak: leftPeakClosure
+            )
+        case .right:
+            return Self.closure(
+                at: date,
+                start: rightStart,
+                duration: rightDuration,
+                peak: rightPeakClosure
+            )
+        }
+    }
+
+    private static func closure(
+        at date: Date,
+        start: Date,
+        duration: TimeInterval,
+        peak: Double
+    ) -> Double {
+        guard duration > 0 else { return 0 }
+        let progress = date.timeIntervalSince(start) / duration
+        guard progress >= 0, progress < 1 else { return 0 }
+
+        // Eyelids close quickly, pause only briefly, then reopen more softly.
+        let amount: Double
+        if progress < 0.34 {
+            amount = smoothStep(progress / 0.34)
+        } else if progress < 0.42 {
+            amount = 1
+        } else {
+            amount = 1 - smoothStep((progress - 0.42) / 0.58)
+        }
+        return min(1, max(0, peak * amount))
+    }
+
+    private static func smoothStep(_ value: Double) -> Double {
+        let amount = min(1, max(0, value))
+        return amount * amount * (3 - 2 * amount)
+    }
+}
+
+struct CaptainAyerAmbientGazePlan: Equatable, Sendable {
+    let delay: TimeInterval
+    /// A deliberately small fraction of the rig's already-bounded gaze bank.
+    let target: CGPoint
+    let acquireDuration: TimeInterval
+    let dwellDuration: TimeInterval
+    let returnDuration: TimeInterval
+
+    var totalDuration: TimeInterval {
+        acquireDuration + dwellDuration + returnDuration
+    }
+
+    /// Fraction of one complete idle cycle spent moving the irises. Keeping
+    /// this independently testable prevents subtle idle motion from drifting
+    /// into near-continuous animation as timing ranges evolve.
+    var activeDutyCycle: Double {
+        let cycleDuration = delay + totalDuration
+        guard cycleDuration > 0 else { return 0 }
+        return totalDuration / cycleDuration
+    }
+
+    func event(startingAt date: Date) -> CaptainAyerAmbientGazeEvent {
+        CaptainAyerAmbientGazeEvent(plan: self, start: date)
+    }
+}
+
+struct CaptainAyerAmbientGazeEvent: Equatable, Sendable {
+    let plan: CaptainAyerAmbientGazePlan
+    let start: Date
+
+    func direction(at date: Date) -> CGPoint? {
+        let elapsed = date.timeIntervalSince(start)
+        // Date arithmetic can round an exact `start + totalDuration` boundary
+        // a fraction of a nanosecond below the requested value. Treat that
+        // representational sliver as finished so the idle planner returns to
+        // its true nil/home state instead of publishing a zero-length gaze.
+        guard elapsed >= 0,
+              elapsed + 1e-9 < plan.totalDuration else { return nil }
+
+        let amount: Double
+        if elapsed < plan.acquireDuration {
+            amount = smoothStep(elapsed / plan.acquireDuration)
+        } else if elapsed < plan.acquireDuration + plan.dwellDuration {
+            amount = 1
+        } else {
+            let returnElapsed = elapsed - plan.acquireDuration - plan.dwellDuration
+            amount = 1 - smoothStep(returnElapsed / plan.returnDuration)
+        }
+        let progress = CGFloat(amount)
+        return CGPoint(
+            x: plan.target.x * progress,
+            y: plan.target.y * progress
+        )
+    }
+
+    private func smoothStep(_ value: Double) -> Double {
+        let amount = min(1, max(0, value))
+        return amount * amount * (3 - 2 * amount)
+    }
+}
+
+/// Turns injected unit samples into bounded plans. Tests pass fixed samples;
+/// production passes system randomness, so behavior stays natural without
+/// making timing-dependent tests flaky.
+enum CaptainAyerAmbientMotionPlanner {
+    static func blinkPlan(
+        delaySample: Double,
+        durationSample: Double,
+        offsetSample: Double,
+        characterSample: Double,
+        leadingEyeSample: Double,
+        asymmetrySample: Double
+    ) -> CaptainAyerAmbientBlinkPlan {
+        let character = unit(characterSample)
+        let isPartial = character < 0.22
+        let basePeak = isPartial
+            ? 0.56 + 0.22 * (character / 0.22)
+            : 0.94 + 0.06 * unit(asymmetrySample)
+        let asymmetry = 0.006 + 0.012 * unit(asymmetrySample)
+        let leadingEye: CaptainAyerEyeSide = unit(leadingEyeSample) < 0.5
+            ? .left : .right
+        let leftPeak = leadingEye == .left ? basePeak : basePeak - asymmetry
+        let rightPeak = leadingEye == .right ? basePeak : basePeak - asymmetry
+
+        return CaptainAyerAmbientBlinkPlan(
+            delay: 2.8 + 3.4 * unit(delaySample),
+            duration: 0.22 + 0.10 * unit(durationSample),
+            followingEyeDelay: 0.012 + 0.022 * unit(offsetSample),
+            leadingEye: leadingEye,
+            leftPeakClosure: min(1, max(0, leftPeak)),
+            rightPeakClosure: min(1, max(0, rightPeak))
+        )
+    }
+
+    static func gazePlan(
+        delaySample: Double,
+        horizontalSample: Double,
+        verticalSample: Double,
+        paceSample: Double,
+        dwellSample: Double
+    ) -> CaptainAyerAmbientGazePlan {
+        var horizontal = (unit(horizontalSample) * 2 - 1) * 0.22
+        if abs(horizontal) < 0.055 {
+            horizontal = horizontal < 0 ? -0.055 : 0.055
+        }
+        return CaptainAyerAmbientGazePlan(
+            delay: 5.0 + 4.0 * unit(delaySample),
+            target: CGPoint(
+                x: horizontal,
+                y: (unit(verticalSample) * 2 - 1) * 0.28
+            ),
+            acquireDuration: 0.28 + 0.14 * unit(paceSample),
+            dwellDuration: 0.34 + 0.46 * unit(dwellSample),
+            returnDuration: 0.38 + 0.12 * (1 - unit(paceSample))
+        )
+    }
+
+    private static func unit(_ value: Double) -> Double {
+        guard value.isFinite else { return 0.5 }
+        return min(1, max(0, value))
+    }
+}
+
 enum CaptainAyerSpriteSheet {
     static func clampedFrame(_ frame: Int, frameCount: Int) -> Int {
         min(max(0, frame), max(0, frameCount - 1))
@@ -181,9 +514,11 @@ final class CaptainAyerFaceReactionController: ObservableObject {
     static let gazeAcquireDuration: TimeInterval = 0.250
     static let gazeReturnDuration: TimeInterval = 0.320
     static let gazeSmoothing = 0.30
+    static let bodyReactionDuration: TimeInterval = 0.900
 
     @Published private(set) var isAnimating = false
     @Published private(set) var isGazeAnimating = false
+    @Published private(set) var isAmbientAnimating = false
     @Published private(set) var isTrackingGaze = false
     @Published private(set) var gazeTarget = CGPoint.zero
 
@@ -212,13 +547,31 @@ final class CaptainAyerFaceReactionController: ObservableObject {
     private var rightWinkStart: Date?
     private var browStart: Date?
     private var mouthStart: Date?
-    private var lastFaceTap: Date?
+    private var bodyReactionStart: Date?
+    private var bodyReaction: CaptainAyerBodyRegion?
+    private var lastTap: Date?
     private var flourishUsesLeftEye = false
     private var completionTask: Task<Void, Never>?
     private var animationGeneration = 0
     private var gazeTransition: GazeTransition?
     private var gazeCompletionTask: Task<Void, Never>?
     private var gazeGeneration = 0
+    private var ambientBlink: CaptainAyerAmbientBlinkEvent?
+    private var ambientGaze: CaptainAyerAmbientGazeEvent?
+    private var ambientBlinkTask: Task<Void, Never>?
+    private var ambientGazeTask: Task<Void, Never>?
+    private var ambientBlinkIsAnimating = false
+    private var ambientGazeIsAnimating = false
+    private let randomUnit: () -> Double
+    private let now: () -> Date
+
+    init(
+        randomUnit: @escaping () -> Double = { Double.random(in: 0 ... 1) },
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.randomUnit = randomUnit
+        self.now = now
+    }
 
     @discardableResult
     func react(
@@ -230,13 +583,19 @@ final class CaptainAyerFaceReactionController: ObservableObject {
     }
 
     @discardableResult
+    func react(
+        atNormalizedBodyPoint point: CGPoint,
+        at date: Date = Date()
+    ) -> Bool {
+        guard let region = CaptainAyerBodyHitMap.region(at: point) else { return false }
+        return react(to: region, at: date)
+    }
+
+    @discardableResult
     func react(to region: CaptainAyerFaceRegion, at date: Date = Date()) -> Bool {
-        if let lastFaceTap,
-           date.timeIntervalSince(lastFaceTap) >= 0,
-           date.timeIntervalSince(lastFaceTap) < Self.tapThrottle {
+        guard acceptsTap(at: date) else {
             return false
         }
-        lastFaceTap = date
 
         switch region {
         case .brow:
@@ -261,11 +620,66 @@ final class CaptainAyerFaceReactionController: ObservableObject {
         return true
     }
 
+    @discardableResult
+    func react(to region: CaptainAyerBodyRegion, at date: Date = Date()) -> Bool {
+        guard acceptsTap(at: date) else { return false }
+        bodyReaction = region
+        bodyReactionStart = date
+
+        switch region {
+        case .head:
+            beginFlourish(at: date)
+        case .leadingHand:
+            leftWinkStart = date
+            mouthStart = date
+        case .trailingHand:
+            rightWinkStart = date
+            mouthStart = date
+        case .heart:
+            browStart = date
+            mouthStart = date
+        case .torso:
+            browStart = date
+        case .lowerBody:
+            browStart = date
+        case .feet:
+            mouthStart = date
+        }
+
+        wakeAnimation(at: date)
+        return true
+    }
+
     /// A rail-button reaction combines the three bundled local tissues. The
     /// wink alternates sides so repeated taps do not look like a loop.
     func flourish(at date: Date = Date()) {
         beginFlourish(at: date)
         wakeAnimation(at: date)
+    }
+
+    /// Starts the low-duty-cycle idle behavior. The stage calls this only
+    /// while visible and while Reduce Motion is off.
+    func startAmbientMotion() {
+        guard ambientBlinkTask == nil, ambientGazeTask == nil else { return }
+
+        ambientBlinkTask = Task { @MainActor [weak self] in
+            await self?.runAmbientBlinkLoop()
+        }
+        ambientGazeTask = Task { @MainActor [weak self] in
+            await self?.runAmbientGazeLoop()
+        }
+    }
+
+    func stopAmbientMotion() {
+        ambientBlinkTask?.cancel()
+        ambientGazeTask?.cancel()
+        ambientBlinkTask = nil
+        ambientGazeTask = nil
+        ambientBlink = nil
+        ambientGaze = nil
+        ambientBlinkIsAnimating = false
+        ambientGazeIsAnimating = false
+        refreshAmbientAnimationFlag()
     }
 
     /// `direction` is normalized to -1...1 around the avatar's eye line.
@@ -356,7 +770,9 @@ final class CaptainAyerFaceReactionController: ObservableObject {
         rightWinkStart = nil
         browStart = nil
         mouthStart = nil
-        lastFaceTap = nil
+        bodyReactionStart = nil
+        bodyReaction = nil
+        lastTap = nil
         animationGeneration += 1
         isAnimating = false
         cancelGaze()
@@ -364,7 +780,9 @@ final class CaptainAyerFaceReactionController: ObservableObject {
 
     func renderState(at date: Date = Date()) -> CaptainAyerFaceReactionRenderState {
         let leftEye = eyeState(startedAt: leftWinkStart, at: date)
+            ?? ambientEyeState(for: .left, at: date)
         let rightEye = eyeState(startedAt: rightWinkStart, at: date)
+            ?? ambientEyeState(for: .right, at: date)
 
         let browEnvelope = envelope(
             startedAt: browStart,
@@ -389,7 +807,8 @@ final class CaptainAyerFaceReactionController: ObservableObject {
             rightEye: rightEye,
             leftBrowFrame: browFrame,
             rightBrowFrame: browFrame,
-            wideMouthOpacity: mouthOpacity
+            wideMouthOpacity: mouthOpacity,
+            headPose: bodyHeadPose(at: date)
         )
     }
 
@@ -432,8 +851,26 @@ final class CaptainAyerFaceReactionController: ObservableObject {
     }
 
     private func gazeFrame(at date: Date) -> Int? {
-        guard isTrackingGaze || isGazeAnimating else { return nil }
-        return gazeFrame(for: gazePosition(at: date))
+        if isTrackingGaze || isGazeAnimating {
+            return gazeFrame(for: gazePosition(at: date))
+        }
+        if let bodyDirection = bodyGazeDirection(at: date) {
+            return gazeFrame(
+                for: CGPoint(
+                    x: bodyDirection.x * Self.gazeXRange,
+                    y: bodyDirection.y * Self.gazeYRange
+                )
+            )
+        }
+        if let ambientDirection = ambientGaze?.direction(at: date) {
+            return gazeFrame(
+                for: CGPoint(
+                    x: ambientDirection.x * Self.gazeXRange,
+                    y: ambientDirection.y * Self.gazeYRange
+                )
+            )
+        }
+        return nil
     }
 
     private func gazeFrame(for position: CGPoint) -> Int {
@@ -468,6 +905,91 @@ final class CaptainAyerFaceReactionController: ObservableObject {
         )
     }
 
+    private func bodyGazeDirection(at date: Date) -> CGPoint? {
+        guard let reaction = bodyReaction,
+              let amount = envelope(
+                startedAt: bodyReactionStart,
+                duration: Self.bodyReactionDuration,
+                at: date
+              ) else { return nil }
+        let target: CGPoint
+        switch reaction {
+        case .head:
+            target = CGPoint(x: 0.08, y: -0.18)
+        case .leadingHand:
+            target = CGPoint(x: -0.62, y: 0.30)
+        case .trailingHand:
+            target = CGPoint(x: 0.62, y: 0.30)
+        case .heart:
+            target = CGPoint(x: -0.12, y: 0.18)
+        case .torso:
+            target = CGPoint(x: 0.08, y: 0.34)
+        case .lowerBody:
+            target = CGPoint(x: 0, y: 0.66)
+        case .feet:
+            target = CGPoint(x: 0, y: 0.82)
+        }
+        let progress = CGFloat(amount)
+        return CGPoint(x: target.x * progress, y: target.y * progress)
+    }
+
+    private func bodyHeadPose(at date: Date) -> CaptainAyerFaceMirrorHeadPose {
+        guard let reaction = bodyReaction,
+              let amount = envelope(
+                startedAt: bodyReactionStart,
+                duration: Self.bodyReactionDuration,
+                at: date
+              ) else { return .zero }
+        let yaw: Double
+        let pitch: Double
+        let roll: Double
+        switch reaction {
+        case .head:
+            yaw = 0.04
+            pitch = -0.06
+            roll = -0.05
+        case .leadingHand:
+            yaw = -0.12
+            pitch = 0.05
+            roll = -0.18
+        case .trailingHand:
+            yaw = 0.12
+            pitch = 0.05
+            roll = 0.18
+        case .heart:
+            yaw = -0.04
+            pitch = 0.12
+            roll = -0.06
+        case .torso:
+            yaw = 0.03
+            pitch = 0.10
+            roll = 0
+        case .lowerBody:
+            yaw = 0
+            pitch = 0.12
+            roll = 0
+        case .feet:
+            yaw = 0
+            pitch = 0.16
+            roll = 0.04
+        }
+        return CaptainAyerFaceMirrorHeadPose(
+            yaw: yaw * amount,
+            pitch: pitch * amount,
+            roll: roll * amount
+        )
+    }
+
+    private func acceptsTap(at date: Date) -> Bool {
+        if let lastTap,
+           date.timeIntervalSince(lastTap) >= 0,
+           date.timeIntervalSince(lastTap) < Self.tapThrottle {
+            return false
+        }
+        lastTap = date
+        return true
+    }
+
     private func wakeAnimation(at date: Date) {
         animationGeneration += 1
         let generation = animationGeneration
@@ -479,6 +1001,7 @@ final class CaptainAyerFaceReactionController: ObservableObject {
             rightWinkStart.map { $0.addingTimeInterval(Self.winkDuration) },
             browStart.map { $0.addingTimeInterval(Self.browDuration) },
             mouthStart.map { $0.addingTimeInterval(Self.mouthDuration) },
+            bodyReactionStart.map { $0.addingTimeInterval(Self.bodyReactionDuration) },
         ]
         .compactMap { $0 }
         .max() ?? date
@@ -494,6 +1017,75 @@ final class CaptainAyerFaceReactionController: ObservableObject {
         }
     }
 
+    private func runAmbientBlinkLoop() async {
+        while !Task.isCancelled {
+            let plan = CaptainAyerAmbientMotionPlanner.blinkPlan(
+                delaySample: randomUnit(),
+                durationSample: randomUnit(),
+                offsetSample: randomUnit(),
+                characterSample: randomUnit(),
+                leadingEyeSample: randomUnit(),
+                asymmetrySample: randomUnit()
+            )
+            guard await wait(plan.delay) else { return }
+
+            ambientBlink = plan.event(startingAt: now())
+            ambientBlinkIsAnimating = true
+            refreshAmbientAnimationFlag()
+            guard await wait(plan.totalDuration) else { return }
+
+            ambientBlink = nil
+            ambientBlinkIsAnimating = false
+            refreshAmbientAnimationFlag()
+        }
+    }
+
+    private func runAmbientGazeLoop() async {
+        while !Task.isCancelled {
+            let plan = CaptainAyerAmbientMotionPlanner.gazePlan(
+                delaySample: randomUnit(),
+                horizontalSample: randomUnit(),
+                verticalSample: randomUnit(),
+                paceSample: randomUnit(),
+                dwellSample: randomUnit()
+            )
+            guard await wait(plan.delay) else { return }
+
+            ambientGaze = plan.event(startingAt: now())
+            ambientGazeIsAnimating = true
+            refreshAmbientAnimationFlag()
+            guard await wait(plan.totalDuration) else { return }
+
+            ambientGaze = nil
+            ambientGazeIsAnimating = false
+            refreshAmbientAnimationFlag()
+        }
+    }
+
+    private func wait(_ duration: TimeInterval) async -> Bool {
+        do {
+            try await Task.sleep(for: .seconds(max(0, duration)))
+            return !Task.isCancelled
+        } catch {
+            return false
+        }
+    }
+
+    private func refreshAmbientAnimationFlag() {
+        let isActive = ambientBlinkIsAnimating || ambientGazeIsAnimating
+        if isAmbientAnimating != isActive {
+            isAmbientAnimating = isActive
+        }
+    }
+
+    private func ambientEyeState(
+        for eye: CaptainAyerEyeSide,
+        at date: Date
+    ) -> CaptainAyerEyeReactionState? {
+        guard let ambientBlink else { return nil }
+        return eyeState(for: ambientBlink.closure(for: eye, at: date))
+    }
+
     private func eyeState(
         startedAt start: Date?,
         at date: Date
@@ -502,7 +1094,14 @@ final class CaptainAyerFaceReactionController: ObservableObject {
             startedAt: start,
             duration: Self.winkDuration,
             at: date
-        ), progress > 0.004 else { return nil }
+        ) else { return nil }
+        return eyeState(for: progress)
+    }
+
+    private func eyeState(
+        for progress: Double
+    ) -> CaptainAyerEyeReactionState? {
+        guard progress > 0.004 else { return nil }
 
         var upper = 0
         while upper < Self.eyeStates.count - 1,

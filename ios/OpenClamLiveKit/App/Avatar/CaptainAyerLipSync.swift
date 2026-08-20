@@ -76,7 +76,23 @@ struct CaptainAyerLipSyncTimeline: Equatable, Sendable {
         let index = max(0, lower - 1)
         let currentCue = cues[index]
         let previousViseme = index > 0 ? cues[index - 1].viseme : currentCue.viseme
-        let fadeDuration = Self.fadeDuration(from: previousViseme, to: currentCue.viseme)
+        let requestedFadeDuration = Self.fadeDuration(
+            from: previousViseme,
+            to: currentCue.viseme
+        )
+        // The final synthetic silence must finish at the audio boundary. A
+        // very short supplied duration can leave less than the normal 75 ms
+        // closing window, so compress only that last fade instead of snapping
+        // the remaining mouth motion when `elapsed` reaches `duration`.
+        let fadeDuration: TimeInterval
+        if index == cues.count - 1, currentCue.viseme == .silence {
+            fadeDuration = min(
+                requestedFadeDuration,
+                max(0.000_001, duration - currentCue.offset)
+            )
+        } else {
+            fadeDuration = requestedFadeDuration
+        }
         let blend = min(1, max(0, (elapsed - currentCue.offset) / fadeDuration))
         return CaptainAyerAvatarRenderState(
             previous: previousViseme,
@@ -85,7 +101,7 @@ struct CaptainAyerLipSyncTimeline: Equatable, Sendable {
         )
     }
 
-    private static func fadeDuration(
+    static func fadeDuration(
         from: CaptainAyerViseme,
         to: CaptainAyerViseme
     ) -> TimeInterval {
@@ -190,11 +206,24 @@ struct CaptainAyerLipSyncPlanner: Sendable {
             }
             offset += item.weight / naturalDuration * duration
         }
-        cues.append(.init(offset: max(0, duration - 0.02), viseme: .silence))
+        var compactedCues = Self.compact(cues)
+        if let lastCue = compactedCues.last, lastCue.viseme != .silence {
+            let closingFadeDuration = CaptainAyerLipSyncTimeline.fadeDuration(
+                from: lastCue.viseme,
+                to: .silence
+            )
+            let closingOffset = min(
+                duration,
+                max(lastCue.offset, duration - closingFadeDuration)
+            )
+            compactedCues.append(
+                .init(offset: closingOffset, viseme: .silence)
+            )
+        }
 
         return CaptainAyerLipSyncTimeline(
             duration: duration,
-            cues: Self.compact(cues)
+            cues: compactedCues
         )
     }
 
@@ -244,7 +273,19 @@ struct CaptainAyerLipSyncPlanner: Sendable {
         var result: [CaptainAyerLipSyncCue] = []
         for cue in cues {
             if let last = result.last, abs(last.offset - cue.offset) < 0.0001 {
-                result[result.count - 1] = cue
+                // Retain the opening silence and first viseme at offset zero.
+                // The timeline's upper-bound lookup then selects the first
+                // viseme with `previous == .silence` and `blend == 0`, giving
+                // speech a real crossfade instead of a one-frame mouth pop.
+                let isOpeningBoundary = result.count == 1
+                    && abs(last.offset) < 0.0001
+                    && last.viseme == .silence
+                    && cue.viseme != .silence
+                if isOpeningBoundary {
+                    result.append(cue)
+                } else {
+                    result[result.count - 1] = cue
+                }
             } else if result.last?.viseme != cue.viseme {
                 result.append(cue)
             }

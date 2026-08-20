@@ -62,6 +62,15 @@ final class OpenClamAvatarAssetStore {
         }
     }
 
+    func resourceURL(for motion: OpenClamAvatarMotionAsset) -> URL? {
+        switch motion.reference {
+        case let .catalogBundle(directory, filename):
+            return resourceURL(directory: directory, filename: filename)
+        case let .installedFile(url):
+            return url
+        }
+    }
+
     func removeCachedImages() {
         cache.removeAllObjects()
     }

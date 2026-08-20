@@ -1,0 +1,422 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclam.app/schemas/avatar-package-v3-ios-light.json",
+  "title": "OpenClam Avatar Package v3 (ios-light with optional motion)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "variant", "id", "displayName", "rig", "assets"],
+  "properties": {
+    "format": {
+      "const": "openclam-avatar"
+    },
+    "version": {
+      "const": 3
+    },
+    "variant": {
+      "const": "ios-light"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "rig": {
+      "$ref": "#/$defs/rig"
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thumbnail", "body", "head-mask", "eye-left", "eye-right",
+        "brow-left", "brow-right", "gaze-left-atlas", "gaze-right-atlas",
+        "viseme-sil", "viseme-FF", "viseme-TH", "viseme-nn", "viseme-RR",
+        "viseme-aa", "viseme-E", "viseme-ih", "viseme-ou"
+      ],
+      "properties": {
+        "thumbnail": {
+          "allOf": [
+            { "$ref": "#/$defs/image" },
+            { "$ref": "#/$defs/thumbnailFile" }
+          ]
+        },
+        "body": { "$ref": "#/$defs/bodyImage" },
+        "head-mask": { "$ref": "#/$defs/headMaskImage" },
+        "eye-left": { "$ref": "#/$defs/eyeLeftImage" },
+        "eye-right": { "$ref": "#/$defs/eyeRightImage" },
+        "brow-left": { "$ref": "#/$defs/browLeftImage" },
+        "brow-right": { "$ref": "#/$defs/browRightImage" },
+        "gaze-left-atlas": { "$ref": "#/$defs/gazeLeftImage" },
+        "gaze-right-atlas": { "$ref": "#/$defs/gazeRightImage" },
+        "viseme-sil": { "$ref": "#/$defs/visemeSilImage" },
+        "viseme-FF": { "$ref": "#/$defs/visemeFFImage" },
+        "viseme-TH": { "$ref": "#/$defs/visemeTHImage" },
+        "viseme-nn": { "$ref": "#/$defs/visemeNNImage" },
+        "viseme-RR": { "$ref": "#/$defs/visemeRRImage" },
+        "viseme-aa": { "$ref": "#/$defs/visemeAAImage" },
+        "viseme-E": { "$ref": "#/$defs/visemeEImage" },
+        "viseme-ih": { "$ref": "#/$defs/visemeIHImage" },
+        "viseme-ou": { "$ref": "#/$defs/visemeOUImage" }
+      }
+    },
+    "motions": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 3,
+      "properties": {
+        "walk": { "$ref": "#/$defs/walkMotion" },
+        "edgeIdle": { "$ref": "#/$defs/edgeIdleMotion" },
+        "moves": { "$ref": "#/$defs/movesMotion" }
+      }
+    }
+  },
+  "$defs": {
+    "motion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path", "sha256", "byteCount", "mediaType", "width", "height",
+        "durationMilliseconds"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^assets/motion-(walk|edge-idle|moves)\\.mov$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "byteCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "mediaType": { "const": "video/quicktime" },
+        "width": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 4096
+        },
+        "durationMilliseconds": {
+          "type": "integer",
+          "minimum": 250,
+          "maximum": 12000
+        }
+      }
+    },
+    "walkMotion": {
+      "allOf": [
+        { "$ref": "#/$defs/motion" },
+        { "properties": { "path": { "const": "assets/motion-walk.mov" } } }
+      ]
+    },
+    "edgeIdleMotion": {
+      "allOf": [
+        { "$ref": "#/$defs/motion" },
+        { "properties": { "path": { "const": "assets/motion-edge-idle.mov" } } }
+      ]
+    },
+    "movesMotion": {
+      "allOf": [
+        { "$ref": "#/$defs/motion" },
+        { "properties": { "path": { "const": "assets/motion-moves.mov" } } }
+      ]
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "byteCount", "mediaType", "width", "height"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^assets/[A-Za-z0-9-]+\\.(png|jpg|jpeg)$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "byteCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "mediaType": {
+          "enum": ["image/png", "image/jpeg"]
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        }
+      }
+    },
+    "pngImage": {
+      "allOf": [
+        { "$ref": "#/$defs/image" },
+        {
+          "properties": {
+            "mediaType": { "const": "image/png" }
+          }
+        }
+      ]
+    },
+    "thumbnailFile": {
+      "oneOf": [
+        {
+          "properties": {
+            "path": { "const": "assets/thumbnail.png" },
+            "mediaType": { "const": "image/png" }
+          }
+        },
+        {
+          "properties": {
+            "path": { "enum": ["assets/thumbnail.jpg", "assets/thumbnail.jpeg"] },
+            "mediaType": { "const": "image/jpeg" }
+          }
+        }
+      ]
+    },
+    "bodyImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/body.png" } } }
+      ]
+    },
+    "headMaskImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/head-mask.png" } } }
+      ]
+    },
+    "eyeLeftImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/eye-left.png" } } }
+      ]
+    },
+    "eyeRightImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/eye-right.png" } } }
+      ]
+    },
+    "browLeftImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/brow-left.png" } } }
+      ]
+    },
+    "browRightImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/brow-right.png" } } }
+      ]
+    },
+    "gazeLeftImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/gaze-left-atlas.png" } } }
+      ]
+    },
+    "gazeRightImage": {
+      "allOf": [
+        { "$ref": "#/$defs/pngImage" },
+        { "properties": { "path": { "const": "assets/gaze-right-atlas.png" } } }
+      ]
+    },
+    "visemeImage": {
+      "allOf": [
+        { "$ref": "#/$defs/image" },
+        {
+          "properties": {
+            "path": {
+              "pattern": "^assets/viseme-(sil|FF|TH|nn|RR|aa|E|ih|ou)\\.(png|jpg|jpeg)$"
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "path": { "pattern": "\\.png$" }
+            }
+          },
+          "then": {
+            "properties": {
+              "mediaType": { "const": "image/png" }
+            }
+          },
+          "else": {
+            "properties": {
+              "mediaType": { "const": "image/jpeg" }
+            }
+          }
+        }
+      ]
+    },
+    "visemeSilImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-sil\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeFFImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-FF\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeTHImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-TH\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeNNImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-nn\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeRRImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-RR\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeAAImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-aa\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeEImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-E\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeIHImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-ih\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "visemeOUImage": {
+      "allOf": [
+        { "$ref": "#/$defs/visemeImage" },
+        { "properties": { "path": { "pattern": "^assets/viseme-ou\\.(png|jpg|jpeg)$" } } }
+      ]
+    },
+    "bodySize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 64, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 64, "maximum": 4096 }
+      }
+    },
+    "bodyRect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 4096 },
+        "y": { "type": "number", "minimum": 0, "maximum": 4096 },
+        "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      }
+    },
+    "spriteBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1024 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1024 },
+        "width": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 1024 }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a", "b", "c", "d", "tx", "ty"],
+      "properties": {
+        "a": { "type": "number", "minimum": -8192, "maximum": 8192 },
+        "b": { "type": "number", "minimum": -8192, "maximum": 8192 },
+        "c": { "type": "number", "minimum": -8192, "maximum": 8192 },
+        "d": { "type": "number", "minimum": -8192, "maximum": 8192 },
+        "tx": { "type": "number", "minimum": -8192, "maximum": 8192 },
+        "ty": { "type": "number", "minimum": -8192, "maximum": 8192 }
+      }
+    },
+    "eyeSprite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["box", "columns", "rows", "storage"],
+      "properties": {
+        "box": { "$ref": "#/$defs/spriteBox" },
+        "columns": { "const": 1 },
+        "rows": { "const": 8 },
+        "storage": { "const": "verticalStrip" }
+      }
+    },
+    "browSprite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["box", "columns", "rows", "storage"],
+      "properties": {
+        "box": { "$ref": "#/$defs/spriteBox" },
+        "columns": { "const": 14 },
+        "rows": { "const": 3 },
+        "storage": { "const": "verticalStrip" }
+      }
+    },
+    "gazeSprite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["box", "columns", "rows", "storage"],
+      "properties": {
+        "box": { "$ref": "#/$defs/spriteBox" },
+        "columns": { "const": 25 },
+        "rows": { "const": 11 },
+        "storage": { "const": "gridAtlas" }
+      }
+    },
+    "rig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bodySize", "faceTransform", "faceBoundsInBody", "leftEye",
+        "rightEye", "leftBrow", "rightBrow", "leftGaze", "rightGaze"
+      ],
+      "properties": {
+        "bodySize": { "$ref": "#/$defs/bodySize" },
+        "faceTransform": { "$ref": "#/$defs/transform" },
+        "faceBoundsInBody": { "$ref": "#/$defs/bodyRect" },
+        "leftEye": { "$ref": "#/$defs/eyeSprite" },
+        "rightEye": { "$ref": "#/$defs/eyeSprite" },
+        "leftBrow": { "$ref": "#/$defs/browSprite" },
+        "rightBrow": { "$ref": "#/$defs/browSprite" },
+        "leftGaze": { "$ref": "#/$defs/gazeSprite" },
+        "rightGaze": { "$ref": "#/$defs/gazeSprite" }
+      }
+    }
+  }
+}

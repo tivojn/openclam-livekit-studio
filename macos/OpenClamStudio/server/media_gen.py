@@ -65,6 +65,13 @@ _IMAGE_DOWNLOAD_TIMEOUT = 120
 _MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024
 _MAX_IMAGE_OUTPUT_BYTES = 64 * 1024 * 1024
 _MAX_IMAGE_PROMPT_CHARS = 32_000
+# Imagine 2.0 rejects oversized prompts before generation.  Full-body briefs
+# are assembled from user/model text plus deterministic identity and rig rules,
+# so enforce the observed 8 KiB compatibility ceiling locally and count bytes,
+# not characters (CJK and emoji occupy more than one UTF-8 byte).
+_IMAGE_PROMPT_BYTE_LIMITS = {
+    ("xai", "grok-imagine-image-2.0"): 8 * 1024,
+}
 _MAX_VIDEO_PROMPT_CHARS = 32_000
 _MAX_VIDEO_INPUT_BYTES = 50 * 1024 * 1024
 _MAX_VIDEO_OUTPUT_BYTES = 512 * 1024 * 1024
@@ -808,6 +815,18 @@ def _image_prompt(prompt):
     return value
 
 
+def _require_image_prompt_limit(prompt, provider, model):
+    maximum = _IMAGE_PROMPT_BYTE_LIMITS.get((provider, model))
+    if maximum is None:
+        return
+    actual = len(prompt.encode("utf-8"))
+    if actual > maximum:
+        label = "Grok Imagine Image 2.0" if provider == "xai" else model
+        raise RuntimeError(
+            f"{label} prompts must be at most {maximum:,} UTF-8 bytes "
+            f"(received {actual:,}); shorten the art direction and try again")
+
+
 def _openai_image_size(value, model="gpt-image-2"):
     # GPT Image 2 documents ``auto`` as the default for both size and quality.
     # Keep the released GPT Image 1 lane's previous explicit square/high shape
@@ -868,6 +887,7 @@ async def generate_image(prompt, config, output_dir=None, file_name=None):
     base = _base("image", provider, config)
     model = _model("image", provider, config)
     _require_avatar_model("image", provider, model)
+    _require_image_prompt_limit(prompt, provider, model)
     reviewed_options = {}
     if provider == "openai":
         reviewed_options = {
@@ -991,6 +1011,7 @@ async def generate_image_edit(prompt, references, config, aspect_ratio="1:1",
     base = _base("image", provider, config)
     model = _model("image", provider, config)
     _require_avatar_model("image", provider, model)
+    _require_image_prompt_limit(prompt, provider, model)
     maximum_references = ({"grok-imagine-image-2.0": 5}.get(model, 3)
                           if provider == "xai" else
                           {"openai": 16, "gemini": 14}[provider])

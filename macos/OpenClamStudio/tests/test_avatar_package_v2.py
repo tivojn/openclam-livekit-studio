@@ -9,9 +9,10 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import jsonschema
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from server import avatar_package as package
 
@@ -29,6 +30,26 @@ def png(path: Path, size=(16, 16), color=(120, 80, 50, 255)) -> None:
 def jpg(path: Path, size=(1024, 1024), color=(120, 80, 50)) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", size, color).save(path, format="JPEG", quality=90)
+
+
+def quicktime(path: Path, marker=b"motion") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  " + marker)
+
+
+def motion_probe(*, codec="hevc", audio=0, alpha=True, duration=6083) -> dict:
+    return {
+        "streamCount": 1 + audio,
+        "videoTracks": 1,
+        "audioTracks": audio,
+        "formatNames": ["mov", "mp4", "m4a", "3gp", "3g2", "mj2"],
+        "codecName": codec,
+        "codecTag": "hvc1" if codec == "hevc" else "avc1",
+        "width": 720,
+        "height": 1088,
+        "durationMilliseconds": duration,
+        "hasAlpha": alpha,
+    }
 
 
 def make_authoring(root: Path, identifier="nova") -> Path:
@@ -60,6 +81,11 @@ def make_authoring(root: Path, identifier="nova") -> Path:
     (avatar / "runtime" / "manifest.json").write_text("{}")
     (avatar / "diag" / "provider.log").write_text("never export")
     (avatar / ".motion-cache" / "signature").write_text("never export")
+    (avatar / ".wardrobe.json").write_text(json.dumps({
+        "version": 3,
+        "digest": "portrait-analysis-cache",
+        "prompt": "recomputable tailored wardrobe prompt",
+    }))
     return avatar
 
 
@@ -121,9 +147,33 @@ def make_runtime(authoring: Path) -> Path:
     return runtime
 
 
+def add_runtime_motions(runtime: Path, kinds=("idle", "move")) -> None:
+    manifest_path = runtime / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    motion = {}
+    for index, kind in enumerate(kinds):
+        filename = f"motion-{kind}.mov"
+        quicktime(runtime / filename, f"clip-{index}".encode())
+        motion[kind] = {
+            "fps": 12,
+            "frames": 73,
+            "frame_width": 720,
+            "frame_height": 1088,
+            "alpha_stream_hevc": f"assets/{filename}",
+            "alpha_stream": f"assets/motion-{kind}.webm",
+            "rawSource": f"/private/owned-avatar/raw/{kind}.mov",
+            "providerPrompt": "never serialize this authoring prompt",
+            "apiKey": "sk-" + ("n" * 32),
+        }
+    manifest["motion"] = motion
+    manifest_path.write_text(json.dumps(manifest))
+
+
 class AvatarContractParityTests(unittest.TestCase):
     def test_vendored_schemas_match_suite_contract_when_both_exist(self):
-        for name in ("README.md", "manifest.schema.json", "macos-full.schema.json"):
+        for name in (
+                "README.md", "manifest.schema.json", "macos-full.schema.json",
+                "ios-light-v3.schema.json"):
             local = SCHEMA_ROOT / name
             self.assertTrue(local.is_file())
             shared = SUITE_SCHEMA_ROOT / name
@@ -150,6 +200,16 @@ class MacFullAvatarPackageTests(unittest.TestCase):
 
     def test_round_trip_preserves_authoring_and_rejects_runtime_data(self):
         source = make_authoring(self.root / "source")
+        # A direct export must never serialize crash-recovery snapshots, even
+        # if it races an interrupted body edit outside the normal busy guard.
+        transaction = source / ".body-edit-transaction"
+        transaction.mkdir()
+        (transaction / "transaction.json").write_text(
+            '{"phase":"state-written","private":"do-not-export"}')
+        transaction_stage = source / ".body-edit-transaction-stage-test"
+        transaction_stage.mkdir()
+        (transaction_stage / "manifest.json").write_text(
+            '{"private":"do-not-export"}')
         archive = self.root / "Nova-Mac.avtr"
         manifest = package.export_macos_full("nova", source, archive)
         self.assertEqual(manifest["variant"], "macos-full")
@@ -166,6 +226,8 @@ class MacFullAvatarPackageTests(unittest.TestCase):
             self.assertFalse(any("runtime" in name for name in names))
             self.assertFalse(any("diag" in name for name in names))
             self.assertFalse(any("cache" in name for name in names))
+            self.assertFalse(any("body-edit-transaction" in name for name in names))
+            self.assertNotIn("authoring/.wardrobe.json", names)
             jsonschema.Draft202012Validator(
                 json.loads((SCHEMA_ROOT / "macos-full.schema.json").read_text())
             ).validate(json.loads(bundle.read("manifest.json")))
@@ -180,7 +242,15 @@ class MacFullAvatarPackageTests(unittest.TestCase):
         self.assertTrue((installed / "nova" / "raw" / "identity-source.png").is_file())
         self.assertTrue((installed / "nova" / "motion" / "raw" / "walk-source.mp4").is_file())
         self.assertFalse((installed / "nova" / "runtime").exists())
+        self.assertFalse((installed / "nova" / ".wardrobe.json").exists())
         self.assertEqual(seen[-1][0], seen[-1][1])
+
+    def test_export_prunes_only_the_known_wardrobe_cache_hidden_file(self):
+        source = make_authoring(self.root / "source")
+        (source / ".unexpected.json").write_text("{}")
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "unsafe authoring path"):
+            package.export_macos_full("nova", source, self.root / "bad.avtr")
 
     def test_collision_installs_a_new_identifier_without_overwrite(self):
         source = make_authoring(self.root / "source")
@@ -264,6 +334,8 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
             "nova", "Nova", self.authoring, self.runtime, archive
         )
         self.assertEqual(manifest["variant"], "ios-light")
+        self.assertEqual(manifest["version"], 2)
+        self.assertNotIn("motions", manifest)
         with zipfile.ZipFile(archive) as bundle:
             self.assertEqual(len(bundle.infolist()), 19)
             self.assertFalse(any(info.is_dir() for info in bundle.infolist()))
@@ -291,6 +363,146 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 content = bundle.read(asset["path"])
                 self.assertEqual(len(content), asset["byteCount"])
                 self.assertEqual(hashlib.sha256(content).hexdigest(), asset["sha256"])
+
+    def test_export_v3_includes_exact_ara_like_idle_and_move_records(self):
+        add_runtime_motions(self.runtime)
+        archive = self.root / "Ara-iPhone.avtr"
+        duplicate = self.root / "Ara-iPhone-again.avtr"
+        with patch.object(package, "_probe_motion_details", return_value=motion_probe()):
+            manifest = package.export_ios_light(
+                "nova", "Ara", self.authoring, self.runtime, archive
+            )
+            duplicate_manifest = package.export_ios_light(
+                "nova", "Ara", self.authoring, self.runtime, duplicate
+            )
+
+        self.assertEqual(manifest, duplicate_manifest)
+        self.assertEqual(
+            archive.read_bytes(), duplicate.read_bytes(),
+            "the same runtime inputs must produce a byte-identical AVTR",
+        )
+        self.assertEqual(manifest["version"], 3)
+        self.assertEqual(set(manifest["motions"]), {"edgeIdle", "moves"})
+        self.assertEqual(
+            manifest["motions"]["edgeIdle"]["path"],
+            "assets/motion-edge-idle.mov",
+        )
+        self.assertEqual(
+            manifest["motions"]["moves"]["path"],
+            "assets/motion-moves.mov",
+        )
+        for record in manifest["motions"].values():
+            self.assertEqual(set(record), {
+                "path", "sha256", "byteCount", "mediaType", "width", "height",
+                "durationMilliseconds",
+            })
+            self.assertEqual(record["mediaType"], "video/quicktime")
+            self.assertEqual((record["width"], record["height"]), (720, 1088))
+            self.assertEqual(record["durationMilliseconds"], 6083)
+
+        with zipfile.ZipFile(archive) as bundle, zipfile.ZipFile(duplicate) as repeated:
+            names = bundle.namelist()
+            self.assertEqual(len(names), 21)
+            self.assertEqual(names[0], "manifest.json")
+            self.assertEqual(names[-2:], [
+                "assets/motion-edge-idle.mov", "assets/motion-moves.mov",
+            ])
+            self.assertEqual(bundle.read("manifest.json"), repeated.read("manifest.json"))
+            loaded = json.loads(bundle.read("manifest.json"))
+            jsonschema.Draft202012Validator(
+                json.loads((SCHEMA_ROOT / "ios-light-v3.schema.json").read_text())
+            ).validate(loaded)
+            for record in loaded["motions"].values():
+                content = bundle.read(record["path"])
+                self.assertEqual(len(content), record["byteCount"])
+                self.assertEqual(hashlib.sha256(content).hexdigest(), record["sha256"])
+            serialized = bundle.read("manifest.json").decode("utf-8")
+            for private_value in (
+                    "/private/owned-avatar", "providerPrompt", "authoring prompt",
+                    "apiKey", "sk-" + ("n" * 8), "alpha_stream_hevc", "rawSource"):
+                self.assertNotIn(private_value, serialized)
+
+    def test_export_strips_image_metadata_and_rejects_rig_asset_mismatch(self):
+        marker = "PRIVATE_EXPORT_PATH_/Users/example/portrait.png"
+        body_path = self.runtime / "body.png"
+        with Image.open(body_path) as source:
+            pixels = source.convert("RGBA")
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text("Source", marker)
+        pixels.save(body_path, format="PNG", pnginfo=metadata)
+
+        viseme_path = self.runtime / "sil_open.jpg"
+        with Image.open(viseme_path) as source:
+            pixels = source.convert("RGB")
+        exif = Image.Exif()
+        exif[0x010E] = marker
+        pixels.save(viseme_path, format="JPEG", quality=90, exif=exif)
+
+        archive = self.root / "clean-images.avtr"
+        package.export_ios_light(
+            "nova", "Nova", self.authoring, self.runtime, archive
+        )
+        with zipfile.ZipFile(archive) as bundle:
+            self.assertNotIn(marker.encode(), bundle.read("assets/body.png"))
+            self.assertNotIn(marker.encode(), bundle.read("assets/viseme-sil.jpg"))
+
+        runtime_manifest_path = self.runtime / "manifest.json"
+        runtime_manifest = json.loads(runtime_manifest_path.read_text())
+        runtime_manifest["body"]["width"] += 1
+        runtime_manifest_path.write_text(json.dumps(runtime_manifest))
+        destination = self.root / "mismatched-rig.avtr"
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "body dimensions do not match"):
+            package.export_ios_light(
+                "nova", "Nova", self.authoring, self.runtime, destination
+            )
+        self.assertFalse(destination.exists())
+
+    def test_export_v3_rejects_wrong_codec_audio_missing_alpha_and_oversize(self):
+        add_runtime_motions(self.runtime, ("idle",))
+        invalid_probes = {
+            "codec": motion_probe(codec="h264"),
+            "audio": motion_probe(audio=1),
+            "alpha": motion_probe(alpha=False),
+            "duration": motion_probe(duration=5900),
+        }
+        messages = {
+            "codec": "HEVC",
+            "audio": "no audio",
+            "alpha": "alpha channel",
+            "duration": "runtime ledger",
+        }
+        for label, details in invalid_probes.items():
+            with self.subTest(label=label):
+                destination = self.root / f"invalid-{label}.avtr"
+                with patch.object(
+                        package, "_probe_motion_details", return_value=details):
+                    with self.assertRaisesRegex(
+                            package.AvatarPackageError, messages[label]):
+                        package.export_ios_light(
+                            "nova", "Nova", self.authoring, self.runtime, destination
+                        )
+                self.assertFalse(destination.exists())
+
+        destination = self.root / "invalid-size.avtr"
+        with patch.object(package, "MAX_IOS_MOTION_BYTES", 24), \
+                patch.object(package, "_probe_motion_details", return_value=motion_probe()):
+            with self.assertRaisesRegex(package.AvatarPackageError, "too large"):
+                package.export_ios_light(
+                    "nova", "Nova", self.authoring, self.runtime, destination
+                )
+        self.assertFalse(destination.exists())
+
+    def test_export_v3_rejects_header_only_motion_without_packaged_ffprobe(self):
+        add_runtime_motions(self.runtime, ("idle",))
+        destination = self.root / "header-only-no-probe.avtr"
+        with patch.object(package.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(
+                    package.AvatarPackageError, "motion validation is unavailable"):
+                package.export_ios_light(
+                    "nova", "Nova", self.authoring, self.runtime, destination
+                )
+        self.assertFalse(destination.exists())
 
     def test_missing_body_or_incompatible_gaze_fails_without_output(self):
         destination = self.root / "bad.avtr"

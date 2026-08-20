@@ -22,6 +22,56 @@ includes('<title>OpenClam Studio · Settings</title>');
 includes('<html lang="en">');
 includes('Avatar Studio');
 includes('Avatar Store');
+includes('<button type="button" data-tab="store" hidden disabled aria-hidden="true" tabindex="-1">Avatar Store</button>');
+includes('<section id="tab-store" hidden aria-hidden="true">');
+includes('const AVATAR_STORE_AVAILABLE = false;');
+includes('if (b.dataset.tab === \'store\' && !AVATAR_STORE_AVAILABLE) return;');
+includes('if (!AVATAR_STORE_AVAILABLE) return;');
+includes('id="importAvtr"');
+includes('id="body-edit-card"');
+includes('.body-edit-card{display:block;');
+includes('id="body-edit-instruction" maxlength="600" aria-describedby="body-edit-note"');
+includes('id="body-edit-apply"');
+includes('Edit all 3 views');
+includes('Sends the three body plates and identity reference to xAI for 3 image edits.');
+includes('aria-labelledby="body-edit-title" aria-busy="false"');
+includes("api('/api/avatar/body/edit'");
+includes("startBodyProgress('body-edit')");
+includes("BODY_JOB_KIND === 'body-edit'");
+includes('job.done && BODY_EDIT_JOB_ID');
+includes("normaliseJobKind(job.kind) === 'body-edit'");
+includes("provider.name === 'xai' && provider.model === 'grok-imagine-image-2.0'");
+const editBodySource = source.slice(
+  source.indexOf('async function editBody()'),
+  source.indexOf('\nasync function generateMotion(', source.indexOf('async function editBody()')),
+);
+const alreadyRunningBranch = editBodySource.slice(
+  editBodySource.indexOf("response.reason === 'already building'"),
+  editBodySource.indexOf('if (response.detail', editBodySource.indexOf("response.reason === 'already building'")),
+);
+assert.doesNotMatch(alreadyRunningBranch, /BODY_EDIT_JOB_ID\s*=/,
+  'An unrelated already-running job must not claim or clear the edit draft');
+const bodyEditAvailable = executableContract(
+  '/* qa:body-edit-provider-gate:start */',
+  '/* qa:body-edit-provider-gate:end */',
+  'bodyEditAvailable');
+assert.equal(bodyEditAvailable({
+  has_body: true, has_turnaround: true, body_edit_available: true,
+  provider: {name: 'xai', model: 'grok-imagine-image-2.0'},
+}), true);
+for (const provider of [
+  {name: 'openai', model: 'gpt-image-1'},
+  {name: 'xai', model: 'grok-imagine-image'},
+  null,
+]) {
+  assert.equal(bodyEditAvailable({
+    has_body: true, has_turnaround: true, body_edit_available: true, provider,
+  }), false, 'Body editing must be visible only for exact xAI Image 2.0');
+}
+assert.equal(bodyEditAvailable({
+  has_body: false, has_turnaround: false, body_edit_available: true,
+  provider: {name: 'xai', model: 'grok-imagine-image-2.0'},
+}), false, 'Body editing requires a complete existing turnaround');
 includes('Curated · verified AVTR');
 includes('Every download is checked against the');
 includes('id="store-state" role="status" aria-live="polite"');
@@ -92,7 +142,7 @@ const actionHolder = {
   querySelectorAll(selector) {
     const attribute = selector.slice(1, -1);
     return this.innerHTML.includes(attribute)
-      ? [{closest: () => ({dataset: {storeId: 'vivieen'}})}] : [];
+      ? [{closest: () => ({dataset: {storeId: 'fixture-avatar'}})}] : [];
   },
 };
 const actionCard = {querySelector: selector => selector === '.store-actions' ? actionHolder : null};
@@ -156,6 +206,14 @@ for (const id of [
   'body-motion-poses', 'body-move-styles', 'body-walk-generate',
   'body-idle-generate', 'body-move-generate',
 ]) includes(`id="${id}"`);
+
+// Under-eye motion must survive a calibration round trip as an independent
+// target. It used to borrow the Cheeks value, which hid the target entirely
+// and made a rebuild publish a blink-only under-eye layer.
+includes("key === 'brows' || key === 'eyebags'");
+includes("slug: RIG_SLUG, brows: RIG_PROFILE.brows, eyebags: RIG_PROFILE.eyebags");
+includes('under-eye ${RIG_PROFILE.eyebags}%');
+excludes(/name === 'eyebags' \? 'cheeks' : name/);
 
 const bodyResponsiveStart = source.indexOf('/* qa:body-responsive:start */');
 const bodyResponsiveEnd = source.indexOf('/* qa:body-responsive:end */');

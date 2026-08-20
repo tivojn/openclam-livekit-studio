@@ -1,16 +1,22 @@
 {
-  "format": 2,
-  "license": "MIT",
-  "contains_human_likeness": false,
-  "source": "shared/avatar-package-v2/fixtures/ios-light-golden.avtr",
-  "source_sha256": "20f46ca9f3160a0d5934202ef5908085f6246e492f8298582e0e12f7411d78cb",
+  "format": 1,
+  "source": "user-authorized-bundled-avatar-pack",
   "avatars": [
     {
       "id": "captain-ayer",
-      "display_name": "OpenClam Guide",
-      "asset_directory": "public-guide",
-      "included_bytes": 58246,
-      "description": "Deterministic synthetic test geometry; no photograph or human likeness."
+      "display_name": "Captain Ayer",
+      "source_slug": "sparrow-avatar",
+      "included_bytes": 10942430,
+      "rights_basis": "user-confirmed-owned-and-authorized"
+    },
+    {
+      "id": "ara",
+      "display_name": "Ara",
+      "source_slug": "ara",
+      "source_archive": "Ara-iPhone-v3-hardened-final-20260820.avtr",
+      "package_sha256": "867e384166813ff4ba19efb8025a0e86ff3d3af8667bcc53d164f5704fbe6142",
+      "included_bytes": 13856550,
+      "rights_basis": "user-confirmed-owned-and-authorized"
     }
   ]
 }

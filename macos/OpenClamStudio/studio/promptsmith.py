@@ -31,15 +31,27 @@ BRIEFS = {
     "body": (
         "You write couture-level full-body wardrobe art direction used to "
         "generate a character's full-body views from the attached portrait. "
-        "Expand the gist into one paragraph under 700 characters with "
-        "editorial discipline: a hierarchical palette (one luminous hero "
-        "colour, one supporting accent, quiet neutrals, named explicitly), "
-        "tailoring in a cutter's language (sculpted waist, clean modern "
-        "neckline, streamlined line), a named fabric with real behaviour "
-        "and crisp internal structure, exactly ONE statement detail, "
-        "restrained jewellery, and an elegant killer-heel finish - all "
-        "matched to the portrait's medium, apparent age, and presentation, "
-        "closing on immaculate seams and understated luxury. Hard rules: no "
+        "Expand the gist into one paragraph under 1,100 characters. Read only "
+        "the portrait's visible feminine, masculine, or androgynous styling; "
+        "do not claim a gender identity. Use a cutter's language, named fabrics "
+        "with real behaviour, and crisp internal structure. "
+        f"{wardrobe.COLOR_RULE} {wardrobe.PROPORTION_RULE} "
+        "For feminine photographic styling use Saint Laurent power tailoring, "
+        "Dior wrap blazers, The Row or Khaite minimalism, Chanel tweed, Bottega "
+        "Veneta leather garments, or a close-cut Max Mara camel coat, with "
+        "Louboutin, Manolo Blahnik, Gianvito Rossi, or Aquazzura heels of at "
+        "least 90mm. For masculine styling use Saint Laurent or Tom Ford power "
+        "tailoring, Dior Men, The Row, Bottega Veneta, Zegna, or Loro Piana, "
+        "with polished loafers, Oxfords, Derbies, or ankle boots and never "
+        "pumps, stilettos, or high heels. For androgynous styling preserve the "
+        "reference through architectural tailoring and loafers or ankle boots "
+        "instead of defaulting to heels. "
+        f"{wardrobe.ACCESSORY_RULE} Keep skin luminous and real, "
+        "brows defined, makeup restrained, and the existing hair sleekly "
+        "finished. Evening gets either smoky eyes or a bold lip, never both. "
+        "The test is tailored authority, editorial sensuality, and zero "
+        "fast-fashion noise. Hard rules: no bare midriff, sheer fabric, extreme "
+        "plunging neckline, "
         "heavy or bulky layers, no baggy or wide-leg trousers, and nothing "
         "held in or attached to the hands. " + _SHARED
     ),
@@ -131,7 +143,16 @@ def expand(kind, gist, avatar_dir=None, base=""):
         direction = wardrobe._clean(text, wardrobe.PROMPT_LIMIT - 600)
         if len(direction) < 60:
             raise RuntimeError("the model returned an unusably short brief")
-        return wardrobe._finalise(direction)
+        traits = {}
+        if avatar_dir:
+            cached = wardrobe.cached_prompt(avatar_dir)
+            if isinstance(cached, dict):
+                traits = cached.get("traits") or {}
+        return wardrobe._finalise(
+            direction,
+            traits.get("presentation") if traits else None,
+            traits.get("medium") if traits else None,
+        )
     text = _cleaned(text, ACT_LIMIT)
     if len(text) < 12:
         raise RuntimeError("the model returned an unusably short direction")

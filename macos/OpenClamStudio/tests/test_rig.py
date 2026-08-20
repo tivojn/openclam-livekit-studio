@@ -24,6 +24,7 @@ class RigProfileTests(unittest.TestCase):
             "lips": (80.0, 120.0),
             "jaw": (25.0, 110.0),
             "cheeks": (0.0, 110.0),
+            "eyebags": (0.0, 60.0),
             "nasolabial": (0.0, 110.0),
             "nose": (0.0, 110.0),
         }
@@ -48,6 +49,7 @@ class RigProfileTests(unittest.TestCase):
             "preset": "subtle",
         })
         self.assertEqual(profile["nose"], 4.0)
+        self.assertEqual(profile["eyebags"], 35.0)
         self.assertEqual(profile["preset"], "subtle")
         with self.assertRaisesRegex(ValueError, "identity lock"):
             rig.normalize({"teeth_lock": False})
@@ -56,7 +58,7 @@ class RigProfileTests(unittest.TestCase):
         locks = rig.public_schema()["locks"]
         self.assertTrue(locks["upper_teeth"])
         self.assertTrue(locks["lower_teeth"])
-        self.assertEqual(rig.VERSION, 3)
+        self.assertEqual(rig.VERSION, 4)
 
     def test_red_experimental_values_are_allowed_for_anatomy_qa(self):
         profile = rig.normalize({
@@ -88,14 +90,21 @@ class RigProfileTests(unittest.TestCase):
         self.assertIn("eyebags", decoded["regions"])
         self.assertEqual(len(decoded["regions"]["eyebags"]), 2)
 
-    def test_eyebag_band_animates_and_shows_in_the_landscape(self):
+    def test_eyebag_has_its_own_calibration_target_and_speech_runtime(self):
         # Owner, rachel 2026-08-01: the infraorbital "eyebag" triangles were
         # the one patch of face no layer touched - cheek weight centred
         # lower on the malar, eye layer stopping at the lid. A thin layer
-        # now rides the cheek envelope (same warp, shallower travel), the
-        # landscape panel shows the band, and it answers the Cheeks slider.
+        # now rides the cheek envelope (same warp, shallower travel). It must
+        # retain its OWN target through a calibration rebuild, never alias the
+        # Cheeks target and disappear from the panel again.
         from studio import expression, export
         self.assertEqual(expression.EYEBAG_UP, [0.0, 0.5, 1.0, 1.6, 2.3])
+        self.assertEqual(rig.CONTROLS["eyebags"]["label"], "Under-eye bags")
+        self.assertEqual(rig.CONTROLS["eyebags"]["default"], 35)
+        self.assertEqual(rig.PRESETS["natural"]["eyebags"], 35)
+        self.assertEqual(rig.normalize({"eyebags": 51})["eyebags"], 51.0)
+        for preset in rig.PRESETS.values():
+            self.assertIn("eyebags", preset)
         source = open(os.path.join(ROOT, "studio", "expression.py"),
                       encoding="utf-8").read()
         self.assertIn("def _eyebag_weight", source)
@@ -110,12 +119,20 @@ class RigProfileTests(unittest.TestCase):
         renderer = open(os.path.join(ROOT, "web", "index.html"),
                         encoding="utf-8").read()
         self.assertIn("if (manifest.eyebag) {", renderer)
-        self.assertIn("const value = blink * Number(values[values.length - 1] || 0) * .3", renderer)
+        self.assertIn("const speechValue = upperFaceSpeaking", renderer)
+        self.assertIn("const eyebagGain = rigExpressionGain('eyebags', 35, 35);", renderer)
+        self.assertIn("const expression = speechExpressionAt(now, upperFaceSpeaking,", renderer)
+        self.assertIn("speechExpressionState, reducedMotion.matches);", renderer)
         self.assertIn("drawStripState(faceContext, layers.eyebag[key]", renderer)
         settings = open(os.path.join(ROOT, "web", "settings.html"),
                         encoding="utf-8").read()
         self.assertIn("eyebags: [126, 196, 226]", settings)
-        self.assertIn("name === 'eyebags' ? 'cheeks' : name", settings)
+        self.assertIn("(RIG_PROFILE[name] || 0) / 100", settings)
+        self.assertNotIn("name === 'eyebags' ? 'cheeks' : name", settings)
+        app_source = open(os.path.join(ROOT, "server", "app.py"),
+                          encoding="utf-8").read()
+        self.assertIn('eyebags: float = _rig_control_field("eyebags")',
+                      app_source)
 
     def test_tilted_source_heads_regenerate_toward_frontal(self):
         # rachel (2026-08-01): a tilted selfie kept its pose through the
@@ -357,7 +374,7 @@ class RigProfileTests(unittest.TestCase):
         # The natural preset IS the owner's proven profile - a fresh upload
         # builds ready to talk, no rebuild-to-100% ritual.
         self.assertEqual(rig.PRESETS["natural"],
-                         dict(lips=100, jaw=97, cheeks=100, brows=10,
+                         dict(lips=100, jaw=97, cheeks=100, eyebags=35, brows=10,
                               forehead=100, nasolabial=100, nose=100))
         self.assertEqual(rig.CONTROLS["forehead"]["label"], "Forehead")
         from studio import expression
@@ -369,7 +386,10 @@ class RigProfileTests(unittest.TestCase):
                         encoding="utf-8").read()
         self.assertIn("const browValues = manifest.brow && manifest.brow.dys || [0]", renderer)
         self.assertIn("const browTop = Math.max(...browValues.map", renderer)
-        self.assertIn("const browValue = (agentSpeaking ? -.58 : -.18 * microBrow(now))", renderer)
+        self.assertIn("const browGain = rigExpressionGain('brows', 10, 10);", renderer)
+        self.assertIn("const upperFaceSpeaking = speaking && !reducedMotion.matches;", renderer)
+        self.assertIn("const speechExpressionAt = (now, speaking, state, reduce = false) =>", renderer)
+        self.assertIn("microBrow(now, reducedMotion.matches)", renderer)
         self.assertIn("const squeeze = manifest.brow.sqs || [0]", renderer)
         self.assertIn("drawStripState(faceContext, layers.brow[key]", renderer)
         from studio import expression as expr

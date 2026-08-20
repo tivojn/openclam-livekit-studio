@@ -178,6 +178,7 @@ final class ConversationModel: ObservableObject {
     @Published private(set) var pendingAppHandoffProposal: AppHandoffProposal?
     @Published private(set) var isTTSEnabled: Bool
     @Published private(set) var speechOutputError: String?
+    @Published private(set) var isSpeechOutputActive = false
 
     private let router = AssistantIntentRouter()
     private let synthesizer = AVSpeechSynthesizer()
@@ -446,12 +447,42 @@ final class ConversationModel: ObservableObject {
         using aiConfiguration: AIConfigurationModel? = nil
     ) {
         guard isTTSEnabled else { return }
+        startAssistantSpeech(text, using: aiConfiguration)
+    }
+
+    /// Plays one response because the user explicitly requested it without changing the
+    /// auto-read preference used for future replies.
+    func readAssistantReplyAloud(
+        _ text: String,
+        using aiConfiguration: AIConfigurationModel? = nil
+    ) {
+        startAssistantSpeech(text, using: aiConfiguration)
+    }
+
+    private func startAssistantSpeech(
+        _ text: String,
+        using aiConfiguration: AIConfigurationModel?
+    ) {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         stopSpeechOutput()
         speechOutputError = nil
         let generation = speechOutputLifecycle.begin()
+        isSpeechOutputActive = true
         captainAyerAvatar.prepare(text: value, generation: generation)
+
+#if DEBUG
+        let holdsUITestPreparation = ProcessInfo.processInfo.arguments.contains(
+            "-OpenClamUITestHoldSpeechPreparation"
+        )
+        // UI automation cannot rely on the simulator's speech service: an unavailable
+        // synthetic voice can cancel before XCTest's first accessibility snapshot. Holding
+        // this request in the real preparation state makes the cancel control deterministic
+        // without changing production playback or the one-shot read-aloud preference.
+        if holdsUITestPreparation {
+            return
+        }
+#endif
 
         guard let aiConfiguration,
               aiConfiguration.effectiveSettings.textToSpeech.provider != .apple else {
@@ -532,6 +563,9 @@ final class ConversationModel: ObservableObject {
         speechOutputStopCount += 1
 #endif
         let shouldDeactivateAudioSession = speechOutputLifecycle.invalidate()
+        if isSpeechOutputActive {
+            isSpeechOutputActive = false
+        }
         cloudSpeechTask?.cancel()
         cloudSpeechTask = nil
         speechOutputDelegate.invalidateAll()
@@ -576,6 +610,7 @@ final class ConversationModel: ObservableObject {
 
     private func completeSpeechOutput(generation: Int, errorMessage: String?) {
         guard speechOutputLifecycle.finish(generation) else { return }
+        isSpeechOutputActive = false
         captainAyerAvatar.finish(generation: generation)
         speechOutputDelegate.invalidateAll()
         if cloudAudioPlayerGeneration == generation {

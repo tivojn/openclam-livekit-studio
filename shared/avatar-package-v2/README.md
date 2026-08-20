@@ -49,6 +49,36 @@ macOS authoring libraries.
 Run `python3 create_golden_fixture.py` from this directory to reproduce the
 deterministic `fixtures/ios-light-golden.avtr` package used by the iOS tests.
 
+## iPhone-light v3 optional motion extension
+
+Version `3` is a backward-compatible extension of the iPhone-light profile.
+The 18 image assets and rig are unchanged. A v3 manifest may additionally have
+a non-empty `motions` object whose keys are a subset of exactly `walk`,
+`edgeIdle`, and `moves`. A v2 manifest must omit `motions`; the iOS importer
+continues to accept those 19-file packages unchanged.
+
+Each motion record contains exactly `path`, `sha256`, `byteCount`, `mediaType`,
+`width`, `height`, and `durationMilliseconds`. Paths and runtime behavior are
+fixed by role, not controlled by package metadata:
+
+- `walk` → `assets/motion-walk.mov`, loops
+- `edgeIdle` → `assets/motion-edge-idle.mov`, loops
+- `moves` → `assets/motion-moves.mov`, plays once
+
+Every clip is a QuickTime movie (`video/quicktime`) with exactly one HEVC video
+track carrying an alpha channel and no audio track. Display dimensions are
+64–4,096 pixels per side and at most 16 megapixels; duration is 250–12,000 ms
+and must match the manifest within 50 ms. Each clip shares the existing 16 MiB
+per-file limit. A v3 archive contains exactly `19 + motions.count` regular
+files, up to 22, while retaining the 32 MiB archive and 64 MiB expanded limits.
+Unknown keys, files, codecs, audio, missing alpha, reflected display transforms,
+hash mismatches, and dimension/duration mismatches are rejected before install.
+
+The normative manifest shape is `ios-light-v3.schema.json`. The synthetic,
+non-person `fixtures/ios-light-motion-v3-golden.avtr` fixture contains only
+procedural artwork and motion and is used to exercise the importer/runtime
+without copying a private avatar.
+
 ## Mac-full authoring profile
 
 A Mac authoring package also uses the `.avtr` extension and ZIP container, but

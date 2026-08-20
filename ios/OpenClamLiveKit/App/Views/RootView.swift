@@ -10,6 +10,7 @@ struct RootView: View {
     @StateObject private var screenContextFeature = ScreenContextFeatureModel.make()
     @State private var navigationPath: [OpenClamRoute] = []
     @State private var showsSidebar = false
+    @State private var avatarSwitchTask: Task<Void, Never>?
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -180,9 +181,24 @@ struct RootView: View {
         displayName: String,
         preservesAvatarOverlay: Bool
     ) {
-        guard conversation.canChangeChat else { return }
-        Task { @MainActor in
+        // Avatar changes, including deletion fallback, must silence the old
+        // avatar immediately. A reply may still be finishing, so retain the
+        // newest requested switch and apply it as soon as chat mutation is safe.
+        conversation.stopSpeechOutput()
+        avatarSwitchTask?.cancel()
+        avatarSwitchTask = Task { @MainActor in
             await conversation.ensureHistoryReady()
+            while !conversation.canChangeChat {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            // A reply that was already working may have started read-aloud
+            // after the first stop while this task waited. Silence it again
+            // at the exact handoff boundary before changing conversations.
             conversation.stopSpeechOutput()
             aiConfiguration.activateAvatar(id: id, displayName: displayName)
 

@@ -1,12 +1,167 @@
+import AVFoundation
 import LiveKit
 import SwiftUI
+import UIKit
+
+struct OpenClamAvatarMotionRuntimeContext: Equatable, Sendable {
+    let hasAsset: Bool
+    let reduceMotion: Bool
+    let isSpeaking: Bool
+    let isLiveTalkActive: Bool
+    let isAvatarHidden: Bool
+    let isFaceMirrorActive: Bool
+}
+
+enum OpenClamAvatarMotionAvailabilityPolicy {
+    static func disabledReason(
+        for context: OpenClamAvatarMotionRuntimeContext
+    ) -> String? {
+        if !context.hasAsset { return "Not included in this avatar" }
+        if context.reduceMotion { return "Unavailable with Reduce Motion" }
+        if context.isLiveTalkActive { return "Unavailable during Live Talk" }
+        if context.isSpeaking { return "Unavailable while speaking" }
+        if context.isAvatarHidden { return "Unavailable while avatar is hidden" }
+        if context.isFaceMirrorActive { return "Unavailable during face mirroring" }
+        return nil
+    }
+}
+
+enum OpenClamAvatarMotionSessionAction: Equatable, Sendable {
+    case none
+    case start(OpenClamAvatarMotionKind)
+    case stop(OpenClamAvatarMotionKind)
+    case replace(OpenClamAvatarMotionKind, OpenClamAvatarMotionKind)
+}
+
+/// A single owner for every full-body clip. Speech, Live Talk, Reduce Motion,
+/// visibility, face mirroring, scene lifecycle, and stage interaction all use
+/// `interrupt`; this prevents a clip from competing with the live face rig.
+struct OpenClamAvatarMotionSessionState: Equatable, Sendable {
+    private(set) var activeKind: OpenClamAvatarMotionKind? = nil
+
+    mutating func request(
+        _ kind: OpenClamAvatarMotionKind,
+        canStart: Bool
+    ) -> OpenClamAvatarMotionSessionAction {
+        guard canStart else { return .none }
+        if activeKind == kind {
+            activeKind = nil
+            return .stop(kind)
+        }
+        if let previous = activeKind {
+            activeKind = kind
+            return .replace(previous, kind)
+        }
+        activeKind = kind
+        return .start(kind)
+    }
+
+    mutating func interrupt() -> OpenClamAvatarMotionSessionAction {
+        guard let activeKind else { return .none }
+        self.activeKind = nil
+        return .stop(activeKind)
+    }
+
+    mutating func complete(
+        _ kind: OpenClamAvatarMotionKind
+    ) -> OpenClamAvatarMotionSessionAction {
+        guard activeKind == kind else { return .none }
+        activeKind = nil
+        return .stop(kind)
+    }
+}
+
+@MainActor
+private final class OpenClamTransparentMotionUIView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+
+    private var player: AVPlayer?
+    private var looper: AVPlayerLooper?
+    private var configuredURL: URL?
+    private var configuredKind: OpenClamAvatarMotionKind?
+
+    private var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        playerLayer.backgroundColor = UIColor.clear.cgColor
+        playerLayer.videoGravity = .resizeAspect
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(
+        fileURL: URL,
+        kind: OpenClamAvatarMotionKind
+    ) {
+        guard configuredURL != fileURL || configuredKind != kind else {
+            return
+        }
+        stop()
+        configuredURL = fileURL
+        configuredKind = kind
+
+        let item = AVPlayerItem(url: fileURL)
+        if kind.loops {
+            let queue = AVQueuePlayer()
+            looper = AVPlayerLooper(player: queue, templateItem: item)
+            player = queue
+        } else {
+            player = AVPlayer(playerItem: item)
+        }
+        player?.isMuted = true
+        playerLayer.player = player
+        player?.play()
+    }
+
+    func stop() {
+        player?.pause()
+        playerLayer.player = nil
+        looper = nil
+        player = nil
+        configuredURL = nil
+        configuredKind = nil
+    }
+}
+
+@MainActor
+private struct OpenClamTransparentMotionPlayer: UIViewRepresentable {
+    let fileURL: URL
+    let kind: OpenClamAvatarMotionKind
+
+    func makeUIView(context _: Context) -> OpenClamTransparentMotionUIView {
+        let view = OpenClamTransparentMotionUIView(frame: .zero)
+        view.configure(fileURL: fileURL, kind: kind)
+        return view
+    }
+
+    func updateUIView(
+        _ uiView: OpenClamTransparentMotionUIView,
+        context _: Context
+    ) {
+        uiView.configure(fileURL: fileURL, kind: kind)
+    }
+
+    static func dismantleUIView(
+        _ uiView: OpenClamTransparentMotionUIView,
+        coordinator _: Void
+    ) {
+        uiView.stop()
+    }
+}
 
 enum CaptainAyerOverlayTuning {
     static let minimumOpacity = 0.10
     static let maximumOpacity = 1.0
     static let initialOpacity = 0.14
     static let opacityTravel: CGFloat = 300
-    static let verticalDragThreshold: CGFloat = 24
 
     static let minimumScale = 0.60
     static let maximumScale = 4.5
@@ -31,6 +186,90 @@ enum CaptainAyerOverlayTuning {
         )
     }
 
+}
+
+struct CaptainAyerOpacityDragSession: Equatable, Sendable {
+    let startingOpacity: Double
+    private(set) var previewOpacity: Double
+    private(set) var persistedValue: Double?
+
+    init(startingOpacity: Double) {
+        let opacity = CaptainAyerOverlayTuning.clampedOpacity(startingOpacity)
+        self.startingOpacity = opacity
+        self.previewOpacity = opacity
+        self.persistedValue = nil
+    }
+
+    mutating func update(verticalTranslation: CGFloat) {
+        guard persistedValue == nil else { return }
+        previewOpacity = CaptainAyerOverlayTuning.opacity(
+            from: startingOpacity,
+            verticalTranslation: verticalTranslation
+        )
+    }
+
+    /// Intermediate updates remain a reversible visual preview. Only the
+    /// gesture's completed path calls this method and persists its result.
+    mutating func complete() -> Double {
+        persistedValue = previewOpacity
+        return previewOpacity
+    }
+}
+
+/// Resolves the only overlapping avatar gestures. Pinch owns the interaction
+/// as soon as it begins: an opacity preview is discarded and its original
+/// value is returned for immediate visual restoration. A late drag end then
+/// has no session left to commit.
+struct CaptainAyerOverlayGestureState: Equatable, Sendable {
+    private var opacityDragSession: CaptainAyerOpacityDragSession?
+    private(set) var isPinching = false
+    private(set) var suppressesOpacityUntilDragEnd = false
+
+    var hasOpacityDrag: Bool { opacityDragSession != nil }
+
+    mutating func updateOpacityDrag(
+        startingOpacity: Double,
+        verticalTranslation: CGFloat
+    ) -> Double? {
+        guard !isPinching, !suppressesOpacityUntilDragEnd else { return nil }
+        if opacityDragSession == nil {
+            opacityDragSession = CaptainAyerOpacityDragSession(
+                startingOpacity: startingOpacity
+            )
+        }
+        opacityDragSession?.update(verticalTranslation: verticalTranslation)
+        return opacityDragSession?.previewOpacity
+    }
+
+    mutating func completeOpacityDrag() -> Double? {
+        if suppressesOpacityUntilDragEnd {
+            suppressesOpacityUntilDragEnd = false
+            opacityDragSession = nil
+            return nil
+        }
+        guard !isPinching, var opacityDragSession else {
+            self.opacityDragSession = nil
+            return nil
+        }
+        let value = opacityDragSession.complete()
+        self.opacityDragSession = nil
+        return value
+    }
+
+    /// Returns the pre-drag opacity when there is a preview to revert.
+    mutating func beginPinch() -> Double? {
+        isPinching = true
+        let revertedOpacity = opacityDragSession?.startingOpacity
+        if opacityDragSession != nil {
+            suppressesOpacityUntilDragEnd = true
+        }
+        opacityDragSession = nil
+        return revertedOpacity
+    }
+
+    mutating func endPinch() {
+        isPinching = false
+    }
 }
 
 enum LiveTalkConnectionFeedbackPolicy {
@@ -260,9 +499,8 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var opacity = CaptainAyerOverlayTuning.initialOpacity
     @State private var scale = CaptainAyerOverlayTuning.initialScale
     @State private var isHeadAnchored = false
-    @State private var opacityAtDragStart: Double?
+    @State private var gestureState = CaptainAyerOverlayGestureState()
     @State private var scaleAtPinchStart: CGFloat?
-    @State private var isPinching = false
     @State private var isAvatarHidden = false
     @State private var isRailFolded = false
     @State private var showsOpacityPanel = false
@@ -270,6 +508,10 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var showsAvatarCarousel = false
     @State private var railDimTask: Task<Void, Never>?
     @State private var lastAvatarWakeSignal = -TimeInterval.infinity
+    @State private var motionSession = OpenClamAvatarMotionSessionState()
+    @State private var motionCompletionTask: Task<Void, Never>?
+    @State private var scaleBeforeMotion: CGFloat?
+    @State private var headAnchoredBeforeMotion: Bool?
 
     var body: some View {
         GeometryReader { proxy in
@@ -330,8 +572,14 @@ struct CaptainAyerAvatarOverlay: View {
             interactions.connect(wakeRail)
             wakeRail()
             connectionFeedback.synchronize(with: liveTalkPhase)
+            motionSession = OpenClamAvatarMotionSessionState()
+            motionCompletionTask?.cancel()
+            motionCompletionTask = nil
+            scaleBeforeMotion = nil
+            headAnchoredBeforeMotion = nil
         }
         .onDisappear {
+            stopAvatarMotion(restoreFraming: false)
             connectionFeedback.stop()
             faceMirror.stop()
             interactions.disconnect()
@@ -340,12 +588,28 @@ struct CaptainAyerAvatarOverlay: View {
         }
         .onChange(of: liveTalkPhase) { _, phase in
             connectionFeedback.synchronize(with: phase)
+            if phase.isSessionActive {
+                stopAvatarMotion()
+            }
             if !LiveTalkAvatarSwitchPolicy.allowsSwitch(during: phase) {
                 showsAvatarCarousel = false
             }
         }
+        .onChange(of: controller.isSpeaking) { _, isSpeaking in
+            if isSpeaking { stopAvatarMotion() }
+        }
+        .onChange(of: avatar.id) { _, _ in
+            stopAvatarMotion()
+        }
+        .onChange(of: reduceMotion) { _, isEnabled in
+            if isEnabled { stopAvatarMotion() }
+        }
+        .onChange(of: faceMirror.isEnabled) { _, isEnabled in
+            if isEnabled { stopAvatarMotion() }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
+                stopAvatarMotion()
                 connectionFeedback.stop()
             }
         }
@@ -387,89 +651,82 @@ struct CaptainAyerAvatarOverlay: View {
     }
 
     private func avatarStage(width: CGFloat, height: CGFloat) -> some View {
-        OpenClamCatalogAvatarStage(
-            avatar: avatar,
-            controller: controller,
-            reactions: faceReactions,
-            faceMirror: faceMirror,
-            presentation: .expanded,
-            allowsGazeTracking: !faceMirror.isEnabled
-                && !isPinching
-                && opacityAtDragStart == nil,
-            onInteraction: noteAvatarInteraction
-        )
+        ZStack {
+            OpenClamCatalogAvatarStage(
+                avatar: avatar,
+                controller: controller,
+                reactions: faceReactions,
+                faceMirror: faceMirror,
+                presentation: .expanded,
+                allowsGazeTracking: !faceMirror.isEnabled
+                    && !gestureState.isPinching
+                    && !gestureState.hasOpacityDrag,
+                showsArtwork: motionSession.activeKind == nil,
+                renderOpacity: opacity,
+                onVerticalOpacityChanged: updateOpacityDrag,
+                onVerticalOpacityEnded: endOpacityDrag,
+                onMagnificationChanged: updatePinch,
+                onMagnificationEnded: endPinch,
+                onInteraction: noteAvatarInteraction
+            )
+
+            if let kind = motionSession.activeKind,
+               let fileURL = motionFileURL(for: kind) {
+                OpenClamTransparentMotionPlayer(fileURL: fileURL, kind: kind)
+                    .opacity(opacity)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .frame(width: width, height: height)
         .scaleEffect(scale, anchor: isHeadAnchored ? .top : .center)
         .compositingGroup()
-        .opacity(opacity)
-        .contentShape(Rectangle())
-        .highPriorityGesture(verticalOpacityGesture)
-        .simultaneousGesture(pinchGesture)
-        .accessibilityRepresentation {
-            Slider(
-                value: Binding(
-                    get: { opacity },
-                    set: { setOpacity($0, persists: true) }
-                ),
-                in: CaptainAyerOverlayTuning.minimumOpacity
-                    ... CaptainAyerOverlayTuning.maximumOpacity,
-                step: 0.05
-            ) {
-                Text("\(avatar.displayName) opacity")
-            }
-            .accessibilityValue("\(Int(opacity * 100)) percent")
-            .accessibilityHint("Swipe up or down to change avatar opacity.")
-            .accessibilityCustomContent("Speech", avatarSpeechAccessibilityValue)
-            .accessibilityCustomContent("Size", "\(Int(scale * 100)) percent")
+        // The artwork spans most of the screen but only a narrow silhouette is
+        // interactive. Do not publish a full-stage accessibility replacement:
+        // it obscures otherwise reachable chat controls in Switch Control and
+        // UI automation. The compact rail control below owns the adjustable
+        // opacity semantics; physical vertical swiping remains on the stage.
+        .accessibilityHidden(true)
+    }
+
+    private func updateOpacityDrag(verticalTranslation: CGFloat) {
+        let beginsDrag = !gestureState.hasOpacityDrag
+        guard let previewOpacity = gestureState.updateOpacityDrag(
+            startingOpacity: opacity,
+            verticalTranslation: verticalTranslation
+        ) else { return }
+        if beginsDrag {
+            wakeRail()
         }
+        setOpacity(previewOpacity, persists: false)
     }
 
-    private var verticalOpacityGesture: some Gesture {
-        DragGesture(minimumDistance: CaptainAyerOverlayTuning.verticalDragThreshold)
-            .onChanged { value in
-                guard !isPinching else { return }
-                let verticalDistance = abs(value.translation.height)
-                guard verticalDistance >= abs(value.translation.width) else { return }
-
-                if opacityAtDragStart == nil {
-                    opacityAtDragStart = opacity
-                    wakeRail()
-                }
-                guard let opacityAtDragStart else { return }
-                setOpacity(
-                    CaptainAyerOverlayTuning.opacity(
-                        from: opacityAtDragStart,
-                        verticalTranslation: value.translation.height
-                    ),
-                    persists: false
-                )
-            }
-            .onEnded { _ in
-                if opacityAtDragStart != nil {
-                    storedOpacity = opacity
-                }
-                opacityAtDragStart = nil
-            }
+    private func endOpacityDrag() {
+        guard let completedOpacity = gestureState.completeOpacityDrag() else {
+            return
+        }
+        storedOpacity = completedOpacity
     }
 
-    private var pinchGesture: some Gesture {
-        MagnifyGesture(minimumScaleDelta: 0.01)
-            .onChanged { value in
-                if scaleAtPinchStart == nil {
-                    scaleAtPinchStart = scale
-                    wakeRail()
-                }
-                isPinching = true
-                guard let scaleAtPinchStart else { return }
-                scale = CaptainAyerOverlayTuning.clampedScale(
-                    scaleAtPinchStart * value.magnification
-                )
-                isHeadAnchored = scale > 1.4
+    private func updatePinch(magnification: CGFloat) {
+        if scaleAtPinchStart == nil {
+            stopAvatarMotion()
+            if let revertedOpacity = gestureState.beginPinch() {
+                setOpacity(revertedOpacity, persists: false)
             }
-            .onEnded { _ in
-                scaleAtPinchStart = nil
-                isPinching = false
-            }
+            scaleAtPinchStart = scale
+            wakeRail()
+        }
+        guard let scaleAtPinchStart else { return }
+        scale = CaptainAyerOverlayTuning.clampedScale(
+            scaleAtPinchStart * magnification
+        )
+        isHeadAnchored = scale > 1.4
+    }
+
+    private func endPinch() {
+        scaleAtPinchStart = nil
+        gestureState.endPinch()
     }
 
     private var toolRail: some View {
@@ -497,6 +754,7 @@ struct CaptainAyerAvatarOverlay: View {
                         during: liveTalkPhase
                     )
                 ) {
+                    stopAvatarMotion()
                     showsOpacityPanel = false
                     showsAvatarCarousel = true
                 }
@@ -506,12 +764,31 @@ struct CaptainAyerAvatarOverlay: View {
                     label: isHeadAnchored ? "Show full body" : "Show face closeup",
                     value: "\(Int(scale * 100)) percent"
                 ) {
+                    stopAvatarMotion()
                     animate(.framing) {
                         isHeadAnchored.toggle()
                         scale = isHeadAnchored ? 3.4 : CaptainAyerOverlayTuning.initialScale
                         storedFraming = isHeadAnchored ? "closeup" : "full"
                     }
                 }
+
+                motionRailButton(
+                    kind: .walk,
+                    systemImage: "figure.walk"
+                )
+                .accessibilityIdentifier("openclam-avatar-walk-button")
+
+                motionRailButton(
+                    kind: .edgeIdle,
+                    systemImage: "figure.stand.line.dotted.figure.stand"
+                )
+                .accessibilityIdentifier("openclam-avatar-edge-idle-button")
+
+                motionRailButton(
+                    kind: .moves,
+                    systemImage: "figure.dance"
+                )
+                .accessibilityIdentifier("openclam-avatar-moves-button")
 
                 railButton(
                     systemImage: controller.isSpeaking
@@ -521,6 +798,7 @@ struct CaptainAyerAvatarOverlay: View {
                     isActive: controller.isSpeaking,
                     isEnabled: !liveTalkPhase.isSessionActive
                 ) {
+                    stopAvatarMotion()
                     controller.isSpeaking ? onStop() : onPlayLatest()
                 }
 
@@ -529,6 +807,9 @@ struct CaptainAyerAvatarOverlay: View {
                     label: isAvatarHidden ? "Show \(avatar.displayName)" : "Hide \(avatar.displayName)",
                     isActive: isAvatarHidden
                 ) {
+                    if !isAvatarHidden {
+                        stopAvatarMotion()
+                    }
                     animate(.toggle) {
                         isAvatarHidden.toggle()
                         if isAvatarHidden {
@@ -548,6 +829,7 @@ struct CaptainAyerAvatarOverlay: View {
                         showsOpacityPanel.toggle()
                     }
                 }
+                .accessibilityIdentifier("openclam-avatar-opacity-control")
 
                 railButton(
                     systemImage: "face.smiling",
@@ -560,6 +842,7 @@ struct CaptainAyerAvatarOverlay: View {
                     if faceMirror.isEnabled {
                         faceMirror.stop()
                     } else {
+                        stopAvatarMotion()
                         faceReactions.cancelAll()
                         faceMirror.start()
                     }
@@ -596,6 +879,7 @@ struct CaptainAyerAvatarOverlay: View {
                 value: liveTalkPhase.statusTitle,
                 isActive: liveTalkPhase.isSessionActive
             ) {
+                stopAvatarMotion()
                 if liveTalkPhase.isSessionActive {
                     connectionFeedback.stop()
                 }
@@ -639,6 +923,13 @@ struct CaptainAyerAvatarOverlay: View {
                 step: 0.05
             )
             .accessibilityLabel("Avatar opacity")
+            // This is a real, laid-out Slider with usable scrubber bounds.
+            // Keep the stable identifier here rather than publishing a
+            // full-stage or virtual replacement that can obscure chat actions
+            // or report zero geometry to assistive clients.
+            .accessibilityIdentifier("openclam-avatar-opacity")
+            .accessibilityValue("\(Int(opacity * 100)) percent")
+            .accessibilityHint("Swipe up or down on the avatar, or adjust here.")
 
             Text("\(Int(opacity * 100))%")
                 .font(.caption.monospacedDigit().weight(.semibold))
@@ -703,6 +994,28 @@ struct CaptainAyerAvatarOverlay: View {
         .opacity(isEnabled ? 1 : 0.55)
     }
 
+    private func motionRailButton(
+        kind: OpenClamAvatarMotionKind,
+        systemImage: String
+    ) -> some View {
+        let disabledReason = motionDisabledReason(for: kind)
+        let isActive = motionSession.activeKind == kind
+        let label: String = switch kind {
+        case .walk: "Walk"
+        case .edgeIdle: "Edge idle"
+        case .moves: "Moves"
+        }
+        return railButton(
+            systemImage: isActive ? "stop.fill" : systemImage,
+            label: isActive ? "Stop \(label.lowercased())" : "Play \(label.lowercased())",
+            value: isActive ? "Playing" : (disabledReason ?? "Ready"),
+            isActive: isActive,
+            isEnabled: disabledReason == nil
+        ) {
+            toggleAvatarMotion(kind)
+        }
+    }
+
     private var avatarSpeechAccessibilityValue: String {
         if faceMirror.isEnabled {
             return faceMirror.statusText
@@ -728,10 +1041,108 @@ struct CaptainAyerAvatarOverlay: View {
     }
 
     private func noteAvatarInteraction() {
+        stopAvatarMotion()
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastAvatarWakeSignal >= 0.15 else { return }
         lastAvatarWakeSignal = now
         wakeRail()
+    }
+
+    private func motionDisabledReason(
+        for kind: OpenClamAvatarMotionKind
+    ) -> String? {
+        OpenClamAvatarMotionAvailabilityPolicy.disabledReason(
+            for: OpenClamAvatarMotionRuntimeContext(
+                hasAsset: motionFileURL(for: kind) != nil,
+                reduceMotion: reduceMotion,
+                isSpeaking: controller.isSpeaking,
+                isLiveTalkActive: liveTalkPhase.isSessionActive,
+                isAvatarHidden: isAvatarHidden,
+                isFaceMirrorActive: faceMirror.isEnabled
+            )
+        )
+    }
+
+    private func toggleAvatarMotion(_ kind: OpenClamAvatarMotionKind) {
+        let action = motionSession.request(
+            kind,
+            canStart: motionDisabledReason(for: kind) == nil
+        )
+        applyMotionAction(action)
+    }
+
+    private func stopAvatarMotion(restoreFraming: Bool = true) {
+        applyMotionAction(
+            motionSession.interrupt(),
+            restoreFraming: restoreFraming
+        )
+    }
+
+    private func applyMotionAction(
+        _ action: OpenClamAvatarMotionSessionAction,
+        restoreFraming: Bool = true
+    ) {
+        switch action {
+        case .none:
+            return
+        case let .start(kind):
+            beginAvatarMotion(kind, savesFraming: true)
+        case let .replace(_, kind):
+            beginAvatarMotion(kind, savesFraming: false)
+        case .stop:
+            motionCompletionTask?.cancel()
+            motionCompletionTask = nil
+            if restoreFraming,
+               let scaleBeforeMotion,
+               let headAnchoredBeforeMotion {
+                animate(.framing) {
+                    scale = scaleBeforeMotion
+                    isHeadAnchored = headAnchoredBeforeMotion
+                }
+            }
+            self.scaleBeforeMotion = nil
+            self.headAnchoredBeforeMotion = nil
+            if !reduceMotion && !faceMirror.isCapturing {
+                faceReactions.startAmbientMotion()
+            }
+        }
+    }
+
+    private func beginAvatarMotion(
+        _ kind: OpenClamAvatarMotionKind,
+        savesFraming: Bool
+    ) {
+        guard let asset = avatar.motion(kind),
+              motionFileURL(for: kind) != nil else {
+            _ = motionSession.interrupt()
+            return
+        }
+        motionCompletionTask?.cancel()
+        motionCompletionTask = nil
+        if savesFraming {
+            scaleBeforeMotion = scale
+            headAnchoredBeforeMotion = isHeadAnchored
+        }
+        faceReactions.cancelAll()
+        animate(.framing) {
+            scale = CaptainAyerOverlayTuning.initialScale
+            isHeadAnchored = false
+        }
+
+        guard !kind.loops else { return }
+        let expectedKind = kind
+        motionCompletionTask = Task { @MainActor in
+            try? await Task.sleep(
+                for: .milliseconds(asset.durationMilliseconds + 80)
+            )
+            guard !Task.isCancelled else { return }
+            applyMotionAction(motionSession.complete(expectedKind))
+        }
+    }
+
+    private func motionFileURL(for kind: OpenClamAvatarMotionKind) -> URL? {
+        guard let motion = avatar.motion(kind) else { return nil }
+        return OpenClamAvatarAssetStore.shared.resourceURL(for: motion)
     }
 
     private enum MotionKind {

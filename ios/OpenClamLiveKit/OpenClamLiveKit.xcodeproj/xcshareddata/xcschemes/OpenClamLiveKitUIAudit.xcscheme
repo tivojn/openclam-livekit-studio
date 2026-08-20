@@ -39,10 +39,28 @@
    </BuildAction>
    <TestAction
       buildConfiguration = "Debug"
-      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
-      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      selectedDebuggerIdentifier = ""
+      selectedLauncherIdentifier = "Xcode.IDEFoundation.Launcher.PosixSpawn"
       shouldUseLaunchSchemeArgsEnv = "YES"
       onlyGenerateCoverageForSpecifiedTargets = "NO">
+      <PreActions>
+         <ExecutionAction
+            ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+            <ActionContent
+               title = "Verify UI audit launcher"
+               scriptText = "set -eu&#10;scheme_path=&quot;$SRCROOT/OpenClamLiveKit.xcodeproj/xcshareddata/xcschemes/OpenClamLiveKitUIAudit.xcscheme&quot;&#10;grep -Fq &apos;selectedDebuggerIdentifier = &quot;&quot;&apos; &quot;$scheme_path&quot;&#10;grep -Fq &apos;selectedLauncherIdentifier = &quot;Xcode.IDEFoundation.Launcher.PosixSpawn&quot;&apos; &quot;$scheme_path&quot;&#10;">
+               <EnvironmentBuildable>
+                  <BuildableReference
+                     BuildableIdentifier = "primary"
+                     BlueprintIdentifier = "D808022F2960BDAE63B78749"
+                     BuildableName = "OpenClamLiveKit.app"
+                     BlueprintName = "OpenClamLiveKit"
+                     ReferencedContainer = "container:OpenClamLiveKit.xcodeproj">
+                  </BuildableReference>
+               </EnvironmentBuildable>
+            </ActionContent>
+         </ExecutionAction>
+      </PreActions>
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"

@@ -1,9 +1,10 @@
-"""OpenClam AVTR v2 export and import.
+"""OpenClam AVTR export and import.
 
 The two profiles deliberately do not synchronize devices:
 
 * ``macos-full`` is a hash-ledgered authoring project for OpenClam Studio.
-* ``ios-light`` is a fixed 19-file runtime package accepted by the iPhone app.
+* ``ios-light`` is either the fixed 19-file v2 runtime package, or v3 with
+  one to three optional, transparent runtime motion clips.
 
 Neither profile carries application settings, histories, credentials, or keys.
 """
@@ -12,11 +13,13 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import mimetypes
 import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 import unicodedata
 import uuid
@@ -29,6 +32,7 @@ from PIL import Image
 
 FORMAT = "openclam-avatar"
 VERSION = 2
+IOS_MOTION_VERSION = 3
 MAC_VARIANT = "macos-full"
 IOS_VARIANT = "ios-light"
 MANIFEST = "manifest.json"
@@ -44,8 +48,13 @@ MAX_MAC_PATH_BYTES = 1_024
 MAX_IOS_ARCHIVE_BYTES = 32 * 1024 * 1024
 MAX_IOS_EXPANDED_BYTES = 64 * 1024 * 1024
 MAX_IOS_ASSET_BYTES = 16 * 1024 * 1024
+MAX_IOS_MOTION_BYTES = 16 * 1024 * 1024
 MAX_IOS_DIMENSION = 8_192
 MAX_IOS_PIXELS = 16 * 1024 * 1024
+MAX_IOS_MOTION_DIMENSION = 4_096
+MIN_IOS_MOTION_DURATION_MS = 250
+MAX_IOS_MOTION_DURATION_MS = 12_000
+MAX_IOS_MOTION_DURATION_DRIFT_MS = 50
 
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAC_PATH_PATTERN = re.compile(r"^authoring/[A-Za-z0-9][A-Za-z0-9._/-]*$")
@@ -65,11 +74,16 @@ IOS_ROLE_FILENAMES = {
     "gaze-right-atlas": "gaze-right-atlas.png",
     **{f"viseme-{name}": f"viseme-{name}.jpg" for name in IOS_VISEMES},
 }
+IOS_MOTION_FILENAMES = {
+    "walk": ("walk", "motion-walk.mov"),
+    "edgeIdle": ("idle", "motion-edge-idle.mov"),
+    "moves": ("move", "motion-moves.mov"),
+}
 
 _PRUNED_TOP_LEVEL = {
     "runtime", "diag", "cache", "caches", ".cache", "logs", "history",
     "histories", "conversations", "threads", "messages", "credentials",
-    "secrets", "keychain", "vault",
+    "secrets", "keychain", "vault", ".wardrobe.json",
 }
 _PRUNED_SEGMENTS = {
     "__pycache__", ".ds_store", "node_modules", ".git", ".svn",
@@ -131,6 +145,33 @@ def _sha256_path(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+
+
+def _zip_entry(path: str, compression: int) -> zipfile.ZipInfo:
+    """Create a reproducible, regular-file ZIP entry without host metadata."""
+    info = zipfile.ZipInfo(path, date_time=_ZIP_TIMESTAMP)
+    info.compress_type = compression
+    info.create_system = 3
+    info.external_attr = (stat.S_IFREG | 0o600) << 16
+    return info
+
+
+def _write_zip_bytes(
+    archive: zipfile.ZipFile, path: str, content: bytes, compression: int
+) -> None:
+    archive.writestr(_zip_entry(path, compression), content)
+
+
+def _write_zip_file(
+    archive: zipfile.ZipFile, source: Path, path: str, compression: int
+) -> None:
+    info = _zip_entry(path, compression)
+    info.file_size = source.stat().st_size
+    with source.open("rb") as input_file, archive.open(info, "w") as output_file:
+        shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
 
 
 def _media_type(path: str) -> str:
@@ -288,9 +329,11 @@ def export_macos_full(
     os.close(descriptor)
     try:
         with zipfile.ZipFile(temporary, "w", zipfile.ZIP_STORED) as archive:
-            archive.writestr(MANIFEST, manifest_bytes)
+            _write_zip_bytes(archive, MANIFEST, manifest_bytes, zipfile.ZIP_STORED)
             for source, archive_path in files:
-                archive.write(source, archive_path)
+                _write_zip_file(
+                    archive, source, archive_path, zipfile.ZIP_STORED
+                )
         if os.path.getsize(temporary) > MAX_MAC_ARCHIVE_BYTES:
             raise AvatarPackageError("avatar archive is too large")
         os.chmod(temporary, 0o600)
@@ -519,6 +562,36 @@ def _copy_gaze_atlas(source: Path, destination: Path, box: Mapping[str, object])
         atlas.save(destination, format="PNG", optimize=True)
 
 
+def _copy_clean_image(
+    source: Path, destination: Path, *, jpeg_quality: int | None = None
+) -> None:
+    """Re-encode a runtime image without EXIF, comments, profiles, or paths."""
+    try:
+        with Image.open(source) as image:
+            image.load()
+            if jpeg_quality is None:
+                clean = image.convert("RGBA")
+                clean.info.clear()
+                clean.save(
+                    destination, format="PNG", optimize=True, compress_level=9
+                )
+            else:
+                clean = image.convert("RGB")
+                clean.info.clear()
+                clean.save(
+                    destination,
+                    format="JPEG",
+                    quality=jpeg_quality,
+                    subsampling=0,
+                    optimize=False,
+                    progressive=False,
+                )
+    except AvatarPackageError:
+        raise
+    except Exception as error:
+        raise AvatarPackageError(f"avatar image is invalid: {source.name}") from error
+
+
 def _asset_record(path: Path, archive_path: str) -> dict:
     size = path.stat().st_size
     if not 1 <= size <= MAX_IOS_ASSET_BYTES:
@@ -534,6 +607,252 @@ def _asset_record(path: Path, archive_path: str) -> dict:
     }
 
 
+def _validate_ios_rig_assets(rig: Mapping[str, object], assets: Mapping[str, dict]) -> None:
+    """Cross-check renderer geometry against the staged, metadata-free pixels."""
+    body_size = rig["bodySize"]
+    body_width = body_size["width"]
+    body_height = body_size["height"]
+    if not 64 <= body_width <= MAX_IOS_MOTION_DIMENSION \
+            or not 64 <= body_height <= MAX_IOS_MOTION_DIMENSION \
+            or body_width * body_height > MAX_IOS_PIXELS:
+        raise AvatarPackageError("iPhone body dimensions are invalid")
+    body_asset = assets["body"]
+    if (body_asset["width"], body_asset["height"]) != (body_width, body_height):
+        raise AvatarPackageError("iPhone body dimensions do not match its runtime rig")
+
+    face = rig["faceBoundsInBody"]
+    if not all(math.isfinite(float(face[key])) for key in ("x", "y", "width", "height")) \
+            or face["x"] < 0 or face["y"] < 0 \
+            or face["width"] < 1 or face["height"] < 1 \
+            or face["x"] + face["width"] > body_width \
+            or face["y"] + face["height"] > body_height:
+        raise AvatarPackageError("iPhone face bounds do not fit the body")
+
+    transform = rig["faceTransform"]
+    determinant = transform["a"] * transform["d"] - transform["b"] * transform["c"]
+    if not math.isfinite(determinant) or abs(determinant) < 1e-8:
+        raise AvatarPackageError("iPhone face transform is singular")
+
+    face_size = (assets["head-mask"]["width"], assets["head-mask"]["height"])
+    if any(
+        (assets[f"viseme-{viseme}"]["width"], assets[f"viseme-{viseme}"]["height"])
+        != face_size
+        for viseme in IOS_VISEMES
+    ):
+        raise AvatarPackageError("iPhone face images have inconsistent dimensions")
+
+    expected_sprites = {
+        "eye-left": (rig["leftEye"], 1, 8),
+        "eye-right": (rig["rightEye"], 1, 8),
+        "brow-left": (rig["leftBrow"], 1, 14 * 3),
+        "brow-right": (rig["rightBrow"], 1, 14 * 3),
+        "gaze-left-atlas": (rig["leftGaze"], 25, 11),
+        "gaze-right-atlas": (rig["rightGaze"], 25, 11),
+    }
+    for role, (sprite, width_factor, height_factor) in expected_sprites.items():
+        box = sprite["box"]
+        expected = (box["width"] * width_factor, box["height"] * height_factor)
+        actual = (assets[role]["width"], assets[role]["height"])
+        if actual != expected:
+            raise AvatarPackageError(f"iPhone {role} dimensions do not match its runtime rig")
+
+
+def _quicktime_header(path: Path) -> bool:
+    """Recognize the app's QuickTime-branded MOV before invoking a parser."""
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(64)
+    except OSError:
+        return False
+    return len(header) >= 12 and header[4:8] == b"ftyp" and header[8:12] == b"qt  "
+
+
+def _positive_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise AvatarPackageError(f"runtime motion {label} is invalid")
+    return value
+
+
+def _positive_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AvatarPackageError(f"runtime motion {label} is invalid")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise AvatarPackageError(f"runtime motion {label} is invalid")
+    return number
+
+
+def _probe_hevc_alpha(path: Path) -> bool:
+    """Return positive alpha evidence or fail when FFmpeg cannot inspect it.
+
+    Apple's HEVC-alpha stores the alpha plane as a second HEVC layer. ffprobe
+    correctly reports the container, codec, tracks, dimensions, and duration,
+    but currently presents only the base layer's yuv420p pixel format. The
+    trace_headers bitstream filter is therefore the reliable positive signal.
+    The packaged runtime ships that filter and must fail closed when either
+    inspection tool is absent; the runtime ledger alone is not media proof.
+    """
+    executable = shutil.which("ffmpeg")
+    if not executable:
+        raise AvatarPackageError("iPhone motion validation is unavailable")
+    try:
+        listing = subprocess.run(
+            [executable, "-hide_banner", "-bsfs"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AvatarPackageError("iPhone motion validation is unavailable") from error
+    filters = {line.strip() for line in listing.stdout.splitlines()}
+    if listing.returncode or "trace_headers" not in filters:
+        raise AvatarPackageError("iPhone motion alpha validation is unavailable")
+    try:
+        traced = subprocess.run(
+            [
+                executable, "-hide_banner", "-loglevel", "trace", "-i", str(path),
+                "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "trace_headers",
+                "-frames:v", "1", "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AvatarPackageError("iPhone motion alpha inspection failed") from error
+    if traced.returncode:
+        raise AvatarPackageError("iPhone motion alpha inspection failed")
+    output = traced.stdout + traced.stderr
+    if "Alpha Channel Information" not in output:
+        return False
+    has_alpha_layer = re.search(
+        r"nuh_layer_id:\s*1|nuh_layer_id\s+0*1\s*=\s*1", output
+    )
+    alpha_enabled = re.search(r"alpha_channel_cancel_flag\s+0\s*=\s*0", output)
+    return bool(has_alpha_layer and alpha_enabled)
+
+
+def _probe_motion_details(path: Path) -> dict:
+    """Read normalized MOV facts without returning paths or provider metadata."""
+    executable = shutil.which("ffprobe")
+    if not executable:
+        raise AvatarPackageError("iPhone motion validation is unavailable")
+    try:
+        result = subprocess.run(
+            [
+                executable, "-v", "error",
+                "-show_entries",
+                "format=format_name,duration:"
+                "stream=codec_type,codec_name,codec_tag_string,width,height,duration",
+                "-of", "json", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AvatarPackageError("iPhone motion inspection failed") from error
+    if result.returncode:
+        raise AvatarPackageError("iPhone motion is not a valid QuickTime movie")
+    try:
+        value = json.loads(result.stdout)
+        streams = value["streams"]
+        container = value["format"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise AvatarPackageError("iPhone motion inspection returned invalid metadata") from error
+    if not isinstance(streams, list) or not isinstance(container, dict):
+        raise AvatarPackageError("iPhone motion inspection returned invalid metadata")
+    video = [item for item in streams if isinstance(item, dict)
+             and item.get("codec_type") == "video"]
+    audio = [item for item in streams if isinstance(item, dict)
+             and item.get("codec_type") == "audio"]
+    primary = video[0] if video else {}
+    raw_duration = container.get("duration") or primary.get("duration")
+    try:
+        duration = float(raw_duration)
+    except (TypeError, ValueError) as error:
+        raise AvatarPackageError("iPhone motion duration is invalid") from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise AvatarPackageError("iPhone motion duration is invalid")
+    return {
+        "streamCount": len(streams),
+        "videoTracks": len(video),
+        "audioTracks": len(audio),
+        "formatNames": str(container.get("format_name") or "").split(","),
+        "codecName": primary.get("codec_name"),
+        "codecTag": primary.get("codec_tag_string"),
+        "width": primary.get("width"),
+        "height": primary.get("height"),
+        "durationMilliseconds": int(round(duration * 1000)),
+        "hasAlpha": _probe_hevc_alpha(path),
+    }
+
+
+def _motion_record(path: Path, archive_path: str, runtime_clip: Mapping[str, object]) -> dict:
+    size = path.stat().st_size
+    if not 1 <= size <= MAX_IOS_MOTION_BYTES:
+        raise AvatarPackageError(f"iPhone motion is too large: {path.name}")
+    if path.suffix.lower() != ".mov" or not _quicktime_header(path):
+        raise AvatarPackageError("iPhone motion is not a QuickTime movie")
+
+    trusted_width = _positive_integer(runtime_clip.get("frame_width"), "width")
+    trusted_height = _positive_integer(runtime_clip.get("frame_height"), "height")
+    frames = _positive_integer(runtime_clip.get("frames"), "frame count")
+    fps = _positive_number(runtime_clip.get("fps"), "frame rate")
+    expected_duration = int(round(frames / fps * 1000))
+    if not 64 <= trusted_width <= MAX_IOS_MOTION_DIMENSION \
+            or not 64 <= trusted_height <= MAX_IOS_MOTION_DIMENSION \
+            or trusted_width * trusted_height > MAX_IOS_PIXELS:
+        raise AvatarPackageError("iPhone motion dimensions are invalid")
+    if not MIN_IOS_MOTION_DURATION_MS <= expected_duration \
+            <= MAX_IOS_MOTION_DURATION_MS:
+        raise AvatarPackageError("iPhone motion duration is invalid")
+
+    inspected = _probe_motion_details(path)
+    if inspected.get("streamCount") != 1 \
+            or inspected.get("videoTracks") != 1 \
+            or inspected.get("audioTracks") != 0:
+        raise AvatarPackageError("iPhone motion must contain one video track and no audio")
+    if "mov" not in inspected.get("formatNames", []):
+        raise AvatarPackageError("iPhone motion is not a QuickTime movie")
+    if inspected.get("codecName") != "hevc" or inspected.get("codecTag") != "hvc1":
+        raise AvatarPackageError("iPhone motion must use HEVC with an hvc1 tag")
+    if inspected.get("hasAlpha") is not True:
+        raise AvatarPackageError("iPhone motion must contain a verified alpha channel")
+    width = inspected.get("width")
+    height = inspected.get("height")
+    duration = inspected.get("durationMilliseconds")
+    if width != trusted_width or height != trusted_height:
+        raise AvatarPackageError("iPhone motion dimensions do not match its runtime ledger")
+    if not isinstance(duration, int) \
+            or abs(duration - expected_duration) > MAX_IOS_MOTION_DURATION_DRIFT_MS:
+        raise AvatarPackageError("iPhone motion duration does not match its runtime ledger")
+
+    if not isinstance(width, int) or not isinstance(height, int) \
+            or not 64 <= width <= MAX_IOS_MOTION_DIMENSION \
+            or not 64 <= height <= MAX_IOS_MOTION_DIMENSION \
+            or width * height > MAX_IOS_PIXELS:
+        raise AvatarPackageError("iPhone motion dimensions are invalid")
+    if not isinstance(duration, int) or not MIN_IOS_MOTION_DURATION_MS <= duration \
+            <= MAX_IOS_MOTION_DURATION_MS:
+        raise AvatarPackageError("iPhone motion duration is invalid")
+    return {
+        "path": archive_path,
+        "sha256": _sha256_path(path),
+        "byteCount": size,
+        "mediaType": "video/quicktime",
+        "width": width,
+        "height": height,
+        "durationMilliseconds": duration,
+    }
+
+
 def export_ios_light(
     identifier: str,
     display_name: str,
@@ -541,7 +860,7 @@ def export_ios_light(
     runtime_root: str | os.PathLike,
     destination: str | os.PathLike,
 ) -> dict:
-    """Export the exact fixed runtime package consumed by OpenClam iOS."""
+    """Export the fixed iOS runtime images and eligible optional motion clips."""
     identifier = _safe_identifier(identifier)
     display_name = _safe_display_name(display_name)
     authoring = Path(authoring_root).resolve(strict=True)
@@ -626,28 +945,51 @@ def export_ios_light(
         for role, filename in IOS_ROLE_FILENAMES.items():
             destination_asset = assets_root / filename
             if role == "thumbnail":
-                with Image.open(sources[role]) as image:
-                    image.convert("RGB").save(
-                        destination_asset, format="JPEG", quality=90, optimize=True
-                    )
+                _copy_clean_image(
+                    sources[role], destination_asset, jpeg_quality=90
+                )
             elif role == "gaze-left-atlas":
                 _copy_gaze_atlas(sources[role], destination_asset, left_gaze["box"])
             elif role == "gaze-right-atlas":
                 _copy_gaze_atlas(sources[role], destination_asset, right_gaze["box"])
+            elif role.startswith("viseme-"):
+                _copy_clean_image(
+                    sources[role], destination_asset, jpeg_quality=95
+                )
             else:
-                shutil.copy2(sources[role], destination_asset)
+                _copy_clean_image(sources[role], destination_asset)
             archive_name = f"assets/{filename}"
             assets[role] = _asset_record(destination_asset, archive_name)
 
+        _validate_ios_rig_assets(rig, assets)
+
+        motions: dict[str, dict] = {}
+        runtime_motion = runtime_manifest.get("motion")
+        if isinstance(runtime_motion, dict):
+            for ios_role, (runtime_role, filename) in IOS_MOTION_FILENAMES.items():
+                runtime_clip = runtime_motion.get(runtime_role)
+                if not isinstance(runtime_clip, dict) \
+                        or runtime_clip.get("alpha_stream_hevc") is None:
+                    continue
+                source = _runtime_asset(runtime, runtime_clip.get("alpha_stream_hevc"))
+                destination_asset = assets_root / filename
+                shutil.copyfile(source, destination_asset)
+                archive_name = f"assets/{filename}"
+                motions[ios_role] = _motion_record(
+                    destination_asset, archive_name, runtime_clip
+                )
+
         manifest = {
             "format": FORMAT,
-            "version": VERSION,
+            "version": IOS_MOTION_VERSION if motions else VERSION,
             "variant": IOS_VARIANT,
             "id": identifier,
             "displayName": display_name,
             "rig": rig,
             "assets": assets,
         }
+        if motions:
+            manifest["motions"] = motions
         manifest_bytes = json.dumps(
             manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
@@ -669,9 +1011,24 @@ def export_ios_light(
             with zipfile.ZipFile(
                 temporary_archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9
             ) as archive:
-                archive.writestr(MANIFEST, manifest_bytes)
+                _write_zip_bytes(
+                    archive, MANIFEST, manifest_bytes, zipfile.ZIP_DEFLATED
+                )
                 for role, filename in IOS_ROLE_FILENAMES.items():
-                    archive.write(assets_root / filename, f"assets/{filename}")
+                    _write_zip_file(
+                        archive,
+                        assets_root / filename,
+                        f"assets/{filename}",
+                        zipfile.ZIP_DEFLATED,
+                    )
+                for ios_role, (_, filename) in IOS_MOTION_FILENAMES.items():
+                    if ios_role in motions:
+                        _write_zip_file(
+                            archive,
+                            assets_root / filename,
+                            f"assets/{filename}",
+                            zipfile.ZIP_DEFLATED,
+                        )
             if os.path.getsize(temporary_archive) > MAX_IOS_ARCHIVE_BYTES:
                 raise AvatarPackageError("iPhone avatar archive is too large")
             os.chmod(temporary_archive, 0o600)

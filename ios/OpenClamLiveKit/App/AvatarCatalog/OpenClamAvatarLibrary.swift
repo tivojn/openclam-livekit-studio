@@ -1,20 +1,57 @@
 import Combine
 import Foundation
 
+enum OpenClamAvatarLibraryMutation: Equatable, Sendable {
+    case importing
+    case deleting(String)
+
+    var deletingAvatarID: String? {
+        guard case let .deleting(id) = self else { return nil }
+        return id
+    }
+}
+
+enum OpenClamAvatarDeletionDecision: Equatable, Sendable {
+    case cancel
+    case confirm
+}
+
+struct OpenClamAvatarDeletionResult: Equatable, Sendable {
+    let deletedAvatarID: String
+    let fallbackIdentity: AvatarAgentIdentity?
+}
+
 @MainActor
 final class OpenClamAvatarLibrary: ObservableObject {
     static let shared = OpenClamAvatarLibrary()
 
     @Published private(set) var importedAvatars: [OpenClamAvatarDescriptor]
     @Published private(set) var skippedInvalidInstallCount = 0
+    @Published private(set) var mutation: OpenClamAvatarLibraryMutation?
+    @Published private(set) var pendingCommittedDeletionIDs: Set<String>
 
     private let packageStore: OpenClamAvatarPackageStore
 
     init(
-        storageRoot: URL = OpenClamAvatarPackageContract.defaultStorageRoot
+        storageRoot: URL = OpenClamAvatarPackageContract.defaultStorageRoot,
+        deletionMoveItem: @escaping @Sendable (URL, URL) throws -> Void = {
+            try FileManager.default.moveItem(at: $0, to: $1)
+        },
+        deletionRemoveItem: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        }
     ) {
-        packageStore = OpenClamAvatarPackageStore(storageRoot: storageRoot)
+        packageStore = OpenClamAvatarPackageStore(
+            storageRoot: storageRoot,
+            deletionMoveItem: deletionMoveItem,
+            deletionRemoveItem: deletionRemoveItem
+        )
+#if DEBUG
+        OpenClamAvatarUITestFixture.prepareIfRequested(packageStore: packageStore)
+#endif
         importedAvatars = packageStore.loadInstalledDescriptors()
+        mutation = nil
+        pendingCommittedDeletionIDs = packageStore.committedDeletionIDs()
         skippedInvalidInstallCount = Self.invalidDirectoryCount(
             at: storageRoot,
             loadedCount: importedAvatars.count
@@ -38,11 +75,26 @@ final class OpenClamAvatarLibrary: ObservableObject {
         importedAvatars.contains(where: { $0.id == id })
     }
 
+    func isProtected(id: String) -> Bool {
+        id == AvatarAgentIdentity.defaultID
+            || OpenClamAvatarCatalog.avatar(id: id) != nil
+    }
+
+    var isMutating: Bool { mutation != nil }
+
+    var deletingAvatarID: String? { mutation?.deletingAvatarID }
+
     func importAvatar(
         from sourceURL: URL,
         expectedID: String? = nil,
         replacingExisting: Bool = false
     ) async throws -> OpenClamAvatarDescriptor {
+        guard mutation == nil else {
+            throw OpenClamAvatarPackageError.avatarOperationInProgress
+        }
+        mutation = .importing
+        defer { mutation = nil }
+
         let store = packageStore
         let descriptor = try await Task.detached(priority: .userInitiated) {
             try store.installArchive(
@@ -61,19 +113,71 @@ final class OpenClamAvatarLibrary: ObservableObject {
     }
 
     func deleteImportedAvatar(id: String) async throws {
+        guard !isProtected(id: id) else {
+            throw OpenClamAvatarPackageError.protectedAvatar
+        }
         guard isImported(id: id) else {
             throw OpenClamAvatarPackageError.deletionFailed
         }
+        guard mutation == nil else {
+            throw OpenClamAvatarPackageError.avatarOperationInProgress
+        }
+        mutation = .deleting(id)
+        defer { mutation = nil }
+
         let store = packageStore
         try await Task.detached(priority: .userInitiated) {
             try store.deleteInstalledAvatar(id: id)
         }.value
         importedAvatars.removeAll(where: { $0.id == id })
+        pendingCommittedDeletionIDs.insert(id)
         OpenClamAvatarAssetStore.shared.removeCachedImages()
     }
 
+    /// Consumes durable receipts left when the process ended after the package
+    /// rename but before profile/thread cleanup. UserDefaults writes performed
+    /// by the configuration model are synchronous; acknowledge only afterward.
+    func reconcileCommittedDeletions(
+        configuration: AIConfigurationModel
+    ) {
+        let identityMigrations = packageStore.quarantineOwnedLegacyDuplicates()
+        if !identityMigrations.isEmpty {
+            importedAvatars = packageStore.loadInstalledDescriptors()
+            skippedInvalidInstallCount = Self.invalidDirectoryCount(
+                at: packageStore.storageRoot,
+                loadedCount: importedAvatars.count
+            )
+            for migration in identityMigrations {
+                configuration.migrateAvatarIdentity(
+                    from: migration.sourceID,
+                    to: AvatarAgentIdentity(
+                        id: migration.targetID,
+                        displayName: migration.targetDisplayName
+                    )
+                )
+            }
+            OpenClamAvatarAssetStore.shared.removeCachedImages()
+        }
+
+        for id in pendingCommittedDeletionIDs.sorted() {
+            configuration.removeImportedAvatarProfile(
+                id: id,
+                availableIdentities: identities
+            )
+            acknowledgeCommittedDeletion(id: id)
+        }
+    }
+
+    func acknowledgeCommittedDeletion(id: String) {
+        guard pendingCommittedDeletionIDs.contains(id) else { return }
+        packageStore.acknowledgeCommittedDeletion(id: id)
+        pendingCommittedDeletionIDs.remove(id)
+    }
+
     func reload() {
+        guard mutation == nil else { return }
         importedAvatars = packageStore.loadInstalledDescriptors()
+        pendingCommittedDeletionIDs = packageStore.committedDeletionIDs()
         skippedInvalidInstallCount = Self.invalidDirectoryCount(
             at: packageStore.storageRoot,
             loadedCount: importedAvatars.count
@@ -95,5 +199,35 @@ final class OpenClamAvatarLibrary: ObservableObject {
             }
         }
         return max(0, visibleDirectoryCount - loadedCount)
+    }
+}
+
+@MainActor
+enum OpenClamAvatarDeletionCoordinator {
+    /// The confirmation decision is part of this testable boundary so Cancel
+    /// is guaranteed to be a no-op. A confirmed deletion updates the package
+    /// library first; profile and thread references are reconciled immediately
+    /// afterward on the same main-actor turn.
+    static func perform(
+        decision: OpenClamAvatarDeletionDecision,
+        avatar: OpenClamAvatarDescriptor,
+        library: OpenClamAvatarLibrary,
+        configuration: AIConfigurationModel
+    ) async throws -> OpenClamAvatarDeletionResult? {
+        guard decision == .confirm else { return nil }
+        guard !library.isProtected(id: avatar.id) else {
+            throw OpenClamAvatarPackageError.protectedAvatar
+        }
+
+        try await library.deleteImportedAvatar(id: avatar.id)
+        let fallback = configuration.removeImportedAvatarProfile(
+            id: avatar.id,
+            availableIdentities: library.identities
+        )
+        library.acknowledgeCommittedDeletion(id: avatar.id)
+        return .init(
+            deletedAvatarID: avatar.id,
+            fallbackIdentity: fallback
+        )
     }
 }

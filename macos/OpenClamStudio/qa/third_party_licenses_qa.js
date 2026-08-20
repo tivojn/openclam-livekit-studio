@@ -147,7 +147,7 @@ assert.ok(resourceEntry(
 assert.ok(resourceEntry(packageJson, 'package-lock.json', 'docs/runtime/package-lock.json'));
 assert.deepEqual(
   resourceEntry(packageJson, '.electron-ffmpeg', 'backend/bin')?.filter,
-  ['ffmpeg', 'LICENSE.LGPLv2.1.txt'],
+  ['ffmpeg', 'ffprobe', 'LICENSE.LGPLv2.1.txt'],
 );
 
 if (process.argv[2]) {

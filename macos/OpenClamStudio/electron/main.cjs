@@ -32,6 +32,7 @@ const {
 } = require('./pet-window-bounds.cjs');
 const { effectivePetAlwaysOnTop } = require('./pet-window-level.cjs');
 const {
+  AVATAR_STORE_AVAILABLE,
   AvatarStore,
   AvatarStoreError,
   normalizeError: normalizeAvatarStoreError,
@@ -137,6 +138,17 @@ const PET_ROAM_MINIMUM = Object.freeze({ width: 96, height: 130 });
 const PET_ROAM_ZOOM_RANGE = Object.freeze({ min: 0.5, max: 3 });
 const PET_ROAM_MIN_SPEED = 42;
 const PET_ROAM_MAX_SPEED = 150;
+const PET_ROAM_MAX_CYCLE_SECONDS = 6;
+const PET_ROAM_MAX_PROFILE_FRAMES = 160;
+const PET_ROAM_TICK_MS = 16;
+// Window travel needs display-rate positioning, but a held ledge or hover is
+// stationary. Let those states sleep and wake near their deadline instead of
+// querying displays, bounds, and the renderer sixty times per second.
+const PET_ROAM_REST_TICK_MS = 250;
+// The renderer extrapolates the short interval between phase samples. Thirty
+// phase packets per second are enough for a 24fps atlas; the old 60Hz IPC feed
+// duplicated work in both processes without presenting another source frame.
+const PET_ROAM_IPC_MS = 32;
 const PET_LEDGE_HOLD_MS = 9000;
 const PET_INTERACTION_COOLDOWN_MS = 1400;
 
@@ -208,6 +220,12 @@ async function saveMotionAsset(event, asset = {}) {
 }
 
 function avatarStore() {
+  if (!AVATAR_STORE_AVAILABLE) {
+    throw new AvatarStoreError(
+      'store_unavailable',
+      'Avatar Store is not available in this release.',
+    );
+  }
   if (!avatarStoreInstance) {
     avatarStoreInstance = new AvatarStore({
       cacheRoot: path.join(app.getPath('userData'), 'avatar-store-v1'),
@@ -224,6 +242,7 @@ function avatarStoreSender(event) {
 function avatarStoreFailure(error) {
   const normalized = normalizeAvatarStoreError(error);
   const messages = {
+    store_unavailable: 'Avatar Store is not available in this release. Import local .avtr files in Avatar Studio.',
     cancelled: 'Download cancelled.',
     catalog_invalid: 'The Avatar Store catalog did not pass validation.',
     catalog_unavailable: 'Connect to the internet to load the Avatar Store.',
@@ -249,6 +268,10 @@ async function avatarStoreLocalSlugs() {
 
 async function avatarStoreCatalog(event, options = {}) {
   if (!avatarStoreSender(event)) return {ok: false, error: 'Avatar Store is available in Settings.'};
+  if (!AVATAR_STORE_AVAILABLE) {
+    return {ok: false, ...avatarStoreFailure(
+      new AvatarStoreError('store_unavailable', 'Avatar Store is disabled')), items: []};
+  }
   try {
     const store = avatarStore();
     const [{catalog, source, warning}, localSlugs] = await Promise.all([
@@ -282,6 +305,10 @@ async function avatarStoreCatalog(event, options = {}) {
 
 async function avatarStoreThumbnail(event, identifier) {
   if (!avatarStoreSender(event)) return {ok: false, error: 'Avatar Store is available in Settings.'};
+  if (!AVATAR_STORE_AVAILABLE) {
+    return {ok: false, ...avatarStoreFailure(
+      new AvatarStoreError('store_unavailable', 'Avatar Store is disabled'))};
+  }
   try {
     return {ok: true, ...await avatarStore().thumbnail(String(identifier || ''))};
   } catch (error) {
@@ -314,6 +341,10 @@ async function importAvatarStorePackage(file, entry) {
 
 async function downloadAvatarStoreItem(event, identifier) {
   if (!avatarStoreSender(event)) return {ok: false, error: 'Avatar Store is available in Settings.'};
+  if (!AVATAR_STORE_AVAILABLE) {
+    return {ok: false, ...avatarStoreFailure(
+      new AvatarStoreError('store_unavailable', 'Avatar Store is disabled'))};
+  }
   const id = String(identifier || '');
   if (avatarStoreJobs.has(id)) return {ok: false, code: 'busy', error: 'This avatar is already downloading.'};
   const controller = new AbortController();
@@ -380,6 +411,7 @@ async function downloadAvatarStoreItem(event, identifier) {
 
 function cancelAvatarStoreItem(event, identifier) {
   if (!avatarStoreSender(event)) return false;
+  if (!AVATAR_STORE_AVAILABLE) return false;
   const job = avatarStoreJobs.get(String(identifier || ''));
   if (!job || job.sender !== event.sender
       || !['preparing', 'downloading'].includes(job.phase)) return false;
@@ -1051,22 +1083,68 @@ function roamMotionState(runtime) {
   // anchored to that edge while a walking hover holds its Walk frame.
   const presentationMode = mode === 'stand'
     ? String(runtime && runtime.resumeMode || 'walk') : mode;
+  const runtimeSampledAt = Number(runtime && runtime.lastAt);
   return {
     enabled: true,
     mode,
     presentationMode,
     direction: Number(runtime && runtime.direction) || 1,
     phase: (Number(runtime && runtime.stride) || 0) % 1,
+    sampledAt: Number.isFinite(runtimeSampledAt) ? runtimeSampledAt : Date.now(),
     edge: presentationMode.startsWith('ledge-')
       ? presentationMode.slice('ledge-'.length) : null,
   };
 }
 
-function sendPetRoamMotion(payload = null) {
+function roamMotionSignature(value) {
+  return [
+    Boolean(value && value.enabled),
+    String(value && value.mode || ''),
+    String(value && value.presentationMode || ''),
+    Number(value && value.direction) || 1,
+    String(value && value.edge || ''),
+  ].join(':');
+}
+
+function shouldSendRoamMotion(runtime, value, now = Date.now(), force = false) {
+  if (force || !runtime) return true;
+  const signature = roamMotionSignature(value);
+  const changed = signature !== runtime.motionSignature;
+  const phaseDue = value.mode === 'walk'
+    && now - (Number(runtime.motionSentAt) || 0) >= PET_ROAM_IPC_MS;
+  if (!changed && !phaseDue) return false;
+  runtime.motionSignature = signature;
+  runtime.motionSentAt = now;
+  return true;
+}
+
+function roamTickDelay(runtime, now = Date.now()) {
+  if (!runtime || runtime.mode === 'walk') return PET_ROAM_TICK_MS;
+  const deadline = runtime.mode === 'stand'
+    ? (!runtime.engaged ? Number(runtime.resumeAt) : Number.POSITIVE_INFINITY)
+    : runtime.mode.startsWith('ledge-') ? Number(runtime.holdUntil) : Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(deadline)) return PET_ROAM_REST_TICK_MS;
+  return Math.max(PET_ROAM_TICK_MS,
+    Math.min(PET_ROAM_REST_TICK_MS, deadline - now));
+}
+
+function sendPetRoamMotion(payload = null, force = false) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const value = payload || (petRoamRuntime ? roamMotionState(petRoamRuntime)
     : { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null });
+  if (!shouldSendRoamMotion(petRoamRuntime, value, Date.now(), force || payload !== null)) return;
   post(mainWindow, 'openclam:pet-roam-motion', value);
+}
+
+function schedulePetRoamTick(delay = roamTickDelay(petRoamRuntime)) {
+  if (petRoamTimer) clearTimeout(petRoamTimer);
+  petRoamTimer = null;
+  if (!state.petRoam || !petRoamRuntime || !mainWindow || mainWindow.isDestroyed()) return;
+  petRoamTimer = setTimeout(() => {
+    petRoamTimer = null;
+    tickPetRoam();
+  }, Math.max(0, Number(delay) || 0));
+  petRoamTimer.unref?.();
 }
 
 function motionTravelAt(profile, phase) {
@@ -1093,7 +1171,7 @@ function motionTravelDelta(profile, previousPhase, nextPhase) {
 
 function tickPetRoam() {
   if (!state.petRoam || !petRoamRuntime || !mainWindow || mainWindow.isDestroyed()) {
-    if (petRoamTimer) clearInterval(petRoamTimer);
+    if (petRoamTimer) clearTimeout(petRoamTimer);
     petRoamTimer = null;
     return;
   }
@@ -1118,8 +1196,12 @@ function tickPetRoam() {
       petRoamRuntime.resumeMode = 'walk';
     } else {
       petRoamRuntime.x = x;
-      mainWindow.setPosition(Math.round(x), dockLineY, false);
+      const roundedX = Math.round(x);
+      if (bounds.x !== roundedX || bounds.y !== dockLineY) {
+        mainWindow.setPosition(roundedX, dockLineY, false);
+      }
       sendPetRoamMotion();
+      schedulePetRoamTick(roamTickDelay(petRoamRuntime, now));
       return;
     }
   }
@@ -1149,13 +1231,17 @@ function tickPetRoam() {
   }
 
   petRoamRuntime.x = x;
-  mainWindow.setPosition(Math.round(x), dockLineY, false);
+  const roundedX = Math.round(x);
+  if (bounds.x !== roundedX || bounds.y !== dockLineY) {
+    mainWindow.setPosition(roundedX, dockLineY, false);
+  }
   sendPetRoamMotion();
+  schedulePetRoamTick(roamTickDelay(petRoamRuntime, now));
 }
 
 function startPetRoamMotion() {
   if (!state.petRoam || !petMotionReady || !mainWindow || mainWindow.isDestroyed()) return;
-  if (petRoamTimer) clearInterval(petRoamTimer);
+  if (petRoamTimer) clearTimeout(petRoamTimer);
   petRoamHoverGate = { armed: false, inside: false };
   const display = petRoamDisplay();
   const area = display.workArea;
@@ -1195,14 +1281,15 @@ function startPetRoamMotion() {
     cycleDistance: petMotionProfile.cycleDistance,
     travelOffsets: [...petMotionProfile.travelOffsets],
     lastAt: Date.now(),
+    motionSentAt: 0,
+    motionSignature: '',
   };
   sendPetRoamMotion();
-  petRoamTimer = setInterval(tickPetRoam, 32);
-  petRoamTimer.unref?.();
+  schedulePetRoamTick();
 }
 
 function stopPetRoamMotion(restore = true) {
-  if (petRoamTimer) clearInterval(petRoamTimer);
+  if (petRoamTimer) clearTimeout(petRoamTimer);
   petRoamTimer = null;
   petRoamRuntime = null;
   petRoamHoverGate = { armed: false, inside: false };
@@ -1238,14 +1325,15 @@ function normalizeMotionProfile(value, current) {
     ? Math.max(PET_ROAM_MIN_SPEED, Math.min(PET_ROAM_MAX_SPEED, requestedSpeed))
     : current.walkSpeed;
   const cycleSeconds = Number.isFinite(requestedCycle)
-    ? Math.max(0.5, Math.min(2.5, requestedCycle))
+    ? Math.max(0.5, Math.min(PET_ROAM_MAX_CYCLE_SECONDS, requestedCycle))
     : current.cycleSeconds;
   const requestedDistance = Number(payload.cycleDistance);
   const cycleDistance = Number.isFinite(requestedDistance)
-    ? Math.max(10, Math.min(PET_ROAM_MAX_SPEED * 2.5, requestedDistance))
+    ? Math.max(10, Math.min(PET_ROAM_MAX_SPEED * cycleSeconds, requestedDistance))
     : walkSpeed * cycleSeconds;
   const requestedOffsets = Array.isArray(payload.travelOffsets)
-    ? payload.travelOffsets.map(Number).filter(Number.isFinite).slice(0, 96) : [];
+    ? payload.travelOffsets.map(Number).filter(Number.isFinite)
+      .slice(0, PET_ROAM_MAX_PROFILE_FRAMES) : [];
   const travelOffsets = requestedOffsets.length >= 2
     ? requestedOffsets.reduce((values, value) => {
       values.push(Math.max(values.at(-1) || 0, Math.min(cycleDistance, value)));
@@ -1308,6 +1396,7 @@ function setPetEngaged(value) {
     petRoamRuntime.resumeAt = Date.now() + PET_INTERACTION_COOLDOWN_MS;
   }
   sendPetRoamMotion();
+  schedulePetRoamTick(0);
 }
 
 function applyPetRoam(value) {
@@ -1405,16 +1494,28 @@ function buddyRoamDisplay() {
   return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
 }
 
-function sendBuddyRoamMotion(payload = null) {
+function sendBuddyRoamMotion(payload = null, force = false) {
   if (!buddyWindow || buddyWindow.isDestroyed()) return;
   const value = payload || (buddyRoamRuntime ? roamMotionState(buddyRoamRuntime)
     : { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null });
+  if (!shouldSendRoamMotion(buddyRoamRuntime, value, Date.now(), force || payload !== null)) return;
   post(buddyWindow, 'openclam:pet-roam-motion', value);
+}
+
+function scheduleBuddyRoamTick(delay = roamTickDelay(buddyRoamRuntime)) {
+  if (buddyRoamTimer) clearTimeout(buddyRoamTimer);
+  buddyRoamTimer = null;
+  if (!buddyRoam || !buddyRoamRuntime || !buddyWindow || buddyWindow.isDestroyed()) return;
+  buddyRoamTimer = setTimeout(() => {
+    buddyRoamTimer = null;
+    tickBuddyRoam();
+  }, Math.max(0, Number(delay) || 0));
+  buddyRoamTimer.unref?.();
 }
 
 function tickBuddyRoam() {
   if (!buddyRoam || !buddyRoamRuntime || !buddyWindow || buddyWindow.isDestroyed()) {
-    if (buddyRoamTimer) clearInterval(buddyRoamTimer);
+    if (buddyRoamTimer) clearTimeout(buddyRoamTimer);
     buddyRoamTimer = null;
     return;
   }
@@ -1438,8 +1539,12 @@ function tickBuddyRoam() {
       buddyRoamRuntime.resumeMode = 'walk';
     } else {
       buddyRoamRuntime.x = x;
-      buddyWindow.setPosition(Math.round(x), dockLineY, false);
+      const roundedX = Math.round(x);
+      if (bounds.x !== roundedX || bounds.y !== dockLineY) {
+        buddyWindow.setPosition(roundedX, dockLineY, false);
+      }
       sendBuddyRoamMotion();
+      scheduleBuddyRoamTick(roamTickDelay(buddyRoamRuntime, now));
       return;
     }
   }
@@ -1469,13 +1574,17 @@ function tickBuddyRoam() {
   }
 
   buddyRoamRuntime.x = x;
-  buddyWindow.setPosition(Math.round(x), dockLineY, false);
+  const roundedX = Math.round(x);
+  if (bounds.x !== roundedX || bounds.y !== dockLineY) {
+    buddyWindow.setPosition(roundedX, dockLineY, false);
+  }
   sendBuddyRoamMotion();
+  scheduleBuddyRoamTick(roamTickDelay(buddyRoamRuntime, now));
 }
 
 function startBuddyRoamMotion() {
   if (!buddyRoam || !buddyMotionReady || !buddyWindow || buddyWindow.isDestroyed()) return;
-  if (buddyRoamTimer) clearInterval(buddyRoamTimer);
+  if (buddyRoamTimer) clearTimeout(buddyRoamTimer);
   const display = buddyRoamDisplay();
   const area = display.workArea;
   const home = buddyWindow.getBounds();
@@ -1514,14 +1623,15 @@ function startBuddyRoamMotion() {
     cycleDistance: buddyMotionProfile.cycleDistance,
     travelOffsets: [...buddyMotionProfile.travelOffsets],
     lastAt: Date.now(),
+    motionSentAt: 0,
+    motionSignature: '',
   };
   sendBuddyRoamMotion();
-  buddyRoamTimer = setInterval(tickBuddyRoam, 32);
-  buddyRoamTimer.unref?.();
+  scheduleBuddyRoamTick();
 }
 
 function stopBuddyRoamMotion(restore = true) {
-  if (buddyRoamTimer) clearInterval(buddyRoamTimer);
+  if (buddyRoamTimer) clearTimeout(buddyRoamTimer);
   buddyRoamTimer = null;
   buddyRoamRuntime = null;
   sendBuddyRoamMotion({ enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null });
@@ -1567,6 +1677,7 @@ function setBuddyEngaged(value) {
     buddyRoamRuntime.resumeAt = Date.now() + PET_INTERACTION_COOLDOWN_MS;
   }
   sendBuddyRoamMotion();
+  scheduleBuddyRoamTick(0);
 }
 
 function setBuddyMotionReady(value) {

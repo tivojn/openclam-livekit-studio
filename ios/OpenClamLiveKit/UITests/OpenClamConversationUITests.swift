@@ -6,7 +6,11 @@ final class OpenClamConversationUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments += [
+            "-AppleLanguages", "(en)",
+            "-AppleLocale", "en_US",
+            "-OpenClamUITestCleanDeletableAvatar",
+        ]
         app.launch()
         XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
 
@@ -39,6 +43,115 @@ final class OpenClamConversationUITests: XCTestCase {
         capture("settings")
     }
 
+    func testAssistantResponseExposesSelectionCopyAndReadAloudControls() throws {
+        app.terminate()
+        app.launchArguments.append("-OpenClamUITestHoldSpeechPreparation")
+        app.launch()
+        XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
+
+        let selectableText = app.textViews.matching(
+            identifier: "openclam-selectable-message-text"
+        ).firstMatch
+        XCTAssertTrue(
+            selectableText.waitForExistence(timeout: 3),
+            "Assistant text must use the native selectable text surface."
+        )
+
+        let copy = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Copy assistant response")
+        ).firstMatch
+        let readAloud = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Read assistant response aloud")
+        ).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: 2))
+        XCTAssertTrue(readAloud.waitForExistence(timeout: 2))
+        XCTAssertTrue(copy.isHittable)
+        XCTAssertTrue(readAloud.isHittable)
+        XCTAssertTrue(readAloud.isEnabled)
+        XCTAssertGreaterThanOrEqual(copy.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(readAloud.frame.height, 44)
+        let readAloudIdentifier = readAloud.identifier
+
+        copy.tap()
+        XCTAssertTrue(selectableText.exists)
+
+        let readAloudControl = app.buttons[readAloudIdentifier]
+        XCTAssertTrue(readAloudControl.waitForExistence(timeout: 2))
+        readAloudControl.tap()
+        let stopSpeaking = app.buttons[readAloudIdentifier]
+        let stopLabelExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "Stop speaking"),
+            object: stopSpeaking
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [stopLabelExpectation], timeout: 3),
+            .completed,
+            "Per-response Read Aloud must become cancellable while speech prepares or plays."
+        )
+        XCTAssertEqual(stopSpeaking.identifier, readAloudIdentifier)
+        stopSpeaking.tap()
+        let readAgain = app.buttons[readAloudIdentifier]
+        let readAgainExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "Read assistant response aloud"),
+            object: readAgain
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [readAgainExpectation], timeout: 2),
+            .completed
+        )
+        capture("assistant-response-actions")
+    }
+
+    func testLocalReadAloudKeepsAvatarSpeechControlsResponsive() throws {
+        let opacityControl = app.buttons["openclam-avatar-opacity-control"]
+        XCTAssertTrue(opacityControl.waitForExistence(timeout: 3))
+        if opacityControl.label == "Open opacity control" {
+            opacityControl.tap()
+        }
+        let opacity = app.sliders["openclam-avatar-opacity"]
+        XCTAssertTrue(opacity.waitForExistence(timeout: 3))
+        XCTAssertTrue(opacity.isHittable)
+        app.buttons["openclam-avatar-opacity-control"].tap()
+        XCTAssertTrue(opacity.waitForNonExistence(timeout: 2))
+
+        // Normalize the first pass to the face crop. This makes the smoke a
+        // repeatable visual oracle for mouth/head stability even when a prior
+        // UI test or user session persisted full-body framing.
+        let showFaceCloseup = app.buttons["Show face closeup"]
+        if showFaceCloseup.exists {
+            showFaceCloseup.tap()
+            XCTAssertTrue(app.buttons["Show full body"].waitForExistence(timeout: 2))
+        }
+
+        func exerciseSpeech(_ attachmentName: String) {
+            let play = app.buttons["Play latest reply"]
+            XCTAssertTrue(play.waitForExistence(timeout: 3))
+            play.tap()
+
+            let stop = app.buttons["Stop speaking"]
+            XCTAssertTrue(
+                stop.waitForExistence(timeout: 3),
+                "Read-aloud must enter the speaking state so avatar lip sync is exercised."
+            )
+            capture(attachmentName)
+
+            // Keep several complete mouth cues on screen for screenshot/video
+            // acceptance while proving the control remains cancellable.
+            Thread.sleep(forTimeInterval: 3)
+            XCTAssertTrue(stop.isHittable)
+            stop.tap()
+            XCTAssertTrue(play.waitForExistence(timeout: 3))
+        }
+
+        exerciseSpeech("avatar-speaking-closeup")
+
+        let showFullBody = app.buttons["Show full body"]
+        XCTAssertTrue(showFullBody.waitForExistence(timeout: 2))
+        showFullBody.tap()
+        XCTAssertTrue(app.buttons["Show face closeup"].waitForExistence(timeout: 2))
+        exerciseSpeech("avatar-speaking-full-body")
+    }
+
     func testComposerKeyboardDoesNotHideNavigationOrModelChooser() throws {
         XCTAssertFalse(app.buttons["Text to speech"].exists)
 
@@ -69,6 +182,27 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(modelMenu.exists)
         XCTAssertTrue(modelMenu.isHittable)
         XCTAssertGreaterThanOrEqual(modelMenu.frame.height, 44)
+
+        let textToSpeech = app.buttons["openclam-tts-button"]
+        let send = app.buttons["Send message"]
+        XCTAssertTrue(textToSpeech.isHittable)
+        XCTAssertTrue(send.waitForExistence(timeout: 2))
+        let controls = [attachmentMenu, textToSpeech, modelMenu, send]
+        for control in controls {
+            XCTAssertGreaterThanOrEqual(control.frame.width, 44)
+            XCTAssertGreaterThanOrEqual(control.frame.height, 44)
+            XCTAssertEqual(control.frame.midY, send.frame.midY, accuracy: 1)
+        }
+        XCTAssertLessThanOrEqual(
+            composer.frame.maxY,
+            send.frame.minY - 4,
+            "The text editor's own padding must not displace or overlap the bottom controls."
+        )
+        XCTAssertLessThanOrEqual(
+            send.frame.maxY,
+            app.keyboards.element.frame.minY,
+            "The safe-area composer must remain above the software keyboard."
+        )
         capture("keyboard-and-composer")
 
         app.buttons["Open sidebar"].tap()
@@ -277,9 +411,140 @@ final class OpenClamConversationUITests: XCTestCase {
         capture("live-talk-managed-or-follow-avatar")
     }
 
+    func testImportedAvatarDeleteCancelConfirmFallbackAndRelaunchPersistence() throws {
+        let fixtureID = "ui-test-deletable-avatar"
+        let fixtureName = "UI Test Imported Avatar"
+
+        app.terminate()
+        app.launchArguments.append("-OpenClamUITestSeedDeletableAvatar")
+        app.launch()
+        XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
+
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
+        app.descendants(matching: .any)[
+            "openclam-avatar-agent-settings-link"
+        ].tap()
+        XCTAssertTrue(app.navigationBars["Avatar Agents"].waitForExistence(timeout: 3))
+
+        let fixtureCard = app.descendants(matching: .any)[
+            "openclam-avatar-agent-\(fixtureID)"
+        ]
+        XCTAssertTrue(fixtureCard.waitForExistence(timeout: 3))
+        XCTAssertTrue(fixtureCard.label.contains("IMPORTED"))
+        fixtureCard.tap()
+        XCTAssertTrue(app.navigationBars[fixtureName].waitForExistence(timeout: 3))
+
+        let makeActive = app.buttons["Make this the active agent"]
+        XCTAssertTrue(makeActive.waitForExistence(timeout: 2))
+        makeActive.tap()
+        XCTAssertTrue(
+            app.navigationBars[fixtureName].waitForNonExistence(timeout: 5),
+            "Activating an avatar should dismiss settings and return to its conversation."
+        )
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 3))
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
+        app.descendants(matching: .any)[
+            "openclam-avatar-agent-settings-link"
+        ].tap()
+        XCTAssertTrue(app.navigationBars["Avatar Agents"].waitForExistence(timeout: 3))
+        XCTAssertTrue(fixtureCard.waitForExistence(timeout: 3))
+        XCTAssertTrue(fixtureCard.label.contains("ACTIVE"))
+        fixtureCard.tap()
+        XCTAssertTrue(app.navigationBars[fixtureName].waitForExistence(timeout: 3))
+
+        let deleteControl = app.buttons["openclam-avatar-editor-delete"]
+        let formScrollStart = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.12, dy: 0.76)
+        )
+        let formScrollEnd = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.12, dy: 0.24)
+        )
+        for _ in 0..<18 where !deleteControl.exists || !deleteControl.isHittable {
+            formScrollStart.press(forDuration: 0.05, thenDragTo: formScrollEnd)
+        }
+        XCTAssertTrue(deleteControl.exists)
+        XCTAssertTrue(deleteControl.isHittable)
+
+        deleteControl.tap()
+        let confirmDelete = app.buttons["Delete \(fixtureName)"]
+        XCTAssertTrue(confirmDelete.waitForExistence(timeout: 2))
+        // iOS 26 presents this confirmation as a popover and omits the
+        // explicit cancel row in compact simulator automation. Tapping the
+        // system dismiss region is the platform's cancel action.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.62)).tap()
+        XCTAssertTrue(confirmDelete.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars[fixtureName].exists)
+        XCTAssertTrue(deleteControl.exists)
+
+        deleteControl.tap()
+        XCTAssertTrue(confirmDelete.waitForExistence(timeout: 2))
+        confirmDelete.tap()
+        XCTAssertTrue(app.navigationBars[fixtureName].waitForNonExistence(timeout: 5))
+        let activeAvatar = app.buttons["Choose avatar"]
+        XCTAssertTrue(activeAvatar.waitForExistence(timeout: 5))
+        XCTAssertEqual(activeAvatar.value as? String, "Captain Ayer")
+
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
+        app.descendants(matching: .any)[
+            "openclam-avatar-agent-settings-link"
+        ].tap()
+        XCTAssertTrue(app.navigationBars["Avatar Agents"].waitForExistence(timeout: 3))
+        XCTAssertTrue(fixtureCard.waitForNonExistence(timeout: 3))
+
+        let captainAyer = app.descendants(matching: .any)[
+            "openclam-avatar-agent-captain-ayer"
+        ]
+        XCTAssertTrue(captainAyer.waitForExistence(timeout: 2))
+        XCTAssertTrue(
+            captainAyer.label.contains("ACTIVE"),
+            "Deleting the selected imported avatar must fall back to Captain Ayer."
+        )
+
+        app.terminate()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
+        app.descendants(matching: .any)[
+            "openclam-avatar-agent-settings-link"
+        ].tap()
+        XCTAssertTrue(app.navigationBars["Avatar Agents"].waitForExistence(timeout: 3))
+        XCTAssertFalse(
+            app.descendants(matching: .any)[
+                "openclam-avatar-agent-\(fixtureID)"
+            ].waitForExistence(timeout: 1),
+            "A confirmed deletion must remain deleted after relaunch."
+        )
+        let relaunchedAyer = app.descendants(matching: .any)[
+            "openclam-avatar-agent-captain-ayer"
+        ]
+        XCTAssertTrue(relaunchedAyer.waitForExistence(timeout: 2))
+        XCTAssertTrue(relaunchedAyer.label.contains("ACTIVE"))
+        capture("imported-avatar-delete-persisted")
+    }
+
     func testAvatarStartsOnBeneathConversationAndWarmEarIsIndependent() throws {
         let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
         XCTAssertTrue(rail.waitForExistence(timeout: 3))
+
+        // The rail intentionally fades to its idle opacity after a few seconds,
+        // and a preceding UI test can leave that timer elapsed. Normalize the
+        // rail to its visible, unfolded state without resetting app data.
+        let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
+        XCTAssertTrue(foldControl.waitForExistence(timeout: 2))
+        if foldControl.label == "Show avatar tools" {
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Fold avatar tools", on: foldControl, timeout: 2))
+        } else if rail.value as? String != "Visible" {
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Show avatar tools", on: foldControl, timeout: 2))
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Fold avatar tools", on: foldControl, timeout: 2))
+        }
         XCTAssertEqual(rail.value as? String, "Visible")
         XCTAssertTrue(app.buttons["Open sidebar"].isHittable)
         XCTAssertTrue(app.buttons["Settings"].isHittable)
@@ -320,13 +585,96 @@ final class OpenClamConversationUITests: XCTestCase {
         // With the avatar truly hidden, the thread owns one-finger drags.
         XCTAssertTrue(waitForValue("Idle", on: rail, timeout: 6))
         let scrollStart = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.30, dy: 0.56)
+            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.56)
         )
         let scrollEnd = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.30, dy: 0.32)
+            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.32)
         )
         scrollStart.press(forDuration: 0.05, thenDragTo: scrollEnd)
         XCTAssertTrue(waitForValue("Visible", on: rail, timeout: 2))
+    }
+
+    func testVisibleAvatarStageSwipeChangesOpacityAndLeavesCanvasGapsScrollable() throws {
+        let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
+        XCTAssertTrue(foldControl.waitForExistence(timeout: 3))
+        if foldControl.label == "Show avatar tools" {
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Fold avatar tools", on: foldControl, timeout: 2))
+        }
+
+        let hiddenAvatar = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'Show '")
+        ).firstMatch
+        if hiddenAvatar.exists {
+            hiddenAvatar.tap()
+        }
+
+        // Use the full-body frame so this test has both a known opaque body
+        // target and a real transparent canvas beside it. The closeup frame
+        // legitimately fills much more of a phone-width stage.
+        let showFullBody = app.buttons["Show full body"]
+        if showFullBody.exists {
+            XCTAssertTrue(showFullBody.isHittable)
+            showFullBody.tap()
+            XCTAssertTrue(app.buttons["Show face closeup"].waitForExistence(timeout: 2))
+        }
+
+        let opacityControl = app.buttons["openclam-avatar-opacity-control"]
+        XCTAssertTrue(opacityControl.waitForExistence(timeout: 2))
+        if opacityControl.label == "Open opacity control" {
+            opacityControl.tap()
+        }
+        let opacity = app.sliders["openclam-avatar-opacity"]
+        XCTAssertTrue(opacity.waitForExistence(timeout: 3))
+        XCTAssertTrue(opacity.isHittable)
+
+        // Normalize the persisted slider first, so an upward swipe always has
+        // visible range to increase regardless of a prior user preference.
+        opacity.adjust(toNormalizedSliderPosition: 0.25)
+        let before = String(describing: opacity.value ?? "")
+        // This is deliberately an app-coordinate drag through the avatar's
+        // lower-body hit region, not a drag on the accessibility Slider.
+        let stageStart = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.55)
+        )
+        let stageEnd = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.20)
+        )
+        stageStart.press(forDuration: 0.06, thenDragTo: stageEnd)
+
+        let didChange = expectation(
+            for: NSPredicate { _, _ in
+                String(describing: opacity.value ?? "") != before
+            },
+            evaluatedWith: nil
+        )
+        wait(for: [didChange], timeout: 2)
+        XCTAssertTrue(opacity.exists)
+
+        let opacityAfterStageDrag = String(describing: opacity.value ?? "")
+        let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 2))
+        XCTAssertTrue(waitForValue("Idle", on: rail, timeout: 6))
+
+        // A drag through the left transparent canvas must belong to the
+        // conversation scroll view, not the avatar. The thread observer wakes
+        // the rail and the opacity semantic value remains unchanged.
+        let gapStart = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.56)
+        )
+        let gapEnd = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.31)
+        )
+        gapStart.press(forDuration: 0.06, thenDragTo: gapEnd)
+        XCTAssertTrue(waitForValue("Visible", on: rail, timeout: 2))
+        XCTAssertEqual(String(describing: opacity.value ?? ""), opacityAfterStageDrag)
+
+        let hideAvatar = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'Hide '")
+        ).firstMatch
+        XCTAssertTrue(hideAvatar.waitForExistence(timeout: 2))
+        hideAvatar.tap()
+        XCTAssertFalse(opacity.waitForExistence(timeout: 1))
     }
 
     func testAvatarCarouselActivatesTheFrontCardWithoutAnExtraUseStep() throws {
@@ -377,13 +725,23 @@ final class OpenClamConversationUITests: XCTestCase {
             )
         ).firstMatch
         XCTAssertTrue(activeFrontCard.waitForExistence(timeout: 2))
-        let dragStart = activeFrontCard.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.62, dy: 0.44)
-        )
-        let dragEnd = activeFrontCard.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.32, dy: 0.44)
-        )
-        dragStart.press(forDuration: 0.05, thenDragTo: dragEnd)
+        let nextCard = app.buttons.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@ AND value == %@",
+                "openclam-avatar-carousel-card-",
+                "Not selected"
+            )
+        ).firstMatch
+        XCTAssertTrue(nextCard.waitForExistence(timeout: 2))
+        // The stacked card centers overlap by design. Tap its visibly exposed
+        // outer edge so XCUI delivers the physical event to that card rather
+        // than to the front card above it.
+        let exposedEdgeX = nextCard.frame.midX >= activeFrontCard.frame.midX
+            ? 0.90
+            : 0.10
+        nextCard.coordinate(
+            withNormalizedOffset: CGVector(dx: exposedEdgeX, dy: 0.50)
+        ).tap()
 
         let selectedCard = app.buttons.matching(
             NSPredicate(
@@ -401,6 +759,79 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(waitForValue(selectedAvatarName, on: chooseAvatar, timeout: 3))
         XCTAssertTrue(app.buttons["openclam-live-talk-rail-button"].isHittable)
         capture("avatar-carousel-direct-selection-result")
+    }
+
+    func testAraMotionRailUsesOnlyValidatedV3Clips() throws {
+        let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
+        XCTAssertTrue(foldControl.waitForExistence(timeout: 3))
+        if foldControl.label == "Show avatar tools" {
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Fold avatar tools", on: foldControl, timeout: 2))
+        }
+
+        let chooseAvatar = app.buttons["Choose avatar"]
+        XCTAssertTrue(chooseAvatar.waitForExistence(timeout: 2))
+        chooseAvatar.tap()
+
+        let cards = app.buttons.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "openclam-avatar-carousel-card-"
+            )
+        )
+        XCTAssertEqual(cards.count, 2, "The shipped picker must contain Ayer and Ara only.")
+        XCTAssertEqual(
+            Set(cards.allElementsBoundByIndex.map(\.label)),
+            Set(["Captain Ayer", "Ara"])
+        )
+
+        let araCard = app.buttons["openclam-avatar-carousel-card-ara"]
+        XCTAssertTrue(araCard.waitForExistence(timeout: 2))
+        if String(describing: araCard.value ?? "") == "Not selected" {
+            let frontCard = app.buttons.matching(
+                NSPredicate(
+                    format: "identifier BEGINSWITH %@ AND value BEGINSWITH %@",
+                    "openclam-avatar-carousel-card-",
+                    "Selected"
+                )
+            ).firstMatch
+            XCTAssertTrue(frontCard.waitForExistence(timeout: 2))
+            let exposedEdgeX = araCard.frame.midX >= frontCard.frame.midX
+                ? 0.90
+                : 0.10
+            araCard.coordinate(
+                withNormalizedOffset: CGVector(dx: exposedEdgeX, dy: 0.50)
+            ).tap()
+            XCTAssertTrue(waitForValue("Selected", on: araCard, timeout: 2))
+        }
+        araCard.tap()
+        XCTAssertTrue(app.buttons["Close avatar carousel"].waitForNonExistence(timeout: 2))
+        XCTAssertTrue(waitForValue("Ara", on: chooseAvatar, timeout: 2))
+
+        let walk = app.buttons["openclam-avatar-walk-button"]
+        let edgeIdle = app.buttons["openclam-avatar-edge-idle-button"]
+        let moves = app.buttons["openclam-avatar-moves-button"]
+        XCTAssertTrue(walk.waitForExistence(timeout: 2))
+        XCTAssertFalse(walk.isEnabled)
+        XCTAssertEqual(String(describing: walk.value ?? ""), "Not included in this avatar")
+        XCTAssertTrue(edgeIdle.isEnabled)
+        XCTAssertEqual(String(describing: edgeIdle.value ?? ""), "Ready")
+        XCTAssertTrue(moves.isEnabled)
+        XCTAssertEqual(String(describing: moves.value ?? ""), "Ready")
+
+        edgeIdle.tap()
+        XCTAssertTrue(waitForValue("Playing", on: edgeIdle, timeout: 2))
+        XCTAssertEqual(edgeIdle.label, "Stop edge idle")
+
+        moves.tap()
+        XCTAssertTrue(waitForValue("Playing", on: moves, timeout: 2))
+        XCTAssertEqual(moves.label, "Stop moves")
+        XCTAssertEqual(edgeIdle.label, "Play edge idle")
+
+        moves.tap()
+        XCTAssertTrue(waitForValue("Ready", on: moves, timeout: 2))
+        XCTAssertEqual(moves.label, "Play moves")
+        capture("ara-v3-motion-rail")
     }
 
     func testLiveTalkUsesOnePersistentPhoneControlOnTheAvatarRail() throws {

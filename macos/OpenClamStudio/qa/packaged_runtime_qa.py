@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 
+from ffmpeg_alpha_runtime_qa import verify_alpha_runtime
+
 
 if len(sys.argv) != 2:
     raise SystemExit("usage: packaged_runtime_qa.py /path/to/OpenClam Studio.app")
@@ -27,7 +29,7 @@ NATIVE_PATH_AUDIT = Path(__file__).resolve().parent.parent / "scripts/audit-nati
 
 if not APP_ASAR.is_file():
     raise SystemExit(f"packaged Electron archive is missing: {APP_ASAR}")
-for required in (PYTHON, FFMPEG_DIR / "ffmpeg", CUTOUT):
+for required in (PYTHON, FFMPEG_DIR / "ffmpeg", FFMPEG_DIR / "ffprobe", CUTOUT):
     if not required.is_file() or not os.access(required, os.X_OK):
         raise SystemExit(f"packaged executable is missing: {required}")
 if not SITE_PACKAGES.is_dir() or not (MODELS / "face_landmarker.task").is_file():
@@ -38,6 +40,7 @@ native_path_audit = subprocess.run(
         sys.executable,
         str(NATIVE_PATH_AUDIT),
         str(FFMPEG_DIR / "ffmpeg"),
+        str(FFMPEG_DIR / "ffprobe"),
         str(SITE_PACKAGES / "cv2"),
         str(CUTOUT),
     ],
@@ -50,6 +53,9 @@ if native_path_audit.returncode:
         (native_path_audit.stderr or native_path_audit.stdout or "native path audit failed")[-4000:]
     )
 print(native_path_audit.stdout.strip())
+verify_alpha_runtime(
+    FFMPEG_DIR / "ffmpeg", FFMPEG_DIR / "ffprobe", "packaged FFmpeg"
+)
 
 
 def require_clean_packaged_asar() -> None:
@@ -75,7 +81,10 @@ function atOrBelow(entry, root) {
 }
 
 const forbidden = entries.filter((entry) => (
-  atOrBelow(entry, '/node_modules/livekit-client/src/test')
+  atOrBelow(entry, '/electron/native')
+  || /^\/node_modules\/(?:@[^/]+\/)?[^/]+\/src(?:\/|$)/.test(entry)
+  || entry.endsWith('.map')
+  || atOrBelow(entry, '/node_modules/livekit-client/src/test')
   || (
     entry.startsWith('/node_modules/livekit-client/src/')
     && (entry.includes('/__snapshots__/') || entry.endsWith('.test.ts'))
@@ -88,7 +97,7 @@ const forbidden = entries.filter((entry) => (
   || entry === '/node_modules/@livekit/mutex/dist/index.test.d.ts.map'
 ));
 if (forbidden.length) {
-  throw new Error(`packaged ASAR contains test-only artifacts: ${forbidden.slice(0, 12).join(', ')}`);
+  throw new Error(`packaged ASAR contains source, source-map, or test-only artifacts: ${forbidden.slice(0, 12).join(', ')}`);
 }
 
 const required = [
