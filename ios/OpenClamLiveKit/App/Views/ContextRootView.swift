@@ -9,6 +9,7 @@ struct ContextRootView: View {
     @EnvironmentObject private var commandModel: AssistantModel
     @EnvironmentObject private var conversation: ConversationModel
     @EnvironmentObject private var aiConfiguration: AIConfigurationModel
+    @EnvironmentObject private var keyboardDictationHost: OpenClamKeyboardDictationHostController
 
     @ObservedObject var feature: ScreenContextFeatureModel
     let onShowAssistant: () -> Void
@@ -74,11 +75,26 @@ struct ContextRootView: View {
                 )
             )
             .navigationTitle("Live Screen Context")
+        } else if keyboardDictationHost.isHandlingVoiceRequest {
+            ContentUnavailableView(
+                "Quick Dictation is using the microphone",
+                systemImage: "mic.badge.xmark",
+                description: Text(
+                    "Finish or cancel the keyboard voice turn before starting Live Screen Context."
+                )
+            )
+            .navigationTitle("Live Screen Context")
         } else if #available(iOS 27.0, *), let manager = feature.captureManager {
             ScreenCaptureSessionView(
                 manager: manager,
                 onQuestionReadyForOneRequest: submitLiveScreenQuestion
             )
+            .onAppear {
+                _ = keyboardDictationHost.prepareForCompetingAppAudio(owner: .liveScreen)
+            }
+            .onDisappear {
+                keyboardDictationHost.setCompetingAppAudioActive(false, owner: .liveScreen)
+            }
         } else {
             ContentUnavailableView(
                 "Live Screen Context unavailable",
@@ -100,7 +116,14 @@ struct ContextRootView: View {
             )
             if succeeded,
                UIApplication.shared.applicationState != .active {
-                conversation.speakLatestAssistantReply(using: aiConfiguration)
+                if keyboardDictationHost.prepareForCompetingAppAudio(owner: .speechOutput) == nil {
+                    conversation.speakLatestAssistantReply(using: aiConfiguration)
+                    keyboardDictationHost.setCompetingAppAudioActive(
+                        conversation.isSpeechOutputActive
+                            || conversation.isPronunciationOutputActive,
+                        owner: .speechOutput
+                    )
+                }
             }
         }
     }

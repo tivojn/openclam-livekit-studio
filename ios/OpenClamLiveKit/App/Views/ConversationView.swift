@@ -131,6 +131,7 @@ struct ConversationView: View {
     @EnvironmentObject private var conversation: ConversationModel
     @EnvironmentObject private var aiConfiguration: AIConfigurationModel
     @EnvironmentObject private var avatarLibrary: OpenClamAvatarLibrary
+    @EnvironmentObject private var keyboardDictationHost: OpenClamKeyboardDictationHostController
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -397,18 +398,23 @@ struct ConversationView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     dismissKeyboard()
+                    if !warmEarEnabled, appAudioActivityIsActive {
+                        liveTalkPTTNotice = "Finish the current microphone or speaker activity before preparing Quick Dictation."
+                        return
+                    }
                     warmEarEnabled.toggle()
                     OpenClamWarmEarControl.setEnabled(warmEarEnabled)
+                    liveTalkPTTNotice = OpenClamWarmEarControl.availabilityExplanation
                 } label: {
-                    Image(systemName: warmEarEnabled ? "ear.fill" : "ear")
+                    Image(systemName: keyboardDictationHost.warmEarPresentationState.symbolName)
                         .font(.system(size: 18, weight: .semibold))
                         .frame(width: 44, height: 44)
                         .contentTransition(.symbolEffect(.replace))
                 }
-                .foregroundStyle(warmEarEnabled ? Color.primary : Color.secondary)
-                .accessibilityLabel("Keyboard ears")
-                .accessibilityValue(warmEarEnabled ? "On" : "Off")
-                .accessibilityHint(OpenClamWarmEarControl.availabilityExplanation)
+                .foregroundStyle(quickDictationStatusColor)
+                .accessibilityLabel("Quick Dictation")
+                .accessibilityValue(keyboardDictationHost.warmEarPresentationState.title)
+                .accessibilityHint(keyboardDictationHost.warmEarPresentationState.detail)
                 .accessibilityIdentifier("openclam-warm-ear-button")
             }
 
@@ -481,8 +487,17 @@ struct ConversationView: View {
                 readAloudMessageID = nil
             }
         }
+        .onChange(of: appAudioActivityIsActive) { _, _ in
+            synchronizeQuickDictationAudioOwnership()
+        }
         .onChange(of: conversation.pendingShortcutPrompt) { _, prompt in
             receivePendingShortcutPrompt(prompt)
+        }
+        .onChange(of: keyboardDictationHost.warmEarPresentationState) { _, state in
+            warmEarEnabled = OpenClamWarmEarControl.isEnabled
+            if case .failed = state {
+                liveTalkPTTNotice = state.detail
+            }
         }
         .onChange(of: conversation.historyController.selectedThreadID) { previousID, selectedID in
             guard previousID != nil, previousID != selectedID else { return }
@@ -513,10 +528,12 @@ struct ConversationView: View {
             conversation.stopSpeechOutput()
             cancelActiveRequest()
             Task { await liveTalk.stop() }
+            keyboardDictationHost.setCompetingAppAudioActive(false)
         }
         .onAppear {
             warmEarEnabled = OpenClamWarmEarControl.isEnabled
             OpenClamWarmEarControl.renewForegroundLease()
+            synchronizeQuickDictationAudioOwnership()
             receivePendingShortcutPrompt(conversation.pendingShortcutPrompt)
             if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let submission = conversation.pendingScreenContextSubmission {
@@ -865,7 +882,9 @@ struct ConversationView: View {
                     }
                     Spacer()
                     Button {
+                        guard reserveAppAudioLane() else { return }
                         conversation.speakPronunciation()
+                        synchronizeQuickDictationAudioOwnership()
                     } label: {
                         Label("Hear it", systemImage: "speaker.wave.2.fill")
                     }
@@ -1773,10 +1792,12 @@ struct ConversationView: View {
     private var textToSpeechButton: some View {
         Button {
             let enabled = !conversation.isTTSEnabled
+            if enabled, !reserveAppAudioLane() { return }
             conversation.setTTSEnabled(enabled)
             if enabled {
                 conversation.speakLatestAssistantReply(using: aiConfiguration)
             }
+            synchronizeQuickDictationAudioOwnership()
         } label: {
             Image(systemName: conversation.isTTSEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
                 .font(.system(size: 18, weight: .medium))
@@ -1974,10 +1995,12 @@ struct ConversationView: View {
             isTTSEnabled: conversation.isTTSEnabled,
             liveTalkPhase: liveTalk.phase,
             onPlayLatest: {
+                guard reserveAppAudioLane() else { return }
                 if !conversation.isTTSEnabled {
                     conversation.setTTSEnabled(true)
                 }
                 conversation.speakLatestAssistantReply(using: aiConfiguration)
+                synchronizeQuickDictationAudioOwnership()
             },
             onStop: conversation.stopSpeechOutput,
             onToggleLiveTalk: toggleLiveTalk,
@@ -2198,6 +2221,19 @@ struct ConversationView: View {
         conversation.clearPendingShortcutPrompt()
     }
 
+    private var quickDictationStatusColor: Color {
+        switch keyboardDictationHost.warmEarPresentationState {
+        case .off, .arming, .paused:
+            .secondary
+        case .ready:
+            .blue
+        case .busy:
+            .red
+        case .failed:
+            .orange
+        }
+    }
+
     private var composerIcon: String {
         if speech.isTranscribing { return "ellipsis" }
         if isRequestActive { return "stop.fill" }
@@ -2245,9 +2281,13 @@ struct ConversationView: View {
             ) {
                 liveTalkPTTNotice = reason
             } else {
+                guard reserveAppAudioLane() else { return }
                 suppressesSpeechError = false
                 liveTalkPTTNotice = nil
-                Task { await speech.start(using: aiConfiguration) }
+                Task {
+                    await speech.start(using: aiConfiguration)
+                    synchronizeQuickDictationAudioOwnership()
+                }
             }
         } else {
             sendInput()
@@ -2298,8 +2338,10 @@ struct ConversationView: View {
               let text = ConversationMessageInteractionPolicy.wholeEntryText(for: message) else {
             return
         }
+        guard reserveAppAudioLane() else { return }
         readAloudMessageID = message.id
         conversation.readAssistantReplyAloud(text, using: aiConfiguration)
+        synchronizeQuickDictationAudioOwnership()
         if !conversation.isSpeechOutputActive {
             readAloudMessageID = nil
         }
@@ -2705,8 +2747,9 @@ struct ConversationView: View {
             return
         }
         AccessibilityNotification.Announcement("Assistant: \(message.text)").post()
-        if !liveTalk.phase.isSessionActive {
+        if !liveTalk.phase.isSessionActive, reserveAppAudioLane() {
             conversation.speakAssistantReply(message.text, using: aiConfiguration)
+            synchronizeQuickDictationAudioOwnership()
         }
     }
 
@@ -2720,6 +2763,7 @@ struct ConversationView: View {
             return
         }
 
+        guard reserveAppAudioLane() else { return }
         speech.cancel()
         conversation.stopSpeechOutput()
         liveTalkPTTNotice = nil
@@ -2734,6 +2778,28 @@ struct ConversationView: View {
                 )
             }
         )
+        synchronizeQuickDictationAudioOwnership()
+    }
+
+    private var appAudioActivityIsActive: Bool {
+        liveTalk.phase.isSessionActive
+            || speech.isListening
+            || speech.isTranscribing
+            || conversation.isSpeechOutputActive
+            || conversation.isPronunciationOutputActive
+    }
+
+    @discardableResult
+    private func reserveAppAudioLane() -> Bool {
+        if let reason = keyboardDictationHost.prepareForCompetingAppAudio() {
+            liveTalkPTTNotice = reason
+            return false
+        }
+        return true
+    }
+
+    private func synchronizeQuickDictationAudioOwnership() {
+        keyboardDictationHost.setCompetingAppAudioActive(appAudioActivityIsActive)
     }
 
     private func requestAvatarSwitch(_ id: String, _ displayName: String) {

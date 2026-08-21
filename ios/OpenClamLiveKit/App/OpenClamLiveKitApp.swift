@@ -16,6 +16,7 @@ struct OpenClamLiveKitApp: App {
                 .environmentObject(conversation)
                 .environmentObject(aiConfiguration)
                 .environmentObject(avatarLibrary)
+                .environmentObject(keyboardDictationHost)
                 .sheet(item: $keyboardDictationHost.activeRequest) { request in
                     OpenClamKeyboardDictationHostView(
                         request: request,
@@ -34,6 +35,11 @@ struct OpenClamLiveKitApp: App {
                     )
                     aiConfiguration.reconcileAvatarCatalog(avatarLibrary.identities)
                     keyboardDictationHost.configure(aiConfiguration: aiConfiguration)
+                    keyboardDictationHost.setCompetingAppAudioActive(
+                        conversation.isSpeechOutputActive
+                            || conversation.isPronunciationOutputActive,
+                        owner: .speechOutput
+                    )
                     model.restoreStagedCommand()
                     conversation.restorePendingShortcutPrompt()
                     keyboardDictationHost.restorePendingRequest()
@@ -55,6 +61,15 @@ struct OpenClamLiveKitApp: App {
                         conversation.restorePendingShortcutPrompt()
                         keyboardDictationHost.restorePendingRequest()
                     }
+                }
+                .onChange(
+                    of: conversation.isSpeechOutputActive
+                        || conversation.isPronunciationOutputActive
+                ) { _, active in
+                    keyboardDictationHost.setCompetingAppAudioActive(
+                        active,
+                        owner: .speechOutput
+                    )
                 }
         }
     }

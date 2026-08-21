@@ -48,7 +48,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>OpenClam uses your location only while open to find places you ask for nearby.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>OpenClam records during explicit tap-to-talk or Screen Voice requests, or for up to 90 seconds after you turn on Keyboard Ear. Live Talk starts the microphone only after you tap the phone button, streams audio through LiveKit to your selected speech service while the app is in the foreground, and stops when you tap hang up or the app enters the background. Keyboard Ear discards standby audio; Apple recognition stays with Apple, and a selected cloud speech provider receives bounded audio only after a keyboard voice request begins.</string>
+	<string>OpenClam records during explicit tap-to-talk or Screen Voice requests, or for up to 90 seconds after you turn on Quick Dictation. Live Talk starts the microphone only after you tap the phone button, streams audio through LiveKit to your selected speech service while the app is in the foreground, and stops when you tap hang up or the app enters the background. Quick Dictation discards standby audio; Apple recognition stays with Apple, and a selected cloud speech provider receives bounded audio only after a keyboard voice request begins.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>OpenClam imports only photos and videos you choose; attachments go to your configured AI service only after you tap Send.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>

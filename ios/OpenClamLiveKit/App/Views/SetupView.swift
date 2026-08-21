@@ -63,7 +63,7 @@ struct SetupView: View {
                     "Enable Allow Full Access for the one-time local App Group handoff",
                     systemImage: "lock.open"
                 )
-                Text("Tap the keyboard microphone to open OpenClam's visible voice-input screen. OpenClam stops recording before you return, and the keyboard inserts the final transcript once. The keyboard extension itself cannot use the microphone or network.")
+                Text(OpenClamKeyboardUserCopy.setupWorkflow)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -74,7 +74,8 @@ struct SetupView: View {
                 Label("Selected attachments leave the iPhone only after you tap Send", systemImage: "paperclip")
                 Label("Only exact contact fields you review can be shared once", systemImage: "person.text.rectangle")
                 Label("Contact notes are not requested or read", systemImage: "note.text.badge.plus")
-                Label("No background microphone or live screen capture; screen context comes only from content you select or explicitly share", systemImage: "mic.slash")
+                Label(OpenClamKeyboardUserCopy.boundedMicrophoneDisclosure, systemImage: "mic.fill")
+                Label("No live screen capture; screen context comes only from content you select or explicitly share", systemImage: "rectangle.dashed")
                 Label("No invented review, rating, menu, or venue claims", systemImage: "checkmark.shield")
                 Label("No silent messages, calls, orders, rides, or purchases", systemImage: "hand.raised")
                 Label("Bounded chat text and attachment descriptors persist on this iPhone; private review payloads and attachment bytes do not enter chat history", systemImage: "lock.doc")

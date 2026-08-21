@@ -94,6 +94,54 @@ final class OpenClamKeyboardTests: XCTestCase {
         )
     }
 
+    func testInsertionPlanPreservesMultilingualAndPunctuationBoundaries() {
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "世界", contextBeforeInput: "你好"),
+            "世界"
+        )
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "です", contextBeforeInput: "便利"),
+            "です"
+        )
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "ไทย", contextBeforeInput: "ภาษา"),
+            "ไทย"
+        )
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "'s ready", contextBeforeInput: "OpenClam"),
+            "'s ready"
+        )
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "hello", contextBeforeInput: "（"),
+            "hello"
+        )
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "مرحبا", contextBeforeInput: "OpenClam"),
+            " مرحبا"
+        )
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "؟", contextBeforeInput: "مرحبا"),
+            "؟"
+        )
+        XCTAssertEqual(
+            OpenClamKeyboardInsertionPlan.text(for: "한국어", contextBeforeInput: "OpenClam"),
+            " 한국어",
+            "Korean normally uses spaces and must not inherit the CJK no-space rule."
+        )
+    }
+
+    func testKeyboardUserCopyMatchesTheActualHandoffAndBoundedLease() {
+        XCTAssertFalse(OpenClamKeyboardCapability.canLaunchContainingAppFromExtension)
+        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("open OpenClam yourself"))
+        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("90 seconds"))
+        XCTAssertTrue(
+            OpenClamKeyboardUserCopy.boundedMicrophoneDisclosure.contains("foreground-started")
+        )
+        XCTAssertTrue(
+            OpenClamKeyboardUserCopy.boundedMicrophoneDisclosure.contains("at most 90 seconds")
+        )
+    }
+
     func testSharedResultIsConsumedExactlyOnceAndDeleted() throws {
         let fixture = try makeStoreFixture()
         defer { try? FileManager.default.removeItem(at: fixture.container) }
@@ -120,11 +168,171 @@ final class OpenClamKeyboardTests: XCTestCase {
         XCTAssertFalse(remainingNames.contains { $0.contains(request.id.uuidString.lowercased()) })
     }
 
+    func testSharedResultRemainsRecoverableUntilInsertionAcknowledgesIt() throws {
+        let fixture = try makeStoreFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let request = try fixture.store.beginRequest(at: now)
+        try fixture.store.write(
+            .completed(requestID: request.id, transcript: "recoverable", at: now),
+            at: now
+        )
+
+        XCTAssertEqual(try fixture.store.peekActiveResult(at: now)?.transcript, "recoverable")
+        XCTAssertEqual(try fixture.store.peekActiveResult(at: now)?.transcript, "recoverable")
+
+        try fixture.store.acknowledgeActiveResult(requestID: request.id, at: now)
+        XCTAssertNil(try fixture.store.activeRequest(at: now))
+        XCTAssertNil(try fixture.store.result(for: request.id))
+    }
+
+    func testBeginningWhileARequestIsPendingReturnsTheSameRequest() throws {
+        let fixture = try makeStoreFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = try fixture.store.beginRequest(at: now)
+        let second = try fixture.store.beginRequest(at: now.addingTimeInterval(1))
+
+        XCTAssertEqual(second, first)
+        XCTAssertEqual(try fixture.store.activeRequest(at: now), first)
+    }
+
+    func testKeyboardCancelWritesOneTerminalResultForTheHostToObserve() throws {
+        let fixture = try makeStoreFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let request = try fixture.store.beginRequest(at: now)
+
+        XCTAssertEqual(try fixture.store.cancelActiveRequest(at: now), request)
+        XCTAssertEqual(try fixture.store.peekActiveResult(at: now)?.state, .cancelled)
+        XCTAssertEqual(try fixture.store.cancelActiveRequest(at: now), request)
+        XCTAssertEqual(try fixture.store.peekActiveResult(at: now)?.state, .cancelled)
+    }
+
+    func testDelayedCancellationKeepsItsExactIdentityUntilHostAcknowledges() throws {
+        let fixture = try makeStoreFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let cancelled = try fixture.store.beginRequest(at: now)
+        _ = try fixture.store.cancelActiveRequest(at: now)
+        try fixture.store.acknowledgeActiveResult(requestID: cancelled.id, at: now)
+
+        let next = try fixture.store.beginRequest(at: now.addingTimeInterval(1))
+
+        XCTAssertNotEqual(next.id, cancelled.id)
+        XCTAssertEqual(
+            try fixture.store.pendingCancellationRequestIDs(at: now.addingTimeInterval(1)),
+            [cancelled.id]
+        )
+        try fixture.store.acknowledgeCancellation(requestID: cancelled.id)
+        XCTAssertTrue(
+            try fixture.store.pendingCancellationRequestIDs(at: now.addingTimeInterval(1)).isEmpty
+        )
+        XCTAssertEqual(try fixture.store.activeRequest(at: now.addingTimeInterval(1)), next)
+    }
+
+    func testTerminalKeyboardResultIsFirstWriterWins() throws {
+        let fixture = try makeStoreFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let request = try fixture.store.beginRequest(at: now)
+
+        XCTAssertTrue(
+            try fixture.store.write(
+                .cancelled(requestID: request.id, at: now),
+                at: now
+            )
+        )
+        XCTAssertFalse(
+            try fixture.store.write(
+                .completed(requestID: request.id, transcript: "must not overwrite", at: now),
+                at: now
+            )
+        )
+        XCTAssertEqual(try fixture.store.result(for: request.id)?.state, .cancelled)
+    }
+
+    func testTextMutationCommitsMarkedInputBeforeEditing() {
+        var events: [String] = []
+
+        OpenClamKeyboardTextMutation.commitMarkedTextThen(
+            { events.append("insert") },
+            unmarkText: { events.append("commit") }
+        )
+
+        XCTAssertEqual(events, ["commit", "insert"])
+    }
+
+    func testOversizedPrivateTranscriptIsRejectedBeforeDiskPersistence() throws {
+        let fixture = try makeStoreFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let request = try fixture.store.beginRequest(at: now)
+        let oversized = String(
+            repeating: "a",
+            count: OpenClamKeyboardHandoffStore.maximumArtifactBytes + 1
+        )
+
+        XCTAssertThrowsError(
+            try fixture.store.write(
+                .completed(requestID: request.id, transcript: oversized, at: now),
+                at: now
+            )
+        ) { error in
+            XCTAssertEqual(error as? OpenClamKeyboardStoreError, .artifactTooLarge)
+        }
+        XCTAssertNil(try fixture.store.result(for: request.id))
+    }
+
+    func testCorruptOversizedActiveMetadataIsPrunedAndDoesNotBlockRecovery() throws {
+        let fixture = try makeStoreFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let keyboardDirectory = fixture.container.appendingPathComponent(
+            "OpenClamKeyboard",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: keyboardDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data(
+            repeating: 0x41,
+            count: OpenClamKeyboardHandoffStore.maximumArtifactBytes + 1
+        ).write(to: keyboardDirectory.appendingPathComponent("active.json"))
+
+        let request = try fixture.store.beginRequest()
+
+        XCTAssertEqual(try fixture.store.activeRequest(), request)
+    }
+
+    func testKeyboardAutomaticTurnTreatsXAILiveAsRealtimeButBatchAsFinalOnly() {
+        XCTAssertTrue(
+            OpenClamKeyboardAutomaticTurnPolicy.supportsSettledPartialTranscript(
+                .init(
+                    provider: .xAI,
+                    model: AIProviderRegistry.xAILiveSpeechToTextModel
+                )
+            )
+        )
+        XCTAssertFalse(
+            OpenClamKeyboardAutomaticTurnPolicy.supportsSettledPartialTranscript(
+                .init(
+                    provider: .xAI,
+                    model: AIProviderRegistry.xAIBatchSpeechToTextModel
+                )
+            )
+        )
+    }
+
     func testExpiredRequestIsRejectedAndRemoved() throws {
         let fixture = try makeStoreFixture()
         defer { try? FileManager.default.removeItem(at: fixture.container) }
         let start = Date(timeIntervalSince1970: 1_700_000_000)
-        _ = try fixture.store.beginRequest(at: start)
+        let request = try fixture.store.beginRequest(at: start)
+        try fixture.store.write(
+            .completed(requestID: request.id, transcript: "expired private transcript", at: start),
+            at: start
+        )
 
         XCTAssertThrowsError(
             try fixture.store.activeRequest(
@@ -134,6 +342,7 @@ final class OpenClamKeyboardTests: XCTestCase {
             XCTAssertEqual(error as? OpenClamKeyboardStoreError, .staleRequest)
         }
         XCTAssertNil(try fixture.store.activeRequest(at: start))
+        XCTAssertNil(try fixture.store.result(for: request.id))
     }
 
     @MainActor
@@ -163,6 +372,19 @@ final class OpenClamKeyboardTests: XCTestCase {
         host.restorePendingRequest(at: now)
 
         XCTAssertEqual(host.activeRequest, request)
+    }
+
+    @MainActor
+    func testIndependentAudioOwnersReleaseOnlyTheirOwnReservation() {
+        let host = OpenClamKeyboardDictationHostController()
+
+        host.setCompetingAppAudioActive(true, owner: .liveScreen)
+        host.setCompetingAppAudioActive(true, owner: .speechOutput)
+        host.setCompetingAppAudioActive(false, owner: .liveScreen)
+        XCTAssertTrue(host.hasCompetingAppAudioActivity)
+
+        host.setCompetingAppAudioActive(false, owner: .speechOutput)
+        XCTAssertFalse(host.hasCompetingAppAudioActivity)
     }
 
     func testExtensionInfoRequestsSharedAccessWithoutClaimingMicrophoneCapture() throws {

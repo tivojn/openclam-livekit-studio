@@ -66,9 +66,11 @@ final class SpeechOutputDelegateProxy: NSObject,
     var onCompletion: ((Int, String?) -> Void)?
     var onAppleSpeechStarted: ((Int) -> Void)?
     var onAppleSpeechRange: ((Int, NSRange, String) -> Void)?
+    var onPronunciationCompletion: (() -> Void)?
 
     private var appleGenerations: [ObjectIdentifier: Int] = [:]
     private var cloudGenerations: [ObjectIdentifier: Int] = [:]
+    private var pronunciationUtterances: Set<ObjectIdentifier> = []
 
     func register(_ utterance: AVSpeechUtterance, generation: Int) {
         appleGenerations[ObjectIdentifier(utterance)] = generation
@@ -76,6 +78,14 @@ final class SpeechOutputDelegateProxy: NSObject,
 
     func register(_ player: AVAudioPlayer, generation: Int) {
         cloudGenerations[ObjectIdentifier(player)] = generation
+    }
+
+    func registerPronunciation(_ utterance: AVSpeechUtterance) {
+        pronunciationUtterances.insert(ObjectIdentifier(utterance))
+    }
+
+    func invalidatePronunciation() {
+        pronunciationUtterances.removeAll(keepingCapacity: true)
     }
 
     func invalidateAll() {
@@ -139,10 +149,12 @@ final class SpeechOutputDelegateProxy: NSObject,
         _ utterance: AVSpeechUtterance,
         errorMessage: String?
     ) {
-        guard let generation = appleGenerations.removeValue(
-            forKey: ObjectIdentifier(utterance)
-        ) else { return }
-        onCompletion?(generation, errorMessage)
+        let identifier = ObjectIdentifier(utterance)
+        if let generation = appleGenerations.removeValue(forKey: identifier) {
+            onCompletion?(generation, errorMessage)
+        } else if pronunciationUtterances.remove(identifier) != nil {
+            onPronunciationCompletion?()
+        }
     }
 
     private func completeCloud(_ player: AVAudioPlayer, errorMessage: String?) {
@@ -232,6 +244,7 @@ final class ConversationModel: ObservableObject {
     @Published private(set) var isTTSEnabled: Bool
     @Published private(set) var speechOutputError: String?
     @Published private(set) var isSpeechOutputActive = false
+    @Published private(set) var isPronunciationOutputActive = false
 
     private let router = AssistantIntentRouter()
     private let synthesizer = AVSpeechSynthesizer()
@@ -295,6 +308,9 @@ final class ConversationModel: ObservableObject {
                 spokenRange: range,
                 fullText: text
             )
+        }
+        speechOutputDelegate.onPronunciationCompletion = { [weak self] in
+            self?.isPronunciationOutputActive = false
         }
         synthesizer.delegate = speechOutputDelegate
         Task { @MainActor [weak self] in
@@ -680,6 +696,7 @@ final class ConversationModel: ObservableObject {
         if isSpeechOutputActive {
             isSpeechOutputActive = false
         }
+        isPronunciationOutputActive = false
         cloudSpeechTask?.cancel()
         cloudSpeechTask = nil
         speechOutputSequence = nil
@@ -687,6 +704,7 @@ final class ConversationModel: ObservableObject {
         cloudSpeechSelection = nil
         cloudSpeechLanguageCode = nil
         speechOutputDelegate.invalidateAll()
+        speechOutputDelegate.invalidatePronunciation()
         let player = cloudAudioPlayer
         cloudAudioPlayer = nil
         cloudAudioPlayerGeneration = nil
@@ -1078,6 +1096,8 @@ final class ConversationModel: ObservableObject {
            let voice = AVSpeechSynthesisVoice(language: code) ?? AVSpeechSynthesisVoice(language: expandedLocale(for: code)) {
             utterance.voice = voice
         }
+        speechOutputDelegate.registerPronunciation(utterance)
+        isPronunciationOutputActive = true
         synthesizer.speak(utterance)
     }
 

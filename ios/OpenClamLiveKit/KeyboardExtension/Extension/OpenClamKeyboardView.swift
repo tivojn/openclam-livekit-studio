@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @MainActor
 final class OpenClamKeyboardViewModel: ObservableObject {
@@ -11,15 +12,21 @@ final class OpenClamKeyboardViewModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .ready
-    @Published private(set) var title = "Voice input"
-    @Published private(set) var detail = "Tap the microphone to speak in OpenClam."
+    @Published private(set) var title = "Quick Dictation"
+    @Published private(set) var detail = "Open OpenClam first for instant voice input."
+    @Published private(set) var primaryActionTitle = "Start"
     @Published private(set) var hasFullAccess = false
     @Published private(set) var warmEarIsReady = false
+    @Published private(set) var showsInputModeSwitchKey = true
+    @Published private(set) var returnKeyLabel = "Return"
+    @Published private(set) var compactLayout = false
 
     private let insertText: (String) -> Void
     private let contextBeforeInput: () -> String?
     private var store: OpenClamKeyboardHandoffStore?
     private var pollingTimer: Timer?
+    private var isVisible = false
+    private var locallyConsumedResultIDs: Set<UUID> = []
 
     init(
         insertText: @escaping (String) -> Void,
@@ -31,7 +38,7 @@ final class OpenClamKeyboardViewModel: ObservableObject {
 
     var microphoneSymbol: String {
         switch phase {
-        case .waiting: warmEarIsReady ? "waveform" : "arrow.up.forward.app.fill"
+        case .waiting: "xmark"
         case .inserted: "checkmark.circle.fill"
         case .failed: "exclamationmark.triangle.fill"
         case .needsFullAccess: "lock.fill"
@@ -39,19 +46,19 @@ final class OpenClamKeyboardViewModel: ObservableObject {
         }
     }
 
-    var microphoneIsEnabled: Bool {
-        hasFullAccess && phase != .waiting
-    }
+    var microphoneIsEnabled: Bool { hasFullAccess }
 
     var accentColor: Color {
         switch phase {
         case .failed: .orange
         case .inserted: .green
-        case .waiting: .blue
+        case .waiting: .red
         case .needsFullAccess: .secondary
-        case .ready: .primary
+        case .ready: .blue
         }
     }
+
+    var isWaiting: Bool { phase == .waiting }
 
     func updateFullAccess(_ enabled: Bool) {
         hasFullAccess = enabled
@@ -66,24 +73,46 @@ final class OpenClamKeyboardViewModel: ObservableObject {
         } else {
             phase = .needsFullAccess
             title = "Allow Full Access"
-            detail = "iOS gives custom keyboards no microphone. Full Access lets OpenClam return only the finished transcript through its shared container."
+            detail = "Required only for the local transcript handoff. The keyboard never receives your provider key."
+            primaryActionTitle = "Full Access Required"
+            updatePolling()
         }
     }
 
     func startPolling() {
-        stopPolling()
+        isVisible = true
         refresh()
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) {
-            [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refresh()
-            }
-        }
+        updatePolling()
     }
 
     func stopPolling() {
+        isVisible = false
         pollingTimer?.invalidate()
         pollingTimer = nil
+    }
+
+    func updateKeyboardTraits(
+        showsInputModeSwitchKey: Bool,
+        returnKeyLabel: String,
+        compactLayout: Bool
+    ) {
+        if self.showsInputModeSwitchKey != showsInputModeSwitchKey {
+            self.showsInputModeSwitchKey = showsInputModeSwitchKey
+        }
+        if self.returnKeyLabel != returnKeyLabel {
+            self.returnKeyLabel = returnKeyLabel
+        }
+        if self.compactLayout != compactLayout {
+            self.compactLayout = compactLayout
+        }
+    }
+
+    func performPrimaryAction() {
+        if phase == .waiting {
+            cancelVoiceInput()
+        } else {
+            beginVoiceInput()
+        }
     }
 
     func beginVoiceInput() {
@@ -100,6 +129,23 @@ final class OpenClamKeyboardViewModel: ObservableObject {
             OpenClamKeyboardWarmEarSignal.postBeginRequest()
             phase = .waiting
             updateWaitingCopy()
+            updatePolling()
+        } catch {
+            showFailure(error.localizedDescription)
+        }
+    }
+
+    func cancelVoiceInput() {
+        guard phase == .waiting else { return }
+        do {
+            let availableStore = try store ?? OpenClamKeyboardHandoffStore.live()
+            store = availableStore
+            _ = try availableStore.cancelActiveRequest()
+            OpenClamKeyboardWarmEarSignal.postCancelRequest()
+            refresh()
+            if phase == .waiting {
+                showReady(detail: "Voice input cancelled.")
+            }
         } catch {
             showFailure(error.localizedDescription)
         }
@@ -110,8 +156,16 @@ final class OpenClamKeyboardViewModel: ObservableObject {
         do {
             let availableStore = try store ?? OpenClamKeyboardHandoffStore.live()
             store = availableStore
-            if let result = try availableStore.takeActiveResult(at: date) {
-                consume(result)
+            if let result = try availableStore.peekActiveResult(at: date) {
+                if !locallyConsumedResultIDs.contains(result.requestID) {
+                    consume(result)
+                    locallyConsumedResultIDs.insert(result.requestID)
+                }
+                try availableStore.acknowledgeActiveResult(
+                    requestID: result.requestID,
+                    at: date
+                )
+                locallyConsumedResultIDs.remove(result.requestID)
                 return
             }
             if try availableStore.activeRequest(at: date) != nil {
@@ -121,8 +175,9 @@ final class OpenClamKeyboardViewModel: ObservableObject {
             } else if phase == .waiting {
                 showReady()
             }
+            updatePolling()
         } catch OpenClamKeyboardStoreError.staleRequest {
-            showFailure("The voice request expired. Tap the microphone to start again.")
+            showFailure("The voice request expired. Tap Try Again to start a new one.")
         } catch {
             showFailure(error.localizedDescription)
         }
@@ -142,7 +197,10 @@ final class OpenClamKeyboardViewModel: ObservableObject {
             insertText(insertion)
             phase = .inserted
             title = "Inserted"
-            detail = "The finished transcript was placed at the cursor and removed from the shared container."
+            detail = "Transcript added at the cursor and cleared from the handoff."
+            primaryActionTitle = "Dictate Again"
+            announce("Transcript inserted")
+            updatePolling()
         case .cancelled:
             showReady(detail: result.message ?? "Voice input was cancelled.")
         case .failed:
@@ -150,105 +208,185 @@ final class OpenClamKeyboardViewModel: ObservableObject {
         }
     }
 
-    private func showReady(detail: String = "Tap the microphone to speak in OpenClam.") {
+    private func showReady(detail: String? = nil) {
         phase = .ready
-        title = "Voice input"
-        self.detail = detail
         warmEarIsReady = OpenClamKeyboardWarmEarState.isReady()
+        title = warmEarIsReady ? "Ready for Quick Dictation" : "Quick Dictation"
+        self.detail = detail ?? (warmEarIsReady
+            ? "Tap Start and speak. OpenClam stops after you pause."
+            : "Open OpenClam first for instant voice input.")
+        primaryActionTitle = "Start"
+        updatePolling()
     }
 
     private func showFailure(_ message: String) {
         phase = .failed
-        title = "Voice input unavailable"
+        title = "Voice Input Unavailable"
         detail = message
+        primaryActionTitle = "Try Again"
         warmEarIsReady = false
+        announce("Voice input unavailable. \(message)")
+        updatePolling()
     }
 
     private func updateWaitingCopy() {
+        let previousTitle = title
         if warmEarIsReady {
-            title = "Listening in OpenClam"
-            detail = "Speak now. OpenClam will stop automatically, return one final transcript, and release the microphone."
+            title = "Listening"
+            detail = "Speak now. OpenClam stops after your pause."
         } else {
-            title = "Open OpenClam"
-            detail = "The Ear lease is not ready. Open OpenClam from the Home Screen, speak on its visible voice screen, then return here."
+            title = "Waiting for OpenClam"
+            detail = "Open OpenClam, finish the visible voice screen, then return."
         }
+        primaryActionTitle = "Cancel"
+        if title != previousTitle {
+            announce(title)
+        }
+    }
+
+    private func updatePolling() {
+        let shouldPoll = isVisible && phase == .waiting
+        if shouldPoll, pollingTimer == nil {
+            pollingTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) {
+                [weak self] _ in
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
+        } else if !shouldPoll {
+            pollingTimer?.invalidate()
+            pollingTimer = nil
+        }
+    }
+
+    private func announce(_ message: String) {
+        guard UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning else {
+            return
+        }
+        UIAccessibility.post(notification: .announcement, argument: message)
     }
 }
 
 struct OpenClamKeyboardView: View {
     @ObservedObject var model: OpenClamKeyboardViewModel
 
-    let beginVoiceInput: () -> Void
-    let advanceKeyboard: () -> Void
+    let performPrimaryAction: () -> Void
+    let showInputModeList: (UIButton, UIEvent) -> Void
     let deleteBackward: () -> Void
     let insertSpace: () -> Void
     let insertReturn: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 12) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 24, weight: .semibold))
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("OpenClam Keyboard")
-                        .font(.headline)
-                    Text("Voice is recorded only by the OpenClam app")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                Button(action: advanceKeyboard) {
-                    Image(systemName: "globe")
-                        .frame(width: 36, height: 30)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Next keyboard")
-            }
-
-            Button(action: beginVoiceInput) {
+        VStack(spacing: model.compactLayout ? 6 : 9) {
+            if !model.compactLayout, !dynamicTypeSize.isAccessibilitySize {
                 HStack(spacing: 12) {
-                    Image(systemName: model.microphoneSymbol)
-                        .font(.system(size: 24, weight: .semibold))
-                        .symbolEffect(.pulse, isActive: model.phase == .waiting)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.title)
-                            .font(.system(size: 16, weight: .semibold))
-                        Text(model.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-                            .lineLimit(3)
-                    }
-                    Spacer(minLength: 0)
+                    Label("OpenClam Voice", systemImage: "waveform.circle.fill")
+                        .font(.headline)
+                    Spacer()
+                    Text(model.warmEarIsReady ? "Ready" : "Open app first")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(model.warmEarIsReady ? .green : .secondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
-                .padding(.horizontal, 14)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
-            .tint(model.accentColor)
-            .disabled(!model.microphoneIsEnabled)
-            .accessibilityLabel(model.title)
-            .accessibilityHint(model.detail)
+
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ScrollView(.vertical) {
+                            HStack(alignment: .top, spacing: 10) {
+                                waitingIndicator
+                                statusText
+                            }
+                        }
+                        .frame(height: model.compactLayout ? 54 : 94)
+                        .scrollBounceBehavior(.basedOnSize)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(model.title). \(model.detail)")
+                        primaryActionButton(showLabel: true)
+                    }
+                } else {
+                    HStack(spacing: 12) {
+                        waitingIndicator
+                        statusText
+                        primaryActionButton(showLabel: false)
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: model.compactLayout ? 62 : 72)
+            .background(
+                Color(uiColor: .secondarySystemBackground),
+                in: RoundedRectangle(cornerRadius: 16)
+            )
 
             HStack(spacing: 8) {
+                if model.showsInputModeSwitchKey {
+                    OpenClamInputModeSwitchButton(action: showInputModeList)
+                        .frame(width: 52, height: 44)
+                        .accessibilityLabel("Next keyboard")
+                        .accessibilityHint("Touch and hold to choose a keyboard")
+                }
                 editButton("delete.left", label: "Delete", action: deleteBackward)
                 Button("space", action: insertSpace)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Space")
-                editButton("return", label: "Return", action: insertReturn)
+                editButton("return", label: model.returnKeyLabel, action: insertReturn)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.top, 9)
-        .padding(.bottom, 8)
+        .padding(.vertical, model.compactLayout ? 6 : 8)
         .background(Color(uiColor: .systemBackground))
+    }
+
+    @ViewBuilder
+    private var waitingIndicator: some View {
+        if model.isWaiting {
+            Image(systemName: "waveform")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.red)
+                .symbolEffect(.pulse, isActive: !reduceMotion)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var statusText: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(model.title)
+                .font(.headline)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            Text(model.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(
+                    dynamicTypeSize.isAccessibilitySize
+                        ? nil
+                        : (model.compactLayout ? 1 : 2)
+                )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func primaryActionButton(showLabel: Bool) -> some View {
+        Button(action: performPrimaryAction) {
+            Group {
+                if showLabel {
+                    Label(model.primaryActionTitle, systemImage: model.microphoneSymbol)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                } else {
+                    Image(systemName: model.microphoneSymbol)
+                        .font(.system(size: 21, weight: .semibold))
+                        .frame(width: 50, height: 50)
+                }
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .buttonBorderShape(showLabel ? .capsule : .circle)
+        .tint(model.accentColor)
+        .disabled(!model.microphoneIsEnabled)
+        .accessibilityLabel(model.primaryActionTitle)
+        .accessibilityHint(model.detail)
     }
 
     private func editButton(
@@ -257,10 +395,54 @@ struct OpenClamKeyboardView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .frame(width: 50)
+            Group {
+                if systemName == "return", label != "Return" {
+                    Text(label)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                } else {
+                    Image(systemName: systemName)
+                }
+            }
+            .frame(minWidth: 50, maxWidth: 66, minHeight: 44)
         }
         .buttonStyle(.bordered)
+        .buttonRepeatBehavior(systemName == "delete.left" ? .enabled : .disabled)
         .accessibilityLabel(label)
+    }
+}
+
+private struct OpenClamInputModeSwitchButton: UIViewRepresentable {
+    let action: (UIButton, UIEvent) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: "globe"), for: .normal)
+        button.accessibilityLabel = "Next keyboard"
+        button.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.handle(_:forEvent:)),
+            for: .allTouchEvents
+        )
+        return button
+    }
+
+    func updateUIView(_ uiView: UIButton, context: Context) {
+        context.coordinator.action = action
+    }
+
+    final class Coordinator: NSObject {
+        var action: (UIButton, UIEvent) -> Void
+
+        init(action: @escaping (UIButton, UIEvent) -> Void) {
+            self.action = action
+        }
+
+        @objc func handle(_ sender: UIButton, forEvent event: UIEvent) {
+            action(sender, event)
+        }
     }
 }

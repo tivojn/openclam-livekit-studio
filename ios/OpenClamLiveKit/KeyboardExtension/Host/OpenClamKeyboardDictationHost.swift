@@ -12,7 +12,74 @@ private extension Notification.Name {
     )
 }
 
-/// The Ear button starts a real, foreground-authorized microphone lease. The keyboard never
+enum OpenClamWarmEarPresentationState: Equatable, Sendable {
+    case off
+    case arming
+    case paused
+    case ready(expiresAt: Date)
+    case busy
+    case failed(String)
+
+    var title: String {
+        switch self {
+        case .off:
+            "Quick Dictation is off"
+        case .arming:
+            "Preparing Quick Dictation"
+        case .paused:
+            "Quick Dictation is paused"
+        case .ready:
+            "Quick Dictation is ready"
+        case .busy:
+            "Quick Dictation is listening"
+        case .failed:
+            "Quick Dictation needs attention"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .off:
+            return "Turn it on while OpenClam is visible to prepare keyboard voice input."
+        case .arming:
+            return "Keep OpenClam visible briefly while the private 90-second microphone lease starts."
+        case .paused:
+            return "Another microphone or speaker feature is active. Quick Dictation will become ready again when it finishes."
+        case let .ready(expiresAt):
+            let seconds = max(0, Int(expiresAt.timeIntervalSinceNow.rounded(.up)))
+            return "Ready for a keyboard voice request for about \(seconds) seconds."
+        case .busy:
+            return "Recording the current keyboard voice request. You can stop it from the keyboard."
+        case let .failed(message):
+            return message
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .off: "ear"
+        case .arming, .paused: "ear"
+        case .ready: "ear.fill"
+        case .busy: "waveform"
+        case .failed: "exclamationmark.triangle.fill"
+        }
+    }
+}
+
+enum OpenClamKeyboardAutomaticTurnPolicy {
+    static func supportsSettledPartialTranscript(_ selection: AIServiceSelection) -> Bool {
+        selection.provider == .apple
+            || AIProviderRegistry.usesRealtimeSpeechRecognition(selection)
+    }
+}
+
+enum OpenClamAppAudioActivityOwner: Hashable, Sendable {
+    case conversation
+    case speechOutput
+    case liveScreen
+}
+
+/// Quick Dictation starts a real, foreground-authorized microphone lease. The keyboard never
 /// records and never receives provider credentials; it only signals the already-running app.
 @MainActor
 enum OpenClamWarmEarControl {
@@ -28,12 +95,12 @@ enum OpenClamWarmEarControl {
 
     static var availabilityExplanation: String {
         if !isEnabled {
-            return "Ear is off. Keyboard voice requests wait for you to open OpenClam."
+            return "Quick Dictation is off. Keyboard voice requests wait for you to open OpenClam."
         }
         if isForegroundReady {
-            return "Ear is ready for up to 90 seconds. The microphone is on, but transcription starts only after you tap the OpenClam Keyboard microphone."
+            return "Quick Dictation is ready for up to 90 seconds. The microphone is on, but transcription starts only after you tap Start in OpenClam Keyboard."
         }
-        return "Ear is enabled but not armed. Keep OpenClam in the foreground briefly to start a new 90-second lease."
+        return "Quick Dictation is preparing. Keep OpenClam visible briefly to start a new 90-second lease."
     }
 
     static func setEnabled(_ enabled: Bool) {
@@ -66,15 +133,15 @@ private enum OpenClamWarmEarError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .microphonePermissionDenied:
-            "Microphone permission is required before Keyboard Ear can be armed."
+            "Microphone permission is required before Quick Dictation can be prepared."
         case .speechPermissionDenied:
             "Speech Recognition permission is required for the selected Apple speech provider."
         case .microphoneUnavailable:
-            "The microphone could not be armed for Keyboard Ear."
+            "The microphone could not be prepared for Quick Dictation."
         case .foregroundStartRequired:
-            "OpenClam must be visible when a Keyboard Ear lease starts."
+            "OpenClam must be visible when a Quick Dictation lease starts."
         case .leaseExpired:
-            "The 90-second Keyboard Ear lease expired. Open OpenClam and tap the Ear again."
+            "The 90-second Quick Dictation lease expired. Open OpenClam and turn it on again."
         }
     }
 }
@@ -97,6 +164,8 @@ private final class OpenClamWarmEarLease {
             AVAudioApplication.requestRecordPermission { continuation.resume(returning: $0) }
         }
         guard granted else { throw OpenClamWarmEarError.microphonePermissionDenied }
+        try Task.checkCancellation()
+        guard OpenClamKeyboardWarmEarState.isEnabled else { throw CancellationError() }
 
         let deadline = Date().addingTimeInterval(OpenClamWarmEarControl.foregroundLeaseDuration)
         try startEngine(until: deadline, requiresForeground: true)
@@ -112,16 +181,19 @@ private final class OpenClamWarmEarLease {
         return deadline
     }
 
-    func finishTurnAndRearm(until deadline: Date) async {
+    @discardableResult
+    func finishTurnAndRearm(until deadline: Date) async -> Bool {
         isTurnActive = false
         guard OpenClamKeyboardWarmEarState.isEnabled, deadline > Date() else {
             disarm()
-            return
+            return false
         }
         do {
             try startEngine(until: deadline, requiresForeground: false)
+            return true
         } catch {
             disarm()
+            return false
         }
     }
 
@@ -148,7 +220,13 @@ private final class OpenClamWarmEarLease {
 
         stopEngine(deactivateAudioSession: false)
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement)
+        // Keep playback available while the short foreground-started readiness lease is armed.
+        // ConversationView still yields this lease before any competing microphone flow begins.
+        try session.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
+        )
         try session.setActive(true)
 
         let input = audioEngine.inputNode
@@ -210,15 +288,17 @@ private final class OpenClamWarmEarLease {
 }
 
 private final class OpenClamKeyboardDarwinObserver {
+    private let name: CFNotificationName
     private let handler: () -> Void
 
-    init(handler: @escaping () -> Void) {
+    init(name: String, handler: @escaping () -> Void) {
+        self.name = CFNotificationName(name as CFString)
         self.handler = handler
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             Unmanaged.passUnretained(self).toOpaque(),
             openClamKeyboardDarwinNotificationCallback,
-            OpenClamKeyboardWarmEarSignal.beginRequestName as CFString,
+            name as CFString,
             nil,
             .deliverImmediately
         )
@@ -228,7 +308,7 @@ private final class OpenClamKeyboardDarwinObserver {
         CFNotificationCenterRemoveObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             Unmanaged.passUnretained(self).toOpaque(),
-            CFNotificationName(OpenClamKeyboardWarmEarSignal.beginRequestName as CFString),
+            name,
             nil
         )
     }
@@ -251,6 +331,7 @@ private let openClamKeyboardDarwinNotificationCallback: CFNotificationCallback =
 final class OpenClamKeyboardDictationHostController: ObservableObject {
     @Published var activeRequest: OpenClamKeyboardRequest?
     @Published private(set) var lastError: String?
+    @Published private(set) var warmEarPresentationState: OpenClamWarmEarPresentationState
 
     private var store: OpenClamKeyboardHandoffStore?
     private weak var aiConfiguration: AIConfigurationModel?
@@ -263,11 +344,23 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
     private var automaticRequest: OpenClamKeyboardRequest?
     private var automaticTask: Task<Void, Never>?
     private var armTask: Task<Void, Never>?
+    private var externallyCancelledRequestIDs: Set<UUID> = []
+    private var competingAppAudioOwners: Set<OpenClamAppAudioActivityOwner> = []
     private var notificationObservers: [NSObjectProtocol] = []
-    private var darwinObserver: OpenClamKeyboardDarwinObserver?
+    private var beginRequestObserver: OpenClamKeyboardDarwinObserver?
+    private var cancelRequestObserver: OpenClamKeyboardDarwinObserver?
 
     init(store: OpenClamKeyboardHandoffStore? = try? .live()) {
         self.store = store
+        if OpenClamKeyboardWarmEarState.isEnabled,
+           OpenClamKeyboardWarmEarState.isReady(),
+           let deadline = OpenClamKeyboardWarmEarState.readyUntil() {
+            warmEarPresentationState = .ready(expiresAt: deadline)
+        } else if OpenClamKeyboardWarmEarState.isEnabled {
+            warmEarPresentationState = .arming
+        } else {
+            warmEarPresentationState = .off
+        }
         warmEarLease.onExpired = { [weak self] in
             self?.handleLeaseExpired()
         }
@@ -293,9 +386,18 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
                 }
             }
         )
-        darwinObserver = OpenClamKeyboardDarwinObserver { [weak self] in
+        beginRequestObserver = OpenClamKeyboardDarwinObserver(
+            name: OpenClamKeyboardWarmEarSignal.beginRequestName
+        ) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.handleWarmEarRequestSignal()
+            }
+        }
+        cancelRequestObserver = OpenClamKeyboardDarwinObserver(
+            name: OpenClamKeyboardWarmEarSignal.cancelRequestName
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.handleWarmEarCancelSignal()
             }
         }
     }
@@ -317,6 +419,49 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         armWarmEarIfPossible()
     }
 
+    var isHandlingVoiceRequest: Bool {
+        automaticTask != nil || automaticRequest != nil || activeRequest != nil
+            || warmEarLease.isTurnActive
+    }
+
+    var hasCompetingAppAudioActivity: Bool {
+        !competingAppAudioOwners.isEmpty
+    }
+
+    /// Claims the app's one microphone/speaker lane for composer PTT, Live Talk, or TTS.
+    /// A keyboard turn already in progress remains authoritative and must finish or be cancelled.
+    func prepareForCompetingAppAudio(
+        owner: OpenClamAppAudioActivityOwner = .conversation
+    ) -> String? {
+        guard !isHandlingVoiceRequest else {
+            return "Finish or cancel the current Quick Dictation turn before starting another voice feature."
+        }
+        setCompetingAppAudioActive(true, owner: owner)
+        return nil
+    }
+
+    func setCompetingAppAudioActive(
+        _ active: Bool,
+        owner: OpenClamAppAudioActivityOwner = .conversation
+    ) {
+        if active, isHandlingVoiceRequest { return }
+        let wasActive = !competingAppAudioOwners.isEmpty
+        if active {
+            competingAppAudioOwners.insert(owner)
+        } else {
+            competingAppAudioOwners.remove(owner)
+        }
+        let isActive = !competingAppAudioOwners.isEmpty
+        guard wasActive != isActive else { return }
+        if active {
+            armTask?.cancel()
+            warmEarLease.disarm()
+            warmEarPresentationState = OpenClamKeyboardWarmEarState.isEnabled ? .paused : .off
+        } else {
+            armWarmEarIfPossible()
+        }
+    }
+
     /// Returns true for every keyboard-dictation URL, including a malformed one, so the URL is
     /// never misreported as an assistant command link.
     func handle(_ url: URL, at date: Date = Date()) -> Bool {
@@ -329,6 +474,7 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
             let availableStore = try requireStore()
             let request = try availableStore.request(id: id, at: date)
             guard try availableStore.result(for: id) == nil else { return true }
+            suspendWarmLeaseForVisibleRequest()
             activeRequest = request
             lastError = nil
         } catch {
@@ -338,6 +484,7 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
     }
 
     func restorePendingRequest(at date: Date = Date()) {
+        handleWarmEarCancelSignal(at: date)
         guard activeRequest == nil else { return }
         do {
             let availableStore = try requireStore()
@@ -347,6 +494,7 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
             if OpenClamKeyboardWarmEarState.isReady(at: date), aiConfiguration != nil {
                 beginAutomaticTurn(for: request)
             } else {
+                suspendWarmLeaseForVisibleRequest()
                 activeRequest = request
             }
         } catch OpenClamKeyboardStoreError.staleRequest {
@@ -361,21 +509,26 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         guard !cleaned.isEmpty else {
             throw OpenClamKeyboardStoreError.invalidRequest
         }
-        try requireStore().write(.completed(requestID: request.id, transcript: cleaned))
+        let availableStore = try requireStore()
+        guard try availableStore.write(
+            .completed(requestID: request.id, transcript: cleaned)
+        ) else {
+            throw OpenClamKeyboardStoreError.mismatchedResult
+        }
     }
 
     func cancel(_ request: OpenClamKeyboardRequest) {
-        do {
-            try requireStore().write(.cancelled(requestID: request.id))
-        } catch {
-            lastError = error.localizedDescription
-        }
+        writeCancellationIfPending(request)
         dismiss(request)
     }
 
     func fail(_ request: OpenClamKeyboardRequest, message: String) {
         do {
-            try requireStore().write(.failed(requestID: request.id, message: message))
+            _ = try requireStore().write(.failed(requestID: request.id, message: message))
+        } catch OpenClamKeyboardStoreError.invalidRequest,
+                OpenClamKeyboardStoreError.staleRequest {
+            // A keyboard-side cancellation may remove its private request before the host sheet
+            // finishes disappearing. That expected cleanup must not become a second failure.
         } catch {
             lastError = error.localizedDescription
         }
@@ -384,55 +537,96 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
     func dismiss(_ request: OpenClamKeyboardRequest) {
         guard activeRequest?.id == request.id else { return }
         activeRequest = nil
+        armWarmEarIfPossible()
+    }
+
+    private func suspendWarmLeaseForVisibleRequest() {
+        armTask?.cancel()
+        warmEarLease.disarm()
+        warmEarPresentationState = .busy
     }
 
     private func handleWarmEarPreferenceChange() {
         if OpenClamKeyboardWarmEarState.isEnabled {
+            warmEarPresentationState = competingAppAudioOwners.isEmpty ? .arming : .paused
             armWarmEarIfPossible()
         } else {
             armTask?.cancel()
-            armTask = nil
             if let automaticRequest {
                 automaticSpeech.cancel()
                 fail(
                     automaticRequest,
-                    message: "Keyboard Ear was turned off before voice input finished."
+                    message: "Quick Dictation was turned off before voice input finished."
                 )
                 self.automaticRequest = nil
             }
             automaticTask?.cancel()
-            automaticTask = nil
             warmEarLease.disarm()
+            warmEarPresentationState = .off
         }
     }
 
     private func armWarmEarIfPossible() {
-        guard OpenClamKeyboardWarmEarState.isEnabled,
-              UIApplication.shared.applicationState == .active,
+        guard OpenClamKeyboardWarmEarState.isEnabled else {
+            warmEarPresentationState = .off
+            return
+        }
+        guard competingAppAudioOwners.isEmpty else {
+            warmEarLease.disarm()
+            warmEarPresentationState = .paused
+            return
+        }
+        if automaticTask != nil || warmEarLease.isTurnActive {
+            warmEarPresentationState = .busy
+            return
+        }
+        if OpenClamKeyboardWarmEarState.isReady(),
+           let deadline = OpenClamKeyboardWarmEarState.readyUntil() {
+            warmEarPresentationState = .ready(expiresAt: deadline)
+            drainReadyPendingRequest()
+            return
+        }
+        warmEarPresentationState = .arming
+        guard UIApplication.shared.applicationState == .active,
               let aiConfiguration,
-              automaticTask == nil,
-              !OpenClamKeyboardWarmEarState.isReady() else { return }
+              armTask == nil else { return }
 
-        armTask?.cancel()
         armTask = Task { @MainActor [weak self, weak aiConfiguration] in
-            guard let self, let aiConfiguration else { return }
+            guard let self else { return }
+            var retryAfterCancellation = false
+            defer {
+                self.armTask = nil
+                if retryAfterCancellation {
+                    self.armWarmEarIfPossible()
+                }
+            }
+            guard let aiConfiguration else {
+                self.refreshWarmEarPresentation()
+                return
+            }
             do {
                 try await self.preflightSpeechPermission(using: aiConfiguration)
                 try Task.checkCancellation()
                 try await self.warmEarLease.armNewLease()
                 self.lastError = nil
+                self.refreshWarmEarPresentation()
+                self.drainReadyPendingRequest()
             } catch is CancellationError {
+                retryAfterCancellation = OpenClamKeyboardWarmEarState.isEnabled
+                    && self.competingAppAudioOwners.isEmpty
                 return
             } catch {
                 self.lastError = error.localizedDescription
                 self.warmEarLease.disarm()
+                self.warmEarPresentationState = .failed(
+            "Quick Dictation couldn't become ready. Check microphone and speech settings, then try again."
+                )
             }
-            self.armTask = nil
         }
     }
 
     private func preflightSpeechPermission(using aiConfiguration: AIConfigurationModel) async throws {
-        guard aiConfiguration.settings.speechToText.provider == .apple else { return }
+        guard aiConfiguration.effectiveSettings.speechToText.provider == .apple else { return }
         var status = SFSpeechRecognizer.authorizationStatus()
         if status == .notDetermined {
             status = await withCheckedContinuation { continuation in
@@ -443,16 +637,55 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
     }
 
     private func handleWarmEarRequestSignal() {
+        handleWarmEarCancelSignal()
+        guard automaticTask == nil else {
+            // Darwin notifications are intentionally only wake-up hints. The request remains in
+            // the App Group and is drained when the current turn releases the microphone.
+            return
+        }
+        drainReadyPendingRequest()
+    }
+
+    private func drainReadyPendingRequest(at date: Date = Date()) {
         guard automaticTask == nil,
-              OpenClamKeyboardWarmEarState.isReady(),
+              automaticRequest == nil,
+              OpenClamKeyboardWarmEarState.isReady(at: date),
               aiConfiguration != nil else { return }
         do {
             let availableStore = try requireStore()
-            guard let request = try availableStore.activeRequest(),
+            guard let request = try availableStore.activeRequest(at: date),
                   try availableStore.result(for: request.id) == nil else { return }
             beginAutomaticTurn(for: request)
         } catch OpenClamKeyboardStoreError.staleRequest {
             lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    private func handleWarmEarCancelSignal(at date: Date = Date()) {
+        do {
+            let availableStore = try requireStore()
+            let cancellationIDs = try availableStore.pendingCancellationRequestIDs(at: date)
+            var releasedVisibleRequest = false
+            for requestID in cancellationIDs {
+                if automaticRequest?.id == requestID {
+                    externallyCancelledRequestIDs.insert(requestID)
+                    automaticSpeech.cancel()
+                    automaticTask?.cancel()
+                    warmEarPresentationState = OpenClamKeyboardWarmEarState.isEnabled
+                        ? .arming
+                        : .off
+                }
+                if activeRequest?.id == requestID {
+                    activeRequest = nil
+                    releasedVisibleRequest = true
+                }
+                try availableStore.acknowledgeCancellation(requestID: requestID)
+            }
+            if releasedVisibleRequest {
+                armWarmEarIfPossible()
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -464,13 +697,22 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
               let aiConfiguration else { return }
         automaticRequest = request
         activeRequest = nil
+        warmEarPresentationState = .busy
         automaticTask = Task { @MainActor [weak self, weak aiConfiguration] in
-            guard let self, let aiConfiguration else { return }
+            guard let self else { return }
+            guard let aiConfiguration else {
+                self.automaticRequest = nil
+                self.automaticTask = nil
+                self.armWarmEarIfPossible()
+                return
+            }
             await self.runAutomaticTurn(request, using: aiConfiguration)
             if self.automaticRequest?.id == request.id {
                 self.automaticRequest = nil
             }
+            self.externallyCancelledRequestIDs.remove(request.id)
             self.automaticTask = nil
+            self.armWarmEarIfPossible()
         }
     }
 
@@ -478,19 +720,28 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         _ request: OpenClamKeyboardRequest,
         using aiConfiguration: AIConfigurationModel
     ) async {
+        guard !Task.isCancelled,
+              !externallyCancelledRequestIDs.contains(request.id) else { return }
         let leaseDeadline: Date
         do {
             leaseDeadline = try warmEarLease.suspendForTurn()
+            warmEarPresentationState = .busy
         } catch {
             failIfPending(request, message: error.localizedDescription)
+            warmEarPresentationState = .failed(
+                "Quick Dictation's private microphone lease expired. Open OpenClam to make it ready again."
+            )
             return
         }
 
+        let speechSelection = aiConfiguration.effectiveSettings.speechToText
         await automaticSpeech.start(using: aiConfiguration)
         guard !Task.isCancelled else {
             automaticSpeech.cancel()
-            failIfPending(request, message: "Keyboard voice input was cancelled.")
-            await warmEarLease.finishTurnAndRearm(until: leaseDeadline)
+            if !externallyCancelledRequestIDs.contains(request.id) {
+                failIfPending(request, message: "Keyboard voice input was cancelled.")
+            }
+            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
             return
         }
         guard automaticSpeech.isListening else {
@@ -498,40 +749,54 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
                 ?? "OpenClam could not start the selected speech provider in the background. Open OpenClam and try again."
             automaticSpeech.cancel()
             failIfPending(request, message: message)
-            await warmEarLease.finishTurnAndRearm(until: leaseDeadline)
+            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
             return
         }
 
-        await waitForAutomaticTurn(using: aiConfiguration, leaseDeadline: leaseDeadline)
+        await waitForAutomaticTurn(
+            selection: speechSelection,
+            leaseDeadline: leaseDeadline
+        )
         guard !Task.isCancelled else {
             automaticSpeech.cancel()
-            failIfPending(request, message: "Keyboard voice input was cancelled.")
-            await warmEarLease.finishTurnAndRearm(until: leaseDeadline)
+            if !externallyCancelledRequestIDs.contains(request.id) {
+                failIfPending(request, message: "Keyboard voice input was cancelled.")
+            }
+            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
             return
         }
 
         let transcript = await automaticSpeech.stop(using: aiConfiguration)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !Task.isCancelled,
+              !externallyCancelledRequestIDs.contains(request.id) else {
+            automaticSpeech.cancel()
+            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
+            return
+        }
         if transcript.isEmpty {
             failIfPending(
                 request,
                 message: automaticSpeech.errorMessage
-                    ?? "No speech was recognized during the bounded Keyboard Ear turn."
+                    ?? "No speech was recognized during the bounded Quick Dictation turn."
             )
         } else {
             do {
                 try complete(request, transcript: transcript)
                 lastError = nil
+            } catch OpenClamKeyboardStoreError.mismatchedResult {
+                // A keyboard-side Cancel can win after recognition finishes but before the final
+                // transcript is committed. Its terminal result is authoritative and intentional.
             } catch {
                 lastError = error.localizedDescription
                 failIfPending(request, message: error.localizedDescription)
             }
         }
-        await warmEarLease.finishTurnAndRearm(until: leaseDeadline)
+        await finishAutomaticTurnAndRefresh(until: leaseDeadline)
     }
 
     private func waitForAutomaticTurn(
-        using aiConfiguration: AIConfigurationModel,
+        selection: AIServiceSelection,
         leaseDeadline: Date
     ) async {
         let now = Date()
@@ -539,10 +804,8 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         let maximumTurn = min(12, remainingLease)
         guard maximumTurn > 0 else { return }
 
-        let selection = aiConfiguration.settings.speechToText
-        let supportsPartialTranscript = selection.provider == .apple
-            || (selection.provider == .soniox
-                && selection.model == SonioxRealtimeSpeechToTextService.model)
+        let supportsPartialTranscript = OpenClamKeyboardAutomaticTurnPolicy
+            .supportsSettledPartialTranscript(selection)
         let startedAt = Date()
         var previousTranscript = automaticSpeech.transcript
         var lastTranscriptChange = startedAt
@@ -567,18 +830,71 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
     }
 
     private func handleLeaseExpired() {
-        guard let automaticRequest else { return }
+        guard let automaticRequest else {
+            warmEarPresentationState = OpenClamKeyboardWarmEarState.isEnabled
+                ? .failed(
+                    "Quick Dictation's 90-second lease expired. Keep OpenClam visible briefly to make it ready again."
+                )
+                : .off
+            return
+        }
         automaticSpeech.cancel()
         automaticTask?.cancel()
-        fail(automaticRequest, message: OpenClamWarmEarError.leaseExpired.localizedDescription)
+        if !externallyCancelledRequestIDs.contains(automaticRequest.id) {
+            failIfPending(
+                automaticRequest,
+                message: OpenClamWarmEarError.leaseExpired.localizedDescription
+            )
+        }
         self.automaticRequest = nil
         warmEarLease.disarm()
+        warmEarPresentationState = .failed(
+            "Quick Dictation's 90-second lease expired. Keep OpenClam visible briefly to make it ready again."
+        )
+    }
+
+    private func finishAutomaticTurnAndRefresh(until deadline: Date) async {
+        _ = await warmEarLease.finishTurnAndRearm(until: deadline)
+        refreshWarmEarPresentation()
+    }
+
+    private func refreshWarmEarPresentation() {
+        guard OpenClamKeyboardWarmEarState.isEnabled else {
+            warmEarPresentationState = .off
+            return
+        }
+        if !competingAppAudioOwners.isEmpty {
+            warmEarPresentationState = .paused
+            return
+        }
+        if automaticTask != nil || warmEarLease.isTurnActive {
+            warmEarPresentationState = .busy
+        } else if OpenClamKeyboardWarmEarState.isReady(),
+                  let deadline = OpenClamKeyboardWarmEarState.readyUntil() {
+            warmEarPresentationState = .ready(expiresAt: deadline)
+        } else if armTask != nil {
+            warmEarPresentationState = .arming
+        }
+    }
+
+    private func writeCancellationIfPending(_ request: OpenClamKeyboardRequest) {
+        do {
+            _ = try requireStore().write(.cancelled(requestID: request.id))
+        } catch OpenClamKeyboardStoreError.invalidRequest,
+                OpenClamKeyboardStoreError.staleRequest {
+            // The keyboard may remove its request before the process-wide cancellation signal is
+            // delivered. Resource cancellation is still required, but there is nothing left to
+            // persist or expose as an error.
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     private func failIfPending(_ request: OpenClamKeyboardRequest, message: String) {
         do {
-            guard try requireStore().result(for: request.id) == nil else { return }
-            fail(request, message: message)
+            _ = try requireStore().write(
+                .failed(requestID: request.id, message: message)
+            )
         } catch {
             lastError = error.localizedDescription
         }
@@ -594,6 +910,8 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
 
 @MainActor
 struct OpenClamKeyboardDictationHostView: View {
+    private static let maximumVisibleTurnDuration: TimeInterval = 30
+
     private enum Phase: Equatable {
         case preparing
         case listening
@@ -612,56 +930,70 @@ struct OpenClamKeyboardDictationHostView: View {
     @State private var message = "Preparing microphone permission…"
     @State private var deliveredResult = false
     @State private var deadlineTask: Task<Void, Never>?
+    @State private var listeningDeadline: Date?
+    @ScaledMetric(relativeTo: .largeTitle) private var microphoneArtworkSize: CGFloat = 132
+    @ScaledMetric(relativeTo: .largeTitle) private var microphoneIconSize: CGFloat = 50
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                Spacer(minLength: 8)
+            ScrollView {
+                VStack(spacing: 20) {
+                    ZStack {
+                        Circle()
+                            .fill(microphoneColor.opacity(0.14))
+                            .frame(
+                                width: min(microphoneArtworkSize, 180),
+                                height: min(microphoneArtworkSize, 180)
+                            )
+                        Image(systemName: microphoneSymbol)
+                            .font(
+                                .system(
+                                    size: min(microphoneIconSize, 70),
+                                    weight: .semibold
+                                )
+                            )
+                            .foregroundStyle(microphoneColor)
+                            .symbolEffect(.pulse, isActive: phase == .listening)
+                    }
+                    .accessibilityHidden(true)
 
-                ZStack {
-                    Circle()
-                        .fill(microphoneColor.opacity(0.14))
-                        .frame(width: 150, height: 150)
-                    Image(systemName: microphoneSymbol)
-                        .font(.system(size: 58, weight: .semibold))
-                        .foregroundStyle(microphoneColor)
-                        .symbolEffect(.pulse, isActive: phase == .listening)
-                }
-                .accessibilityHidden(true)
+                    VStack(spacing: 8) {
+                        Text(title)
+                            .font(.title2.bold())
+                        Text(message)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Text("Using \(providerName)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
 
-                VStack(spacing: 8) {
-                    Text(title)
-                        .font(.title2.bold())
-                    Text(message)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Text("Using \(providerName)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
+                    timeoutProgress
 
-                if !speech.transcript.isEmpty {
-                    ScrollView {
+                    if !speech.transcript.isEmpty {
                         Text(speech.transcript)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                             .padding(14)
+                            .background(
+                                .quaternary,
+                                in: RoundedRectangle(cornerRadius: 14)
+                            )
                     }
-                    .frame(maxHeight: 150)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+
+                    actionArea
+
+                    Text("The keyboard extension cannot access the microphone. OpenClam records only on this visible screen, stops before you return, and shares only the final transcript through the local App Group.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-
-                actionArea
-
-                Text("The keyboard extension cannot access the microphone. OpenClam records only on this visible screen, stops before you return, and shares only the final transcript through the local App Group.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-
-                Spacer(minLength: 8)
+                .frame(maxWidth: 620)
+                .padding(24)
+                .frame(maxWidth: .infinity)
             }
-            .padding(24)
+            .scrollBounceBehavior(.basedOnSize)
             .navigationTitle("Keyboard Voice Input")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -672,7 +1004,7 @@ struct OpenClamKeyboardDictationHostView: View {
                 }
             }
         }
-        .interactiveDismissDisabled(phase == .listening || phase == .transcribing)
+        .interactiveDismissDisabled(!deliveredResult)
         .task(id: request.id) {
             await startIfNeeded()
         }
@@ -688,14 +1020,32 @@ struct OpenClamKeyboardDictationHostView: View {
         .onDisappear {
             deadlineTask?.cancel()
             deadlineTask = nil
-            if phase == .listening || phase == .transcribing {
+            listeningDeadline = nil
+            if !deliveredResult {
                 speech.cancel()
-                if !deliveredResult {
-                    host.fail(
-                        request,
-                        message: "Voice input closed before a transcript was ready."
+                host.cancel(request)
+                deliveredResult = true
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var timeoutProgress: some View {
+        if phase == .listening, let listeningDeadline {
+            TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                let remaining = max(0, listeningDeadline.timeIntervalSince(context.date))
+                VStack(spacing: 6) {
+                    ProgressView(
+                        value: Self.maximumVisibleTurnDuration - remaining,
+                        total: Self.maximumVisibleTurnDuration
                     )
+                    Text("Automatic stop in \(Int(remaining.rounded(.up))) seconds")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Voice input time remaining")
+                .accessibilityValue("\(Int(remaining.rounded(.up))) seconds")
             }
         }
     }
@@ -731,22 +1081,25 @@ struct OpenClamKeyboardDictationHostView: View {
             }
         case .failed:
             VStack(spacing: 10) {
-                Button("Try again") {
-                    phase = .preparing
-                    message = "Preparing microphone permission…"
-                    Task { await startIfNeeded() }
-                }
-                .buttonStyle(.borderedProminent)
+                Text("Return to the keyboard and tap Try Again to start a fresh request.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                 Button("Close") { host.dismiss(request) }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
             }
         }
     }
 
     private var providerName: String {
-        AIProviderRegistry.descriptor(
-            for: aiConfiguration.settings.speechToText.provider
-        ).displayName
+        let selection = aiConfiguration.effectiveSettings.speechToText
+        let provider = AIProviderRegistry.descriptor(for: selection.provider).displayName
+        let model = AIProviderRegistry.modelDisplayName(
+            for: selection.model,
+            provider: selection.provider,
+            capability: .speechToText
+        )
+        return "\(provider) · \(model)"
     }
 
     private var title: String {
@@ -786,8 +1139,13 @@ struct OpenClamKeyboardDictationHostView: View {
             phase = .listening
             message = "Speak now. Tap Stop when you are finished; OpenClam will release the microphone before you return."
             deadlineTask?.cancel()
+            listeningDeadline = Date().addingTimeInterval(
+                Self.maximumVisibleTurnDuration
+            )
             deadlineTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                try? await Task.sleep(
+                    nanoseconds: UInt64(Self.maximumVisibleTurnDuration * 1_000_000_000)
+                )
                 guard !Task.isCancelled, phase == .listening else { return }
                 await stopAndDeliver()
             }
@@ -800,6 +1158,7 @@ struct OpenClamKeyboardDictationHostView: View {
         guard phase == .listening else { return }
         deadlineTask?.cancel()
         deadlineTask = nil
+        listeningDeadline = nil
         phase = .transcribing
         message = "OpenClam is finalizing the selected speech provider."
         let transcript = await speech.stop(using: aiConfiguration)
@@ -821,6 +1180,7 @@ struct OpenClamKeyboardDictationHostView: View {
     private func cancel() {
         deadlineTask?.cancel()
         deadlineTask = nil
+        listeningDeadline = nil
         speech.cancel()
         if !deliveredResult {
             host.cancel(request)
@@ -833,6 +1193,7 @@ struct OpenClamKeyboardDictationHostView: View {
     private func fail(_ error: String) {
         deadlineTask?.cancel()
         deadlineTask = nil
+        listeningDeadline = nil
         speech.cancel()
         phase = .failed
         message = error
