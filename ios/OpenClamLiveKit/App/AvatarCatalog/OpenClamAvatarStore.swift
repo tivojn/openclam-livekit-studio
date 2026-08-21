@@ -96,7 +96,7 @@ enum OpenClamAvatarStoreReleasePolicy {
     static let productionCatalogURL = URL(
         string: "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/catalog.json"
     )!
-    static let catalogURL: URL? = nil
+    static let catalogURL: URL? = productionCatalogURL
     static let unavailableMessage =
         "Avatar Store isn’t available in this release. You can still import .avtr files from Files."
 

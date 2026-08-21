@@ -345,49 +345,29 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertEqual(offline.entries.map(\.id), ["fixture-avatar"])
     }
 
-    func testReleaseStoreHasNoEndpointAndNeverReadsCacheOrCallsTransfer() async throws {
-        XCTAssertFalse(OpenClamAvatarStoreReleasePolicy.isAvailable)
-        XCTAssertNil(OpenClamAvatarStoreReleasePolicy.catalogURL)
-
-        let root = temporaryRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let cache = OpenClamAvatarStoreCache(
-            root: root.appendingPathComponent("cache", isDirectory: true)
-        )
-        try cache.storeCatalog(syntheticCatalogData())
-        let client = AvatarStoreScriptedTransferClient(catalogData: syntheticCatalogData())
-        let library = OpenClamAvatarLibrary(
-            storageRoot: root.appendingPathComponent("library", isDirectory: true)
-        )
-        let store = OpenClamAvatarStore(transferClient: client, cache: cache)
-
-        store.load(library: library)
-        await Task.yield()
-
-        XCTAssertEqual(store.entries, [])
+    func testReleaseStoreUsesPinnedProductionCatalogEndpoint() {
+        XCTAssertTrue(OpenClamAvatarStoreReleasePolicy.isAvailable)
         XCTAssertEqual(
-            store.catalogStatus,
-            .unavailable(OpenClamAvatarStoreReleasePolicy.unavailableMessage)
+            OpenClamAvatarStoreReleasePolicy.catalogURL,
+            OpenClamAvatarStoreReleasePolicy.productionCatalogURL
         )
-        let releaseFetchRequests = await client.fetchRequestCount()
-        XCTAssertEqual(releaseFetchRequests, 0)
+        XCTAssertTrue(
+            OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
+                OpenClamAvatarStoreReleasePolicy.productionCatalogURL
+            )
+        )
     }
 
-    func testDisabledStoreLeavesDirectImportLibraryAndDeleteWorking() async throws {
+    func testStoreAvailabilityLeavesDirectImportLibraryAndDeleteWorking() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let client = AvatarStoreScriptedTransferClient(catalogData: syntheticCatalogData())
         let library = OpenClamAvatarLibrary(
             storageRoot: root.appendingPathComponent("library", isDirectory: true)
         )
         let imported = try await library.importAvatar(from: goldenFixtureURL)
-        let store = OpenClamAvatarStore(transferClient: client)
 
-        store.load(library: library)
         XCTAssertTrue(library.isImported(id: imported.id))
         XCTAssertEqual(library.avatar(id: imported.id)?.displayName, imported.displayName)
-        let releaseFetchRequests = await client.fetchRequestCount()
-        XCTAssertEqual(releaseFetchRequests, 0)
 
         try await library.deleteImportedAvatar(id: imported.id)
         XCTAssertFalse(library.isImported(id: imported.id))

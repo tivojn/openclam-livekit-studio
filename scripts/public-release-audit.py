@@ -390,9 +390,10 @@ CAPTAIN_AYER_CONTENTS_FILES = {
     path.with_name("Contents.json") for path in CAPTAIN_AYER_BINARY_HASHES
 }
 
-REQUIRED_STORE_DISABLED_SNIPPETS = {
+REQUIRED_STORE_POLICY_SNIPPETS = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/OpenClamAvatarStore.swift"): (
-        b"static let catalogURL: URL? = nil",
+        b"static let catalogURL: URL? = productionCatalogURL",
+        b"avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/catalog.json",
         b"static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)",
         b"guard remoteAccess.isEnabled else",
     ),
@@ -847,15 +848,15 @@ def avatar_rights_findings(root: Path) -> list[str]:
 
 def store_release_policy_findings(root: Path) -> list[str]:
     findings: list[str] = []
-    for relative, snippets in REQUIRED_STORE_DISABLED_SNIPPETS.items():
+    for relative, snippets in REQUIRED_STORE_POLICY_SNIPPETS.items():
         try:
             raw = (root / relative).read_bytes()
         except OSError:
-            findings.append(f"store-disabled policy file missing: {relative}")
+            findings.append(f"store release-policy file missing: {relative}")
             continue
         for snippet in snippets:
             if snippet not in raw:
-                findings.append(f"store-disabled policy marker missing: {relative}")
+                findings.append(f"store release-policy marker missing: {relative}")
                 break
     return findings
 

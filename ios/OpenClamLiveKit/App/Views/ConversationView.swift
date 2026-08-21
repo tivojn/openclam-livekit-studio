@@ -1807,7 +1807,7 @@ struct ConversationView: View {
         .accessibilityLabel(composerAccessibilityLabel)
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Rectangle())
-        .disabled(isLoadingAttachments || isChatTransitioning)
+        .disabled(isLoadingAttachments || isChatTransitioning || speech.isTranscribing)
     }
 
     private func modelSelectionMenu(
@@ -2199,6 +2199,7 @@ struct ConversationView: View {
     }
 
     private var composerIcon: String {
+        if speech.isTranscribing { return "ellipsis" }
         if isRequestActive { return "stop.fill" }
         if speech.isListening { return "stop.fill" }
         if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "mic.fill" }
@@ -2210,6 +2211,7 @@ struct ConversationView: View {
     }
 
     private var composerAccessibilityLabel: String {
+        if speech.isTranscribing { return "Transcribing speech" }
         if isRequestActive { return "Stop current request" }
         if speech.isListening { return "Stop listening and send" }
         if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Start tap to talk" }
@@ -2228,7 +2230,7 @@ struct ConversationView: View {
     }
 
     private func performComposerAction() {
-        guard !isChatTransitioning else { return }
+        guard !isChatTransitioning, !speech.isTranscribing else { return }
         if !liveTalk.phase.isSessionActive {
             conversation.stopSpeechOutput()
         }

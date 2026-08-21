@@ -476,6 +476,36 @@ final class CloudRecordingFinalizationCoordinator {
     }
 }
 
+/// Keeps the recorder open for a few final microphone buffers after the user taps Stop. This
+/// captures only the natural end of the utterance; it never appends synthetic silence or audio.
+@MainActor
+enum CloudRecordingManualStopTailCapture {
+    static let graceNanoseconds: UInt64 = 320_000_000
+
+    static func waitThenStop(
+        stop: @MainActor () -> Void
+    ) async -> Bool {
+        await waitThenStop(
+            sleep: { try await Task.sleep(nanoseconds: $0) },
+            stop: stop
+        )
+    }
+
+    static func waitThenStop(
+        sleep: @MainActor (UInt64) async throws -> Void,
+        stop: @MainActor () -> Void
+    ) async -> Bool {
+        do {
+            try await sleep(graceNanoseconds)
+        } catch {
+            stop()
+            return false
+        }
+        stop()
+        return !Task.isCancelled
+    }
+}
+
 /// Keeps partial and finalized Apple Speech segments stable across recognizer restarts.
 /// Apple may finalize a short segment while the user is still holding the mic; that is a segment
 /// boundary, not permission for the app to end a user-controlled recording.
@@ -1551,6 +1581,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         let url = cloudRecordingURL
         let service = cloudSpeechToTextService
         let selection = cloudSpeechToTextSelection
+        let sessionOwnership = audioSessionOwnership
         cloudRecorder = nil
         cloudRecordingURL = nil
         cloudSpeechToTextService = nil
@@ -1560,7 +1591,24 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             && url != nil && service != nil && selection != nil
 
         let task = cloudFinalization.task { @MainActor [weak self] in
+            if stopRecorder {
+                let shouldTranscribe = await CloudRecordingManualStopTailCapture.waitThenStop {
+                    recorder?.stop()
+                }
+                guard shouldTranscribe else {
+                    if let url { try? FileManager.default.removeItem(at: url) }
+                    sessionOwnership.releaseIfNeeded()
+                    return ""
+                }
+            }
+            sessionOwnership.releaseIfNeeded()
+
             guard let self else {
+                if let url { try? FileManager.default.removeItem(at: url) }
+                return ""
+            }
+
+            guard generation == self.sessionGeneration else {
                 if let url { try? FileManager.default.removeItem(at: url) }
                 return ""
             }
@@ -1591,11 +1639,6 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
                 generation: generation
             )
         }
-
-        if stopRecorder {
-            recorder?.stop()
-        }
-        audioSessionOwnership.releaseIfNeeded()
         return task
     }
 

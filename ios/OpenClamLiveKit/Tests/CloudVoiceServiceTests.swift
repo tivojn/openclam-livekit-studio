@@ -1354,6 +1354,44 @@ final class CloudVoiceServiceTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testCloudManualStopCapturesBoundedTailBeforeStoppingAndStopsOnCancellation() async {
+        var events: [String] = []
+        var requestedGrace: UInt64?
+
+        let shouldTranscribe = await CloudRecordingManualStopTailCapture.waitThenStop(
+            sleep: { nanoseconds in
+                requestedGrace = nanoseconds
+                events.append("tail")
+            },
+            stop: { events.append("stop") }
+        )
+
+        XCTAssertTrue(shouldTranscribe)
+        XCTAssertEqual(
+            requestedGrace,
+            CloudRecordingManualStopTailCapture.graceNanoseconds
+        )
+        XCTAssertEqual(events, ["tail", "stop"])
+        XCTAssertLessThanOrEqual(
+            CloudRecordingManualStopTailCapture.graceNanoseconds,
+            500_000_000
+        )
+
+        events = []
+        let shouldTranscribeAfterCancellation = await CloudRecordingManualStopTailCapture
+            .waitThenStop(
+                sleep: { _ in
+                    events.append("tail")
+                    throw CancellationError()
+                },
+                stop: { events.append("stop") }
+            )
+
+        XCTAssertFalse(shouldTranscribeAfterCancellation)
+        XCTAssertEqual(events, ["tail", "stop"])
+    }
+
     func testScreenshotOCRRejectsOversizedMetadataBeforeImageDecode() throws {
         let validPNG = try encodedImage(type: .png, frameCount: 1)
         let oversizedDimension = png(
