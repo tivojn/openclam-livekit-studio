@@ -405,6 +405,110 @@ final class AIProviderSettingsTests: XCTestCase {
         )
     }
 
+    func testXAIBatchStaysDefaultAndLiveModeIsExplicitlySelectable() throws {
+        let batch = AIServiceSelection(
+            provider: .xAI,
+            model: AIProviderRegistry.xAIBatchSpeechToTextModel
+        )
+        let live = AIServiceSelection(
+            provider: .xAI,
+            model: AIProviderRegistry.xAILiveSpeechToTextModel
+        )
+
+        XCTAssertEqual(
+            AIProviderRegistry.descriptor(for: .xAI).defaultModels[.speechToText],
+            [
+                AIProviderRegistry.xAIBatchSpeechToTextModel,
+                AIProviderRegistry.xAILiveSpeechToTextModel,
+            ]
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.modelDisplayName(
+                for: batch.model,
+                provider: .xAI,
+                capability: .speechToText
+            ),
+            "Grok Transcribe — Batch (lower cost)"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.modelDisplayName(
+                for: live.model,
+                provider: .xAI,
+                capability: .speechToText
+            ),
+            "Grok Transcribe — Live text"
+        )
+        XCTAssertNoThrow(try batch.validated(for: .speechToText))
+        XCTAssertNoThrow(try live.validated(for: .speechToText))
+        XCTAssertThrowsError(
+            try AIServiceSelection(provider: .xAI, model: "grok-transcribe-unknown")
+                .validated(for: .speechToText)
+        ) { error in
+            XCTAssertEqual(error as? AIProviderSettingsError, .invalidModel)
+        }
+
+        XCTAssertFalse(AIProviderRegistry.usesRealtimeSpeechRecognition(batch))
+        XCTAssertTrue(AIProviderRegistry.usesRealtimeSpeechRecognition(live))
+        XCTAssertTrue(
+            AIProviderRegistry.usesRealtimeSpeechRecognition(
+                .init(
+                    provider: .soniox,
+                    model: AIProviderRegistry.sonioxRealtimeSpeechToTextModel
+                )
+            )
+        )
+        XCTAssertFalse(
+            AIProviderRegistry.usesRealtimeSpeechRecognition(
+                .init(
+                    provider: .soniox,
+                    model: AIProviderRegistry.sonioxBatchSpeechToTextModel
+                )
+            )
+        )
+
+        let note = try XCTUnwrap(
+            AIProviderRegistry.configurationNote(
+                provider: .xAI,
+                capability: .speechToText
+            )
+        )
+        XCTAssertTrue(note.contains("$0.10"))
+        XCTAssertTrue(note.contains("$0.20"))
+        XCTAssertTrue(note.contains("Live text"))
+    }
+
+    @MainActor
+    func testXAISpeechFactoriesKeepBatchAndRealtimeRoutesSeparate() throws {
+        let batch = AIServiceSelection(
+            provider: .xAI,
+            model: AIProviderRegistry.xAIBatchSpeechToTextModel
+        )
+        let live = AIServiceSelection(
+            provider: .xAI,
+            model: AIProviderRegistry.xAILiveSpeechToTextModel
+        )
+        let suiteName = "AIProviderSettingsTests.xai-stt-modes.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "test.xai-stt-modes",
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        XCTAssertEqual(
+            configuration.preferredModel(for: .speechToText, provider: .xAI),
+            AIProviderRegistry.xAIBatchSpeechToTextModel
+        )
+
+        configuration.settings.speechToText = batch
+        XCTAssertNoThrow(try configuration.makeCloudSpeechToTextService())
+        XCTAssertThrowsError(try configuration.makeRealtimeSpeechToTextService())
+
+        configuration.settings.speechToText = live
+        XCTAssertThrowsError(try configuration.makeCloudSpeechToTextService())
+        XCTAssertNoThrow(try configuration.makeRealtimeSpeechToTextService())
+    }
+
     func testCloudSpeechRequestUsesSelectedXAIVoiceAndAutomaticLanguage() throws {
         let shared = try CloudSpeechSynthesisRequestResolver.resolve(
             text: "Hello 世界",

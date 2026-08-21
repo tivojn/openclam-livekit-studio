@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "ios": {
+    "avatar_store": {
+      "enabled": true,
+      "catalog_tag": "avatar-store-v1.0.0"
+    },
+    "push_to_talk": {
+      "apple": {
+        "enabled": true,
+        "transcript_delivery": "live"
+      },
+      "soniox": {
+        "enabled": true,
+        "default_model": "stt-rt-v5",
+        "transcript_delivery": "live"
+      },
+      "xai": {
+        "enabled": true,
+        "default_model": "grok-transcribe",
+        "modes": {
+          "grok-transcribe": "after_stop",
+          "grok-transcribe-live": "live"
+        }
+      }
+    }
+  },
+  "change_control": {
+    "feature_disable_requires_explicit_product_approval": true,
+    "one_user_visible_feature_per_commit": true,
+    "signed_smoke_required_for_changed_capture_path": true
+  }
+}

@@ -69,7 +69,13 @@ enum AvatarAgentServicePresentation {
         capability: AICapability,
         model: String
     ) -> String {
-        guard provider == .apple else { return model }
+        guard provider == .apple else {
+            return AIProviderRegistry.modelDisplayName(
+                for: model,
+                provider: provider,
+                capability: capability
+            )
+        }
         switch (capability, model) {
         case (.textToSpeech, "system-voice"):
             return "System voice"

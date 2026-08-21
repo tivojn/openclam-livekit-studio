@@ -21,6 +21,7 @@ import sys
 
 
 ALLOWED_TOP_LEVEL = {
+    ".github",
     ".gitignore",
     "AVATAR_ASSET_LICENSE.md",
     "CONTRIBUTING.md",
@@ -40,6 +41,7 @@ ALLOWED_TOP_LEVEL = {
 }
 
 REQUIRED_FILES = {
+    Path(".github/workflows/release-feature-guards.yml"),
     Path(".gitignore"),
     Path("AVATAR_ASSET_LICENSE.md"),
     Path("CONTRIBUTING.md"),
@@ -53,6 +55,7 @@ REQUIRED_FILES = {
     Path("cloudflare-broker/package-lock.json"),
     Path("cloudflare-broker/package.json"),
     Path("contracts/live-talk-approved-tuples-v1.json"),
+    Path("contracts/release-feature-contract-v1.json"),
     Path("ios/OpenClamLiveKit/OpenClamLiveKit.xcodeproj/project.pbxproj"),
     Path("ios/OpenClamLiveKit/project.yml"),
     Path("macos/OpenClamStudio/package-lock.json"),
@@ -403,6 +406,33 @@ REQUIRED_STORE_POLICY_SNIPPETS = {
     ),
     Path("macos/OpenClamStudio/electron/main.cjs"): (
         b"if (!AVATAR_STORE_AVAILABLE)",
+    ),
+}
+
+RELEASE_FEATURE_CONTRACT_PATH = Path("contracts/release-feature-contract-v1.json")
+REQUIRED_RELEASE_FEATURE_SNIPPETS = {
+    Path("ios/OpenClamLiveKit/App/Services/LocalAssistantServices.swift"): (
+        b"request.shouldReportPartialResults = true",
+        b"AIProviderRegistry.usesRealtimeSpeechRecognition",
+        b"CloudRecordingManualStopTailCapture.waitThenStop",
+    ),
+    Path("ios/OpenClamLiveKit/App/Services/CloudVoiceServices.swift"): (
+        b'static let speechToTextServiceID = "grok-transcribe"',
+        b"struct XAIRealtimeSpeechToTextService",
+        b'static let model = "grok-transcribe-live"',
+        b'"interim_results"',
+        b'"audio.done"',
+        b"struct SonioxRealtimeSpeechToTextService",
+        b'static let model = "stt-rt-v5"',
+    ),
+    Path("ios/OpenClamLiveKit/App/Models/AIProviderSettings.swift"): (
+        b'static let xAIBatchSpeechToTextModel = "grok-transcribe"',
+        b'static let xAILiveSpeechToTextModel = "grok-transcribe-live"',
+        b"usesRealtimeSpeechRecognition",
+    ),
+    Path("ios/OpenClamLiveKit/App/Services/AIConfigurationModel.swift"): (
+        b"XAIRealtimeSpeechToTextService",
+        b"SonioxRealtimeSpeechToTextService",
     ),
 }
 
@@ -861,6 +891,60 @@ def store_release_policy_findings(root: Path) -> list[str]:
     return findings
 
 
+def release_feature_contract_findings(root: Path) -> list[str]:
+    findings: list[str] = []
+    try:
+        contract = json.loads(
+            (root / RELEASE_FEATURE_CONTRACT_PATH).read_text(encoding="utf-8")
+        )
+        ios = contract["ios"]
+        store = ios["avatar_store"]
+        ptt = ios["push_to_talk"]
+        controls = contract["change_control"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        return ["release feature contract is unreadable or incomplete"]
+
+    if contract.get("schema_version") != 1:
+        findings.append("release feature contract schema mismatch")
+    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.0"}:
+        findings.append("release feature contract changed the approved Avatar Store state")
+    if ptt.get("apple") != {"enabled": True, "transcript_delivery": "live"}:
+        findings.append("release feature contract changed Apple PTT delivery")
+    if ptt.get("soniox") != {
+        "enabled": True,
+        "default_model": "stt-rt-v5",
+        "transcript_delivery": "live",
+    }:
+        findings.append("release feature contract changed Soniox PTT delivery")
+    if ptt.get("xai") != {
+        "enabled": True,
+        "default_model": "grok-transcribe",
+        "modes": {
+            "grok-transcribe": "after_stop",
+            "grok-transcribe-live": "live",
+        },
+    }:
+        findings.append("release feature contract changed xAI PTT modes")
+    if controls != {
+        "feature_disable_requires_explicit_product_approval": True,
+        "one_user_visible_feature_per_commit": True,
+        "signed_smoke_required_for_changed_capture_path": True,
+    }:
+        findings.append("release feature contract changed required change controls")
+
+    for relative, snippets in REQUIRED_RELEASE_FEATURE_SNIPPETS.items():
+        try:
+            raw = (root / relative).read_bytes()
+        except OSError:
+            findings.append(f"release feature implementation file missing: {relative}")
+            continue
+        for snippet in snippets:
+            if snippet not in raw:
+                findings.append(f"release feature implementation marker missing: {relative}")
+                break
+    return findings
+
+
 def audit_current_tree(root: Path) -> tuple[list[str], int]:
     findings: list[str] = []
     entries = source_tree_entries(root)
@@ -909,6 +993,7 @@ def audit_current_tree(root: Path) -> tuple[list[str], int]:
         findings.extend(audit_bytes(relative, path.read_bytes()))
     findings.extend(avatar_rights_findings(root))
     findings.extend(store_release_policy_findings(root))
+    findings.extend(release_feature_contract_findings(root))
     return findings, inspected
 
 

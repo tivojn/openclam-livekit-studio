@@ -1,0 +1,22 @@
+name: Release feature guards
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+
+permissions:
+  contents: read
+
+jobs:
+  public-source-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Enforce public and feature contracts
+        run: python3 scripts/public-release-audit.py .

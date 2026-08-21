@@ -532,6 +532,9 @@ final class AIConfigurationModel: ObservableObject {
         case .openAI:
             return OpenAICloudVoiceService(credentialStore: credentialStore)
         case .xAI:
+            guard selection.model == AIProviderRegistry.xAIBatchSpeechToTextModel else {
+                throw AIProviderSettingsError.agentRuntimeUnavailable(selection.provider)
+            }
             return XAICloudVoiceService(credentialStore: credentialStore)
         case .openRouter:
             return OpenRouterCloudVoiceService(credentialStore: credentialStore)
@@ -557,6 +560,9 @@ final class AIConfigurationModel: ObservableObject {
         case .openAI:
             return OpenAICloudVoiceService(credentialStore: credentialStore)
         case .xAI:
+            guard selection.model == AIProviderRegistry.xAIBatchSpeechToTextModel else {
+                throw AIProviderSettingsError.agentRuntimeUnavailable(selection.provider)
+            }
             return XAICloudVoiceService(credentialStore: credentialStore)
         case .openRouter:
             return OpenRouterCloudVoiceService(credentialStore: credentialStore)
@@ -576,18 +582,21 @@ final class AIConfigurationModel: ObservableObject {
         }
     }
 
-    /// Real-time microphone adapter used when Soniox's streaming model is selected.
+    /// Real-time microphone adapter used by streaming speech-recognition selections.
     func makeRealtimeSpeechToTextService() throws -> any RealtimeSpeechToTextServicing {
         let selection = try effectiveSettings.speechToText.validated(for: .speechToText)
-        guard selection.provider == .soniox,
-              selection.model == SonioxRealtimeSpeechToTextService.model else {
-            throw AIProviderSettingsError.agentRuntimeUnavailable(selection.provider)
-        }
         let credentialStore = ProviderScopedAgentCredentialStore(
             provider: selection.provider,
             vault: providerVault
         )
-        return SonioxRealtimeSpeechToTextService(credentialStore: credentialStore)
+        switch (selection.provider, selection.model) {
+        case (.soniox, AIProviderRegistry.sonioxRealtimeSpeechToTextModel):
+            return SonioxRealtimeSpeechToTextService(credentialStore: credentialStore)
+        case (.xAI, AIProviderRegistry.xAILiveSpeechToTextModel):
+            return XAIRealtimeSpeechToTextService(credentialStore: credentialStore)
+        default:
+            throw AIProviderSettingsError.agentRuntimeUnavailable(selection.provider)
+        }
     }
 
     func testConnection(oneUseAPIKey: String?) async throws {

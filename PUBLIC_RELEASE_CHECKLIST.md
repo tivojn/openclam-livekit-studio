@@ -9,6 +9,9 @@
       data, caches, models, builds, logs, screenshots, recordings, and AVTR
       release packages.
 - [ ] Run `python3 scripts/public-release-audit.py .` and review every finding.
+- [ ] Review `contracts/release-feature-contract-v1.json` as a product diff.
+      Any enabled-to-disabled feature or transcript-delivery change requires
+      explicit product approval in its own commit.
 - [ ] Write an external file/mode/SHA-256 manifest with `--write-manifest`,
       require it with `--manifest`, and verify an extracted Git archive against
       that same manifest.
@@ -20,6 +23,12 @@
 
 - [ ] Build and test the iOS app from the snapshot with generated data outside
       the source tree.
+- [ ] When Store paths change, run only the pinned endpoint, catalog/package,
+      collision/update, and Store-link visibility tests.
+- [ ] When PTT/provider paths change, run only the provider route, audio-format,
+      partial/final transcript, stop-tail, cancellation, and composer tests.
+- [ ] Run one signed-device/provider smoke whenever a microphone capture or
+      realtime transport path changes; mocked request data is not sufficient.
 - [ ] Run the broker typecheck and tests.
 - [ ] Run the agent lint and tests.
 - [ ] Run the complete macOS regression, dependency, license, privacy, native,
@@ -36,8 +45,9 @@
       before adding or replacing any likeness media.
 - [ ] Confirm neither the public source nor its history can reach source
       portraits, authoring projects, unapproved avatars, or release packages.
-- [ ] Confirm Avatar Store networking remains fail-closed for v1.0.1 while
-      local AVTR import and deletion still work.
+- [ ] Confirm the iOS Avatar Store is visible and uses the immutable catalog tag
+      declared by the release feature contract; local AVTR import and deletion
+      must remain available.
 
 ## macOS binary release
 

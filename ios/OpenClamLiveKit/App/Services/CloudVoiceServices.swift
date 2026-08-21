@@ -309,9 +309,14 @@ protocol CloudVoiceWebSocketTaskFactory: Sendable {
     func makeTask(for request: URLRequest) -> any CloudVoiceWebSocketTask
 }
 
-/// WebSocket handshakes must never follow a redirect: `URLSessionWebSocketTask.send` may queue the
-/// first frame while the handshake is in flight, and that frame contains the Soniox credential.
-/// An ephemeral session also prevents cookies or cached authentication from joining the request.
+enum CloudVoiceRealtimeTransportLimits {
+    static let maximumResponseBytes = 256_000
+}
+
+/// WebSocket handshakes must never follow a redirect. A provider credential can be present in the
+/// upgrade request or first encrypted configuration frame, so redirecting the handshake could send
+/// it to a different origin. An ephemeral session also prevents cookies or cached authentication
+/// from joining the request.
 final class CloudVoiceNoRedirectURLSessionDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(
         _ session: URLSession,
@@ -348,7 +353,7 @@ private final class URLSessionCloudVoiceWebSocketTaskFactory: CloudVoiceWebSocke
 
     func makeTask(for request: URLRequest) -> any CloudVoiceWebSocketTask {
         let task = session.webSocketTask(with: request)
-        task.maximumMessageSize = SonioxRealtimeSpeechToTextSession.maximumResponseBytes
+        task.maximumMessageSize = CloudVoiceRealtimeTransportLimits.maximumResponseBytes
         return URLSessionCloudVoiceWebSocketTask(
             task: task,
             session: session
@@ -661,6 +666,445 @@ struct XAICloudVoiceService: CloudTextToSpeechServicing, CloudSpeechToTextServic
         urlRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
 
         return try CloudVoiceRequestSupport.transcription(from: await transport.send(urlRequest))
+    }
+}
+
+/// xAI's standalone streaming transcription endpoint. This adapter is intentionally separate
+/// from both the batch REST service above and xAI's conversational Voice Agent API. It sends only
+/// bounded PCM16LE/16-kHz/mono microphone frames and waits for the provider's ready event before
+/// returning the session to its caller.
+struct XAIRealtimeSpeechToTextService: RealtimeSpeechToTextServicing, Sendable {
+    static let endpoint = URL(string: "wss://api.x.ai/v1/stt")!
+    static let model = "grok-transcribe-live"
+
+    let provider = AIProviderID.xAI
+    let requestStorageBehavior = CloudVoiceRequestStorageBehavior.providerDefaultNoRequestFlag
+
+    private let credentialStore: AgentCredentialStore
+    private let socketFactory: CloudVoiceWebSocketTaskFactory
+
+    init(
+        credentialStore: AgentCredentialStore,
+        socketFactory: CloudVoiceWebSocketTaskFactory = URLSessionCloudVoiceWebSocketTaskFactory()
+    ) {
+        self.credentialStore = credentialStore
+        self.socketFactory = socketFactory
+    }
+
+    func startSession(
+        model: String,
+        languageCode: String?
+    ) async throws -> any RealtimeSpeechToTextSession {
+        let selectedModel = try CloudVoiceRequestSupport.identifier(model, maximumBytes: 64)
+        guard selectedModel == Self.model else {
+            throw CloudVoiceServiceError.invalidIdentifier
+        }
+        let url = try Self.streamingEndpoint(languageCode: languageCode)
+        let key = try CloudVoiceRequestSupport.credential(from: credentialStore)
+        var request = CloudVoiceRequestSupport.request(
+            url: url,
+            method: "GET",
+            timeout: 15
+        )
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        guard Self.isTrustedEndpoint(request.url) else {
+            throw CloudVoiceServiceError.untrustedEndpoint
+        }
+        let socket = socketFactory.makeTask(for: request)
+
+        return try await withTaskCancellationHandler {
+            do {
+                try Task.checkCancellation()
+                socket.resume()
+                let readyMessage = try await socket.receive()
+                try Task.checkCancellation()
+                try XAIRealtimeSpeechToTextSession.validateCreated(readyMessage)
+                return XAIRealtimeSpeechToTextSession(socket: socket)
+            } catch {
+                socket.cancel()
+                throw error
+            }
+        } onCancel: {
+            socket.cancel()
+        }
+    }
+
+    static func streamingEndpoint(languageCode: String?) throws -> URL {
+        let language = try CloudVoiceRequestSupport.language(languageCode)
+        guard var components = URLComponents(
+            url: Self.endpoint,
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw CloudVoiceServiceError.untrustedEndpoint
+        }
+        components.queryItems = [
+            URLQueryItem(name: "sample_rate", value: "16000"),
+            URLQueryItem(name: "encoding", value: "pcm"),
+            URLQueryItem(name: "interim_results", value: "true"),
+        ]
+        if let language {
+            components.queryItems?.append(URLQueryItem(name: "language", value: language))
+        }
+        guard let url = components.url, Self.isTrustedEndpoint(url) else {
+            throw CloudVoiceServiceError.untrustedEndpoint
+        }
+        return url
+    }
+
+    static func isTrustedEndpoint(_ url: URL?) -> Bool {
+        guard let url,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == "wss",
+              components.host == "api.x.ai",
+              components.port == nil,
+              components.user == nil,
+              components.password == nil,
+              components.path == "/v1/stt",
+              components.fragment == nil,
+              let queryItems = components.queryItems else {
+            return false
+        }
+
+        var query: [String: String] = [:]
+        for item in queryItems {
+            guard let value = item.value,
+                  query.updateValue(value, forKey: item.name) == nil else {
+                return false
+            }
+        }
+        guard query["sample_rate"] == "16000",
+              query["encoding"] == "pcm",
+              query["interim_results"] == "true" else {
+            return false
+        }
+        if let language = query["language"] {
+            do {
+                guard try CloudVoiceRequestSupport.language(language) == language else {
+                    return false
+                }
+            } catch {
+                return false
+            }
+        }
+        return query.count == (query["language"] == nil ? 3 : 4)
+    }
+}
+
+private actor XAIRealtimeSpeechToTextSession: RealtimeSpeechToTextSession {
+    static let maximumPCMChunkBytes = 64 * 1_024
+    static let maximumPCMSessionBytes = 4_000_000
+    static let maximumResponseBytes = CloudVoiceRealtimeTransportLimits.maximumResponseBytes
+    static let maximumTranscriptBytes = 200_000
+
+    private static let finishMessage = #"{"type":"audio.done"}"#
+
+    private let socket: CloudVoiceWebSocketTask
+    private var totalPCMBytes = 0
+    private var completedText = ""
+    private var lockedCurrentUtteranceText = ""
+    private var provisionalText = ""
+    private var didSendFinish = false
+    private var didReceiveFinished = false
+    private var isCancelled = false
+
+    init(socket: CloudVoiceWebSocketTask) {
+        self.socket = socket
+    }
+
+    static func validateCreated(_ message: CloudVoiceWebSocketMessage) throws {
+        let event = try decodeEvent(message)
+        if event.type == "error" {
+            throw providerError(for: event)
+        }
+        guard event.type == "transcript.created" else {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+    }
+
+    func sendPCM(_ data: Data) async throws {
+        try Task.checkCancellation()
+        guard !isCancelled, !didSendFinish else { throw CancellationError() }
+        guard !data.isEmpty,
+              data.count <= Self.maximumPCMChunkBytes,
+              data.count.isMultiple(of: MemoryLayout<Int16>.size),
+              totalPCMBytes <= Self.maximumPCMSessionBytes - data.count else {
+            throw CloudVoiceServiceError.invalidAudio
+        }
+        totalPCMBytes += data.count
+        do {
+            try await socket.send(.data(data))
+        } catch {
+            failClosed()
+            throw error
+        }
+    }
+
+    func finishAudio() async throws {
+        try Task.checkCancellation()
+        guard !isCancelled else { throw CancellationError() }
+        guard !didSendFinish else { return }
+        didSendFinish = true
+        do {
+            try await socket.send(.string(Self.finishMessage))
+        } catch {
+            failClosed()
+            throw error
+        }
+    }
+
+    func receiveUpdate() async throws -> RealtimeTranscriptionUpdate? {
+        do {
+            try Task.checkCancellation()
+            guard !isCancelled else { throw CancellationError() }
+            guard !didReceiveFinished else { return nil }
+
+            let event = try Self.decodeEvent(try await socket.receive())
+            switch event.type {
+            case "transcript.partial":
+                return try processPartial(event)
+            case "transcript.done":
+                return try processDone(event)
+            case "error":
+                throw Self.providerError(for: event)
+            default:
+                throw CloudVoiceServiceError.malformedResponse
+            }
+        } catch {
+            failClosed()
+            throw error
+        }
+    }
+
+    func cancel() {
+        failClosed()
+    }
+
+    private func processPartial(
+        _ event: EventEnvelope
+    ) throws -> RealtimeTranscriptionUpdate {
+        guard let isFinal = event.isFinal,
+              let speechFinal = event.speechFinal,
+              !speechFinal || isFinal else {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+        try Self.validateTiming(start: event.start, duration: event.duration)
+        let segment = try Self.transcriptText(event.text)
+
+        if speechFinal {
+            // An utterance-final event is authoritative for the current utterance. Replacing the
+            // locked/interim assembly prevents the same chunk being appended a second time.
+            completedText = Self.stitch(completedText, segment)
+            lockedCurrentUtteranceText = ""
+            provisionalText = ""
+        } else if isFinal {
+            lockedCurrentUtteranceText = Self.stitch(
+                lockedCurrentUtteranceText,
+                segment
+            )
+            provisionalText = ""
+        } else {
+            // Interim text may revise earlier words, so it replaces the prior interim tail.
+            provisionalText = segment
+        }
+
+        let text = currentText()
+        try Self.validateTranscriptSize(text)
+        return .init(
+            text: text,
+            isFinal: isFinal,
+            endpointDetected: speechFinal,
+            isFinished: false
+        )
+    }
+
+    private func processDone(
+        _ event: EventEnvelope
+    ) throws -> RealtimeTranscriptionUpdate {
+        guard didSendFinish else {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+        try Self.validateTiming(start: nil, duration: event.duration, requiresStart: false)
+        let authoritativeText = try Self.transcriptText(event.text)
+        try Self.validateTranscriptSize(authoritativeText)
+        completedText = authoritativeText
+        lockedCurrentUtteranceText = ""
+        provisionalText = ""
+        didReceiveFinished = true
+        return .init(
+            text: authoritativeText.trimmingCharacters(in: .whitespacesAndNewlines),
+            isFinal: true,
+            endpointDetected: false,
+            isFinished: true
+        )
+    }
+
+    private func currentText() -> String {
+        let currentUtterance = Self.stitch(
+            lockedCurrentUtteranceText,
+            provisionalText
+        )
+        return Self.stitch(completedText, currentUtterance)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func failClosed() {
+        guard !isCancelled else { return }
+        isCancelled = true
+        socket.cancel()
+    }
+
+    private static func decodeEvent(
+        _ message: CloudVoiceWebSocketMessage
+    ) throws -> EventEnvelope {
+        let data: Data
+        switch message {
+        case .data(let value):
+            data = value
+        case .string(let value):
+            data = Data(value.utf8)
+        }
+        guard !data.isEmpty else {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+        guard data.count <= Self.maximumResponseBytes else {
+            throw CloudVoiceServiceError.responseTooLarge
+        }
+        do {
+            return try JSONDecoder().decode(EventEnvelope.self, from: data)
+        } catch {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+    }
+
+    private static func transcriptText(_ raw: String?) throws -> String {
+        guard let raw else {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+        try validateTranscriptSize(raw)
+        guard !raw.unicodeScalars.contains(where: { scalar in
+            scalar.properties.generalCategory == .control
+                && !CharacterSet.whitespacesAndNewlines.contains(scalar)
+        }) else {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+        return raw
+    }
+
+    private static func validateTranscriptSize(_ text: String) throws {
+        guard text.utf8.count <= Self.maximumTranscriptBytes else {
+            throw CloudVoiceServiceError.responseTooLarge
+        }
+    }
+
+    private static func validateTiming(
+        start: Double?,
+        duration: Double?,
+        requiresStart: Bool = true
+    ) throws {
+        guard let duration, duration.isFinite, duration >= 0 else {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+        if requiresStart {
+            guard let start, start.isFinite, start >= 0 else {
+                throw CloudVoiceServiceError.malformedResponse
+            }
+        }
+    }
+
+    /// Supports both provider styles seen in streaming APIs: a mutable cumulative result, or a
+    /// succession of finalized chunks. Whitespace supplied by the provider is preserved; a narrow
+    /// ASCII fallback prevents adjacent English chunks from becoming `Helloworld`.
+    private static func stitch(_ prefix: String, _ component: String) -> String {
+        guard !prefix.isEmpty else { return component }
+        guard !component.isEmpty else { return prefix }
+        if component == prefix || component.hasPrefix(prefix) {
+            return component
+        }
+        if prefix.last?.isWhitespace == true || component.first?.isWhitespace == true {
+            return prefix + component
+        }
+        let needsSpace = component.first.map(isASCIIWordCharacter) == true
+            && prefix.last.map { character in
+                isASCIIWordCharacter(character) || ".,!?;:)]}".contains(character)
+            } == true
+        return prefix + (needsSpace ? " " : "") + component
+    }
+
+    private static func isASCIIWordCharacter(_ character: Character) -> Bool {
+        guard character.unicodeScalars.count == 1,
+              let scalar = character.unicodeScalars.first,
+              scalar.isASCII else {
+            return false
+        }
+        return CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private static func providerError(for event: EventEnvelope) -> CloudVoiceServiceError {
+        let code = event.code ?? event.error?.code
+        switch code {
+        case .integer(let status):
+            if status == 401 || status == 403 { return .credentialRejected }
+            if (400...599).contains(status) { return .httpError(status) }
+        case .string(let raw):
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let status = Int(normalized) {
+                if status == 401 || status == 403 { return .credentialRejected }
+                if (400...599).contains(status) { return .httpError(status) }
+            }
+            if normalized.contains("unauthor")
+                || normalized.contains("forbidden")
+                || normalized.contains("permission")
+                || normalized.contains("api_key")
+                || normalized.contains("credential") {
+                return .credentialRejected
+            }
+        case nil:
+            break
+        }
+        // Never surface the provider's free-form message because it can echo request details or a
+        // credential. The stable app-owned error is sufficient for UI and diagnostics.
+        return .providerProcessingFailed
+    }
+
+    private struct EventEnvelope: Decodable {
+        let type: String
+        let text: String?
+        let isFinal: Bool?
+        let speechFinal: Bool?
+        let start: Double?
+        let duration: Double?
+        let code: FlexibleCode?
+        let error: ProviderErrorEnvelope?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case text
+            case isFinal = "is_final"
+            case speechFinal = "speech_final"
+            case start
+            case duration
+            case code
+            case error
+        }
+    }
+
+    private struct ProviderErrorEnvelope: Decodable {
+        let code: FlexibleCode?
+    }
+
+    private enum FlexibleCode: Decodable {
+        case integer(Int)
+        case string(String)
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let value = try? container.decode(Int.self) {
+                self = .integer(value)
+            } else {
+                self = .string(try container.decode(String.self))
+            }
+        }
     }
 }
 
@@ -1047,7 +1491,7 @@ private actor SonioxRealtimeSpeechToTextSession: RealtimeSpeechToTextSession {
     static let maximumConfigurationBytes = 8_192
     static let maximumPCMChunkBytes = 64 * 1_024
     static let maximumPCMSessionBytes = 4_000_000
-    static let maximumResponseBytes = 256_000
+    static let maximumResponseBytes = CloudVoiceRealtimeTransportLimits.maximumResponseBytes
     static let maximumTranscriptBytes = 200_000
     static let maximumTokensPerResponse = 4_096
     static let maximumTokenBytes = 1_024

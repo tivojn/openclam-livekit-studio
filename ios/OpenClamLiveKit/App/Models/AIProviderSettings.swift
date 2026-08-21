@@ -76,6 +76,11 @@ struct AISpeechRecognitionLanguageOption: Identifiable, Equatable, Sendable {
 }
 
 enum AIProviderRegistry {
+    static let xAIBatchSpeechToTextModel = "grok-transcribe"
+    static let xAILiveSpeechToTextModel = "grok-transcribe-live"
+    static let sonioxRealtimeSpeechToTextModel = "stt-rt-v5"
+    static let sonioxBatchSpeechToTextModel = "stt-async-v5"
+
     static let descriptors: [AIProviderDescriptor] = [
         .init(
             id: .apple,
@@ -154,13 +159,13 @@ enum AIProviderRegistry {
             documentationURL: URL(string: "https://docs.x.ai/developers/models")!,
             capabilities: [.llm, .textToSpeech, .speechToText, .imageGeneration, .videoGeneration, .webSearch],
             availability: .available,
-            availabilityNote: "Includes Grok language models, X Search, and the official REST speech and transcription endpoints. Grok Transcribe automatically detects only its documented 25 languages; Chinese is not supported.",
+            availabilityNote: "Includes Grok language models, X Search, and both batch and live Grok Transcribe. Batch is lower cost; Live shows text while you speak. Automatic detection covers xAI's documented 25 languages; Chinese is not supported.",
             agentResponsesEndpoint: URL(string: "https://api.x.ai/v1/responses")!,
             modelListEndpoint: URL(string: "https://api.x.ai/v1/models")!,
             defaultModels: [
                 .llm: ["grok-4.5"],
                 .textToSpeech: ["xai-tts"],
-                .speechToText: ["grok-transcribe"],
+                .speechToText: [xAIBatchSpeechToTextModel, xAILiveSpeechToTextModel],
                 .imageGeneration: ["grok-imagine-image-quality"],
                 .videoGeneration: ["grok-imagine-video"],
                 .webSearch: ["x_search"],
@@ -247,7 +252,10 @@ enum AIProviderRegistry {
                 .textToSpeech: ["tts-rt-v1"],
                 // Live microphone input defaults to Soniox's WebSocket model. The asynchronous
                 // model remains an explicit recorded-file fallback rather than a silent migration.
-                .speechToText: ["stt-rt-v5", "stt-async-v5"],
+                .speechToText: [
+                    sonioxRealtimeSpeechToTextModel,
+                    sonioxBatchSpeechToTextModel,
+                ],
             ]
         ),
         .init(
@@ -494,7 +502,7 @@ enum AIProviderRegistry {
         case (.deepgram, .speechToText):
             return "Auto multilingual uses Nova-3 language detection and supports mixed Chinese and English speech."
         case (.xAI, .speechToText):
-            return "Automatic detection covers exactly Arabic, Czech, Danish, Dutch, English, Filipino, French, German, Hindi, Indonesian, Italian, Japanese, Korean, Macedonian, Malay, Persian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish, and Vietnamese. Chinese is not supported; choose Deepgram for Chinese or mixed Chinese and English. A specific language here is an xAI formatting hint, not a way to add an unsupported language."
+            return "Grok Transcribe — Batch sends one recording after Stop and costs $0.10 per audio hour. Grok Transcribe — Live text streams partial text while you speak and costs $0.20 per audio hour. Automatic detection covers exactly Arabic, Czech, Danish, Dutch, English, Filipino, French, German, Hindi, Indonesian, Italian, Japanese, Korean, Macedonian, Malay, Persian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish, and Vietnamese. Chinese is not supported; choose Deepgram for Chinese or mixed Chinese and English."
         case (.openAI, .videoGeneration):
             return "OpenAI currently lists Sora 2 as a legacy model. This build saves the preference only and does not submit generation requests."
         case (_, .imageGeneration), (_, .videoGeneration):
@@ -563,6 +571,33 @@ enum AIProviderRegistry {
             ]
         default:
             return [.init(id: "auto", displayName: "Automatic")]
+        }
+    }
+
+    static func modelDisplayName(
+        for model: String,
+        provider: AIProviderID,
+        capability: AICapability
+    ) -> String {
+        guard provider == .xAI, capability == .speechToText else { return model }
+        switch model {
+        case xAIBatchSpeechToTextModel:
+            return "Grok Transcribe — Batch (lower cost)"
+        case xAILiveSpeechToTextModel:
+            return "Grok Transcribe — Live text"
+        default:
+            return model
+        }
+    }
+
+    static func usesRealtimeSpeechRecognition(_ selection: AIServiceSelection) -> Bool {
+        let model = selection.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (selection.provider, model) {
+        case (.soniox, sonioxRealtimeSpeechToTextModel),
+             (.xAI, xAILiveSpeechToTextModel):
+            return true
+        default:
+            return false
         }
     }
 
@@ -709,7 +744,18 @@ struct AIServiceSelection: Codable, Equatable, Sendable {
         }
 
         if capability == .speechToText, provider == .soniox {
-            guard ["stt-rt-v5", "stt-async-v5"].contains(normalizedModel) else {
+            guard [
+                AIProviderRegistry.sonioxRealtimeSpeechToTextModel,
+                AIProviderRegistry.sonioxBatchSpeechToTextModel,
+            ].contains(normalizedModel) else {
+                throw AIProviderSettingsError.invalidModel
+            }
+        }
+        if capability == .speechToText, provider == .xAI {
+            guard [
+                AIProviderRegistry.xAIBatchSpeechToTextModel,
+                AIProviderRegistry.xAILiveSpeechToTextModel,
+            ].contains(normalizedModel) else {
                 throw AIProviderSettingsError.invalidModel
             }
         }

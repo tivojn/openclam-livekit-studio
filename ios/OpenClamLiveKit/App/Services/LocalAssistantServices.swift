@@ -612,9 +612,9 @@ final class BoundedRealtimePCMStreamSink: @unchecked Sendable {
     }
 }
 
-/// Converts the device microphone's native format to the raw format declared in the Soniox
-/// WebSocket configuration. It is owned and called only by one AVAudioEngine tap.
-private final class SonioxRealtimePCMConverter: @unchecked Sendable {
+/// Converts the device microphone's native format to the raw 16 kHz mono PCM format declared by
+/// the real-time speech services. It is owned and called only by one AVAudioEngine tap.
+private final class RealtimeSpeechPCMConverter: @unchecked Sendable {
     private static let sampleRate = 16_000.0
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
@@ -695,7 +695,7 @@ final class SpeechInputAudioSessionOwnership {
 enum SpeechInputCaptureRoute: Equatable, Sendable {
     case none
     case apple
-    case sonioxRealtime(AIServiceSelection)
+    case realtime(AIServiceSelection)
     case cloudRecording(AIServiceSelection)
 }
 
@@ -879,10 +879,9 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         switch readiness {
         case .ready:
             do {
-                if requestedSelection.provider == .soniox,
-                   requestedSelection.model == SonioxRealtimeSpeechToTextService.model {
+                if AIProviderRegistry.usesRealtimeSpeechRecognition(requestedSelection) {
                     let service = try aiConfiguration.makeRealtimeSpeechToTextService()
-                    await startSonioxRealtime(
+                    await startRealtime(
                         service: service,
                         selection: requestedSelection
                     )
@@ -1043,15 +1042,15 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         switch captureRouteState.active {
         case .apple:
             return await stop()
-        case .sonioxRealtime:
-            return await stopSonioxRealtime()
+        case .realtime:
+            return await stopRealtime()
         case .cloudRecording:
             return await stopCloudRecording()
         case .none:
             // Defensive resource checks cover the brief transition between a provider finishing
             // automatically and its shared finalization task publishing the result.
             if realtimeSession != nil {
-                return await stopSonioxRealtime()
+                return await stopRealtime()
             }
             if cloudRecorder != nil || cloudFinalization.existingTask() != nil {
                 return await stopCloudRecording()
@@ -1300,7 +1299,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         recognitionRequest = nil
     }
 
-    private func startSonioxRealtime(
+    private func startRealtime(
         service: any RealtimeSpeechToTextServicing,
         selection: AIServiceSelection
     ) async {
@@ -1341,7 +1340,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
 
             let input = audioEngine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
-            guard let converter = SonioxRealtimePCMConverter(inputFormat: inputFormat) else {
+            guard let converter = RealtimeSpeechPCMConverter(inputFormat: inputFormat) else {
                 throw LocalAssistantServiceError.speechUnavailable
             }
             let (stream, continuation) = AsyncStream.makeStream(
@@ -1395,7 +1394,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             hasInstalledTap = true
             audioEngine.prepare()
             try audioEngine.start()
-            captureRouteState.begin(.sonioxRealtime(selection))
+            captureRouteState.begin(.realtime(selection))
             isListening = true
         } catch {
             guard generation == sessionGeneration else { return }
@@ -1404,14 +1403,24 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         }
     }
 
-    private func stopSonioxRealtime() async -> String {
+    private func stopRealtime() async -> String {
         guard let session = realtimeSession else {
             return publishFinishedTranscript(transcript)
         }
         let generation = sessionGeneration
         isListening = false
         isTranscribing = true
-        stopAppleAudioFeeding()
+        let shouldFinalize = await CloudRecordingManualStopTailCapture.waitThenStop {
+            guard generation == self.sessionGeneration else { return }
+            self.stopAppleAudioFeeding()
+        }
+        guard generation == sessionGeneration else { return "" }
+        guard shouldFinalize, realtimeSession != nil else {
+            cleanupRealtimeCapture(cancelSession: true)
+            audioSessionOwnership.releaseIfNeeded()
+            isTranscribing = false
+            return ""
+        }
         realtimePCMContinuation?.finish()
         realtimePCMContinuation = nil
 

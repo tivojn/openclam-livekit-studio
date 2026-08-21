@@ -670,6 +670,212 @@ final class CloudVoiceServiceTests: XCTestCase {
         XCTAssertNil(body["store"])
     }
 
+    func testXAIRealtimeSTTWaitsForCreatedStitchesPartialsAndUsesDoneAsAuthority() async throws {
+        let socket = RecordingCloudVoiceWebSocketTask(received: [
+            .string(#"{"type":"transcript.created"}"#),
+            .string(#"{"type":"transcript.partial","text":"Hel","is_final":false,"speech_final":false,"start":0,"duration":0.3}"#),
+            .string(#"{"type":"transcript.partial","text":"Hello","is_final":false,"speech_final":false,"start":0,"duration":0.5}"#),
+            .string(#"{"type":"transcript.partial","text":"Hello","is_final":true,"speech_final":false,"start":0,"duration":0.6}"#),
+            .string(#"{"type":"transcript.partial","text":" wor","is_final":false,"speech_final":false,"start":0.6,"duration":0.2}"#),
+            .string(#"{"type":"transcript.partial","text":" world","is_final":true,"speech_final":false,"start":0.6,"duration":0.5}"#),
+            .string(#"{"type":"transcript.partial","text":"Hello world","is_final":true,"speech_final":true,"start":0,"duration":1.1}"#),
+            .string(#"{"type":"transcript.done","text":"Hello world!","duration":1.2}"#),
+        ])
+        let factory = RecordingCloudVoiceWebSocketTaskFactory(task: socket)
+        let service = XAIRealtimeSpeechToTextService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "xai-fake-key"),
+            socketFactory: factory
+        )
+
+        let session = try await service.startSession(
+            model: XAIRealtimeSpeechToTextService.model,
+            languageCode: nil
+        )
+        XCTAssertEqual(socket.receiveCount(), 1, "The ready event must be consumed before return.")
+        try await session.sendPCM(Data([1, 0, 2, 0]))
+
+        let firstInterim = try await session.receiveUpdate()
+        XCTAssertEqual(
+            firstInterim,
+            .init(text: "Hel", isFinal: false, endpointDetected: false, isFinished: false)
+        )
+        let correctedInterim = try await session.receiveUpdate()
+        XCTAssertEqual(
+            correctedInterim,
+            .init(text: "Hello", isFinal: false, endpointDetected: false, isFinished: false)
+        )
+        let firstLockedChunk = try await session.receiveUpdate()
+        XCTAssertEqual(
+            firstLockedChunk,
+            .init(text: "Hello", isFinal: true, endpointDetected: false, isFinished: false)
+        )
+        let nextInterim = try await session.receiveUpdate()
+        XCTAssertEqual(
+            nextInterim,
+            .init(text: "Hello wor", isFinal: false, endpointDetected: false, isFinished: false)
+        )
+        let secondLockedChunk = try await session.receiveUpdate()
+        XCTAssertEqual(
+            secondLockedChunk,
+            .init(text: "Hello world", isFinal: true, endpointDetected: false, isFinished: false)
+        )
+        let utteranceFinal = try await session.receiveUpdate()
+        XCTAssertEqual(
+            utteranceFinal,
+            .init(text: "Hello world", isFinal: true, endpointDetected: true, isFinished: false)
+        )
+
+        try await session.finishAudio()
+        try await session.finishAudio()
+        do {
+            try await session.sendPCM(Data([3, 0]))
+            XCTFail("Audio after audio.done must be rejected.")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        let done = try await session.receiveUpdate()
+        XCTAssertEqual(
+            done,
+            .init(text: "Hello world!", isFinal: true, endpointDetected: false, isFinished: true)
+        )
+        let afterDone = try await session.receiveUpdate()
+        XCTAssertNil(afterDone)
+
+        let request = try XCTUnwrap(factory.request())
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true"
+        )
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer xai-fake-key")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+        XCTAssertFalse(request.url?.absoluteString.contains("xai-fake-key") == true)
+        XCTAssertEqual(socket.resumeCount(), 1)
+        XCTAssertEqual(socket.sentMessages(), [
+            .data(Data([1, 0, 2, 0])),
+            .string(#"{"type":"audio.done"}"#),
+        ])
+    }
+
+    func testXAIRealtimeSTTPinsLanguageQueryAndRejectsEndpointMutation() throws {
+        let endpoint = try XAIRealtimeSpeechToTextService.streamingEndpoint(
+            languageCode: "en-US"
+        )
+        XCTAssertEqual(
+            endpoint.absoluteString,
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&language=en-US"
+        )
+        XCTAssertTrue(XAIRealtimeSpeechToTextService.isTrustedEndpoint(endpoint))
+
+        for untrusted in [
+            "https://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true",
+            "wss://api.x.ai.evil.example/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true",
+            "wss://api.x.ai:444/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true",
+            "wss://user@api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true",
+            "wss://api.x.ai/v1/other?sample_rate=16000&encoding=pcm&interim_results=true",
+            "wss://api.x.ai/v1/stt?sample_rate=8000&encoding=pcm&interim_results=true",
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=false",
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&extra=1",
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&language=en&language=fr",
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true#fragment",
+        ] {
+            XCTAssertFalse(
+                XAIRealtimeSpeechToTextService.isTrustedEndpoint(URL(string: untrusted)),
+                untrusted
+            )
+        }
+    }
+
+    func testXAIRealtimeSTTRequiresCreatedAndMapsCredentialErrorWithoutLeakingMessage() async {
+        let socket = RecordingCloudVoiceWebSocketTask(received: [
+            .string(#"{"type":"error","code":401,"message":"bad key xai-fake-key"}"#),
+        ])
+        let service = XAIRealtimeSpeechToTextService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "xai-fake-key"),
+            socketFactory: RecordingCloudVoiceWebSocketTaskFactory(task: socket)
+        )
+
+        do {
+            _ = try await service.startSession(
+                model: XAIRealtimeSpeechToTextService.model,
+                languageCode: nil
+            )
+            XCTFail("Expected the pre-ready credential error to fail the handshake.")
+        } catch {
+            XCTAssertEqual(error as? CloudVoiceServiceError, .credentialRejected)
+            XCTAssertFalse(error.localizedDescription.contains("xai-fake-key"))
+            XCTAssertFalse(error.localizedDescription.contains("bad key"))
+        }
+        XCTAssertEqual(socket.cancelCount(), 1)
+    }
+
+    func testXAIRealtimeSTTMapsSessionErrorWithoutLeakingProviderText() async throws {
+        let socket = RecordingCloudVoiceWebSocketTask(received: [
+            .string(#"{"type":"transcript.created"}"#),
+            .string(#"{"type":"error","code":"rate_limit_exceeded","message":"request echoed xai-fake-key"}"#),
+        ])
+        let service = XAIRealtimeSpeechToTextService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "xai-fake-key"),
+            socketFactory: RecordingCloudVoiceWebSocketTaskFactory(task: socket)
+        )
+        let session = try await service.startSession(
+            model: XAIRealtimeSpeechToTextService.model,
+            languageCode: nil
+        )
+
+        do {
+            _ = try await session.receiveUpdate()
+            XCTFail("Expected the provider error to fail the session.")
+        } catch {
+            XCTAssertEqual(error as? CloudVoiceServiceError, .providerProcessingFailed)
+            XCTAssertFalse(error.localizedDescription.contains("xai-fake-key"))
+            XCTAssertFalse(error.localizedDescription.contains("request echoed"))
+        }
+        XCTAssertEqual(socket.cancelCount(), 1)
+    }
+
+    func testXAIRealtimeSTTRejectsInvalidPCMAndOversizedTranscriptThenCancels() async throws {
+        let oversizedText = String(repeating: "a", count: 200_001)
+        let oversizedEvent = try JSONSerialization.data(withJSONObject: [
+            "type": "transcript.partial",
+            "text": oversizedText,
+            "is_final": false,
+            "speech_final": false,
+            "start": 0,
+            "duration": 1,
+        ], options: [.sortedKeys])
+        let socket = RecordingCloudVoiceWebSocketTask(received: [
+            .string(#"{"type":"transcript.created"}"#),
+            .data(oversizedEvent),
+        ])
+        let service = XAIRealtimeSpeechToTextService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "xai-fake-key"),
+            socketFactory: RecordingCloudVoiceWebSocketTaskFactory(task: socket)
+        )
+        let session = try await service.startSession(
+            model: XAIRealtimeSpeechToTextService.model,
+            languageCode: nil
+        )
+
+        for invalidPCM in [Data(), Data([1]), Data(repeating: 0, count: 65_538)] {
+            do {
+                try await session.sendPCM(invalidPCM)
+                XCTFail("Expected invalid PCM to be rejected.")
+            } catch {
+                XCTAssertEqual(error as? CloudVoiceServiceError, .invalidAudio)
+            }
+        }
+        do {
+            _ = try await session.receiveUpdate()
+            XCTFail("Expected oversized transcript to be rejected.")
+        } catch {
+            XCTAssertEqual(error as? CloudVoiceServiceError, .responseTooLarge)
+        }
+        XCTAssertEqual(socket.cancelCount(), 1)
+        await session.cancel()
+        XCTAssertEqual(socket.cancelCount(), 1, "Cancellation must be idempotent.")
+    }
+
     func testSonioxRealtimeSTTStreamsBoundedPCMAndHandlesFinalEndpointTokens() async throws {
         let socket = RecordingCloudVoiceWebSocketTask(received: [
             .string(#"{"tokens":[{"text":"Hel","is_final":false},{"text":"lo","is_final":false}],"final_audio_proc_ms":0,"total_audio_proc_ms":240}"#),
@@ -849,15 +1055,15 @@ final class CloudVoiceServiceTests: XCTestCase {
         let laterApple = AIServiceSelection(provider: .apple, model: "apple-dictation")
         var state = SpeechInputCaptureRouteState()
 
-        state.begin(.sonioxRealtime(startedRealtime))
-        XCTAssertEqual(state.active, .sonioxRealtime(startedRealtime))
+        state.begin(.realtime(startedRealtime))
+        XCTAssertEqual(state.active, .realtime(startedRealtime))
         XCTAssertNotEqual(state.active, .apple)
         XCTAssertEqual(laterApple.provider, .apple)
 
         let startedFile = AIServiceSelection(provider: .xAI, model: "grok-transcribe")
         state.begin(.cloudRecording(startedFile))
         XCTAssertEqual(state.active, .cloudRecording(startedFile))
-        XCTAssertNotEqual(state.active, .sonioxRealtime(startedRealtime))
+        XCTAssertNotEqual(state.active, .realtime(startedRealtime))
 
         state.end()
         XCTAssertEqual(state.active, .none)
@@ -1744,6 +1950,7 @@ private final class RecordingCloudVoiceWebSocketTask: CloudVoiceWebSocketTask,
     private var received: [CloudVoiceWebSocketMessage]
     private var sent: [CloudVoiceWebSocketMessage] = []
     private var resumes = 0
+    private var receives = 0
     private var cancellations = 0
 
     init(received: [CloudVoiceWebSocketMessage]) {
@@ -1759,7 +1966,11 @@ private final class RecordingCloudVoiceWebSocketTask: CloudVoiceWebSocketTask,
     }
 
     func receive() async throws -> CloudVoiceWebSocketMessage {
-        try dequeueReceivedMessage()
+        try lock.withLock {
+            receives += 1
+            guard !received.isEmpty else { throw URLError(.badServerResponse) }
+            return received.removeFirst()
+        }
     }
 
     func cancel() {
@@ -1774,16 +1985,14 @@ private final class RecordingCloudVoiceWebSocketTask: CloudVoiceWebSocketTask,
         lock.withLock { resumes }
     }
 
+    func receiveCount() -> Int {
+        lock.withLock { receives }
+    }
+
     func cancelCount() -> Int {
         lock.withLock { cancellations }
     }
 
-    private func dequeueReceivedMessage() throws -> CloudVoiceWebSocketMessage {
-        try lock.withLock {
-            guard !received.isEmpty else { throw URLError(.badServerResponse) }
-            return received.removeFirst()
-        }
-    }
 }
 
 private actor StalledRealtimeSpeechToTextSession: RealtimeSpeechToTextSession {

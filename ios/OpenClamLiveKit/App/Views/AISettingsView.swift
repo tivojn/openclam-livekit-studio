@@ -188,7 +188,14 @@ struct AISettingsView: View {
 
         Picker("Model", selection: modelBinding(for: capability)) {
             ForEach(modelOptions(for: capability, provider: selection.provider), id: \.self) {
-                Text($0).tag($0)
+                Text(
+                    AIProviderRegistry.modelDisplayName(
+                        for: $0,
+                        provider: selection.provider,
+                        capability: capability
+                    )
+                )
+                .tag($0)
             }
         }
 
