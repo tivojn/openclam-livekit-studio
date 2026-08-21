@@ -104,6 +104,38 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
     }
 
+    func testStagedProductionStorePackagesPassFullBundledUpdateImport() throws {
+        guard let stagingPath = ProcessInfo.processInfo.environment[
+            "OPENCLAM_AVATAR_STORE_STAGING"
+        ], !stagingPath.isEmpty else {
+            throw XCTSkip(
+                "Set OPENCLAM_AVATAR_STORE_STAGING for the local production-package audit."
+            )
+        }
+
+        let releaseRoot = URL(fileURLWithPath: stagingPath, isDirectory: true)
+            .appendingPathComponent("release-assets", isDirectory: true)
+        for id in ["captain-ayer", "ara"] {
+            let storageRoot = try temporaryDirectory()
+            let packageURL = releaseRoot.appendingPathComponent(
+                "\(id)-ios-light.avtr"
+            )
+            let descriptor = try OpenClamAvatarPackageStore(
+                storageRoot: storageRoot
+            ).installArchive(
+                at: packageURL,
+                expectedID: id,
+                allowsBundledStoreUpdate: true
+            )
+            XCTAssertEqual(descriptor.id, id)
+            XCTAssertEqual(
+                OpenClamAvatarPackageStore(storageRoot: storageRoot)
+                    .loadInstalledDescriptors().map(\.id),
+                [id]
+            )
+        }
+    }
+
     func testExactAuthorizedLegacyAraV2IsQuarantinedWithoutDeletion() throws {
         guard let path = ProcessInfo.processInfo.environment[
             "OPENCLAM_AUTHORIZED_ARA_V2_PATH"
@@ -392,6 +424,59 @@ final class OpenClamAvatarPackageTests: XCTestCase {
             XCTAssertEqual(error as? OpenClamAvatarPackageError, .avatarAlreadyInstalled)
         }
         XCTAssertEqual(store.loadInstalledDescriptors().map(\.id), ["golden-guide"])
+    }
+
+    @MainActor
+    func testStoreOnlyPathInstallsProtectedBundledUpdateAndDirectImportStillFails() async throws {
+        let archive = try archiveByMutatingManifest { manifest in
+            manifest["id"] = "captain-ayer"
+            manifest["displayName"] = "Captain Ayer Downloaded"
+        }
+
+        let directRoot = try temporaryDirectory()
+        let directLibrary = OpenClamAvatarLibrary(storageRoot: directRoot)
+        do {
+            _ = try await directLibrary.importAvatar(from: archive)
+            XCTFail("Direct Files import must not replace a bundled avatar.")
+        } catch {
+            XCTAssertEqual(
+                error as? OpenClamAvatarPackageError,
+                .bundledIdentifierCollision
+            )
+        }
+
+        let storeRoot = try temporaryDirectory()
+        let library = OpenClamAvatarLibrary(storageRoot: storeRoot)
+        let installed = try await library.installStoreAvatar(
+            from: archive,
+            expectedID: "captain-ayer"
+        )
+
+        XCTAssertEqual(installed.id, "captain-ayer")
+        XCTAssertEqual(
+            library.avatar(id: "captain-ayer")?.displayName,
+            "Captain Ayer Downloaded"
+        )
+        XCTAssertEqual(
+            library.avatars.filter { $0.id == "captain-ayer" }.count,
+            1,
+            "The downloaded descriptor must replace, not duplicate, the bundled row."
+        )
+        XCTAssertTrue(library.isImported(id: "captain-ayer"))
+        XCTAssertTrue(library.isProtected(id: "captain-ayer"))
+        do {
+            try await library.deleteImportedAvatar(id: "captain-ayer")
+            XCTFail("A bundled fallback must remain protected after a Store update.")
+        } catch {
+            XCTAssertEqual(error as? OpenClamAvatarPackageError, .protectedAvatar)
+        }
+
+        let restarted = OpenClamAvatarLibrary(storageRoot: storeRoot)
+        XCTAssertEqual(
+            restarted.avatar(id: "captain-ayer")?.displayName,
+            "Captain Ayer Downloaded"
+        )
+        XCTAssertTrue(restarted.isProtected(id: "captain-ayer"))
     }
 
     func testCatalogInstallRequiresExpectedIdentityAndAtomicUpdateKeepsOneAvatar() throws {

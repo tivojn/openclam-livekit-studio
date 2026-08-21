@@ -59,7 +59,19 @@ final class OpenClamAvatarLibrary: ObservableObject {
     }
 
     var avatars: [OpenClamAvatarDescriptor] {
-        OpenClamAvatarCatalog.avatars + importedAvatars
+        let bundledIDs = Set(OpenClamAvatarCatalog.avatars.map(\.id))
+        let downloadedByID = Dictionary(
+            uniqueKeysWithValues: importedAvatars
+                .filter { bundledIDs.contains($0.id) }
+                .map { ($0.id, $0) }
+        )
+        let bundledWithDownloadedUpdates = OpenClamAvatarCatalog.avatars.map {
+            downloadedByID[$0.id] ?? $0
+        }
+        let additionalImports = importedAvatars.filter {
+            !bundledIDs.contains($0.id)
+        }
+        return bundledWithDownloadedUpdates + additionalImports
     }
 
     var identities: [AvatarAgentIdentity] {
@@ -67,8 +79,8 @@ final class OpenClamAvatarLibrary: ObservableObject {
     }
 
     func avatar(id: String) -> OpenClamAvatarDescriptor? {
-        OpenClamAvatarCatalog.avatar(id: id)
-            ?? importedAvatars.first(where: { $0.id == id })
+        importedAvatars.first(where: { $0.id == id })
+            ?? OpenClamAvatarCatalog.avatar(id: id)
     }
 
     func isImported(id: String) -> Bool {
@@ -89,6 +101,37 @@ final class OpenClamAvatarLibrary: ObservableObject {
         expectedID: String? = nil,
         replacingExisting: Bool = false
     ) async throws -> OpenClamAvatarDescriptor {
+        try await installAvatar(
+            from: sourceURL,
+            expectedID: expectedID,
+            replacingExisting: replacingExisting,
+            allowsBundledStoreUpdate: false
+        )
+    }
+
+    /// Store downloads reach this boundary only after the catalog URL, byte
+    /// count, SHA-256, and AVTR identity have all been pinned and checked.
+    /// Direct Files imports intentionally use `importAvatar` and remain unable
+    /// to replace a bundled identity.
+    func installStoreAvatar(
+        from sourceURL: URL,
+        expectedID: String,
+        replacingExisting: Bool = false
+    ) async throws -> OpenClamAvatarDescriptor {
+        try await installAvatar(
+            from: sourceURL,
+            expectedID: expectedID,
+            replacingExisting: replacingExisting,
+            allowsBundledStoreUpdate: true
+        )
+    }
+
+    private func installAvatar(
+        from sourceURL: URL,
+        expectedID: String?,
+        replacingExisting: Bool,
+        allowsBundledStoreUpdate: Bool
+    ) async throws -> OpenClamAvatarDescriptor {
         guard mutation == nil else {
             throw OpenClamAvatarPackageError.avatarOperationInProgress
         }
@@ -100,7 +143,8 @@ final class OpenClamAvatarLibrary: ObservableObject {
             try store.installArchive(
                 at: sourceURL,
                 expectedID: expectedID,
-                replacingExisting: replacingExisting
+                replacingExisting: replacingExisting,
+                allowsBundledStoreUpdate: allowsBundledStoreUpdate
             )
         }.value
         importedAvatars.removeAll(where: { $0.id == descriptor.id })

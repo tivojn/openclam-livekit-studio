@@ -461,7 +461,8 @@ struct OpenClamAvatarPackageStore: Sendable {
     func installArchive(
         at sourceURL: URL,
         expectedID: String? = nil,
-        replacingExisting: Bool = false
+        replacingExisting: Bool = false,
+        allowsBundledStoreUpdate: Bool = false
     ) throws -> OpenClamAvatarDescriptor {
         if let expectedID, !OpenClamAvatarID.isValid(expectedID) {
             throw OpenClamAvatarPackageError.invalidIdentifier
@@ -568,7 +569,10 @@ struct OpenClamAvatarPackageStore: Sendable {
         if let expectedID, staged.id != expectedID {
             throw OpenClamAvatarPackageError.catalogIdentityMismatch
         }
-        guard !OpenClamAvatarCatalog.avatars.contains(where: { $0.id == staged.id }) else {
+        let collidesWithBundledAvatar = OpenClamAvatarCatalog.avatars.contains {
+            $0.id == staged.id
+        }
+        guard !collidesWithBundledAvatar || allowsBundledStoreUpdate else {
             throw OpenClamAvatarPackageError.bundledIdentifierCollision
         }
 
@@ -668,8 +672,7 @@ struct OpenClamAvatarPackageStore: Sendable {
                   values?.isSymbolicLink != true,
                   OpenClamAvatarID.isValid(directory.lastPathComponent),
                   let descriptor = try? validatedDescriptor(in: directory),
-                  descriptor.id == directory.lastPathComponent,
-                  !OpenClamAvatarCatalog.avatars.contains(where: { $0.id == descriptor.id }) else {
+                  descriptor.id == directory.lastPathComponent else {
                 return nil
             }
             return descriptor
@@ -703,8 +706,7 @@ struct OpenClamAvatarPackageStore: Sendable {
                   values.isDirectory == true,
                   values.isSymbolicLink != true,
                   let prior = try? validatedDescriptor(in: backup),
-                  prior.id == expectedID,
-                  !OpenClamAvatarCatalog.avatars.contains(where: { $0.id == expectedID }) else {
+                  prior.id == expectedID else {
                 continue
             }
 

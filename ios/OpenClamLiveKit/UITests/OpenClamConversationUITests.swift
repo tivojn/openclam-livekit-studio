@@ -942,6 +942,7 @@ final class OpenClamConversationUITests: XCTestCase {
         edgeIdle.tap()
         XCTAssertTrue(waitForValue("Playing", on: edgeIdle, timeout: 2))
         XCTAssertEqual(edgeIdle.label, "Stop edge idle")
+        capture("ara-v3-edge-idle-physical-left-edge")
 
         moves.tap()
         XCTAssertTrue(waitForValue("Playing", on: moves, timeout: 2))
@@ -952,6 +953,80 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(waitForValue("Ready", on: moves, timeout: 2))
         XCTAssertEqual(moves.label, "Play moves")
         capture("ara-v3-motion-rail")
+    }
+
+    func testAraMotionCannotBlockComposerTapToTalkAndEmptySpeechIsExplained() throws {
+        app.terminate()
+        app.launchArguments.append("-OpenClamUITestSpeechInputReady")
+        app.launch()
+        XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
+        startFreshChat()
+
+        let chooseAvatar = app.buttons["Choose avatar"]
+        XCTAssertTrue(chooseAvatar.waitForExistence(timeout: 3))
+        chooseAvatar.tap()
+        let araCard = app.buttons["openclam-avatar-carousel-card-ara"]
+        XCTAssertTrue(araCard.waitForExistence(timeout: 2))
+        if String(describing: araCard.value ?? "") == "Not selected" {
+            let frontCard = app.buttons.matching(
+                NSPredicate(
+                    format: "identifier BEGINSWITH %@ AND value BEGINSWITH %@",
+                    "openclam-avatar-carousel-card-",
+                    "Selected"
+                )
+            ).firstMatch
+            XCTAssertTrue(frontCard.waitForExistence(timeout: 2))
+            araCard.coordinate(
+                withNormalizedOffset: CGVector(
+                    dx: araCard.frame.midX >= frontCard.frame.midX ? 0.90 : 0.10,
+                    dy: 0.50
+                )
+            ).tap()
+            XCTAssertTrue(waitForValue("Selected", on: araCard, timeout: 2))
+        }
+        araCard.tap()
+        XCTAssertTrue(app.buttons["Close avatar carousel"].waitForNonExistence(timeout: 2))
+
+        // Recreate the reported overlap: the normal stage is close-up, then
+        // full-height Moves artwork replaces it while the composer stays visible.
+        let showFaceCloseup = app.buttons["Show face closeup"]
+        if showFaceCloseup.waitForExistence(timeout: 1) {
+            showFaceCloseup.tap()
+            XCTAssertTrue(app.buttons["Show full body"].waitForExistence(timeout: 2))
+        }
+        let moves = app.buttons["openclam-avatar-moves-button"]
+        XCTAssertTrue(moves.waitForExistence(timeout: 2))
+        moves.tap()
+        XCTAssertTrue(waitForValue("Playing", on: moves, timeout: 2))
+
+        let start = app.buttons["Start tap to talk"]
+        XCTAssertTrue(start.waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            start.isHittable,
+            "Visible avatar motion must not intercept the composer microphone."
+        )
+        start.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        let stop = app.buttons["Stop listening and send"]
+        XCTAssertTrue(
+            stop.waitForExistence(timeout: 2),
+            "A physical microphone tap must immediately enter the listening state."
+        )
+        let status = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "tap Stop")
+        ).firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 2))
+        XCTAssertTrue(status.label.contains("tap Stop"))
+        capture("ara-motion-ptt-listening")
+
+        stop.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let error = app.descendants(matching: .any)["openclam-composer-error"]
+        XCTAssertTrue(
+            error.waitForExistence(timeout: 2),
+            "An empty dictation must leave visible next-step guidance."
+        )
+        XCTAssertTrue(error.label.contains("Tap the microphone"))
+        capture("ara-motion-ptt-empty-guidance")
     }
 
     func testLiveTalkUsesOnePersistentPhoneControlOnTheAvatarRail() throws {

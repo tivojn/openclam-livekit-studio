@@ -27,40 +27,65 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
         }
     }
 
-    func testEdgeIdleAnchorsItsVisibleSubjectAgainstTheTrailingScreenEdge() {
+    func testEdgeIdlePinsItsMeasuredContactToThePhysicalLeftScreenEdge() {
         let source = CGSize(width: 720, height: 1_088)
         for available in [
             CGSize(width: 390, height: 844),
             CGSize(width: 844, height: 390),
+            CGSize(width: 768, height: 1_024),
+            CGSize(width: 1_024, height: 768),
+            CGSize(width: 1_024, height: 1_366),
+            CGSize(width: 507, height: 1_024),
+            CGSize(width: 320, height: 1_024),
         ] {
             let layout = OpenClamAvatarMotionLayoutPolicy.layout(
                 kind: .edgeIdle,
                 availableSize: available,
                 pixelSize: source
             )
-            let visibleSubjectTrailingX = layout.playerFrame.minX
+            let contactX = layout.playerFrame.minX
                 + layout.playerFrame.width
-                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleSubjectTrailingFraction
+                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleLeftContactFraction
+            let expectedInset = min(
+                OpenClamAvatarMotionLayoutPolicy.edgeIdlePreferredInset,
+                available.width / 100
+            )
+            let visibleSubjectLeadingX = layout.playerFrame.minX
+                + layout.playerFrame.width
+                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleContentBounds.minX
+            let visibleSubjectWidth = layout.playerFrame.width
+                * OpenClamAvatarMotionLayoutPolicy.edgeIdleContentBounds.width
 
-            XCTAssertEqual(layout.playerFrame.height, available.height, accuracy: 0.001)
-            XCTAssertEqual(visibleSubjectTrailingX, available.width, accuracy: 0.001)
+            XCTAssertEqual(visibleSubjectLeadingX, expectedInset, accuracy: 0.001)
+            XCTAssertLessThanOrEqual(
+                visibleSubjectLeadingX + visibleSubjectWidth,
+                available.width - expectedInset + 0.001,
+                "Every retained Edge Idle frame must fit without clipping, including narrow Split View."
+            )
+            XCTAssertLessThanOrEqual(layout.playerFrame.height, available.height + 0.001)
+            XCTAssertEqual(layout.playerFrame.midY, available.height / 2, accuracy: 0.001)
+            if available.width >= 390 {
+                XCTAssertEqual(layout.playerFrame.height, available.height, accuracy: 0.001)
+            }
+            XCTAssertGreaterThanOrEqual(
+                contactX,
+                visibleSubjectLeadingX,
+                "The stable contact must remain inside the measured retained-alpha envelope."
+            )
+            XCTAssertLessThanOrEqual(
+                contactX - visibleSubjectLeadingX,
+                9,
+                "The stable contact must remain visually flush with the physical left edge."
+            )
+            let visibleSubjectMidX = visibleSubjectLeadingX
+                + visibleSubjectWidth / 2
+            XCTAssertLessThanOrEqual(
+                visibleSubjectMidX,
+                available.width / 2 + 0.001,
+                "Edge Idle must remain visibly left-anchored rather than centered."
+            )
             XCTAssertEqual(layout.clippingBounds, CGRect(origin: .zero, size: available))
         }
-
-        let portrait = OpenClamAvatarMotionLayoutPolicy.layout(
-            kind: .edgeIdle,
-            availableSize: CGSize(width: 390, height: 844),
-            pixelSize: source
-        )
-        let normalizedTrailingShift = (
-            portrait.playerFrame.midX - portrait.clippingBounds.midX
-        ) / portrait.playerFrame.width
-        XCTAssertEqual(
-            normalizedTrailingShift,
-            0.12,
-            accuracy: 0.005,
-            "Ara's portrait Edge Idle should move roughly 12% of its natural width toward the edge."
-        )
     }
 
     func testMotionLayoutSanitizesInvalidAndTinyGeometry() {
@@ -93,10 +118,11 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
         XCTAssertEqual(
             tiny.playerFrame.minX
                 + tiny.playerFrame.width
-                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleSubjectTrailingFraction,
-            1,
+                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleContentBounds.minX,
+            0.01,
             accuracy: 0.001
         )
+        XCTAssertEqual(tiny.clippingBounds, CGRect(x: 0, y: 0, width: 1, height: 1))
     }
 
     func testCaptainTransformMatchesMigratedStageGeometry() throws {

@@ -181,6 +181,16 @@ BRANDING_AND_RUNTIME_BINARY_HASHES = {
         "f7c01e384bb20625640b18fb2ba83ee3f0b8e75e5f31bb65c5933c86e9303e3b",
 }
 
+# Public Avatar Store thumbnails are catalog artwork, not bundled runtime
+# avatars. Keep each release artifact behind an exact path/hash decision while
+# the catalog JSON and package payloads remain independently hash-pinned.
+AVATAR_STORE_CATALOG_BINARY_HASHES = {
+    Path("shared/avatar-store-v1/catalog/v1/captain-ayer-thumbnail.png"):
+        "2103488ebbc4a50b459adeabecbada7650cb6dc2b5db5b3640dc911e09f590d6",
+    Path("shared/avatar-store-v1/catalog/v1/ara-thumbnail.png"):
+        "7eb7ec65799715cdca9b52bad64d664fe2404b072a6f0a5b6af0368f4393217f",
+}
+
 CAPTAIN_AYER_BINARY_HASHES = {
     Path("ios/OpenClamLiveKit/App/Assets.xcassets/CaptainAyerBody.imageset/CaptainAyerBody.png"):
         "7e38b08b90f06fdd816d728fa3a093de62408164cc99dcfcfb28e86fd98e1375",
@@ -371,6 +381,7 @@ AUTHORIZED_AVATAR_LEDGER_SHA256 = (
 )
 ALLOWED_BINARY_HASHES = {
     **BRANDING_AND_RUNTIME_BINARY_HASHES,
+    **AVATAR_STORE_CATALOG_BINARY_HASHES,
     **REQUIRED_AVATAR_BINARY_HASHES,
     **DETERMINISTIC_FIXTURE_BINARY_HASHES,
 }

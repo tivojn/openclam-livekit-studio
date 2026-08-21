@@ -1216,10 +1216,10 @@
       if (kind !== 'walk' && clip.alpha_stream) {
         const video = document.createElement('video');
         video.muted = true;
-        // Edge Idle and Moves are authored one-shot clips. Looping Edge Idle
-        // crossed Ara's known last-to-first seam while the nine-second ledge
-        // hold was still active, and Chromium could expose a decoder gap on
-        // that seek. Freeze the final decoded frame until the next state.
+        // Native looping crosses Ara's known last-to-first seam and Chromium
+        // can expose a decoder gap on that seek. Keep the media one-shot; a
+        // warm second decoder dissolves Edge Idle across the seam below while
+        // Moves still ends on its authored final frame.
         video.loop = false;
         video.playsInline = true;
         video.preload = 'auto';
@@ -1231,6 +1231,21 @@
           video.load();
         });
         if (video.videoWidth) loaded.video = video;
+        if (kind === 'idle' && loaded.video) {
+          const loopVideo = document.createElement('video');
+          loopVideo.muted = true;
+          loopVideo.loop = false;
+          loopVideo.playsInline = true;
+          loopVideo.preload = 'auto';
+          loopVideo.src = video.src;
+          await new Promise(resolve => {
+            const timer = setTimeout(resolve, 3500);
+            loopVideo.oncanplay = () => { clearTimeout(timer); resolve(); };
+            loopVideo.onerror = () => { clearTimeout(timer); resolve(); };
+            loopVideo.load();
+          });
+          if (loopVideo.videoWidth) loaded.loopVideo = loopVideo;
+        }
       }
       if (clip.poster) {
         const poster = await loadImage(clip.poster);
@@ -1880,18 +1895,90 @@
       context.clearRect(0, 0, canvas.width, canvas.height);
     };
 
+    const IDLE_SEAM_BLEND_SECONDS = 2 / 3;
+    const clipVideos = clip => [clip && clip.video, clip && clip.loopVideo].filter(Boolean);
+
+    const resetIdlePlayback = clip => {
+      const videos = clipVideos(clip);
+      clip.idlePlayback = { active: 0, fading: false, mix: 0 };
+      videos.forEach((video, index) => {
+        video.pause();
+        try { video.currentTime = 0; } catch (_) { /* poster covers a pending seek */ }
+        if (index === 0) video.play().catch(() => {});
+      });
+    };
+
+    // Keep two copies of the small GPU-decoded stream warm, but run the
+    // second one only for the final 2/3 second of each six-second idle. The
+    // outgoing decoded frame remains on the canvas while the incoming copy
+    // starts at zero, so neither a seek gap nor the bad endpoint jump can
+    // flash. At 12fps the dissolve is eight source frames, and the extra
+    // decoder is active for only ~11% of the loop.
+    const idleVideoFrames = (clip, frozen = false) => {
+      const videos = clipVideos(clip);
+      if (videos.length < 2) return videos.length ? [{ video: videos[0], alpha: 1 }] : [];
+      const playback = clip.idlePlayback || (clip.idlePlayback = {
+        active: 0, fading: false, mix: 0,
+      });
+      let active = videos[playback.active];
+      let standby = videos[1 - playback.active];
+      if (frozen) {
+        for (const video of videos) if (!video.paused) video.pause();
+      } else if (!playback.fading) {
+        if (active.paused && !active.ended) active.play().catch(() => {});
+        const duration = Number(active.duration);
+        if (active.ended || (Number.isFinite(duration)
+            && duration > IDLE_SEAM_BLEND_SECONDS
+            && active.currentTime >= duration - IDLE_SEAM_BLEND_SECONDS)) {
+          playback.fading = true;
+          playback.mix = 0;
+          standby.pause();
+          try { standby.currentTime = 0; } catch (_) { /* keep the outgoing frame */ }
+          standby.play().catch(() => {});
+        }
+      }
+      if (!frozen && playback.fading) {
+        if (!active.ended && active.paused) active.play().catch(() => {});
+        if (standby.paused && !standby.ended) standby.play().catch(() => {});
+      }
+      if (!playback.fading) return [{ video: active, alpha: 1 }];
+      const standbyReady = standby.readyState >= 2 && !standby.seeking;
+      if (!standbyReady) return [{ video: active, alpha: 1 }];
+      if (!frozen) {
+        playback.mix = Math.max(0, Math.min(1,
+          Number(standby.currentTime) / IDLE_SEAM_BLEND_SECONDS));
+      }
+      if (playback.mix >= .985) {
+        active.pause();
+        try { active.currentTime = 0; } catch (_) { /* pre-roll on the next pass */ }
+        playback.active = 1 - playback.active;
+        playback.fading = false;
+        playback.mix = 0;
+        active = standby;
+        return [{ video: active, alpha: 1 }];
+      }
+      return [
+        { video: active, alpha: 1 - playback.mix },
+        { video: standby, alpha: playback.mix },
+      ];
+    };
+
     const beginMotionPresentation = (kind, edge, clip) => {
       const key = `${kind}:${edge || ''}`;
       if (key === presentedMotionKey) return key;
       presentedMotionKey = key;
       paintedMotionKey = '';
       for (const otherClip of Object.values(motion)) {
-        if (otherClip !== clip && otherClip.video && !otherClip.video.paused) otherClip.video.pause();
+        if (otherClip === clip) continue;
+        for (const video of clipVideos(otherClip)) if (!video.paused) video.pause();
       }
       if (clip.video) {
-        clip.video.pause();
-        try { clip.video.currentTime = 0; } catch (_) { /* poster covers a pending seek */ }
-        clip.video.play().catch(() => {});
+        if (kind === 'idle' && clip.loopVideo) resetIdlePlayback(clip);
+        else {
+          clip.video.pause();
+          try { clip.video.currentTime = 0; } catch (_) { /* poster covers a pending seek */ }
+          clip.video.play().catch(() => {});
+        }
       }
       return key;
     };
@@ -1901,7 +1988,7 @@
       presentedMotionKey = '';
       paintedMotionKey = '';
       for (const clip of Object.values(motion)) {
-        if (clip.video && !clip.video.paused) clip.video.pause();
+        for (const video of clipVideos(clip)) if (!video.paused) video.pause();
       }
     };
 
@@ -1927,7 +2014,19 @@
         x = edge === 'left' ? 3 - leftSupport * fit.scale : innerWidth - 3 - (width - leftSupport) * fit.scale;
       }
 
-      const videoReady = Boolean(clip.video && clip.video.readyState >= 2 && !clip.video.seeking);
+      const frozen = roamState.enabled && roamState.mode === 'stand';
+      let videoFrames = [];
+      if (clip.video) {
+        if (kind === 'idle' && clip.loopVideo) {
+          videoFrames = idleVideoFrames(clip, frozen);
+        } else {
+          if (frozen && !clip.video.paused) clip.video.pause();
+          else if (!frozen && clip.video.paused && !clip.video.ended) clip.video.play().catch(() => {});
+          videoFrames = [{ video: clip.video, alpha: 1 }];
+        }
+      }
+      const videoReady = Boolean(videoFrames.length && videoFrames.every(
+        value => value.video.readyState >= 2 && !value.video.seeking));
       const fallback = !videoReady && !frame ? clip.posterImage : null;
       // A transient decoder state must hold the last valid transparent frame,
       // never clear the stage and expose the standing plate for one refresh.
@@ -1938,10 +2037,11 @@
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * x, pixelRatio * fit.y);
       if (mirror) { context.translate(width, 0); context.scale(-1, 1); }
       if (videoReady) {
-        const frozen = roamState.enabled && roamState.mode === 'stand';
-        if (frozen && !clip.video.paused) clip.video.pause();
-        else if (!frozen && clip.video.paused && !clip.video.ended) clip.video.play().catch(() => {});
-        context.drawImage(clip.video, 0, 0, width, height);
+        for (const value of videoFrames) {
+          context.globalAlpha = value.alpha;
+          context.drawImage(value.video, 0, 0, width, height);
+        }
+        context.globalAlpha = 1;
       } else if (frame) {
         context.drawImage(frame.sheet.image, frame.sx, frame.sy, width, height, 0, 0, width, height);
       } else {
@@ -2100,7 +2200,7 @@
         const kind = roamMotionKind(roamState.mode, roamState.presentationMode);
         const clip = kind && motion[kind];
         const frozen = roamState.mode === 'stand'
-          || Boolean(clip && clip.video && clip.video.ended);
+          || Boolean(kind === 'move' && clip && clip.video && clip.video.ended);
         return motionFrameDelay(clip, frozen);
       }
       if (now < moveUntil) {
@@ -2108,8 +2208,7 @@
           Boolean(motion.move && motion.move.video && motion.move.video.ended));
       }
       if (edgeIdleActive(now)) {
-        return motionFrameDelay(motion.idle,
-          Boolean(motion.idle && motion.idle.video && motion.idle.video.ended));
+        return motionFrameDelay(motion.idle, false);
       }
       if (dragging || avatarZoomGesture) return 16;
       const active = speechSource || hasAttachedAgentAudio() || agentSpeaking || ptt;

@@ -167,6 +167,36 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
         XCTAssertGreaterThan(tallPhone, phone)
     }
 
+    func testUserBubbleWidthIsCompactAndCappedOnNarrowAndWideScreens() {
+        XCTAssertEqual(
+            ConversationThreadLayout.userBubbleWidth(
+                viewportWidth: 320,
+                naturalTextWidth: 20,
+                hasAttachments: false
+            ),
+            48,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            ConversationThreadLayout.userBubbleWidth(
+                viewportWidth: 320,
+                naturalTextWidth: 1_000,
+                hasAttachments: false
+            ),
+            244.8,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            ConversationThreadLayout.userBubbleWidth(
+                viewportWidth: 1_024,
+                naturalTextWidth: 1_000,
+                hasAttachments: true
+            ),
+            ConversationThreadLayout.userBubbleMaximumWidth,
+            accuracy: 0.001
+        )
+    }
+
     func testBlockParserPreservesNativeMarkdownStructure() {
         let source = """
         # Heading

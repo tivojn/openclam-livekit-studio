@@ -12,8 +12,11 @@ enum LocalAssistantServiceError: LocalizedError, Equatable {
     case invalidImage
     case noText
     case speechUnavailable
+    case appleSpeechLocaleUnavailable
+    case appleSpeechServiceUnavailable
     case speechPermissionDenied
     case microphonePermissionDenied
+    case noSpeechRecognized
     case cloudSpeechCredentialMissing
     case cloudSpeechAdapterUnavailable
     case credentialStoreUnavailable
@@ -25,8 +28,14 @@ enum LocalAssistantServiceError: LocalizedError, Equatable {
         case .invalidImage: "That image could not be read. Try a different screenshot."
         case .noText: "No readable text was found in that screenshot."
         case .speechUnavailable: "Speech recognition is unavailable right now."
+        case .appleSpeechLocaleUnavailable:
+            "Apple Speech does not support the selected language on this iPhone. Choose another recognition language or a cloud speech provider in Settings."
+        case .appleSpeechServiceUnavailable:
+            "Apple Speech is temporarily unavailable. Check your connection and try again, or choose a cloud speech provider in Settings."
         case .speechPermissionDenied: "Speech Recognition access is off. You can enable it in Settings."
         case .microphonePermissionDenied: "Microphone access is off. You can enable it in Settings."
+        case .noSpeechRecognized:
+            "I didn’t catch any speech. Tap the microphone, speak, then tap Stop to send."
         case .cloudSpeechCredentialMissing:
             "Add and validate this speech provider's API key in Settings before recording."
         case .cloudSpeechAdapterUnavailable:
@@ -355,9 +364,24 @@ enum ContactPhoneResolver {
 /// a later SwiftUI/controller recreation cannot mistake the current recording for a launch orphan.
 final class CloudDictationTemporaryFileScrubber: @unchecked Sendable {
     static let fileNamePrefix = "CodexCloudDictation-"
-    static let fileNameSuffix = ".m4a"
+    static let fileNameSuffix = ".wav"
+    static let uploadFilename = "openclam-dictation.wav"
+    static let uploadMIMEType = "audio/wav"
+    static let maximumRecordingDuration: TimeInterval = 60
     static let maximumFilesToRemove = 64
     static let recordingFileProtection = FileProtectionType.complete
+
+    static func recorderSettings() -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+    }
 
     private let lock = NSLock()
     private var didScrub = false
@@ -657,6 +681,102 @@ struct SpeechInputCaptureRouteState: Equatable, Sendable {
     }
 }
 
+struct SpeechInputCompletion: Equatable, Sendable {
+    let transcript: String
+    let errorMessage: String?
+
+    static func resolve(
+        _ rawTranscript: String,
+        existingError: String?
+    ) -> SpeechInputCompletion {
+        let transcript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else {
+            return .init(
+                transcript: "",
+                errorMessage: existingError
+                    ?? LocalAssistantServiceError.noSpeechRecognized.localizedDescription
+            )
+        }
+        return .init(transcript: transcript, errorMessage: existingError)
+    }
+}
+
+private final class SpeechInputOperationError: @unchecked Sendable {
+    let underlying: Error
+
+    init(_ underlying: Error) {
+        self.underlying = underlying
+    }
+}
+
+private enum SpeechInputRealtimeRaceOutcome: Sendable {
+    case completed
+    case failed(SpeechInputOperationError)
+    case timedOut
+    case cancelled
+}
+
+struct AppleSpeechRecognitionAvailabilitySnapshot: Equatable, Sendable {
+    let isAvailable: Bool
+    let supportsOnDeviceRecognition: Bool
+}
+
+enum AppleSpeechRecognitionAvailabilityOutcome: Equatable, Sendable {
+    case available(requiresOnDeviceRecognition: Bool)
+    case unavailable
+    case cancelled
+}
+
+enum AppleSpeechRecognitionAvailabilityWaiter {
+    static let defaultMaximumChecks = 6
+    static let defaultRetryDelayNanoseconds: UInt64 = 250_000_000
+
+    @MainActor
+    static func wait(
+        maximumChecks: Int = defaultMaximumChecks,
+        retryDelayNanoseconds: UInt64 = defaultRetryDelayNanoseconds,
+        snapshot: @escaping @MainActor () -> AppleSpeechRecognitionAvailabilitySnapshot,
+        isCancelled: @escaping @MainActor () -> Bool = { Task.isCancelled },
+        sleep: @escaping @MainActor (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
+        }
+    ) async -> AppleSpeechRecognitionAvailabilityOutcome {
+        let boundedMaximumChecks = max(1, maximumChecks)
+        for checkIndex in 0..<boundedMaximumChecks {
+            guard !Task.isCancelled, !isCancelled() else { return .cancelled }
+
+            let current = snapshot()
+            if current.isAvailable {
+                return .available(
+                    requiresOnDeviceRecognition: current.supportsOnDeviceRecognition
+                )
+            }
+
+            guard checkIndex + 1 < boundedMaximumChecks else { return .unavailable }
+            do {
+                try await sleep(retryDelayNanoseconds)
+            } catch {
+                return .cancelled
+            }
+        }
+        return .unavailable
+    }
+}
+
+enum AppleSpeechRecognitionTaskGate {
+    static func startIfAvailable<Task>(
+        snapshot: AppleSpeechRecognitionAvailabilitySnapshot,
+        onUnavailable: () -> Void = {},
+        start: (_ requiresOnDeviceRecognition: Bool) -> Task
+    ) -> Task? {
+        guard snapshot.isAvailable else {
+            onUnavailable()
+            return nil
+        }
+        return start(snapshot.supportsOnDeviceRecognition)
+    }
+}
+
 @MainActor
 final class SpeechInputController: NSObject, ObservableObject, @preconcurrency AVAudioRecorderDelegate {
     @Published private(set) var isListening = false
@@ -766,6 +886,18 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         transcript = ""
         isTranscribing = false
 
+#if DEBUG
+        // Keeps the physical UI hit test deterministic without granting private
+        // speech services to a simulator. Production builds never take this path.
+        if ProcessInfo.processInfo.arguments.contains("-OpenClamUITestSpeechInputReady") {
+            stopCapture(cancelRecognition: true)
+            appleTranscriptState = AppleDictationTranscriptState()
+            captureRouteState.begin(.apple)
+            isListening = true
+            return
+        }
+#endif
+
         let speechStatus = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
@@ -784,11 +916,44 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             return
         }
 
-        let locale = languageCode.map(Locale.init(identifier:)) ?? .current
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
-            errorMessage = LocalAssistantServiceError.speechUnavailable.localizedDescription
+        let supportedLocaleIdentifiers = Set(
+            SFSpeechRecognizer.supportedLocales().map(\.identifier)
+        )
+        guard let resolvedLocaleIdentifier =
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: languageCode,
+                supportedLocaleIdentifiers: supportedLocaleIdentifiers
+            ),
+            let recognizer = SFSpeechRecognizer(
+                locale: Locale(identifier: resolvedLocaleIdentifier)
+            ) else {
+            errorMessage = LocalAssistantServiceError.appleSpeechLocaleUnavailable
+                .localizedDescription
             return
         }
+        let availabilityOutcome = await AppleSpeechRecognitionAvailabilityWaiter.wait(
+            snapshot: {
+                .init(
+                    isAvailable: recognizer.isAvailable,
+                    supportsOnDeviceRecognition: recognizer.supportsOnDeviceRecognition
+                )
+            },
+            isCancelled: { [weak self] in
+                guard let self else { return true }
+                return generation != self.sessionGeneration
+            }
+        )
+        switch availabilityOutcome {
+        case .available:
+            break
+        case .unavailable:
+            errorMessage = LocalAssistantServiceError.appleSpeechServiceUnavailable
+                .localizedDescription
+            return
+        case .cancelled:
+            return
+        }
+        guard generation == sessionGeneration, !Task.isCancelled else { return }
 
         stopCapture(cancelRecognition: true)
         speechRecognizer = recognizer
@@ -807,7 +972,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
                 throw LocalAssistantServiceError.speechUnavailable
             }
             isListening = true
-            beginAppleRecognitionSegment(generation: generation)
+            guard beginAppleRecognitionSegment(generation: generation) else { return }
             input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [appleAudioSink] buffer, _ in
                 appleAudioSink.append(buffer)
             }
@@ -838,8 +1003,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         }
         guard generation == sessionGeneration else { return "" }
 
-        let value = appleTranscriptState.text
-        transcript = value
+        let value = publishFinishedTranscript(appleTranscriptState.text)
         stopCapture(cancelRecognition: false)
         isTranscribing = false
         return value
@@ -875,6 +1039,17 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         stopCapture(cancelRecognition: true)
     }
 
+    @discardableResult
+    func publishFinishedTranscript(_ rawTranscript: String) -> String {
+        let completion = SpeechInputCompletion.resolve(
+            rawTranscript,
+            existingError: errorMessage
+        )
+        transcript = completion.transcript
+        errorMessage = completion.errorMessage
+        return completion.transcript
+    }
+
     /// Most stale transcription results are discarded after cancellation. A failed Soniox remote
     /// deletion is different: retain that warning so it is visible when the app becomes active
     /// again instead of implying the uploaded resource was verified removed.
@@ -892,26 +1067,38 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         session: any RealtimeSpeechToTextSession,
         timeoutNanoseconds: UInt64
     ) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
+        let outcome = await withTaskGroup(
+            of: SpeechInputRealtimeRaceOutcome.self
+        ) { group in
             group.addTask {
                 await task.value
-                return true
+                return .completed
             }
             group.addTask {
                 do {
                     try await Task.sleep(nanoseconds: timeoutNanoseconds)
                 } catch {
-                    return true
+                    return .cancelled
                 }
-                guard !Task.isCancelled else { return true }
+                guard !Task.isCancelled else { return .cancelled }
+                return .timedOut
+            }
+            let first = await group.next() ?? .cancelled
+            switch first {
+            case .timedOut, .cancelled:
+                // Select the race result before cancelling the operation. If
+                // cancellation happens first, the waiter can otherwise report
+                // a false successful drain and silently drop the PTT result.
                 task.cancel()
                 await session.cancel()
-                return false
+            case .completed, .failed:
+                break
             }
-            let drained = await group.next() ?? false
             group.cancelAll()
-            return drained
+            return first
         }
+        if case .completed = outcome { return true }
+        return false
     }
 
     /// Sends Soniox's graceful empty finish frame with a wall timeout. Cancelling both the child
@@ -922,77 +1109,126 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
     ) async throws {
         let finishTask = Task { try await session.finishAudio() }
         defer { finishTask.cancel() }
-        try await withThrowingTaskGroup(of: Void.self) { group in
+        let outcome = await withTaskGroup(
+            of: SpeechInputRealtimeRaceOutcome.self
+        ) { group in
             group.addTask {
-                try await finishTask.value
+                do {
+                    try await finishTask.value
+                    return .completed
+                } catch {
+                    return .failed(SpeechInputOperationError(error))
+                }
             }
             group.addTask {
                 do {
                     try await Task.sleep(nanoseconds: timeoutNanoseconds)
-                } catch is CancellationError {
-                    return
+                } catch {
+                    return .cancelled
                 }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return .cancelled }
+                return .timedOut
+            }
+            let first = await group.next() ?? .cancelled
+            switch first {
+            case .timedOut, .cancelled:
+                // Fix the timeout outcome before cancellation reaches the
+                // sibling awaiting finishTask.value. A stalled provider now
+                // deterministically reports processingTimedOut instead of a
+                // scheduler-dependent CancellationError/empty transcript.
                 finishTask.cancel()
                 await session.cancel()
-                throw CloudVoiceServiceError.processingTimedOut
+            case .completed, .failed:
+                break
             }
-            defer { group.cancelAll() }
-            _ = try await group.next()
+            group.cancelAll()
+            return first
+        }
+
+        switch outcome {
+        case .completed:
+            return
+        case let .failed(error):
+            throw error.underlying
+        case .timedOut:
+            throw CloudVoiceServiceError.processingTimedOut
+        case .cancelled:
+            throw CancellationError()
         }
     }
 
-    private func beginAppleRecognitionSegment(generation: Int) {
-        guard let speechRecognizer else { return }
+    @discardableResult
+    private func beginAppleRecognitionSegment(generation: Int) -> Bool {
+        guard let speechRecognizer else { return false }
         recognitionSegmentID += 1
         let segmentID = recognitionSegmentID
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.taskHint = .dictation
-        recognitionRequest = request
-        appleAudioSink.replaceRequest(with: request)
+        let availability = AppleSpeechRecognitionAvailabilitySnapshot(
+            isAvailable: speechRecognizer.isAvailable,
+            supportsOnDeviceRecognition: speechRecognizer.supportsOnDeviceRecognition
+        )
+        let task = AppleSpeechRecognitionTaskGate.startIfAvailable(
+            snapshot: availability,
+            onUnavailable: { [weak self] in
+                guard let self else { return }
+                self.errorMessage = LocalAssistantServiceError.appleSpeechServiceUnavailable
+                    .localizedDescription
+                self.stopCapture(cancelRecognition: true)
+            }
+        ) { [appleAudioSink] requiresOnDeviceRecognition in
+            let request = SFSpeechAudioBufferRecognitionRequest()
+            request.shouldReportPartialResults = true
+            request.taskHint = .dictation
+            // Deliberately keep supported recognition on device, but only after
+            // the availability gate permits creation of a recognition task.
+            request.requiresOnDeviceRecognition = requiresOnDeviceRecognition
+            recognitionRequest = request
+            appleAudioSink.replaceRequest(with: request)
 
-        recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
-            Task { @MainActor in
-                guard let self,
-                      generation == self.sessionGeneration,
-                      segmentID == self.recognitionSegmentID else { return }
+            return speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
+                Task { @MainActor in
+                    guard let self,
+                          generation == self.sessionGeneration,
+                          segmentID == self.recognitionSegmentID else { return }
 
-                if let result {
-                    let action = self.appleTranscriptState.receive(
-                        result.bestTranscription.formattedString,
-                        isFinal: result.isFinal
-                    )
-                    self.transcript = self.appleTranscriptState.text
-                    if result.isFinal {
-                        switch action {
-                        case .none:
-                            break
-                        case .restartRecognition:
-                            guard self.isListening else { return }
-                            self.recognitionTask = nil
-                            self.recognitionRequest = nil
-                            self.beginAppleRecognitionSegment(generation: generation)
-                        case .finishRequestedStop:
-                            self.appleStopReceivedFinal = true
-                            self.completeAppleStopWait()
+                    if let result {
+                        let action = self.appleTranscriptState.receive(
+                            result.bestTranscription.formattedString,
+                            isFinal: result.isFinal
+                        )
+                        self.transcript = self.appleTranscriptState.text
+                        if result.isFinal {
+                            switch action {
+                            case .none:
+                                break
+                            case .restartRecognition:
+                                guard self.isListening else { return }
+                                self.recognitionTask = nil
+                                self.recognitionRequest = nil
+                                self.beginAppleRecognitionSegment(generation: generation)
+                            case .finishRequestedStop:
+                                self.appleStopReceivedFinal = true
+                                self.completeAppleStopWait()
+                            }
+                            return
                         }
-                        return
                     }
-                }
 
-                guard let error else { return }
-                if self.appleTranscriptState.stopRequested {
-                    if self.appleTranscriptState.text.isEmpty {
+                    guard let error else { return }
+                    if self.appleTranscriptState.stopRequested {
+                        if self.appleTranscriptState.text.isEmpty {
+                            self.errorMessage = error.localizedDescription
+                        }
+                        self.completeAppleStopWait()
+                    } else if self.isListening {
                         self.errorMessage = error.localizedDescription
+                        self.stopCapture(cancelRecognition: true)
                     }
-                    self.completeAppleStopWait()
-                } else if self.isListening {
-                    self.errorMessage = error.localizedDescription
-                    self.stopCapture(cancelRecognition: true)
                 }
             }
         }
+        guard let task else { return false }
+        recognitionTask = task
+        return true
     }
 
     private func waitForAppleFinalTranscript(generation: Int) async {
@@ -1140,7 +1376,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
 
     private func stopSonioxRealtime() async -> String {
         guard let session = realtimeSession else {
-            return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            return publishFinishedTranscript(transcript)
         }
         let generation = sessionGeneration
         isListening = false
@@ -1198,7 +1434,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             shouldCancelSession = true
         }
 
-        let value = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = publishFinishedTranscript(transcript)
         cleanupRealtimeCapture(cancelSession: shouldCancelSession)
         audioSessionOwnership.releaseIfNeeded()
         isTranscribing = false
@@ -1261,20 +1497,16 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             audioSessionOwnership.claim()
             let recorder = try AVAudioRecorder(
                 url: url,
-                settings: [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: 16_000,
-                    AVNumberOfChannelsKey: 1,
-                    AVEncoderBitRateKey: 64_000,
-                    AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-                ]
+                settings: CloudDictationTemporaryFileScrubber.recorderSettings()
             )
             recorder.delegate = self
             guard recorder.prepareToRecord() else {
                 throw LocalAssistantServiceError.speechUnavailable
             }
             try CloudDictationTemporaryFileScrubber.protectRecording(at: url)
-            guard recorder.record(forDuration: 60) else {
+            guard recorder.record(
+                forDuration: CloudDictationTemporaryFileScrubber.maximumRecordingDuration
+            ) else {
                 throw LocalAssistantServiceError.speechUnavailable
             }
             cloudRecorder = recorder
@@ -1379,8 +1611,8 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             let request = CloudTranscriptionRequest(
                 audioData: data,
-                filename: "openclam-dictation.m4a",
-                mimeType: "audio/mp4",
+                filename: CloudDictationTemporaryFileScrubber.uploadFilename,
+                mimeType: CloudDictationTemporaryFileScrubber.uploadMIMEType,
                 model: selection.model,
                 languageCode: AIProviderRegistry.speechRecognitionRequestLanguage(
                     for: selection
@@ -1393,9 +1625,8 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             defer { clearCloudTranscriptionTask(for: generation) }
             let result = try await task.value
             guard generation == sessionGeneration else { return "" }
-            let value = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            transcript = value
             errorMessage = nil
+            let value = publishFinishedTranscript(result.text)
             isTranscribing = false
             return value
         } catch is CancellationError {

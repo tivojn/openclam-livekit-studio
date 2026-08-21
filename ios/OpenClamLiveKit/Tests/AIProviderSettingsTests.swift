@@ -325,6 +325,61 @@ final class AIProviderSettingsTests: XCTestCase {
         )
     }
 
+    func testAppleSpeechLocaleResolverFallsBackWithinRequestedLanguageOnly() {
+        let supported: Set<String> = [
+            "en-AE", "en-GB", "en-US", "fr-FR", "zh-CN", "zh-HK", "zh-TW",
+        ]
+
+        XCTAssertEqual(
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: "en_CN",
+                supportedLocaleIdentifiers: supported
+            ),
+            "en-US"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: "zh_Hans_CN",
+                supportedLocaleIdentifiers: supported
+            ),
+            "zh-CN"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: "en",
+                supportedLocaleIdentifiers: supported
+            ),
+            "en-US"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: "zh",
+                supportedLocaleIdentifiers: supported
+            ),
+            "zh-CN"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: "zh_HK",
+                supportedLocaleIdentifiers: supported
+            ),
+            "zh-HK"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: "en-GB",
+                supportedLocaleIdentifiers: supported
+            ),
+            "en-GB"
+        )
+        XCTAssertNil(
+            AIProviderRegistry.resolvedAppleSpeechRecognitionLocaleIdentifier(
+                requestedLanguageCode: "ja_JP",
+                supportedLocaleIdentifiers: supported
+            )
+        )
+    }
+
     func testSonioxDefaultsToRealtimeAndKeepsAsyncAsExplicitFallback() throws {
         XCTAssertEqual(
             AIProviderRegistry.descriptor(for: .soniox).defaultModels[.speechToText],

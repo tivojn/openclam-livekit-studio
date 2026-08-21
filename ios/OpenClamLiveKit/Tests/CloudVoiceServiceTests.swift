@@ -863,33 +863,219 @@ final class CloudVoiceServiceTests: XCTestCase {
         XCTAssertEqual(state.active, .none)
     }
 
+    func testSpeechInputCompletionNeverDropsAnEmptyRecordingSilently() {
+        let empty = SpeechInputCompletion.resolve("  \n ", existingError: nil)
+        XCTAssertEqual(empty.transcript, "")
+        XCTAssertEqual(
+            empty.errorMessage,
+            LocalAssistantServiceError.noSpeechRecognized.localizedDescription
+        )
+
+        let providerFailure = SpeechInputCompletion.resolve(
+            "",
+            existingError: "The speech provider did not respond."
+        )
+        XCTAssertEqual(
+            providerFailure.errorMessage,
+            "The speech provider did not respond."
+        )
+
+        let recognized = SpeechInputCompletion.resolve(
+            "  Send this message.  ",
+            existingError: nil
+        )
+        XCTAssertEqual(recognized.transcript, "Send this message.")
+        XCTAssertNil(recognized.errorMessage)
+    }
+
+    @MainActor
+    func testAppleSpeechAvailabilityWaitsForServiceBeforeUsingOnDeviceRecognition() async {
+        let snapshots = [
+            AppleSpeechRecognitionAvailabilitySnapshot(
+                isAvailable: false,
+                supportsOnDeviceRecognition: true
+            ),
+            AppleSpeechRecognitionAvailabilitySnapshot(
+                isAvailable: false,
+                supportsOnDeviceRecognition: true
+            ),
+            AppleSpeechRecognitionAvailabilitySnapshot(
+                isAvailable: true,
+                supportsOnDeviceRecognition: true
+            ),
+        ]
+        var snapshotIndex = 0
+        var sleepCount = 0
+
+        let outcome = await AppleSpeechRecognitionAvailabilityWaiter.wait(
+            maximumChecks: snapshots.count,
+            retryDelayNanoseconds: 1,
+            snapshot: {
+                defer { snapshotIndex += 1 }
+                return snapshots[min(snapshotIndex, snapshots.count - 1)]
+            },
+            isCancelled: { false },
+            sleep: { _ in sleepCount += 1 }
+        )
+
+        XCTAssertEqual(outcome, .available(requiresOnDeviceRecognition: true))
+        XCTAssertEqual(snapshotIndex, 3)
+        XCTAssertEqual(sleepCount, 2)
+    }
+
+    @MainActor
+    func testAppleSpeechAvailabilityStopsAfterBoundedUnavailableChecks() async {
+        var snapshotCount = 0
+        var sleepCount = 0
+
+        let outcome = await AppleSpeechRecognitionAvailabilityWaiter.wait(
+            maximumChecks: 4,
+            retryDelayNanoseconds: 1,
+            snapshot: {
+                snapshotCount += 1
+                return .init(
+                    isAvailable: false,
+                    supportsOnDeviceRecognition: true
+                )
+            },
+            isCancelled: { false },
+            sleep: { _ in sleepCount += 1 }
+        )
+
+        XCTAssertEqual(outcome, .unavailable)
+        XCTAssertEqual(snapshotCount, 4)
+        XCTAssertEqual(sleepCount, 3)
+    }
+
+    @MainActor
+    func testAppleSpeechAvailabilityWaitHonorsCancellation() async {
+        var snapshotCount = 0
+        var sleepCount = 0
+
+        let outcome = await AppleSpeechRecognitionAvailabilityWaiter.wait(
+            maximumChecks: 6,
+            retryDelayNanoseconds: 1,
+            snapshot: {
+                snapshotCount += 1
+                return .init(
+                    isAvailable: false,
+                    supportsOnDeviceRecognition: false
+                )
+            },
+            isCancelled: { snapshotCount == 1 },
+            sleep: { _ in sleepCount += 1 }
+        )
+
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertEqual(snapshotCount, 1)
+        XCTAssertEqual(sleepCount, 1)
+    }
+
+    func testAppleSpeechTaskGateNeverCreatesTaskBeforeServiceIsAvailableAndCleansUp() {
+        var startCount = 0
+        var simulatedIsListening = true
+        var simulatedOwnsAudioSession = true
+        var surfacedError: String?
+        let unavailableTask: Int? = AppleSpeechRecognitionTaskGate.startIfAvailable(
+            snapshot: .init(
+                isAvailable: false,
+                supportsOnDeviceRecognition: true
+            ),
+            onUnavailable: {
+                simulatedIsListening = false
+                simulatedOwnsAudioSession = false
+                surfacedError = LocalAssistantServiceError.appleSpeechServiceUnavailable
+                    .localizedDescription
+            }
+        ) { _ in
+            startCount += 1
+            return startCount
+        }
+        XCTAssertNil(unavailableTask)
+        XCTAssertEqual(startCount, 0)
+        XCTAssertFalse(simulatedIsListening)
+        XCTAssertFalse(simulatedOwnsAudioSession)
+        XCTAssertEqual(
+            surfacedError,
+            LocalAssistantServiceError.appleSpeechServiceUnavailable.localizedDescription
+        )
+
+        var requiresOnDeviceRecognition: Bool?
+        let availableTask: Int? = AppleSpeechRecognitionTaskGate.startIfAvailable(
+            snapshot: .init(
+                isAvailable: true,
+                supportsOnDeviceRecognition: true
+            )
+        ) { requiresOnDevice in
+            startCount += 1
+            requiresOnDeviceRecognition = requiresOnDevice
+            return startCount
+        }
+        XCTAssertEqual(availableTask, 1)
+        XCTAssertEqual(startCount, 1)
+        XCTAssertEqual(requiresOnDeviceRecognition, true)
+
+        let networkBackedTask: Int? = AppleSpeechRecognitionTaskGate.startIfAvailable(
+            snapshot: .init(
+                isAvailable: true,
+                supportsOnDeviceRecognition: false
+            )
+        ) { requiresOnDevice in
+            requiresOnDeviceRecognition = requiresOnDevice
+            return 2
+        }
+        XCTAssertEqual(networkBackedTask, 2)
+        XCTAssertEqual(requiresOnDeviceRecognition, false)
+    }
+
+    func testAppleSpeechStartupErrorsDistinguishLocaleAndTemporaryServiceFailures() {
+        let unsupportedLocale = LocalAssistantServiceError.appleSpeechLocaleUnavailable
+            .localizedDescription
+        let unavailableService = LocalAssistantServiceError.appleSpeechServiceUnavailable
+            .localizedDescription
+        XCTAssertNotEqual(unsupportedLocale, unavailableService)
+        XCTAssertTrue(unsupportedLocale.contains("language"))
+        XCTAssertTrue(unsupportedLocale.contains("Settings"))
+        XCTAssertTrue(unavailableService.contains("temporarily"))
+        XCTAssertTrue(unavailableService.contains("connection"))
+    }
+
     @MainActor
     func testRealtimeStopTimeoutCancelsStalledSendAndFinishOperations() async {
-        let session = StalledRealtimeSpeechToTextSession()
-        let sendTask = Task<Void, Never> {
-            try? await session.sendPCM(Data([1, 0]))
-        }
+        // Repeat enough times to exercise both scheduler orderings. The
+        // timeout result must be stable even when cancelling finishAudio wakes
+        // its waiter immediately.
+        for iteration in 0..<20 {
+            let session = StalledRealtimeSpeechToTextSession()
+            let sendTask = Task<Void, Never> {
+                try? await session.sendPCM(Data([1, 0]))
+            }
 
-        let drained = await SpeechInputController.awaitRealtimeSendDrain(
-            sendTask,
-            session: session,
-            timeoutNanoseconds: 1_000_000
-        )
-        XCTAssertFalse(drained)
-        let afterSendCancel = await session.cancelCount()
-        XCTAssertEqual(afterSendCancel, 1)
-
-        do {
-            try await SpeechInputController.finishRealtimeSession(
-                session,
+            let drained = await SpeechInputController.awaitRealtimeSendDrain(
+                sendTask,
+                session: session,
                 timeoutNanoseconds: 1_000_000
             )
-            XCTFail("Expected stalled finish to time out")
-        } catch {
-            XCTAssertEqual(error as? CloudVoiceServiceError, .processingTimedOut)
+            XCTAssertFalse(drained, "iteration \(iteration)")
+            let afterSendCancel = await session.cancelCount()
+            XCTAssertEqual(afterSendCancel, 1, "iteration \(iteration)")
+
+            do {
+                try await SpeechInputController.finishRealtimeSession(
+                    session,
+                    timeoutNanoseconds: 1_000_000
+                )
+                XCTFail("Expected stalled finish to time out (iteration \(iteration))")
+            } catch {
+                XCTAssertEqual(
+                    error as? CloudVoiceServiceError,
+                    .processingTimedOut,
+                    "iteration \(iteration)"
+                )
+            }
+            let afterFinishCancel = await session.cancelCount()
+            XCTAssertEqual(afterFinishCancel, 2, "iteration \(iteration)")
         }
-        let afterFinishCancel = await session.cancelCount()
-        XCTAssertEqual(afterFinishCancel, 2)
     }
 
     func testSonioxSTTCompletesBoundedLifecycleAndDeletesRemoteResources() async throws {
@@ -1138,6 +1324,34 @@ final class CloudVoiceServiceTests: XCTestCase {
             FileProtectionType.complete.rawValue
         )
 #endif
+    }
+
+    func testCloudDictationUsesPortableMonoPCMUploadContract() {
+        let settings = CloudDictationTemporaryFileScrubber.recorderSettings()
+
+        XCTAssertEqual(
+            settings[AVFormatIDKey] as? AudioFormatID,
+            kAudioFormatLinearPCM
+        )
+        XCTAssertEqual(settings[AVSampleRateKey] as? Double, 16_000)
+        XCTAssertEqual(settings[AVNumberOfChannelsKey] as? Int, 1)
+        XCTAssertEqual(settings[AVLinearPCMBitDepthKey] as? Int, 16)
+        XCTAssertEqual(settings[AVLinearPCMIsFloatKey] as? Bool, false)
+        XCTAssertEqual(settings[AVLinearPCMIsBigEndianKey] as? Bool, false)
+        XCTAssertEqual(settings[AVLinearPCMIsNonInterleaved] as? Bool, false)
+        XCTAssertEqual(CloudDictationTemporaryFileScrubber.fileNameSuffix, ".wav")
+        XCTAssertEqual(
+            CloudDictationTemporaryFileScrubber.uploadFilename,
+            "openclam-dictation.wav"
+        )
+        XCTAssertEqual(
+            CloudDictationTemporaryFileScrubber.uploadMIMEType,
+            "audio/wav"
+        )
+        XCTAssertEqual(
+            CloudDictationTemporaryFileScrubber.maximumRecordingDuration,
+            60
+        )
     }
 
     func testScreenshotOCRRejectsOversizedMetadataBeforeImageDecode() throws {

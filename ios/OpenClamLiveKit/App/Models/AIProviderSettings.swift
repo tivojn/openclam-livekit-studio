@@ -596,6 +596,79 @@ enum AIProviderRegistry {
         return selected
     }
 
+    /// Resolves Apple Dictation only within the requested language. Device locales can contain a
+    /// region for which Speech has no recognizer (for example `en_CN`), even though the same
+    /// language is supported as `en-US`. Prefer an exact locale, then the requested/default region,
+    /// and never fall through to an unrelated language.
+    static func resolvedAppleSpeechRecognitionLocaleIdentifier(
+        requestedLanguageCode: String?,
+        locale: Locale = .current,
+        supportedLocaleIdentifiers: Set<String>
+    ) -> String? {
+        let trimmedRequest = requestedLanguageCode?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedIdentifier: String
+        if let trimmedRequest, !trimmedRequest.isEmpty {
+            requestedIdentifier = trimmedRequest
+        } else {
+            requestedIdentifier = locale.identifier
+        }
+        let requestedLocale = Locale(identifier: requestedIdentifier)
+        guard let languageCode = requestedLocale.language.languageCode?.identifier.lowercased()
+        else { return nil }
+
+        let candidates = supportedLocaleIdentifiers.compactMap { identifier -> (String, Locale)? in
+            let candidate = Locale(identifier: identifier)
+            guard candidate.language.languageCode?.identifier.lowercased() == languageCode else {
+                return nil
+            }
+            return (identifier, candidate)
+        }
+        guard !candidates.isEmpty else { return nil }
+
+        func normalized(_ identifier: String) -> String {
+            identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+        }
+        if let exact = candidates.filter({
+            normalized($0.0) == normalized(requestedIdentifier)
+        }).sorted(by: { $0.0 < $1.0 }).first {
+            return exact.0
+        }
+
+        let requestedRegion = requestedLocale.region?.identifier.uppercased()
+        let requestedScript = requestedLocale.language.script?.identifier.lowercased()
+        let defaultLocale = Locale(
+            identifier: Locale(identifier: languageCode).language.maximalIdentifier
+        )
+        let defaultRegion = defaultLocale.region?.identifier.uppercased()
+
+        return candidates.sorted { lhs, rhs in
+            func score(_ candidate: Locale) -> Int {
+                var value = 0
+                if let requestedRegion,
+                   candidate.region?.identifier.uppercased() == requestedRegion {
+                    value += 16
+                }
+                if let requestedScript,
+                   candidate.language.script?.identifier.lowercased() == requestedScript {
+                    value += 8
+                }
+                if let defaultRegion,
+                   candidate.region?.identifier.uppercased() == defaultRegion {
+                    value += 4
+                }
+                return value
+            }
+            let lhsScore = score(lhs.1)
+            let rhsScore = score(rhs.1)
+            if lhsScore != rhsScore { return lhsScore > rhsScore }
+            let normalizedLHS = normalized(lhs.0)
+            let normalizedRHS = normalized(rhs.0)
+            if normalizedLHS != normalizedRHS { return normalizedLHS < normalizedRHS }
+            return lhs.0 < rhs.0
+        }.first?.0
+    }
+
     static func provider(forResponsesEndpoint rawEndpoint: String) -> AIProviderID? {
         let normalized = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         return descriptors.first(where: { $0.agentResponsesEndpoint?.absoluteString == normalized })?.id

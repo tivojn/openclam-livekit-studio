@@ -31,7 +31,7 @@ struct OpenClamAvatarStoreThumbnail: Codable, Equatable, Sendable {
 
 struct OpenClamAvatarStoreVariants: Codable, Equatable, Sendable {
     let iosLight: OpenClamAvatarStoreVariant
-    let macOSFull: OpenClamAvatarStoreVariant
+    let macOSFull: OpenClamAvatarStoreVariant?
 
     enum CodingKeys: String, CodingKey {
         case iosLight = "ios-light"
@@ -89,10 +89,13 @@ enum OpenClamAvatarStoreCatalogError: LocalizedError, Equatable {
     }
 }
 
-/// v1.0.1 ships without a reviewed remote catalog. Keeping the release
-/// endpoint optional makes the privacy boundary explicit: no production URL
-/// exists for the store to request, and cached remote entries are not exposed.
+/// The endpoint stays nil until the matching catalog and hash-pinned release
+/// assets are publicly reachable. Publication and client enablement are two
+/// separate release steps so a shipped build can never point at a placeholder.
 enum OpenClamAvatarStoreReleasePolicy {
+    static let productionCatalogURL = URL(
+        string: "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/catalog.json"
+    )!
     static let catalogURL: URL? = nil
     static let unavailableMessage =
         "Avatar Store isn’t available in this release. You can still import .avtr files from Files."
@@ -118,17 +121,15 @@ struct OpenClamAvatarStoreRemoteAccess: Sendable {
 }
 
 enum OpenClamAvatarStoreURLPolicy {
-    static let syntheticCatalogURL = URL(
-        string: "https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/catalog.json"
-    )!
+    static let productionCatalogURL = OpenClamAvatarStoreReleasePolicy.productionCatalogURL
 
-    private static let owner = "openclam-fixtures"
-    private static let repository = "avatar-store-fixtures"
+    private static let owner = "tivojn"
+    private static let repository = "openclam-livekit-studio"
 
     static func allowsCatalogURL(_ url: URL) -> Bool {
         guard hasSafeHTTPSComponents(url),
               url.host?.lowercased() == "raw.githubusercontent.com",
-              url.path == "/\(owner)/\(repository)/main/catalog/v1/catalog.json" else {
+              url.path == "/\(owner)/\(repository)/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/catalog.json" else {
             return false
         }
         return true
@@ -252,18 +253,21 @@ enum OpenClamAvatarStoreCatalogParser {
                 thumbnail,
                 ["url", "sha256", "bytes", "mime", "width", "height"]
             )
-            guard let macOSFull = variants["macos-full"] as? [String: Any] else {
-                throw OpenClamAvatarStoreCatalogError.invalidShape
-            }
-            try exactKeys(variants, ["ios-light", "macos-full"])
+            let macOSFull = variants["macos-full"] as? [String: Any]
+            let expectedVariantKeys: Set<String> = macOSFull == nil
+                ? ["ios-light"]
+                : ["ios-light", "macos-full"]
+            try exactKeys(variants, expectedVariantKeys)
             try exactKeys(
                 iosLight,
                 ["url", "sha256", "bytes", "format", "profile"]
             )
-            try exactKeys(
-                macOSFull,
-                ["url", "sha256", "bytes", "format", "profile"]
-            )
+            if let macOSFull {
+                try exactKeys(
+                    macOSFull,
+                    ["url", "sha256", "bytes", "format", "profile"]
+                )
+            }
         }
 
         let document: OpenClamAvatarStoreCatalogDocument
@@ -313,7 +317,7 @@ enum OpenClamAvatarStoreCatalogParser {
         }
         guard isSHA256(thumbnail.sha256),
               isSHA256(entry.iosLight.sha256),
-              isSHA256(entry.variants.macOSFull.sha256) else {
+              entry.variants.macOSFull.map({ isSHA256($0.sha256) }) ?? true else {
             throw OpenClamAvatarStoreCatalogError.invalidHash
         }
         guard thumbnail.bytes > 0,
@@ -341,15 +345,16 @@ enum OpenClamAvatarStoreCatalogParser {
             throw OpenClamAvatarStoreCatalogError.unsupportedPackage
         }
 
-        let macVariant = entry.variants.macOSFull
-        guard OpenClamAvatarStoreURLPolicy.allowsPackageURL(macVariant.url) else {
-            throw OpenClamAvatarStoreCatalogError.invalidURL
-        }
-        guard macVariant.bytes > 0,
-              macVariant.bytes <= 2_000_000_000,
-              macVariant.format == OpenClamAvatarPackageContract.canonicalFormat,
-              macVariant.profile == "macos-full" else {
-            throw OpenClamAvatarStoreCatalogError.unsupportedPackage
+        if let macVariant = entry.variants.macOSFull {
+            guard OpenClamAvatarStoreURLPolicy.allowsPackageURL(macVariant.url) else {
+                throw OpenClamAvatarStoreCatalogError.invalidURL
+            }
+            guard macVariant.bytes > 0,
+                  macVariant.bytes <= 2_000_000_000,
+                  macVariant.format == OpenClamAvatarPackageContract.canonicalFormat,
+                  macVariant.profile == "macos-full" else {
+                throw OpenClamAvatarStoreCatalogError.unsupportedPackage
+            }
         }
     }
 
@@ -1135,7 +1140,7 @@ final class OpenClamAvatarStore: ObservableObject {
                 try Task.checkCancellation()
                 phases[entry.id] = .installing
 
-                let descriptor = try await library.importAvatar(
+                let descriptor = try await library.installStoreAvatar(
                     from: cache.archiveURL(for: entry),
                     expectedID: entry.id,
                     replacingExisting: library.isImported(id: entry.id)

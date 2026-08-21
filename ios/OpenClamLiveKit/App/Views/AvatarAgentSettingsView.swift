@@ -214,7 +214,8 @@ struct AvatarAgentSettingsView: View {
                         agentCard(avatar)
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if avatarLibrary.isImported(id: avatar.id) {
+                        if avatarLibrary.isImported(id: avatar.id),
+                           !avatarLibrary.isProtected(id: avatar.id) {
                             Button("Delete", role: .destructive) {
                                 requestDeletion(of: avatar)
                             }
@@ -335,7 +336,11 @@ struct AvatarAgentSettingsView: View {
                             .foregroundStyle(Color.accentColor)
                     }
                     if avatarLibrary.isImported(id: avatar.id) {
-                        Text("IMPORTED")
+                        Text(
+                            avatarLibrary.isProtected(id: avatar.id)
+                                ? "DOWNLOADED"
+                                : "IMPORTED"
+                        )
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.secondary)
                     }

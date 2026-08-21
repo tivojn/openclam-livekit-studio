@@ -1,9 +1,9 @@
 # OpenClam avatar store v1 contract
 
-Avatar Store is release-disabled in OpenClam v1.0.1. Neither shipped app has a
-catalog URL, loads a cached store catalog, or requests remote thumbnails or
-packages. Direct AVTR import, library use, export, and deletion are separate
-local workflows and remain available.
+Avatar Store publication is deliberately split from client enablement. The
+catalog and hash-pinned release assets must be publicly reachable and verified
+before an app release is allowed to set its production catalog URL. Direct
+AVTR import, library use, export, and deletion remain separate local workflows.
 
 This directory retains the strict catalog contract and a generic offline
 staging builder for a future, separately reviewed store. The catalog root is
@@ -14,11 +14,17 @@ exactly:
 ```
 
 Each entry contains only `id`, `name`, `author`, `version`, `thumbnail`, and
-`variants`. Every entry has exactly an `ios-light` package and a `macos-full`
-package. Clients select their own profile, stream the download with progress,
-verify its declared byte count and SHA-256, then hand the file to the existing
-atomic AVTR v2 importer. A package for the other platform is never used as a
-fallback.
+`variants`. Every entry has an `ios-light` package; a `macos-full` package is
+optional and may be listed only when reviewed Mac authoring media exists.
+Clients select their own profile, stream the download with progress, verify its
+declared byte count and SHA-256, then hand the file to the existing atomic AVTR
+importer. A package for the other platform is never used as a fallback.
+
+`build_bundled_ios_catalog.py` stages the two user-authorized identities already
+shipped with iOS: Captain Ayer and Ara. Their Store packages use the same IDs as
+the protected bundled fallbacks. Only the Store's pinned verification path may
+install these updates; Files import remains collision-blocked, and the bundled
+fallback remains undeletable.
 
 ## Generic staging layout
 

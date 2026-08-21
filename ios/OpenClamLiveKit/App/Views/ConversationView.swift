@@ -47,6 +47,11 @@ enum ConversationComposerLayout {
 }
 
 enum ConversationThreadLayout {
+    static let horizontalContentInset: CGFloat = 16
+    static let userBubbleMaximumWidth: CGFloat = 560
+    static let userBubbleMaximumWidthFraction: CGFloat = 0.85
+    static let userBubbleMinimumWidth: CGFloat = 44
+    static let userBubbleHorizontalPadding: CGFloat = 28
     static let standardUserTurnHeightAllowance: CGFloat = 40
     static let accessibilityUserTurnHeightAllowance: CGFloat = 72
     static let minimumStandardResponseReserve: CGFloat = 240
@@ -69,6 +74,23 @@ enum ConversationThreadLayout {
             ? minimumAccessibilityResponseReserve
             : minimumStandardResponseReserve
         return max(minimum, boundedHeight - userTurnAllowance)
+    }
+
+    static func userBubbleWidth(
+        viewportWidth: CGFloat,
+        naturalTextWidth: CGFloat,
+        hasAttachments: Bool
+    ) -> CGFloat {
+        let availableWidth = max(0, viewportWidth - (horizontalContentInset * 2))
+        let maximumWidth = min(
+            availableWidth,
+            userBubbleMaximumWidth,
+            max(userBubbleMinimumWidth, availableWidth * userBubbleMaximumWidthFraction)
+        )
+        let desiredWidth = hasAttachments
+            ? maximumWidth
+            : max(0, naturalTextWidth) + userBubbleHorizontalPadding
+        return min(maximumWidth, max(userBubbleMinimumWidth, desiredWidth))
     }
 }
 
@@ -154,7 +176,10 @@ struct ConversationView: View {
                     ScrollView {
                     LazyVStack(spacing: 14) {
                         ForEach(conversation.messages) { message in
-                            messageBubble(message)
+                            messageBubble(
+                                message,
+                                viewportWidth: threadViewport.size.width
+                            )
                                 .id(message.id)
                         }
 
@@ -235,10 +260,6 @@ struct ConversationView: View {
                         pendingScreenContextComposerCard(submission)
                     }
 
-                    if let error = composerSupportError {
-                        composerErrorCard(error)
-                    }
-
                     if !stagedAttachments.isEmpty || isLoadingAttachments {
                         attachmentTray
                     }
@@ -256,7 +277,7 @@ struct ConversationView: View {
 
                     Color.clear.frame(height: 4).id("bottom")
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, ConversationThreadLayout.horizontalContentInset)
                 .padding(.top, isFreshConversation ? 36 : 12)
                 .padding(.bottom, 8)
                 .disabled(conversation.isWorking || commandModel.isExecuting || activeRequestTask != nil)
@@ -347,7 +368,13 @@ struct ConversationView: View {
         }
         .navigationTitle(conversation.currentThreadTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom) { composer }
+        .safeAreaInset(edge: .bottom) {
+            composer
+                // Motion artwork may visually extend into the safe area. Keep
+                // the native composer above that artwork for rendering and hit testing.
+                .zIndex(100)
+                .contentShape(Rectangle())
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
@@ -520,31 +547,63 @@ struct ConversationView: View {
         conversation.messages.count == 1
     }
 
-    private func messageBubble(_ message: ConversationMessage) -> some View {
-        HStack(alignment: .top) {
-            if message.role == .user { Spacer(minLength: 52) }
-            VStack(alignment: .leading, spacing: 2) {
-                messageContent(message)
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, message.role == .user ? 14 : 2)
-                    .padding(.vertical, message.role == .user ? 10 : 6)
-                    .background(
-                        message.role == .user
-                            ? AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
-                            : AnyShapeStyle(Color.clear),
-                        in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    )
-
-                if ConversationMessageInteractionPolicy.supportsAssistantActions(message) {
-                    assistantMessageActions(message)
-                }
+    @ViewBuilder
+    private func messageBubble(
+        _ message: ConversationMessage,
+        viewportWidth: CGFloat
+    ) -> some View {
+        if message.role == .user {
+            messageBubbleContent(message)
+                .frame(
+                    width: ConversationThreadLayout.userBubbleWidth(
+                        viewportWidth: viewportWidth,
+                        naturalTextWidth: naturalUserMessageWidth(message.text),
+                        hasAttachments: !message.attachments.isEmpty
+                    ),
+                    alignment: .leading
+                )
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityElement(children: .contain)
+        } else {
+            HStack(alignment: .top) {
+                messageBubbleContent(message)
+                Spacer(minLength: 18)
             }
-            .accessibilityIdentifier(messageAccessibilityIdentifier(for: message))
-            .accessibilityValue(message.text)
-            if message.role == .assistant { Spacer(minLength: 18) }
+            .accessibilityElement(children: .contain)
+            .frame(maxWidth: .infinity)
         }
-        .accessibilityElement(children: .contain)
-        .frame(maxWidth: .infinity)
+    }
+
+    private func messageBubbleContent(_ message: ConversationMessage) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            messageContent(message)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, message.role == .user ? 14 : 2)
+                .padding(.vertical, message.role == .user ? 10 : 6)
+                .background(
+                    message.role == .user
+                        ? AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
+                        : AnyShapeStyle(Color.clear),
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+
+            if ConversationMessageInteractionPolicy.supportsAssistantActions(message) {
+                assistantMessageActions(message)
+            }
+        }
+        .accessibilityIdentifier(messageAccessibilityIdentifier(for: message))
+        .accessibilityValue(message.text)
+    }
+
+    private func naturalUserMessageWidth(_ text: String) -> CGFloat {
+        let traits = UITraitCollection(
+            preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize)
+        )
+        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traits)
+        return text
+            .components(separatedBy: .newlines)
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
     }
 
     private func messageAccessibilityIdentifier(
@@ -1538,6 +1597,7 @@ struct ConversationView: View {
             || input.contains("\n")
             || input.count > 48
             || speechStatusText != nil
+            || composerSupportError != nil
             || isChatTransitioning
     }
 
@@ -1624,6 +1684,9 @@ struct ConversationView: View {
                 .foregroundStyle(speech.isListening ? Color.red : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("openclam-speech-status")
+        } else if let error = composerSupportError {
+            composerErrorCard(error)
         }
     }
 
@@ -2020,6 +2083,7 @@ struct ConversationView: View {
         .background(.red.opacity(0.07), in: RoundedRectangle(cornerRadius: 13))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Composer error: \(message)")
+        .accessibilityIdentifier("openclam-composer-error")
     }
 
     private func formattedByteCount(_ value: Int) -> String {
@@ -2314,7 +2378,8 @@ struct ConversationView: View {
 
     private func finishSpeechAndSend() {
         Task { @MainActor in
-            let value = await speech.stop(using: aiConfiguration)
+            let stoppedValue = await speech.stop(using: aiConfiguration)
+            let value = speech.publishFinishedTranscript(stoppedValue)
             input = value
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             sendInput()

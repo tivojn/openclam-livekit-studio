@@ -20,7 +20,23 @@ final class OpenClamAvatarStoreTests: XCTestCase {
             String(repeating: "1", count: 64)
         )
         XCTAssertEqual(fixture.iosLight.profile, "ios-light")
-        XCTAssertEqual(fixture.variants.macOSFull.profile, "macos-full")
+        XCTAssertEqual(try XCTUnwrap(fixture.variants.macOSFull).profile, "macos-full")
+    }
+
+    func testCatalogAcceptsAnIOSOnlyEntryWithoutInventingAMacPackage() throws {
+        var root = try catalogObject()
+        var entries = try XCTUnwrap(root["entries"] as? [[String: Any]])
+        var entry = entries[0]
+        var variants = try XCTUnwrap(entry["variants"] as? [String: Any])
+        variants.removeValue(forKey: "macos-full")
+        entry["variants"] = variants
+        entries[0] = entry
+        root["entries"] = entries
+
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+        let decoded = try OpenClamAvatarStoreCatalogParser.decode(data)
+        XCTAssertEqual(decoded.entries.first?.iosLight.profile, "ios-light")
+        XCTAssertNil(decoded.entries.first?.variants.macOSFull)
     }
 
     func testCatalogRejectsUnknownMissingAndDuplicateEntries() throws {
@@ -32,7 +48,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         var entries = try XCTUnwrap(root["entries"] as? [[String: Any]])
         var entry = entries[0]
         var variants = try XCTUnwrap(entry["variants"] as? [String: Any])
-        variants.removeValue(forKey: "macos-full")
+        variants.removeValue(forKey: "ios-light")
         entry["variants"] = variants
         entries[0] = entry
         root["entries"] = entries
@@ -81,14 +97,14 @@ final class OpenClamAvatarStoreTests: XCTestCase {
 
     func testURLPolicyAllowsOnlyExactStoreOriginsAndOpaqueReleaseRedirect() throws {
         let packageURL = try XCTUnwrap(URL(string:
-            "https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/fixtures-v1/fixture-avatar-ios-light.avtr"
+            "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.0/fixture-avatar-ios-light.avtr"
         ))
         let opaqueReleaseURL = try XCTUnwrap(URL(string:
             "https://release-assets.githubusercontent.com/github-production-release-asset/file?sp=r&sig=opaque"
         ))
         XCTAssertTrue(
             OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
-                OpenClamAvatarStoreURLPolicy.syntheticCatalogURL
+                OpenClamAvatarStoreURLPolicy.productionCatalogURL
             )
         )
         XCTAssertTrue(
@@ -105,13 +121,13 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsRedirectOrFinalURL(
                 opaqueReleaseURL,
-                for: OpenClamAvatarStoreURLPolicy.syntheticCatalogURL
+                for: OpenClamAvatarStoreURLPolicy.productionCatalogURL
             )
         )
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsPackageURL(
                 try XCTUnwrap(URL(string:
-                    "https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/v1/avatar.avtr?token=leak"
+                    "https://github.com/tivojn/openclam-livekit-studio/releases/download/v1/avatar.avtr?token=leak"
                 ))
             )
         )
@@ -124,7 +140,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
                 try XCTUnwrap(URL(string:
-                    "https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/catalog.json?changed=1"
+                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/catalog.json?changed=1"
                 ))
             )
         )
@@ -378,7 +394,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
     }
 
     private var testRemoteAccess: OpenClamAvatarStoreRemoteAccess {
-        .testing(catalogURL: OpenClamAvatarStoreURLPolicy.syntheticCatalogURL)
+        .testing(catalogURL: OpenClamAvatarStoreURLPolicy.productionCatalogURL)
     }
 
     private var goldenFixtureURL: URL {
@@ -394,7 +410,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
 
     private func syntheticCatalogData() -> Data {
         Data(
-            #"{"schemaVersion":1,"entries":[{"id":"fixture-avatar","name":"Fixture Avatar","author":"Example Publisher","version":1,"thumbnail":{"url":"https://raw.githubusercontent.com/openclam-fixtures/avatar-store-fixtures/main/catalog/v1/fixture-avatar-thumbnail.png","sha256":"0000000000000000000000000000000000000000000000000000000000000000","bytes":68,"mime":"image/png","width":1,"height":1},"variants":{"ios-light":{"url":"https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/fixtures-v1/fixture-avatar-ios-light.avtr","sha256":"1111111111111111111111111111111111111111111111111111111111111111","bytes":10,"format":"openclam-avatar","profile":"ios-light"},"macos-full":{"url":"https://github.com/openclam-fixtures/avatar-store-fixtures/releases/download/fixtures-v1/fixture-avatar-macos-full.avtr","sha256":"2222222222222222222222222222222222222222222222222222222222222222","bytes":20,"format":"openclam-avatar","profile":"macos-full"}}}]}"#.utf8
+            #"{"schemaVersion":1,"entries":[{"id":"fixture-avatar","name":"Fixture Avatar","author":"Example Publisher","version":1,"thumbnail":{"url":"https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/fixture-avatar-thumbnail.png","sha256":"0000000000000000000000000000000000000000000000000000000000000000","bytes":68,"mime":"image/png","width":1,"height":1},"variants":{"ios-light":{"url":"https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.0/fixture-avatar-ios-light.avtr","sha256":"1111111111111111111111111111111111111111111111111111111111111111","bytes":10,"format":"openclam-avatar","profile":"ios-light"},"macos-full":{"url":"https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.0/fixture-avatar-macos-full.avtr","sha256":"2222222222222222222222222222222222222222222222222222222222222222","bytes":20,"format":"openclam-avatar","profile":"macos-full"}}}]}"#.utf8
         )
     }
 

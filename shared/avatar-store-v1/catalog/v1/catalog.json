@@ -1,0 +1,51 @@
+{
+  "entries": [
+    {
+      "author": "OpenClam",
+      "id": "captain-ayer",
+      "name": "Captain Ayer",
+      "thumbnail": {
+        "bytes": 1529646,
+        "height": 1024,
+        "mime": "image/png",
+        "sha256": "2103488ebbc4a50b459adeabecbada7650cb6dc2b5db5b3640dc911e09f590d6",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/captain-ayer-thumbnail.png",
+        "width": 1024
+      },
+      "variants": {
+        "ios-light": {
+          "bytes": 10881111,
+          "format": "openclam-avatar",
+          "profile": "ios-light",
+          "sha256": "3890d6901c1904c4e791e4ac494dbed4a8de812e99d69f3a146cb12eeba25288",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.0/captain-ayer-ios-light.avtr"
+        }
+      },
+      "version": 1
+    },
+    {
+      "author": "OpenClam",
+      "id": "ara",
+      "name": "Ara",
+      "thumbnail": {
+        "bytes": 1210708,
+        "height": 1024,
+        "mime": "image/png",
+        "sha256": "7eb7ec65799715cdca9b52bad64d664fe2404b072a6f0a5b6af0368f4393217f",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/ara-thumbnail.png",
+        "width": 1024
+      },
+      "variants": {
+        "ios-light": {
+          "bytes": 15063000,
+          "format": "openclam-avatar",
+          "profile": "ios-light",
+          "sha256": "3713c746302511ec54d70c6c8a870d9c4b7e4ad87165b1bce921ad9d448a4a4e",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.0/ara-ios-light.avtr"
+        }
+      },
+      "version": 1
+    }
+  ],
+  "schemaVersion": 1
+}

@@ -77,12 +77,19 @@ struct OpenClamAvatarMotionLayout: Equatable, Sendable {
 }
 
 enum OpenClamAvatarMotionLayoutPolicy {
-    /// Ara's retained Edge Idle alpha reaches x=525 in its 720px-wide clip.
-    /// Anchoring that subject edge, rather than the transparent movie edge,
-    /// puts her supporting foot against the trailing screen boundary. On a
-    /// portrait phone this is the requested ~12% player-width trailing shift;
-    /// the normalized anchor continues to work in landscape and split sizes.
-    static let edgeIdleSubjectTrailingFraction: CGFloat = 525.0 / 720.0
+    /// Measured from all 73 retained frames of Ara's 720 x 1088 Edge Idle
+    /// clip. The foreground union is x=188..<532, y=48..<1064 and the stable
+    /// screen-left contact is x=192 in 66/73 frames. Pin the contact, not the
+    /// far knee/foot at the opposite side of the silhouette: Edge Idle is the
+    /// canonical left-edge pose used by the Mac runtime too.
+    static let edgeIdleContentBounds = CGRect(
+        x: 188.0 / 720.0,
+        y: 48.0 / 1_088.0,
+        width: 344.0 / 720.0,
+        height: 1_016.0 / 1_088.0
+    )
+    static let edgeIdleLeftContactFraction: CGFloat = 192.0 / 720.0
+    static let edgeIdlePreferredInset: CGFloat = 3
 
     static func layout(
         kind: OpenClamAvatarMotionKind,
@@ -108,25 +115,53 @@ enum OpenClamAvatarMotionLayoutPolicy {
             )
         }
 
-        // The transparent movie always receives the entire available height.
-        // Matching its native aspect ratio avoids resizeAspectFill cropping
-        // inside a narrower intermediate stage.
-        let playerWidth = availableHeight * sourceWidth / sourceHeight
+        // Use the largest native-aspect canvas that preserves the intended
+        // motion composition. Moves and Walk fill the available height. Edge
+        // Idle does too unless a very narrow Split View would crop retained
+        // subject alpha; only then does it scale down just enough to fit.
+        let fullHeightScale = availableHeight / sourceHeight
+        let playerScale: CGFloat
         let originX: CGFloat
+        let originY: CGFloat
         switch kind {
         case .edgeIdle:
-            originX = availableWidth
-                - playerWidth * edgeIdleSubjectTrailingFraction
+            // The avatar rail is physically on the right, in both LTR and
+            // RTL. Edge Idle belongs to the opposite physical screen edge;
+            // this geometry is deliberately not mirrored by locale.
+            let visibleContentInset = min(
+                edgeIdlePreferredInset,
+                availableWidth / 100
+            )
+            let contentWidth = sourceWidth * edgeIdleContentBounds.width
+            let horizontalFitScale = max(
+                0,
+                (availableWidth - 2 * visibleContentInset) / contentWidth
+            )
+            playerScale = min(fullHeightScale, horizontalFitScale)
+            let playerWidth = sourceWidth * playerScale
+            // Use the all-frame leading envelope for placement. The stable
+            // contact is four source pixels inside that envelope, so it still
+            // reads as touching the wall while no retained alpha is clipped on
+            // tall phones, iPad, Split View, or tiny defensive layouts.
+            originX = visibleContentInset
+                - playerWidth * edgeIdleContentBounds.minX
+            originY = (availableHeight - sourceHeight * playerScale) / 2
         case .walk, .moves:
+            playerScale = fullHeightScale
+            let playerWidth = sourceWidth * playerScale
             originX = (availableWidth - playerWidth) / 2
+            originY = 0
         }
+
+        let playerWidth = sourceWidth * playerScale
+        let playerHeight = sourceHeight * playerScale
 
         return OpenClamAvatarMotionLayout(
             playerFrame: CGRect(
                 x: originX,
-                y: 0,
+                y: originY,
                 width: playerWidth,
-                height: availableHeight
+                height: playerHeight
             ),
             clippingBounds: clippingBounds
         )

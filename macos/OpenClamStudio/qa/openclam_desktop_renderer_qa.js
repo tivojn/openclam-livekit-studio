@@ -542,12 +542,16 @@ const motionFrameSource = inline[1].match(
 const beginMotionPresentationSource = inline[1].match(
   /(const beginMotionPresentation = \(kind, edge, clip\) => \{[\s\S]*?\n    \};)/,
 );
+const idleVideoFramesSource = inline[1].match(
+  /(const idleVideoFrames = \(clip, frozen = false\) => \{[\s\S]*?\n    \};)/,
+);
 const drawMotionSource = inline[1].match(
   /(const drawMotion = \(kind, now, edge = null\) => \{[\s\S]*?\n    \};)/,
 );
 assert.ok(motionPhaseAtSource, 'Walk phase clock must remain independently testable');
 assert.ok(motionFrameSource, 'sprite frame selector must remain independently testable');
 assert.ok(beginMotionPresentationSource, 'motion entry/reset helper must remain independently testable');
+assert.ok(idleVideoFramesSource, 'Edge Idle seam handoff must remain independently testable');
 assert.ok(drawMotionSource, 'motion painter must remain independently testable');
 const motionPhaseAt = new Function(
   `'use strict'; ${motionPhaseAtSource[1]}; return motionPhaseAt;`,
@@ -622,12 +626,16 @@ assert.equal(successfulWalk('walk', 0), true);
 assert.deepEqual(successfulWalkChrome, [true],
   'a successfully painted Horizon Walk frame must suppress the chrome');
 
-// Edge Idle and Moves are one-shot presentations: each entry seeks to zero,
-// ended media holds its decoded final frame, and a poster covers an initial
-// seek without ever replaying the bad last-to-first asset seam.
+// Moves remains one-shot, but Edge Idle continuously hands off between two
+// one-shot decoders. Eight 12fps frames dissolve the bad endpoint seam and the
+// outgoing decoded frame covers the incoming seek, so neither a jump nor a
+// blank standing plate can flash.
 assert.match(source, /video\.loop = false;/);
+assert.match(source, /const IDLE_SEAM_BLEND_SECONDS = 2 \/ 3;/);
+assert.match(source, /if \(kind === 'idle' && loaded\.video\)[\s\S]{0,900}loaded\.loopVideo = loopVideo;/);
+assert.match(drawMotionSource[1], /idleVideoFrames\(clip, frozen\)/);
 assert.match(drawMotionSource[1], /clip\.video\.paused && !clip\.video\.ended/,
-  'ended one-shot media must never auto-replay');
+  'an ended Move must never auto-replay');
 assert.match(drawMotionSource[1], /roamState\.enabled && roamState\.mode === 'stand'/,
   'hovering a ledge must freeze its decoded Edge Idle frame');
 assert.match(drawMotionSource[1], /clip\.posterImage/,
@@ -653,6 +661,48 @@ assert.deepEqual(resetCalls, ['pause', 'seek:0', 'play'],
 presentationEntry.beginMotionPresentation('idle', 'right', idleClip);
 assert.deepEqual(resetCalls, ['pause', 'seek:0', 'play', 'pause', 'seek:0', 'play'],
   'a new ledge presentation must deterministically restart from frame zero');
+
+const clipVideos = clip => [clip && clip.video, clip && clip.loopVideo].filter(Boolean);
+const idleVideoFrames = new Function(
+  'IDLE_SEAM_BLEND_SECONDS', 'clipVideos',
+  `'use strict'; ${idleVideoFramesSource[1]}; return idleVideoFrames;`,
+)(2 / 3, clipVideos);
+const seamCalls = [];
+const seamVideo = name => ({
+  name, duration: 6, readyState: 4, seeking: false, paused: true, ended: false,
+  _currentTime: 0,
+  pause() { this.paused = true; seamCalls.push(`${name}:pause`); },
+  play() { this.paused = false; seamCalls.push(`${name}:play`); return Promise.resolve(); },
+  set currentTime(value) { this._currentTime = value; seamCalls.push(`${name}:seek:${value}`); },
+  get currentTime() { return this._currentTime; },
+});
+const seamA = seamVideo('a');
+const seamB = seamVideo('b');
+seamA.paused = false;
+seamA._currentTime = 5.5;
+const seamClip = {
+  video: seamA, loopVideo: seamB,
+  idlePlayback: {active: 0, fading: false, mix: 0},
+};
+assert.deepEqual(idleVideoFrames(seamClip).map(value => value.alpha), [1, 0],
+  'the incoming decoder must begin invisibly over the outgoing decoded frame');
+seamB._currentTime = 1 / 3;
+assert.deepEqual(idleVideoFrames(seamClip).map(value => value.alpha), [.5, .5],
+  'the bad seam must crossfade instead of jumping last-to-first');
+seamB._currentTime = .66;
+assert.deepEqual(idleVideoFrames(seamClip), [{video: seamB, alpha: 1}],
+  'the warmed incoming decoder must become the sole active stream');
+assert.equal(seamClip.idlePlayback.active, 1);
+seamB._currentTime = 5.5;
+idleVideoFrames(seamClip);
+seamA._currentTime = .66;
+assert.deepEqual(idleVideoFrames(seamClip), [{video: seamA, alpha: 1}],
+  'Edge Idle must continue into a second seamless loop, not freeze');
+assert.equal(seamClip.idlePlayback.active, 0);
+idleVideoFrames(seamClip, true);
+assert.ok(seamA.paused && seamB.paused,
+  'hover pause must freeze both sides of a seam handoff');
+
 let replayCalls = 0;
 const endedVideo = {
   readyState: 4, seeking: false, paused: true, ended: true,
@@ -669,14 +719,14 @@ const endedPainter = new Function(
   'motionPhaseAt', 'beginMotionPresentation', 'clearStage',
   `'use strict'; let paintedMotionKey = ''; ${motionFrameSource[1]}; ${drawMotionSource[1]}; return drawMotion;`,
 )(
-  {idle: {video: endedVideo, fps: 12, frames: 73, frame_width: 20, frame_height: 30, bounds: [0, 0, 20, 30]}},
+  {move: {video: endedVideo, fps: 12, frames: 73, frame_width: 20, frame_height: 30, bounds: [0, 0, 20, 30]}},
   () => ({x: 0, y: 0, scale: 1}),
-  {enabled: true, mode: 'ledge-left', direction: 1}, endedContext, 1, 200,
-  motionPhaseAt, () => 'idle:left', () => {},
+  {enabled: true, mode: 'idle', direction: 1}, endedContext, 1, 200,
+  motionPhaseAt, () => 'move:', () => {},
 );
-assert.equal(endedPainter('idle', 7000, 'left'), true);
-assert.equal(endedPaints.length, 1, 'the final decoded Edge Idle frame must remain visible');
-assert.equal(replayCalls, 0, 'the final decoded Edge Idle frame must never restart its bad seam');
+assert.equal(endedPainter('move', 7000), true);
+assert.equal(endedPaints.length, 1, 'the final decoded Move frame must remain visible');
+assert.equal(replayCalls, 0, 'the final decoded Move frame must not restart');
 
 const motionFrameDelaySource = inline[1].match(
   /(const motionFrameDelay = \(clip, frozen = false\) => \{[\s\S]*?\n    \};)/,
@@ -705,7 +755,7 @@ assert.ok(Math.abs(motionFrameDelay({fps: 24}) - (1000 / 24)) < 1e-9,
 assert.ok(Math.abs(motionFrameDelay({fps: 12}) - (1000 / 12)) < 1e-9,
   'Edge Idle must paint at its 12fps source cadence, not duplicate at 60fps');
 assert.equal(motionFrameDelay({fps: 12}, true), 250,
-  'an ended Edge Idle must reduce to a low-rate maintenance frame');
+  'a frozen hover/ended Move must reduce to a low-rate maintenance frame');
 assert.equal(standbyFrameDelay(1000), 250,
   'a truly still standing avatar must paint at only 4fps');
 assert.equal(standbyFrameDelay(1000, {blink: true}), 32,
