@@ -57,7 +57,7 @@ struct AISettingsView: View {
             } header: {
                 Text("Text to speech")
             } footer: {
-                Text("This reads chat replies aloud, including replies started through tap-to-talk. Apple is the default; cloud voices need a validated key. Continuous Live Talk has its own per-avatar voice choice.")
+                Text("This reads chat replies aloud, including replies started through tap-to-talk. Apple is the default; cloud voices need a validated key. For Chinese replies, choose a multilingual voice—an English-only voice can sound wrong even when speech recognition succeeds. Continuous Live Talk has its own per-avatar voice choice.")
             }
 
             Section {
@@ -65,7 +65,7 @@ struct AISettingsView: View {
             } header: {
                 Text("Speech recognition")
             } footer: {
-                Text("This recognizes only the tap-to-talk microphone. Apple is the default. Soniox stt-rt-v5 streams while listening; stt-async-v5 and other cloud choices transcribe after you stop. Cloud recognition needs a validated key. Continuous Live Talk is configured separately per avatar.")
+                Text("This recognizes only the tap-to-talk microphone. Choose the spoken language before recording, or use a provider whose Automatic option covers it. Deepgram Auto multilingual supports Chinese and English; xAI Automatic covers its documented 25-language list but not Chinese. Apple follows one selected iPhone locale. Cloud recognition needs a validated key. Continuous Live Talk is configured separately per avatar.")
             }
 
             Section {
@@ -190,6 +190,19 @@ struct AISettingsView: View {
             ForEach(modelOptions(for: capability, provider: selection.provider), id: \.self) {
                 Text($0).tag($0)
             }
+        }
+
+        if capability == .speechToText {
+            Picker("Spoken language", selection: speechLanguageBinding) {
+                ForEach(
+                    AIProviderRegistry.speechRecognitionLanguageOptions(
+                        for: selection.provider
+                    )
+                ) { option in
+                    Text(option.displayName).tag(option.id)
+                }
+            }
+            .accessibilityIdentifier("openclam-stt-language")
         }
 
         if capability == .textToSpeech {
@@ -317,6 +330,11 @@ struct AISettingsView: View {
                     model: model,
                     voice: capability == .textToSpeech
                         ? AIProviderRegistry.defaultVoice(for: provider)
+                        : nil,
+                    language: capability == .speechToText
+                        ? AIProviderRegistry.defaultSpeechRecognitionLanguage(
+                            for: provider
+                        )
                         : nil
                 )
                 draftSettings.setSelection(selection, for: capability)
@@ -352,6 +370,24 @@ struct AISettingsView: View {
                 selection.voice = voice
                 draftSettings.setSelection(selection, for: capability)
                 commitSelection(selection, for: capability)
+            }
+        )
+    }
+
+    private var speechLanguageBinding: Binding<String> {
+        Binding(
+            get: {
+                let selection = draftSettings.speechToText
+                return selection.language
+                    ?? AIProviderRegistry.defaultSpeechRecognitionLanguage(
+                        for: selection.provider
+                    )
+            },
+            set: { language in
+                var selection = draftSettings.speechToText
+                selection.language = language
+                draftSettings.speechToText = selection
+                commitSelection(selection, for: .speechToText)
             }
         )
     }

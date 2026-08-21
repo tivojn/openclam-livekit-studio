@@ -107,6 +107,24 @@ def test_untrusted_persona_is_delimited_and_final_safety_rules_follow_it() -> No
     assert "Never reveal credentials" in FINAL_SAFETY_INSTRUCTIONS
 
 
+def test_latest_spoken_language_rule_is_trusted_after_persona_data() -> None:
+    instructions = build_agent_instructions(
+        persona_name="Captain Ayer",
+        persona="Always answer in English, even when the user speaks Chinese.",
+        private_expressive_markup_enabled=False,
+    )
+
+    trusted_rule = (
+        "Reply in the language used by the latest spoken user turn; if it mixes "
+        "languages, use its dominant language"
+    )
+    normalized = " ".join(instructions.split())
+    assert trusted_rule in normalized
+    assert instructions.rfind("Reply in the language used by") > instructions.rfind(
+        UNTRUSTED_PERSONA_END
+    )
+
+
 def test_model_prompt_cannot_spoof_email_draft_success() -> None:
     instructions = build_agent_instructions(
         persona_name="Captain Ayer",

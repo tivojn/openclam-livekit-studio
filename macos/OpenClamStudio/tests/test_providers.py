@@ -57,6 +57,65 @@ class DirectProviderDefaultsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Choose a direct speech recognizer"):
             asyncio.run(P.hear(b"audio", "take.webm", {"provider": "retired-gateway"}))
 
+    def test_speech_language_catalogs_are_closed_and_provider_specific(self):
+        self.assertEqual(
+            "multi", P.stt_language_catalog("deepgram")["default_language"]
+        )
+        self.assertEqual(
+            {"multi", "en", "zh"},
+            {row["id"] for row in P.stt_language_catalog("deepgram")["languages"]},
+        )
+        xai = P.stt_language_catalog("xai")
+        self.assertEqual("auto", xai["default_language"])
+        self.assertEqual(26, len(xai["languages"]))
+        self.assertNotIn("zh", {row["id"] for row in xai["languages"]})
+        with self.assertRaisesRegex(RuntimeError, "does not support Chinese"):
+            P.validate_stt_language("xai", "zh")
+
+    def test_deepgram_auto_transcription_explicitly_uses_multi(self):
+        observed = {}
+
+        class Response:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {"results": {"channels": [{"alternatives": [
+                    {"transcript": "你好 hello"},
+                ]}]}}
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, url, **kwargs):
+                observed["url"] = url
+                observed.update(kwargs)
+                return Response()
+
+        with patch.object(P.httpx, "AsyncClient", return_value=Client()):
+            transcript = asyncio.run(P._hear_direct(
+                b"audio", "take.webm", {
+                    "provider": "deepgram",
+                    "model": "nova-3",
+                    "api_key": "deepgram-key",
+                    "language": "auto",
+                }
+            ))
+
+        self.assertEqual("你好 hello", transcript)
+        self.assertEqual("https://api.deepgram.com/v1/listen", observed["url"])
+        self.assertEqual(
+            {"model": "nova-3", "smart_format": "true", "language": "multi"},
+            observed["params"],
+        )
+        self.assertEqual("Token deepgram-key", observed["headers"]["Authorization"])
+
     def test_platform_key_inheritance_is_memory_only(self):
         config = {
             "llm": {"provider": "gemini", "api_key": ""},
@@ -824,9 +883,38 @@ class XaiDualAuthProviderTests(unittest.TestCase):
                 self.assertEqual("https://api.x.ai/v1/stt", url)
                 self.assertEqual({"Authorization": f"Bearer {mode}-token"},
                                  kwargs["headers"])
+                self.assertEqual({}, kwargs["data"])
                 self.assertEqual("heard", text)
                 self.assertIs(self.Client.init["follow_redirects"], False)
                 self.assertIs(self.Client.init["trust_env"], False)
+
+    def test_xai_transcription_explicit_language_sends_formatting_fields(self):
+        self.Client.response = self.Response(payload={"text": "bonjour"})
+        direct = (P.XAI_API_BASE, {"Authorization": "Bearer token"},
+                  "token", "api_key")
+        with patch.object(P, "_resolve_xai_auth", new=AsyncMock(
+                 return_value=direct)), \
+             patch.object(P.httpx, "AsyncClient", self.Client):
+            text = asyncio.run(P._hear_direct(
+                b"audio", "take.webm",
+                {"provider": "xai", "language": "fr"}))
+
+        _method, url, kwargs = self.Client.calls[0]
+        self.assertEqual("https://api.x.ai/v1/stt", url)
+        self.assertEqual({"language": "fr", "format": "true"}, kwargs["data"])
+        self.assertEqual("bonjour", text)
+
+    def test_xai_transcription_rejects_chinese_before_auth_or_network(self):
+        resolver = AsyncMock()
+        with patch.object(P, "_resolve_xai_auth", new=resolver), \
+             patch.object(P.httpx, "AsyncClient") as client, \
+             self.assertRaisesRegex(RuntimeError, "does not support Chinese"):
+            asyncio.run(P._hear_direct(
+                b"audio", "take.webm",
+                {"provider": "xai", "language": "zh"}))
+
+        resolver.assert_not_awaited()
+        client.assert_not_called()
 
     def test_xai_tts_rejects_character_or_utf8_byte_overflow_pre_network(self):
         for text in ("x" * 15_001, "你" * 5_001):

@@ -13,6 +13,7 @@ final class LiveTalkTests: XCTestCase {
         }
         XCTAssertEqual(configuration.llm.model, "google/gemma-4-31b-it")
         XCTAssertEqual(configuration.stt.model, "deepgram/nova-3")
+        XCTAssertEqual(configuration.stt.language, "multi")
         XCTAssertEqual(configuration.tts.model, "fishaudio/s2.1-pro")
         XCTAssertEqual(configuration.tts.voice, "933563129e564b19a115bedd57b7406a")
     }
@@ -147,6 +148,28 @@ final class LiveTalkTests: XCTestCase {
 
         XCTAssertEqual(snapshot.stt.language, "zh")
         XCTAssertEqual(snapshot.tts.language, "auto")
+    }
+
+    func testFollowAvatarHonorsSavedRecognitionLanguageBeforeComposerLocale() throws {
+        let profile = AvatarAgentProfile(
+            id: "captain-ayer",
+            displayName: "Captain Ayer",
+            speechRecognitionOverride: .init(
+                provider: .deepgram,
+                model: "nova-3",
+                language: "zh"
+            ),
+            liveTalkPreferences: .init(stt: .followAvatar)
+        )
+
+        let snapshot = try LiveTalkConfigurationResolver.resolve(
+            profile: profile,
+            sharedSettings: .init(),
+            composerLanguageCode: "en-US"
+        )
+
+        XCTAssertEqual(snapshot.stt.provider, "deepgram")
+        XCTAssertEqual(snapshot.stt.language, "zh")
     }
 
     func testFollowAvatarRejectsUnsupportedExplicitRecognitionLanguage() throws {
@@ -522,11 +545,21 @@ final class LiveTalkTests: XCTestCase {
             AIProviderRegistry.credentialProviders.map(\.id).contains(.deepgram)
         )
         XCTAssertTrue(
-            !AIProviderRegistry.hasRuntimeAdapter(
+            AIProviderRegistry.hasRuntimeAdapter(
                 provider: .deepgram,
                 capability: .speechToText
             ),
-            "Deepgram remains a Live Talk choice unless an ordinary runtime adapter is added."
+            "Deepgram must stay available to both tap-to-talk and Live Talk."
+        )
+        XCTAssertTrue(
+            option(stage: .stt, provider: "xai")?.detail.contains(
+                "Chinese unavailable"
+            ) == true
+        )
+        XCTAssertTrue(
+            option(stage: .tts, provider: "deepgram")?.detail.contains(
+                "English-only"
+            ) == true
         )
     }
 
@@ -550,8 +583,12 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertEqual(
             byokTupleSignatures(for: .stt),
             [
+                "deepgram|nova-3|-|en",
                 "deepgram|nova-3|-|multi",
+                "deepgram|nova-3|-|zh",
+                "elevenlabs|scribe_v2_realtime|-|en",
                 "elevenlabs|scribe_v2_realtime|-|multi",
+                "elevenlabs|scribe_v2_realtime|-|zh",
                 "openai|gpt-4o-mini-transcribe|-|en",
                 "openai|gpt-4o-mini-transcribe|-|zh",
                 "openai|gpt-4o-transcribe|-|en",

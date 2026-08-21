@@ -445,6 +445,65 @@ private struct AvatarLibraryNotice: Identifiable {
     let message: String
 }
 
+enum AvatarAgentEditorSaveError: LocalizedError, Equatable {
+    case avatarUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .avatarUnavailable:
+            "This avatar is no longer installed. Its old settings were not saved."
+        }
+    }
+}
+
+/// Keeps Save terminal after a successful write so two rapid taps cannot
+/// persist the same stale editor twice while NavigationStack removes it.
+struct AvatarAgentEditorSaveGate: Equatable, Sendable {
+    enum Phase: Equatable, Sendable {
+        case idle
+        case saving
+        case saved
+    }
+
+    private(set) var phase: Phase = .idle
+
+    var canSubmit: Bool { phase == .idle }
+
+    mutating func begin() -> Bool {
+        guard canSubmit else { return false }
+        phase = .saving
+        return true
+    }
+
+    mutating func fail() {
+        guard phase == .saving else { return }
+        phase = .idle
+    }
+
+    mutating func succeed() {
+        guard phase == .saving else { return }
+        phase = .saved
+    }
+}
+
+@MainActor
+enum AvatarAgentEditorSaveOperation {
+    static func persist(
+        draft: AvatarAgentProfile,
+        configuration: AIConfigurationModel,
+        avatarIsAvailable: Bool
+    ) throws -> AvatarAgentProfile {
+        guard avatarIsAvailable else {
+            throw AvatarAgentEditorSaveError.avatarUnavailable
+        }
+        _ = try LiveTalkConfigurationResolver.resolve(
+            profile: draft,
+            sharedSettings: configuration.settings
+        )
+        return try configuration.updateAvatarProfile(draft)
+    }
+}
+
 struct AvatarAgentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var avatarLibrary: OpenClamAvatarLibrary
@@ -458,6 +517,7 @@ struct AvatarAgentEditorView: View {
     @State private var showsDeleteConfirmation = false
     @State private var isDeletingAvatar = false
     @State private var deletionNotice: AvatarLibraryNotice?
+    @State private var saveGate = AvatarAgentEditorSaveGate()
 
     init(
         configuration: AIConfigurationModel,
@@ -483,6 +543,15 @@ struct AvatarAgentEditorView: View {
                     Button("Make this the active agent") {
                         onActivate(avatarID, draft.displayName)
                     }
+                }
+
+                if let notice {
+                    Text(notice)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier(
+                            "openclam-avatar-editor-notice"
+                        )
                 }
             }
 
@@ -518,7 +587,7 @@ struct AvatarAgentEditorView: View {
             } header: {
                 Text("Voice")
             } footer: {
-                Text("This voice reads chat replies aloud, including replies started with tap-to-talk. It does not change Continuous Live Talk unless Speaking voice below is set to Follow this avatar.")
+                Text("This voice reads chat replies aloud, including replies started with tap-to-talk. For Chinese replies, choose a multilingual voice; an English-only voice can sound wrong even when speech recognition succeeds. It does not change Continuous Live Talk unless Speaking voice below is set to Follow this avatar.")
             }
 
             Section {
@@ -581,6 +650,14 @@ struct AvatarAgentEditorView: View {
                     }
                     .padding(.vertical, 2)
                 }
+                if let warning = liveTalkLanguageCompatibilityWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier(
+                            "openclam-live-talk-language-compatibility-warning"
+                        )
+                }
             } header: {
                 Text("Continuous Live Talk")
                     .accessibilityIdentifier("openclam-avatar-live-talk-section")
@@ -614,6 +691,7 @@ struct AvatarAgentEditorView: View {
                 Button("Reset this agent", role: .destructive) {
                     showsResetConfirmation = true
                 }
+                .disabled(!saveGate.canSubmit || isDeletingAvatar)
             }
 
             if avatarLibrary.isImported(id: avatarID) {
@@ -624,7 +702,11 @@ struct AvatarAgentEditorView: View {
                     ) {
                         showsDeleteConfirmation = true
                     }
-                    .disabled(isDeletingAvatar || avatarLibrary.isMutating)
+                    .disabled(
+                        !saveGate.canSubmit
+                            || isDeletingAvatar
+                            || avatarLibrary.isMutating
+                    )
                     .accessibilityLabel(
                         "Delete avatar \(deletionDisplayName)"
                     )
@@ -657,19 +739,24 @@ struct AvatarAgentEditorView: View {
                 }
             }
 
-            if let notice {
-                Section {
-                    Text(notice)
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
         .navigationTitle(draft.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save", action: save)
-                    .disabled(isDeletingAvatar || !isAvatarAvailable)
+                    .disabled(
+                        !saveGate.canSubmit
+                            || isDeletingAvatar
+                            || avatarLibrary.isMutating
+                            || !isAvatarAvailable
+                    )
+                    .accessibilityHint(
+                        "Saves changes and returns to Avatar Agents."
+                    )
+                    .accessibilityIdentifier(
+                        "openclam-avatar-save-and-close"
+                    )
             }
         }
         .onChange(of: avatarLibrary.avatars.map(\.id)) { _, availableIDs in
@@ -687,6 +774,7 @@ struct AvatarAgentEditorView: View {
                 draft = configuration.profile(for: avatarID)
                 notice = "Reset to shared chat settings and LiveKit managed Live Talk."
             }
+            .disabled(!saveGate.canSubmit || isDeletingAvatar)
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog(
@@ -721,7 +809,8 @@ struct AvatarAgentEditorView: View {
     }
 
     private func deleteImportedAvatar() {
-        guard !isDeletingAvatar,
+        guard saveGate.canSubmit,
+              !isDeletingAvatar,
               !avatarLibrary.isMutating,
               avatarLibrary.isImported(id: avatarID),
               let avatar = avatarLibrary.avatar(id: avatarID) else {
@@ -900,6 +989,24 @@ struct AvatarAgentEditorView: View {
             }
             .accessibilityIdentifier("openclam-avatar-stt-model")
             .accessibilityValue(speechRecognitionModelBinding.wrappedValue)
+            Picker("Spoken language", selection: speechRecognitionLanguageBinding) {
+                ForEach(
+                    AIProviderRegistry.speechRecognitionLanguageOptions(
+                        for: speechRecognitionProviderBinding.wrappedValue
+                    )
+                ) { option in
+                    Text(option.displayName).tag(option.id)
+                }
+            }
+            .accessibilityIdentifier("openclam-avatar-stt-language")
+            if let note = AIProviderRegistry.configurationNote(
+                provider: speechRecognitionProviderBinding.wrappedValue,
+                capability: .speechToText
+            ) {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -966,7 +1073,10 @@ struct AvatarAgentEditorView: View {
                     model: configuration.preferredModel(
                         for: .speechToText,
                         provider: provider
-                    ) ?? ""
+                    ) ?? "",
+                    language: AIProviderRegistry.defaultSpeechRecognitionLanguage(
+                        for: provider
+                    )
                 )
             }
         )
@@ -979,6 +1089,25 @@ struct AvatarAgentEditorView: View {
                     ?? configuration.settings.speechToText.model
             },
             set: { draft.speechRecognitionOverride?.model = $0 }
+        )
+    }
+
+    private var speechRecognitionLanguageBinding: Binding<String> {
+        Binding(
+            get: {
+                let selection = draft.speechRecognitionOverride
+                    ?? configuration.settings.speechToText
+                return selection.language
+                    ?? AIProviderRegistry.defaultSpeechRecognitionLanguage(
+                        for: selection.provider
+                    )
+            },
+            set: { language in
+                var selection = draft.speechRecognitionOverride
+                    ?? configuration.settings.speechToText
+                selection.language = language
+                draft.speechRecognitionOverride = selection
+            }
         )
     }
 
@@ -1042,6 +1171,20 @@ struct AvatarAgentEditorView: View {
         case let .fixed(selection):
             return LiveTalkCatalog.option(matching: selection, for: stage)?.detail
         }
+    }
+
+    private var liveTalkLanguageCompatibilityWarning: String? {
+        guard let resolved = try? LiveTalkConfigurationResolver.resolve(
+            profile: draft,
+            sharedSettings: configuration.settings
+        ),
+        resolved.tts.provider == "deepgram",
+        resolved.tts.model == "aura-2-andromeda-en",
+        resolved.stt.language == LiveTalkLanguage.multilingual.rawValue
+            || resolved.stt.language == LiveTalkLanguage.chinese.rawValue else {
+            return nil
+        }
+        return "Deepgram Aura-2 Andromeda is English-only. Chinese may transcribe correctly, but this voice cannot reliably speak the Chinese reply; choose a multilingual speaking voice before starting Live Talk."
     }
 
     private func liveTalkUnavailableMessage(for stage: LiveTalkStage) -> String {
@@ -1150,7 +1293,10 @@ struct AvatarAgentEditorView: View {
             capability: .speechToText,
             model: selection.model
         )
-        return "\(providerName(selection.provider)) · \(model)"
+        let language = AIProviderRegistry.speechRecognitionLanguageLabel(
+            for: selection
+        )
+        return "\(providerName(selection.provider)) · \(model) · \(language)"
     }
 
     private func voiceSummary(_ selection: AIServiceSelection) -> String {
@@ -1167,18 +1313,20 @@ struct AvatarAgentEditorView: View {
     }
 
     private func save() {
-        guard isAvatarAvailable else {
-            notice = "This avatar is no longer installed. Its old settings were not saved."
-            return
-        }
+        guard !isDeletingAvatar,
+              !avatarLibrary.isMutating,
+              saveGate.begin() else { return }
+
         do {
-            _ = try LiveTalkConfigurationResolver.resolve(
-                profile: draft,
-                sharedSettings: configuration.settings
+            draft = try AvatarAgentEditorSaveOperation.persist(
+                draft: draft,
+                configuration: configuration,
+                avatarIsAvailable: isAvatarAvailable
             )
-            draft = try configuration.updateAvatarProfile(draft)
-            notice = "Saved for \(draft.displayName)."
+            saveGate.succeed()
+            dismiss()
         } catch {
+            saveGate.fail()
             notice = error.localizedDescription
         }
     }

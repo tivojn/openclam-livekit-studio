@@ -950,6 +950,10 @@ document.documentElement.dataset.design='quiet';</script>
   <div class="card" id="blk-llm"></div>
 
   <h2>Push to talk · speech recognition</h2>
+  <p class="section-note">Language is chosen before the recording is sent.
+    Local Whisper defaults to Auto multilingual and supports Chinese and English.
+    xAI detects only its documented 25 languages and does not support Chinese;
+    choose local Whisper or Deepgram for Chinese.</p>
   <div class="card" id="blk-stt"></div>
 
   <h2>Read aloud · speaking voice</h2>
@@ -967,7 +971,9 @@ document.documentElement.dataset.design='quiet';</script>
   <h2>Continuous Live Talk · LiveKit</h2>
   <div class="card" id="blk-live">
     <p class="note" style="margin:0 0 16px">This is independent from Chat
-      &amp; PTT above. Choose an approved provider, model, language, and voice
+      &amp; PTT above. Managed speech recognition defaults to Deepgram Nova-3
+      Auto multilingual, including Chinese and English. Choose an approved
+      provider, model, language, and voice
       for each stage. Managed choices use LiveKit infrastructure; personal-account
       choices use a matching Keychain key or the one shared xAI Account mode.</p>
     <div class="livekit-stage" data-livekit-stage="llm">
@@ -1708,7 +1714,7 @@ function resetModelState(kind) {
 
 function fieldSpecs(kind, provider) {
   if (kind === 'llm') return [['model', 'Model', 'models']];
-  if (kind === 'stt') return [['model', 'Model', 'models'], ['language', 'Language', 'free']];
+  if (kind === 'stt') return [['model', 'Model', 'models'], ['language', 'Spoken language', 'languages']];
   const fields = [];
   if (!['kokoro', 'edge', 'system', 'xai'].includes(provider)) fields.push(['model', 'Model', 'models']);
   fields.push(['voice', 'Voice', 'voices']);
@@ -2232,6 +2238,18 @@ function choiceField(kind, field, label, source, state) {
 
 function directFields(kind, provider, state) {
   return fieldSpecs(kind, provider).map(([field, label, source]) => {
+    if (source === 'languages') {
+      const descriptor = directCatalog(kind).find(item => item.id === provider) || {};
+      const choices = Array.isArray(descriptor.languages) ? descriptor.languages : [];
+      const selected = CFG[kind][field] || descriptor.default_language || 'auto';
+      const approved = choices.some(choice => choice && choice.id === selected);
+      const options = (approved ? ''
+        : `<option value="${esc(selected)}" selected>Unsupported saved choice · ${esc(selected)}</option>`)
+        + choices.map(choice => `<option value="${esc(choice.id)}" ${choice.id === selected ? 'selected' : ''}>${esc(choice.label || choice.id)}</option>`).join('');
+      const controlId = `${kind}-${field}-choice`;
+      return `<div class="f"><label for="${esc(controlId)}">${esc(label)}</label>
+        <select id="${esc(controlId)}" data-choice="${esc(field)}">${options}</select></div>`;
+    }
     if (source === 'free') {
       const controlId = `${kind}-${field}-free`;
       return `<div class="f"><label for="${esc(controlId)}">${esc(label)}</label>
@@ -2322,6 +2340,10 @@ function renderBlock(kind) {
       else delete config.web_search;
     }
     if (kind === 'tts') config.voice = '';
+    if (kind === 'stt') {
+      const nextProvider = list.find(item => item.id === config.provider) || {};
+      config.language = nextProvider.default_language || 'auto';
+    }
     resetModelState(kind);
     dirty();
     renderBlock(kind);
@@ -5190,8 +5212,9 @@ function uniqueValues(rows, key) {
 function liveKitOptions(values, selected, labeler=value => value) {
   return values.map(value => `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(labeler(value))}</option>`).join('');
 }
-function liveKitLanguageLabel(value) {
-  if (value === 'multi') return 'Multilingual';
+function liveKitLanguageLabel(value, selection={}) {
+  if (selection.provider === 'xai') return 'Automatic · 25 languages, no Chinese';
+  if (value === 'multi') return 'Auto multilingual · Chinese + English';
   if (value === 'auto') return 'Automatic';
   return String(value || '').toUpperCase();
 }
@@ -5229,7 +5252,7 @@ function renderLiveKitStage(stage, preferred=null) {
     const detailSelect = $(`#livekit-${stage}-${detailKey}`);
     const details = uniqueValues(modelRows, detailKey);
     detailSelect.innerHTML = liveKitOptions(details, selected[detailKey], value =>
-      detailKey === 'voice' ? (LIVEKIT_VOICE_NAMES[value] || value) : liveKitLanguageLabel(value));
+      detailKey === 'voice' ? (LIVEKIT_VOICE_NAMES[value] || value) : liveKitLanguageLabel(value, selected));
   }
 
   const disclosure = $(`#livekit-${stage}-disclosure`);
@@ -5240,7 +5263,7 @@ function renderLiveKitStage(stage, preferred=null) {
   disclosure.className = 'livekit-disclosure'
     + (selected.source === 'managed' ? ' managed' : '')
     + (selected.source === 'byok' && !credentialReady ? ' missing' : '');
-  disclosure.textContent = selected.source === 'managed'
+  const credentialDisclosure = selected.source === 'managed'
     ? 'Managed by LiveKit. No personal provider key is needed for this stage.'
     : sharedXai && credentialReady
       ? `${providerName} uses the shared ${xaiModeName(XAI_ACCOUNT.status.auth_mode)} mode from xAI Account. No credential is placed in room metadata.`
@@ -5249,6 +5272,20 @@ function renderLiveKitStage(stage, preferred=null) {
     : keyStored
       ? `${providerName} uses the matching key stored in this Mac’s Keychain. The key is never placed in room metadata.`
       : `Add a ${providerName} key under Provider keys before calling. Live Talk cannot use a key pasted only into a Chat, PTT, or read-aloud lane.`;
+  const speechDisclosure = stage !== 'stt' ? ''
+    : selected.provider === 'xai'
+      ? 'xAI recognition is automatic only within its exact 25-language list; Chinese is unavailable. Choose managed Deepgram Auto multilingual for Chinese.'
+      : selected.language === 'multi'
+        ? 'Auto multilingual recognition is enabled, including Chinese and English.'
+        : selected.language === 'zh' ? 'Chinese recognition is selected.'
+          : selected.language === 'en' ? 'English recognition is selected.' : '';
+  const voiceDisclosure = stage === 'tts'
+      && selected.provider === 'deepgram'
+      && selected.model === 'aura-2-andromeda-en'
+    ? 'Aura-2 Andromeda is English-only. Choose a multilingual speaking voice if speech recognition is Auto multilingual or Chinese.'
+    : '';
+  disclosure.textContent = [speechDisclosure, voiceDisclosure, credentialDisclosure]
+    .filter(Boolean).join(' ');
 
   sourceSelect.onchange = () => renderLiveKitStage(stage,
     choices.find(choice => choice.source === sourceSelect.value));

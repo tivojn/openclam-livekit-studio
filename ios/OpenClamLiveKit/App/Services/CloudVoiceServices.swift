@@ -14,9 +14,212 @@ struct CloudSpeechSynthesisRequest: Equatable, Sendable {
     }
 }
 
+/// One source of truth for the text boundary enforced by every cloud speech adapter. The
+/// conversation speech planner deliberately stays a little below these limits so a provider can
+/// tighten JSON/request accounting without turning a valid response into an all-or-nothing error.
+enum CloudSpeechTextLimits {
+    static let chunkHeadroomBytes = 64
+
+    static func maximumInputBytes(for provider: AIProviderID) -> Int {
+        switch provider {
+        case .openAI, .openRouter:
+            4_096
+        case .elevenLabs, .soniox:
+            5_000
+        case .gemini:
+            8_000
+        case .xAI:
+            15_000
+        case .apple:
+            // AVSpeechSynthesizer has no documented provider byte boundary. Keeping its local
+            // utterances at the strictest cloud boundary gives cancellation and lip sync the same
+            // predictable cadence as cloud playback.
+            4_096
+        default:
+            // No other provider reaches the text-to-speech runtime today. This conservative
+            // fallback is fail-safe for a newly registered adapter until its explicit limit lands.
+            4_096
+        }
+    }
+
+    static func safeChunkBytes(for provider: AIProviderID) -> Int {
+        max(1, maximumInputBytes(for: provider) - chunkHeadroomBytes)
+    }
+}
+
+/// A provider request contains only `text`. `separatorBefore` records whitespace consumed at a
+/// chunk boundary so tests and diagnostics can reconstruct the exact ephemeral normalized speech
+/// copy without placing leading whitespace into a request that providers trim.
+struct CloudSpeechTextChunk: Equatable, Sendable {
+    let separatorBefore: String
+    let text: String
+}
+
+struct CloudSpeechTextPlan: Equatable, Sendable {
+    let normalizedText: String
+    let chunks: [CloudSpeechTextChunk]
+
+    var reconstructedText: String {
+        chunks.map { $0.separatorBefore + $0.text }.joined()
+    }
+}
+
+/// Normalizes and chunks only the transient speech copy. Conversation history and provider model
+/// input retain the original response byte-for-byte. Splitting iterates Swift `Character` values,
+/// so a combining sequence, emoji variation selector, or ZWJ family is never divided.
+enum CloudSpeechTextPlanner {
+    static func plan(
+        _ rawText: String,
+        provider: AIProviderID
+    ) throws -> CloudSpeechTextPlan {
+        let normalized = normalize(rawText)
+        guard !normalized.isEmpty else {
+            return .init(normalizedText: "", chunks: [])
+        }
+        let chunks = try chunk(
+            normalized,
+            maximumBytes: CloudSpeechTextLimits.safeChunkBytes(for: provider)
+        )
+        return .init(normalizedText: normalized, chunks: chunks)
+    }
+
+    static func normalize(_ rawText: String) -> String {
+        let canonical = rawText.precomposedStringWithCanonicalMapping
+        var result = String.UnicodeScalarView()
+        var hasContent = false
+        var pendingSpace = false
+
+        for scalar in canonical.unicodeScalars {
+            if scalar.properties.generalCategory == .control
+                || CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                // Mapping controls to one boundary (instead of deleting them) prevents words on
+                // either side of CR/LF/tab/NUL from being accidentally joined. Format scalars are
+                // intentionally not removed: emoji ZWJ and meaningful direction marks survive.
+                pendingSpace = hasContent
+                continue
+            }
+            if pendingSpace {
+                result.append(" ")
+                pendingSpace = false
+            }
+            result.append(scalar)
+            hasContent = true
+        }
+        return String(result)
+    }
+
+    private static func chunk(
+        _ normalizedText: String,
+        maximumBytes: Int
+    ) throws -> [CloudSpeechTextChunk] {
+        precondition(maximumBytes >= 4)
+        var result: [CloudSpeechTextChunk] = []
+        var pending: [Character] = []
+        var pendingBytes = 0
+        var separatorBefore = ""
+
+        for character in normalizedText {
+            let characterBytes = String(character).utf8.count
+            guard characterBytes <= maximumBytes else {
+                // Never split a grapheme and never silently omit content. An intentionally
+                // pathological grapheme containing thousands of combining marks cannot be
+                // represented within this provider's contract, so fail before any request.
+                throw CloudVoiceServiceError.invalidText
+            }
+            while pendingBytes + characterBytes > maximumBytes, !pending.isEmpty {
+                let boundary = preferredBoundary(in: pending)
+                let prefix = Array(pending[..<boundary])
+                let suffix = Array(pending[boundary...])
+                let emitted = trimmingTrailingSpaces(prefix)
+                if !emitted.isEmpty {
+                    result.append(.init(
+                        separatorBefore: separatorBefore,
+                        text: String(emitted)
+                    ))
+                }
+
+                let leadingSpaceWasConsumed = suffix.first?.isWhitespace == true
+                pending = trimmingLeadingSpaces(suffix)
+                pendingBytes = utf8Count(pending)
+                separatorBefore = leadingSpaceWasConsumed ? " " : ""
+            }
+            pending.append(character)
+            pendingBytes += characterBytes
+        }
+
+        let final = trimmingBoundarySpaces(pending)
+        if !final.isEmpty {
+            result.append(.init(separatorBefore: separatorBefore, text: String(final)))
+        }
+        return result
+    }
+
+    private static func preferredBoundary(in characters: [Character]) -> Int {
+        if let sentence = characters.indices.reversed().first(where: {
+            isSentenceTerminal(characters[$0])
+        }) {
+            return characters.index(after: sentence)
+        }
+        if let whitespace = characters.indices.reversed().first(where: {
+            characters[$0].isWhitespace
+        }) {
+            return whitespace
+        }
+        return characters.endIndex
+    }
+
+    private static func isSentenceTerminal(_ character: Character) -> Bool {
+        ".!?\u{2026}\u{3002}\u{FF01}\u{FF1F}".contains(character)
+    }
+
+    private static func trimmingBoundarySpaces(_ characters: [Character]) -> [Character] {
+        guard let first = characters.firstIndex(where: { !$0.isWhitespace }),
+              let last = characters.lastIndex(where: { !$0.isWhitespace }) else {
+            return []
+        }
+        return Array(characters[first ... last])
+    }
+
+    private static func trimmingLeadingSpaces(_ characters: [Character]) -> [Character] {
+        guard let first = characters.firstIndex(where: { !$0.isWhitespace }) else { return [] }
+        return Array(characters[first...])
+    }
+
+    private static func trimmingTrailingSpaces(_ characters: [Character]) -> [Character] {
+        guard let last = characters.lastIndex(where: { !$0.isWhitespace }) else { return [] }
+        return Array(characters[...last])
+    }
+
+    private static func utf8Count(_ characters: [Character]) -> Int {
+        characters.reduce(into: 0) { $0 += String($1).utf8.count }
+    }
+}
+
 struct CloudSpeechAudio: Equatable, Sendable {
     let data: Data
     let mimeType: String
+}
+
+/// One language-hint contract for every cloud read-aloud consumer. In
+/// particular, xAI TTS must stay on provider-side automatic detection so a
+/// Chinese reply is not mislabeled as English merely because the iPhone UI is
+/// currently English.
+enum CloudSpeechSynthesisRequestResolver {
+    static func resolve(
+        text: String,
+        selection: AIServiceSelection,
+        localeLanguageCode: String?
+    ) throws -> CloudSpeechSynthesisRequest {
+        let validated = try selection.validated(for: .textToSpeech)
+        return .init(
+            text: text,
+            model: validated.model,
+            voice: validated.voice
+                ?? AIProviderRegistry.defaultVoice(for: validated.provider)
+                ?? "default",
+            languageCode: validated.provider == .xAI ? nil : localeLanguageCode
+        )
+    }
 }
 
 struct CloudTranscriptionRequest: Equatable, Sendable {
@@ -210,7 +413,10 @@ struct OpenAICloudVoiceService: CloudTextToSpeechServicing, CloudSpeechToTextSer
     }
 
     func synthesize(_ request: CloudSpeechSynthesisRequest) async throws -> CloudSpeechAudio {
-        let text = try CloudVoiceRequestSupport.text(request.text, maximumBytes: 4_096)
+        let text = try CloudVoiceRequestSupport.text(
+            request.text,
+            maximumBytes: CloudSpeechTextLimits.maximumInputBytes(for: provider)
+        )
         let model = try CloudVoiceRequestSupport.identifier(request.model, maximumBytes: 128)
         let voice = try CloudVoiceRequestSupport.identifier(request.voice, maximumBytes: 64)
         let key = try CloudVoiceRequestSupport.credential(from: credentialStore)
@@ -292,7 +498,10 @@ struct OpenRouterCloudVoiceService: CloudTextToSpeechServicing,
     }
 
     func synthesize(_ request: CloudSpeechSynthesisRequest) async throws -> CloudSpeechAudio {
-        let text = try CloudVoiceRequestSupport.text(request.text, maximumBytes: 4_096)
+        let text = try CloudVoiceRequestSupport.text(
+            request.text,
+            maximumBytes: CloudSpeechTextLimits.maximumInputBytes(for: provider)
+        )
         let model = try CloudVoiceRequestSupport.identifier(request.model, maximumBytes: 128)
         let voice = try CloudVoiceRequestSupport.identifier(request.voice, maximumBytes: 64)
         let key = try CloudVoiceRequestSupport.credential(from: credentialStore)
@@ -389,7 +598,10 @@ struct XAICloudVoiceService: CloudTextToSpeechServicing, CloudSpeechToTextServic
     }
 
     func synthesize(_ request: CloudSpeechSynthesisRequest) async throws -> CloudSpeechAudio {
-        let text = try CloudVoiceRequestSupport.text(request.text, maximumBytes: 15_000)
+        let text = try CloudVoiceRequestSupport.text(
+            request.text,
+            maximumBytes: CloudSpeechTextLimits.maximumInputBytes(for: provider)
+        )
         let serviceID = try CloudVoiceRequestSupport.identifier(request.model, maximumBytes: 128)
         guard serviceID == Self.textToSpeechServiceID else {
             throw CloudVoiceServiceError.invalidIdentifier
@@ -470,7 +682,10 @@ struct GeminiCloudTextToSpeechService: CloudTextToSpeechServicing, Sendable {
     }
 
     func synthesize(_ request: CloudSpeechSynthesisRequest) async throws -> CloudSpeechAudio {
-        let text = try CloudVoiceRequestSupport.text(request.text, maximumBytes: 8_000)
+        let text = try CloudVoiceRequestSupport.text(
+            request.text,
+            maximumBytes: CloudSpeechTextLimits.maximumInputBytes(for: provider)
+        )
         let model = try CloudVoiceRequestSupport.identifier(request.model, maximumBytes: 128)
         let voice = try CloudVoiceRequestSupport.identifier(request.voice, maximumBytes: 64)
         let key = try CloudVoiceRequestSupport.credential(from: credentialStore)
@@ -521,6 +736,74 @@ struct GeminiCloudTextToSpeechService: CloudTextToSpeechServicing, Sendable {
     }
 }
 
+struct DeepgramCloudSpeechToTextService: CloudSpeechToTextServicing, Sendable {
+    static let transcriptionEndpoint = URL(string: "https://api.deepgram.com/v1/listen")!
+
+    let provider = AIProviderID.deepgram
+    let requestStorageBehavior = CloudVoiceRequestStorageBehavior.providerDefaultLogging
+
+    private let credentialStore: AgentCredentialStore
+    private let transport: OpenAIResponsesTransport
+
+    init(
+        credentialStore: AgentCredentialStore,
+        transport: OpenAIResponsesTransport = URLSessionOpenAIResponsesTransport()
+    ) {
+        self.credentialStore = credentialStore
+        self.transport = transport
+    }
+
+    func transcribe(_ request: CloudTranscriptionRequest) async throws -> CloudTranscription {
+        let file = try CloudVoiceRequestSupport.audioRequest(request)
+        let model = try CloudVoiceRequestSupport.identifier(request.model, maximumBytes: 32)
+        guard model == "nova-3" else { throw CloudVoiceServiceError.invalidIdentifier }
+        let language = try CloudVoiceRequestSupport.language(request.languageCode) ?? "multi"
+        guard ["multi", "en", "zh"].contains(language) else {
+            throw CloudVoiceServiceError.invalidLanguage
+        }
+        let key = try CloudVoiceRequestSupport.credential(from: credentialStore)
+        var components = URLComponents(
+            url: Self.transcriptionEndpoint,
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            .init(name: "model", value: model),
+            .init(name: "language", value: language),
+            .init(name: "smart_format", value: "true"),
+        ]
+        var urlRequest = CloudVoiceRequestSupport.request(
+            url: components.url!,
+            method: "POST",
+            timeout: 60
+        )
+        urlRequest.httpBody = file.data
+        urlRequest.setValue(file.mimeType, forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        urlRequest.setValue("Token \(key)", forHTTPHeaderField: "Authorization")
+
+        let data = try CloudVoiceRequestSupport.successData(
+            await transport.send(urlRequest),
+            maximumBytes: CloudVoiceRequestSupport.maximumJSONResponseBytes
+        )
+        let envelope: DeepgramTranscriptionEnvelope
+        do {
+            envelope = try JSONDecoder().decode(
+                DeepgramTranscriptionEnvelope.self,
+                from: data
+            )
+        } catch {
+            throw CloudVoiceServiceError.malformedResponse
+        }
+        let text = envelope.results.channels.first?.alternatives.first?.transcript
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { throw CloudVoiceServiceError.missingTranscript }
+        guard text.utf8.count <= CloudVoiceRequestSupport.maximumTranscriptBytes else {
+            throw CloudVoiceServiceError.responseTooLarge
+        }
+        return .init(text: text)
+    }
+}
+
 struct ElevenLabsCloudVoiceService: CloudTextToSpeechServicing, CloudSpeechToTextServicing, Sendable {
     static let speechBaseURL = URL(string: "https://api.elevenlabs.io/v1/text-to-speech")!
     static let transcriptionEndpoint = URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!
@@ -540,7 +823,10 @@ struct ElevenLabsCloudVoiceService: CloudTextToSpeechServicing, CloudSpeechToTex
     }
 
     func synthesize(_ request: CloudSpeechSynthesisRequest) async throws -> CloudSpeechAudio {
-        let text = try CloudVoiceRequestSupport.text(request.text, maximumBytes: 5_000)
+        let text = try CloudVoiceRequestSupport.text(
+            request.text,
+            maximumBytes: CloudSpeechTextLimits.maximumInputBytes(for: provider)
+        )
         let model = try CloudVoiceRequestSupport.identifier(request.model, maximumBytes: 128)
         let voice = try CloudVoiceRequestSupport.safePathSegment(request.voice, maximumBytes: 128)
         let key = try CloudVoiceRequestSupport.credential(from: credentialStore)
@@ -617,7 +903,10 @@ struct SonioxCloudTextToSpeechService: CloudTextToSpeechServicing, Sendable {
     }
 
     func synthesize(_ request: CloudSpeechSynthesisRequest) async throws -> CloudSpeechAudio {
-        let text = try CloudVoiceRequestSupport.text(request.text, maximumBytes: 5_000)
+        let text = try CloudVoiceRequestSupport.text(
+            request.text,
+            maximumBytes: CloudSpeechTextLimits.maximumInputBytes(for: provider)
+        )
         let model = try CloudVoiceRequestSupport.identifier(request.model, maximumBytes: 50)
         let voice = try CloudVoiceRequestSupport.identifier(request.voice, maximumBytes: 50)
         guard let language = try CloudVoiceRequestSupport.language(request.languageCode) else {
@@ -1206,7 +1495,7 @@ enum CloudVoiceRequestSupport {
     static let maximumAudioOutputBytes = 20_000_000
     static let maximumBase64ResponseBytes = 28_000_000
     static let maximumJSONResponseBytes = 1_000_000
-    private static let maximumTranscriptBytes = 200_000
+    static let maximumTranscriptBytes = 200_000
 
     struct AudioFile: Sendable {
         let data: Data
@@ -1230,7 +1519,9 @@ enum CloudVoiceRequestSupport {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty,
               value.utf8.count <= maximumBytes,
-              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+              !value.unicodeScalars.contains(where: {
+                  $0.properties.generalCategory == .control
+              }) else {
             throw CloudVoiceServiceError.invalidText
         }
         return value
@@ -1402,6 +1693,18 @@ private struct GeminiAudioEnvelope: Decodable {
 
 private struct TextEnvelope: Decodable {
     let text: String
+}
+
+private struct DeepgramTranscriptionEnvelope: Decodable {
+    struct Results: Decodable {
+        struct Channel: Decodable {
+            struct Alternative: Decodable { let transcript: String }
+            let alternatives: [Alternative]
+        }
+        let channels: [Channel]
+    }
+
+    let results: Results
 }
 
 private struct IdentifierEnvelope: Decodable {

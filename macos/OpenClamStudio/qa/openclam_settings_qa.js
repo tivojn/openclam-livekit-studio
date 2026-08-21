@@ -838,6 +838,8 @@ assert.ok((source.match(/setLiveKitState\(liveKitErrorMessage\(error,/g) || []).
   'Both LiveKit render and Save errors must use the friendly mapper');
 includes('Live Talk cannot use a key pasted only into a Chat, PTT, or read-aloud lane.');
 includes('Live Talk does not fall back to a lane credential.');
+includes('Aura-2 Andromeda is English-only.');
+includes('xAI recognition is automatic only within its exact 25-language list; Chinese is unavailable.');
 includes('every selected personal provider account are available');
 
 console.log('OpenClam Studio settings QA passed.');

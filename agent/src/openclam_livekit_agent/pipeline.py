@@ -318,8 +318,10 @@ def _build_stt(selection: StageSelection, claim: ClaimedSession) -> stt.STT:
             use_realtime=False,
         )
     if selection.provider == "xai":
-        # Both explicit modes use xAI's direct speech API with bearer
-        # authorization; only the OAuth LLM transport differs.
+        # The pinned plugin always serializes this closed-contract `en` value.
+        # It is an inverse-text-formatting hint, not a claim of English-only
+        # recognition and not a way to add Chinese. xAI automatically recognizes
+        # only its documented 25-language set, which excludes Chinese.
         claim.xai_auth_mode_for(StageName.STT)
         return _OwnedXaiSTT(
             speech_session=_HardenedXaiSpeechSession(XAI_STT_PATH),

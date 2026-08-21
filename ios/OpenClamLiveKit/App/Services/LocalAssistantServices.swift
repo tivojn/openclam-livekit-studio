@@ -713,7 +713,11 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
     func start(using aiConfiguration: AIConfigurationModel) async {
         let requestedSelection = aiConfiguration.effectiveSettings.speechToText
         if requestedSelection.provider == .apple {
-            await start()
+            await startApple(
+                languageCode: AIProviderRegistry.speechRecognitionRequestLanguage(
+                    for: requestedSelection
+                )
+            )
             return
         }
 
@@ -752,6 +756,10 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
     }
 
     func start() async {
+        await startApple(languageCode: Locale.current.identifier)
+    }
+
+    private func startApple(languageCode: String?) async {
         sessionGeneration += 1
         let generation = sessionGeneration
         errorMessage = nil
@@ -776,7 +784,8 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
             return
         }
 
-        guard let recognizer = SFSpeechRecognizer(locale: .current), recognizer.isAvailable else {
+        let locale = languageCode.map(Locale.init(identifier:)) ?? .current
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
             errorMessage = LocalAssistantServiceError.speechUnavailable.localizedDescription
             return
         }
@@ -1048,7 +1057,9 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         do {
             let session = try await service.startSession(
                 model: selection.model,
-                languageCode: Locale.current.language.languageCode?.identifier
+                languageCode: AIProviderRegistry.speechRecognitionRequestLanguage(
+                    for: selection
+                )
             )
             guard generation == sessionGeneration else {
                 await session.cancel()
@@ -1371,7 +1382,9 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
                 filename: "openclam-dictation.m4a",
                 mimeType: "audio/mp4",
                 model: selection.model,
-                languageCode: Locale.current.language.languageCode?.identifier
+                languageCode: AIProviderRegistry.speechRecognitionRequestLanguage(
+                    for: selection
+                )
             )
             isTranscribing = true
             let task = Task { try await service.transcribe(request) }

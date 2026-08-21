@@ -1,9 +1,272 @@
+import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
 import XCTest
 @testable import OpenClamLiveKit
 
 final class CloudVoiceServiceTests: XCTestCase {
+    func testSpeechProviderLimitsAcceptBelowAndAtBoundaryButRejectAbove() throws {
+        let providers: [AIProviderID] = [
+            .openAI, .openRouter, .elevenLabs, .soniox, .gemini, .xAI,
+        ]
+
+        for provider in providers {
+            let maximum = CloudSpeechTextLimits.maximumInputBytes(for: provider)
+            let below = String(repeating: "a", count: maximum - 1)
+            let at = String(repeating: "a", count: maximum)
+            let above = String(repeating: "a", count: maximum + 1)
+
+            XCTAssertEqual(
+                try CloudVoiceRequestSupport.text(below, maximumBytes: maximum),
+                below,
+                "\(provider) should accept one byte below its limit."
+            )
+            XCTAssertEqual(
+                try CloudVoiceRequestSupport.text(at, maximumBytes: maximum),
+                at,
+                "\(provider) should accept its exact byte limit."
+            )
+            XCTAssertThrowsError(
+                try CloudVoiceRequestSupport.text(above, maximumBytes: maximum),
+                "\(provider) must reject one byte above its limit."
+            ) { error in
+                XCTAssertEqual(error as? CloudVoiceServiceError, .invalidText)
+            }
+            XCTAssertEqual(
+                CloudSpeechTextLimits.safeChunkBytes(for: provider),
+                maximum - CloudSpeechTextLimits.chunkHeadroomBytes
+            )
+        }
+    }
+
+    func testSpeechNormalizationRemovesUnsafeControlsButPreservesSemanticUnicode() throws {
+        let family = "👩🏽‍💻"
+        let raw = " \u{0000}\tCafe\u{0301}\r\n你好\u{0007}  \(family)\u{200E} مرحبا  "
+        let plan = try CloudSpeechTextPlanner.plan(raw, provider: .openAI)
+
+        XCTAssertEqual(plan.normalizedText, "Café 你好 \(family)\u{200E} مرحبا")
+        XCTAssertEqual(plan.reconstructedText, plan.normalizedText)
+        XCTAssertFalse(
+            plan.normalizedText.unicodeScalars.contains {
+                $0.properties.generalCategory == .control
+            }
+        )
+        XCTAssertTrue(
+            plan.normalizedText.unicodeScalars.contains { $0.value == 0x200D },
+            "Emoji ZWJ must survive."
+        )
+        XCTAssertTrue(
+            plan.normalizedText.unicodeScalars.contains { $0.value == 0x200E },
+            "Direction marks are semantic format scalars."
+        )
+    }
+
+    func testHugeMultilingualSpeechPlanPreservesEveryNormalizedCharacterInOrder() throws {
+        let paragraph = "Part one keeps emoji 👨‍👩‍👧‍👦 and café. 第二段保留中文、かな、한글。 مرحبا بالعالم!\n"
+        let raw = String(repeating: paragraph, count: 900)
+        let plan = try CloudSpeechTextPlanner.plan(raw, provider: .openAI)
+        let safeLimit = CloudSpeechTextLimits.safeChunkBytes(for: .openAI)
+
+        XCTAssertGreaterThan(plan.normalizedText.utf8.count, safeLimit * 10)
+        XCTAssertGreaterThan(plan.chunks.count, 10)
+        XCTAssertEqual(plan.reconstructedText, plan.normalizedText)
+        for chunk in plan.chunks {
+            XCTAssertFalse(chunk.text.isEmpty)
+            XCTAssertLessThanOrEqual(chunk.text.utf8.count, safeLimit)
+            XCTAssertEqual(
+                try CloudVoiceRequestSupport.text(
+                    chunk.text,
+                    maximumBytes: CloudSpeechTextLimits.maximumInputBytes(for: .openAI)
+                ),
+                chunk.text
+            )
+        }
+    }
+
+    func testSpeechPlannerNeverSplitsExtendedGraphemeClusters() throws {
+        let grapheme = "👩🏽‍💻"
+        let raw = Array(repeating: grapheme, count: 2_000).joined()
+        let plan = try CloudSpeechTextPlanner.plan(raw, provider: .openAI)
+
+        XCTAssertGreaterThan(plan.chunks.count, 1)
+        XCTAssertEqual(plan.reconstructedText, raw)
+        XCTAssertTrue(
+            plan.chunks.allSatisfy { chunk in
+                chunk.text.allSatisfy { String($0) == grapheme }
+            }
+        )
+    }
+
+    func testSpeechPlannerPrefersSentenceBoundaryBeforeHardLimit() throws {
+        let first = String(repeating: "a", count: 2_200) + "."
+        let second = String(repeating: "b", count: 2_200) + "."
+        let plan = try CloudSpeechTextPlanner.plan("\(first) \(second)", provider: .openAI)
+
+        XCTAssertEqual(plan.chunks.count, 2)
+        XCTAssertEqual(plan.chunks[0].text, first)
+        XCTAssertEqual(plan.chunks[1].separatorBefore, " ")
+        XCTAssertEqual(plan.chunks[1].text, second)
+        XCTAssertEqual(plan.reconstructedText, plan.normalizedText)
+    }
+
+    func testSpeechSequenceAdvancesOnlyAfterConfirmedCompletionAndKeepsOrder() throws {
+        let plan = try CloudSpeechTextPlanner.plan(
+            String(repeating: "Sentence with ordered content. ", count: 1_000),
+            provider: .openAI
+        )
+        var sequence = SpeechOutputSequence(generation: 41, chunks: plan.chunks)
+        var spoken: [CloudSpeechTextChunk] = []
+
+        while let part = sequence.beginNextPart() {
+            XCTAssertNil(
+                sequence.beginNextPart(),
+                "A second part must not begin while the current part is active."
+            )
+            spoken.append(part.chunk)
+            let isComplete = sequence.completeActivePart()
+            XCTAssertEqual(isComplete, spoken.count == plan.chunks.count)
+        }
+
+        XCTAssertEqual(spoken, plan.chunks)
+        XCTAssertEqual(
+            spoken.map { $0.separatorBefore + $0.text }.joined(),
+            plan.normalizedText
+        )
+    }
+
+    func testMidSequenceFailureNamesPartAndRequiresExplicitRetryFromStart() {
+        let chunks = [
+            CloudSpeechTextChunk(separatorBefore: "", text: "One."),
+            CloudSpeechTextChunk(separatorBefore: " ", text: "Two."),
+            CloudSpeechTextChunk(separatorBefore: " ", text: "Three."),
+        ]
+        var sequence = SpeechOutputSequence(generation: 8, chunks: chunks)
+        _ = sequence.beginNextPart()
+        XCTAssertFalse(sequence.completeActivePart())
+        _ = sequence.beginNextPart()
+
+        XCTAssertEqual(sequence.activePartNumber, 2)
+        XCTAssertEqual(
+            sequence.failureMessage(detail: "Provider unavailable."),
+            "Speech stopped at part 2 of 3: Provider unavailable. Tap Read Aloud to retry from the beginning."
+        )
+        XCTAssertNil(sequence.beginNextPart(), "Failure cannot silently skip the active part.")
+    }
+
+    @MainActor
+    func testLongSpeechCancellationInvalidatesGenerationAndResetsLipSync() {
+        var releaseCount = 0
+        let lifecycle = SpeechOutputLifecycleCoordinator { releaseCount += 1 }
+        let avatar = CaptainAyerLipSyncController()
+        let generation = lifecycle.begin()
+        lifecycle.markAudioSessionActive(for: generation)
+        avatar.prepare(text: "First long part", generation: generation)
+        avatar.begin(generation: generation, duration: 2)
+        XCTAssertTrue(avatar.isSpeaking)
+
+        let shouldDeactivate = lifecycle.invalidate()
+        avatar.cancelAll()
+        lifecycle.deactivateAfterExplicitStop(ifNeeded: shouldDeactivate)
+
+        XCTAssertFalse(lifecycle.finish(generation), "A stale completion cannot revive speech.")
+        XCTAssertEqual(avatar.phase, .idle)
+        XCTAssertNil(avatar.generation)
+        XCTAssertEqual(releaseCount, 1)
+    }
+
+    @MainActor
+    func testSuccessfulMultiPartLipSyncUsesOneGenerationAndFinishesOnce() {
+        var releaseCount = 0
+        let lifecycle = SpeechOutputLifecycleCoordinator { releaseCount += 1 }
+        let avatar = CaptainAyerLipSyncController()
+        let chunks = [
+            CloudSpeechTextChunk(separatorBefore: "", text: "First part."),
+            CloudSpeechTextChunk(separatorBefore: " ", text: "第二部分。"),
+            CloudSpeechTextChunk(separatorBefore: " ", text: "Emoji 🙂 finish."),
+        ]
+        let generation = lifecycle.begin()
+        lifecycle.markAudioSessionActive(for: generation)
+        var sequence = SpeechOutputSequence(generation: generation, chunks: chunks)
+
+        while let part = sequence.beginNextPart() {
+            avatar.prepare(text: part.chunk.text, generation: generation)
+            avatar.begin(generation: generation, duration: 1)
+            XCTAssertTrue(avatar.isSpeaking)
+            if sequence.completeActivePart() {
+                XCTAssertTrue(lifecycle.finish(generation))
+                avatar.finish(generation: generation)
+            }
+        }
+
+        XCTAssertEqual(avatar.phase, .idle)
+        XCTAssertEqual(releaseCount, 1)
+        XCTAssertFalse(lifecycle.finish(generation))
+    }
+
+    @MainActor
+    func testPronunciationReplacesAssistantSpeechWithoutPublishingCancellationError() async throws {
+        let directory = try temporaryDirectory()
+        let suiteName = "PronunciationSpeechReplacement-\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        preferences.set(true, forKey: "assistant.tts-enabled")
+        var releaseCount = 0
+        let lifecycle = SpeechOutputLifecycleCoordinator { releaseCount += 1 }
+        let model = ConversationModel(
+            preferences: preferences,
+            historyController: ConversationHistoryController(
+                store: ConversationHistoryStore(
+                    fileURL: directory.appendingPathComponent("history.json")
+                )
+            ),
+            speechOutputLifecycle: lifecycle
+        )
+        defer {
+            model.stopSpeechOutput()
+            preferences.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let historyIsReady = await model.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        model.analyzePronunciation("hello")
+        XCTAssertNotNil(model.pronunciation)
+
+        model.readAssistantReplyAloud(
+            String(repeating: "This assistant response is still speaking. ", count: 80)
+        )
+        XCTAssertTrue(model.isSpeechOutputActive)
+
+        model.speakPronunciation()
+
+        XCTAssertFalse(model.isSpeechOutputActive)
+        XCTAssertNil(model.speechOutputError)
+        XCTAssertEqual(model.captainAyerAvatar.phase, .idle)
+        XCTAssertEqual(releaseCount, 1)
+    }
+
+    @MainActor
+    func testInvalidatedAssistantUtteranceCancellationCannotCompleteReplacement() {
+        let lifecycle = SpeechOutputLifecycleCoordinator {}
+        let proxy = SpeechOutputDelegateProxy()
+        let synthesizer = AVSpeechSynthesizer()
+        let replacedUtterance = AVSpeechUtterance(string: "Replaced assistant speech")
+        let replacedGeneration = lifecycle.begin()
+        var completion: (generation: Int, error: String?)?
+        proxy.onCompletion = { completion = (generation: $0, error: $1) }
+        proxy.register(replacedUtterance, generation: replacedGeneration)
+
+        _ = lifecycle.invalidate()
+        proxy.invalidateAll()
+        let replacementGeneration = lifecycle.begin()
+        proxy.speechSynthesizer(
+            synthesizer,
+            didCancel: replacedUtterance
+        )
+
+        XCTAssertNil(completion)
+        XCTAssertTrue(lifecycle.isCurrent(replacementGeneration))
+    }
+
     func testOpenAITTSUsesPinnedEndpointAndBoundedMP3Request() async throws {
         let transport = CloudVoiceRecordingTransport(responses: [
             .init(data: Data([1, 2, 3]), statusCode: 200),
@@ -104,7 +367,134 @@ final class CloudVoiceServiceTests: XCTestCase {
         let transcriptionBody = try XCTUnwrap(String(data: requests[1].httpBody!, encoding: .utf8))
         XCTAssertTrue(transcriptionBody.contains("filename=\"voice.m4a\""))
         XCTAssertTrue(transcriptionBody.contains("name=\"language\"\r\n\r\nen"))
+        XCTAssertTrue(transcriptionBody.contains("name=\"format\"\r\n\r\ntrue"))
         XCTAssertFalse(transcriptionBody.contains("xai-fake-key"))
+    }
+
+    func testXAITranscriptionAutoOmitsLanguageAndFormattingFields() async throws {
+        let transport = CloudVoiceRecordingTransport(responses: [
+            .json(#"{"text":"automatic transcript"}"#),
+        ])
+        let service = XAICloudVoiceService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "xai-fake-key"),
+            transport: transport
+        )
+
+        let transcript = try await service.transcribe(.init(
+            audioData: Data([0, 1, 2]),
+            filename: "voice.m4a",
+            mimeType: "audio/mp4",
+            model: "grok-transcribe",
+            languageCode: nil
+        ))
+
+        XCTAssertEqual(transcript.text, "automatic transcript")
+        let requests = await transport.requests()
+        let request = try XCTUnwrap(requests.first)
+        let body = try XCTUnwrap(String(data: request.httpBody!, encoding: .utf8))
+        XCTAssertFalse(body.contains("name=\"language\""))
+        XCTAssertFalse(body.contains("name=\"format\""))
+    }
+
+    func testDeepgramNova3UsesPinnedAutoMultilingualRequestContract() async throws {
+        let transport = CloudVoiceRecordingTransport(responses: [
+            .json(#"{"results":{"channels":[{"alternatives":[{"transcript":"你好, hello"}]}]}}"#),
+        ])
+        let service = DeepgramCloudSpeechToTextService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "deepgram-fake-key"),
+            transport: transport
+        )
+        let audio = Data([7, 6, 5, 4])
+
+        let transcript = try await service.transcribe(.init(
+            audioData: audio,
+            filename: "voice.wav",
+            mimeType: "audio/wav",
+            model: "nova-3",
+            languageCode: nil
+        ))
+
+        XCTAssertEqual(transcript.text, "你好, hello")
+        XCTAssertEqual(service.requestStorageBehavior, .providerDefaultLogging)
+        let requests = await transport.requests()
+        let request = try XCTUnwrap(requests.first)
+        let components = try XCTUnwrap(
+            URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)
+        )
+        XCTAssertEqual(components.scheme, "https")
+        XCTAssertEqual(components.host, "api.deepgram.com")
+        XCTAssertEqual(components.path, "/v1/listen")
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map {
+                ($0.name, $0.value ?? "")
+            }),
+            ["model": "nova-3", "language": "multi", "smart_format": "true"]
+        )
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Token deepgram-fake-key")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "audio/wav")
+        XCTAssertEqual(request.httpBody, audio)
+        XCTAssertFalse(
+            try XCTUnwrap(String(data: request.httpBody!, encoding: .isoLatin1))
+                .contains("deepgram-fake-key")
+        )
+    }
+
+    func testDeepgramRejectsUnknownModelLanguageAndOversizedAudioBeforeNetwork() async throws {
+        let transport = CloudVoiceRecordingTransport(responses: [])
+        let service = DeepgramCloudSpeechToTextService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "deepgram-fake-key"),
+            transport: transport
+        )
+        let base = CloudTranscriptionRequest(
+            audioData: Data([1]),
+            filename: "voice.wav",
+            mimeType: "audio/wav",
+            model: "nova-3",
+            languageCode: "multi"
+        )
+
+        do {
+            _ = try await service.transcribe(.init(
+                audioData: base.audioData,
+                filename: base.filename,
+                mimeType: base.mimeType,
+                model: "future-model",
+                languageCode: base.languageCode
+            ))
+            XCTFail("An unreviewed Deepgram model must fail before networking.")
+        } catch {
+            XCTAssertEqual(error as? CloudVoiceServiceError, .invalidIdentifier)
+        }
+        do {
+            _ = try await service.transcribe(.init(
+                audioData: base.audioData,
+                filename: base.filename,
+                mimeType: base.mimeType,
+                model: base.model,
+                languageCode: "auto"
+            ))
+            XCTFail("Deepgram must use its explicit multi contract, not auto.")
+        } catch {
+            XCTAssertEqual(error as? CloudVoiceServiceError, .invalidLanguage)
+        }
+        do {
+            _ = try await service.transcribe(.init(
+                audioData: Data(
+                    repeating: 0,
+                    count: CloudVoiceRequestSupport.maximumAudioInputBytes + 1
+                ),
+                filename: base.filename,
+                mimeType: base.mimeType,
+                model: base.model,
+                languageCode: base.languageCode
+            ))
+            XCTFail("Oversized audio must fail before networking.")
+        } catch {
+            XCTAssertEqual(error as? CloudVoiceServiceError, .invalidAudio)
+        }
+        let requests = await transport.requests()
+        XCTAssertTrue(requests.isEmpty)
     }
 
     func testOpenRouterVoiceUsesDedicatedCapabilityEndpointsAndProviderScopedBearerKey() async throws {

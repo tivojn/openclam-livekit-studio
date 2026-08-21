@@ -79,7 +79,7 @@ assert.match(electron, /backgroundColor: '#181818'/);
 // The visual rewrite may never turn icon-only desktop controls into unnamed
 // AX nodes, or turn the settings sidebar into an unlabeled row of buttons.
 for (const label of [
-  'Start Live Talk', 'Open Chat and Push to Talk', 'Show avatar move',
+  'Start Live Talk', 'Switch to next avatar', 'Show avatar move',
   'Start walking', 'Open Character Studio', 'Hold to talk', 'Message',
   'Send message', 'Close conversation',
 ]) {

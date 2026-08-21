@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import OpenClamLiveKit
 
@@ -209,6 +210,121 @@ final class AIProviderSettingsTests: XCTestCase {
         )
     }
 
+    func testSpeechLanguageSelectionPersistsAndLegacySelectionDefaultsSafely() throws {
+        let selected = AIServiceSelection(
+            provider: .deepgram,
+            model: "nova-3",
+            language: "multi"
+        )
+        let roundTrip = try JSONDecoder().decode(
+            AIServiceSelection.self,
+            from: JSONEncoder().encode(selected)
+        )
+        XCTAssertEqual(roundTrip, selected)
+
+        let legacy = try JSONDecoder().decode(
+            AIServiceSelection.self,
+            from: Data(#"{"provider":"deepgram","model":"nova-3"}"#.utf8)
+        )
+        XCTAssertNil(legacy.language)
+        XCTAssertEqual(
+            AIProviderRegistry.speechRecognitionRequestLanguage(for: legacy),
+            "multi"
+        )
+        XCTAssertEqual(
+            try AIServiceSelection(
+                provider: .deepgram,
+                model: "nova-3",
+                language: "auto"
+            ).validated(for: .speechToText).language,
+            "multi"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.speechRecognitionRequestLanguage(
+                for: .init(
+                    provider: .deepgram,
+                    model: "nova-3",
+                    language: "auto"
+                )
+            ),
+            "multi"
+        )
+    }
+
+    func testSpeechLanguageCatalogAndResolverDoNotClaimXAIChineseSupport() throws {
+        let xAIOptions = AIProviderRegistry.speechRecognitionLanguageOptions(for: .xAI)
+        XCTAssertEqual(xAIOptions.first?.id, "auto")
+        XCTAssertEqual(xAIOptions.count, 26)
+        XCTAssertFalse(xAIOptions.contains(where: { $0.id == "zh" }))
+        XCTAssertNil(
+            AIProviderRegistry.speechRecognitionRequestLanguage(
+                for: .init(
+                    provider: .xAI,
+                    model: "grok-transcribe",
+                    language: "auto"
+                )
+            )
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.speechRecognitionRequestLanguage(
+                for: .init(
+                    provider: .xAI,
+                    model: "grok-transcribe",
+                    language: "fr"
+                )
+            ),
+            "fr"
+        )
+        XCTAssertThrowsError(
+            try AIServiceSelection(
+                provider: .xAI,
+                model: "grok-transcribe",
+                language: "zh"
+            ).validated(for: .speechToText)
+        ) { error in
+            XCTAssertEqual(
+                error as? AIProviderSettingsError,
+                .unsupportedSpeechLanguage(.xAI, "zh")
+            )
+        }
+    }
+
+    func testSharedSpeechLanguageResolverCoversBothPTTRequestShapes() {
+        let deepgram = AIServiceSelection(
+            provider: .deepgram,
+            model: "nova-3",
+            language: nil
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.speechRecognitionRequestLanguage(for: deepgram),
+            "multi"
+        )
+
+        let apple = AIServiceSelection(
+            provider: .apple,
+            model: "apple-dictation",
+            language: "auto"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.speechRecognitionRequestLanguage(
+                for: apple,
+                locale: Locale(identifier: "zh-Hans-CN")
+            ),
+            "zh-Hans-CN"
+        )
+        XCTAssertEqual(
+            AIProviderRegistry.speechRecognitionRequestLanguage(
+                for: .init(
+                    provider: .apple,
+                    model: "apple-dictation",
+                    language: "zh"
+                ),
+                locale: Locale(identifier: "en-US")
+            ),
+            "zh"
+        )
+    }
+
     func testSonioxDefaultsToRealtimeAndKeepsAsyncAsExplicitFallback() throws {
         XCTAssertEqual(
             AIProviderRegistry.descriptor(for: .soniox).defaultModels[.speechToText],
@@ -235,11 +351,17 @@ final class AIProviderSettingsTests: XCTestCase {
     }
 
     func testCloudSpeechRequestUsesSelectedXAIVoiceAndAutomaticLanguage() throws {
+        let shared = try CloudSpeechSynthesisRequestResolver.resolve(
+            text: "Hello 世界",
+            selection: .init(provider: .xAI, model: "xai-tts", voice: "sal"),
+            localeLanguageCode: "en"
+        )
         let selected = try ConversationModel.cloudSpeechSynthesisRequest(
             text: "Hello 世界",
             selection: .init(provider: .xAI, model: "xai-tts", voice: "sal"),
             localeLanguageCode: "en"
         )
+        XCTAssertEqual(selected, shared)
         XCTAssertEqual(selected.voice, "sal")
         XCTAssertNil(selected.languageCode)
 
@@ -250,6 +372,13 @@ final class AIProviderSettingsTests: XCTestCase {
         )
         XCTAssertEqual(migratedDefault.voice, "eve")
         XCTAssertNil(migratedDefault.languageCode)
+
+        let openAI = try CloudSpeechSynthesisRequestResolver.resolve(
+            text: "Hello",
+            selection: .init(provider: .openAI, model: "tts-1", voice: "alloy"),
+            localeLanguageCode: "en"
+        )
+        XCTAssertEqual(openAI.languageCode, "en")
     }
 
     func testValidationTrimsModelsAndKeepsOfficialEndpoint() throws {
@@ -318,6 +447,8 @@ final class AIProviderSettingsTests: XCTestCase {
         XCTAssertTrue(AIProviderRegistry.hasCloudVoiceServiceAdapter(provider: .xAI, capability: .speechToText))
         XCTAssertTrue(AIProviderRegistry.hasCloudVoiceServiceAdapter(provider: .openRouter, capability: .textToSpeech))
         XCTAssertTrue(AIProviderRegistry.hasCloudVoiceServiceAdapter(provider: .openRouter, capability: .speechToText))
+        XCTAssertTrue(AIProviderRegistry.hasRuntimeAdapter(provider: .deepgram, capability: .speechToText))
+        XCTAssertTrue(AIProviderRegistry.hasCloudVoiceServiceAdapter(provider: .deepgram, capability: .speechToText))
     }
 
     func testMediaInputIsOfferedOnlyForAdaptersThatEncodeContentParts() {

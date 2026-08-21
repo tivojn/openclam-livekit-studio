@@ -46,30 +46,61 @@ enum ConversationComposerLayout {
     static let minimumExpandedTextHeight: CGFloat = 62
 }
 
+enum ConversationThreadLayout {
+    static let standardUserTurnHeightAllowance: CGFloat = 40
+    static let accessibilityUserTurnHeightAllowance: CGFloat = 72
+    static let minimumStandardResponseReserve: CGFloat = 240
+    static let minimumAccessibilityResponseReserve: CGFloat = 320
+
+    /// Keeps enough content below a newly submitted user turn for ScrollView to
+    /// place that turn at the top of its viewport. The larger accessibility
+    /// floor accommodates a multi-line user bubble without relying on a fixed
+    /// font height; subtracting only the bubble allowance adapts to every
+    /// phone and keyboard viewport while guaranteeing a valid top anchor.
+    static func responseReserveHeight(
+        viewportHeight: CGFloat,
+        usesAccessibilityType: Bool
+    ) -> CGFloat {
+        let boundedHeight = max(0, viewportHeight)
+        let userTurnAllowance = usesAccessibilityType
+            ? accessibilityUserTurnHeightAllowance
+            : standardUserTurnHeightAllowance
+        let minimum = usesAccessibilityType
+            ? minimumAccessibilityResponseReserve
+            : minimumStandardResponseReserve
+        return max(minimum, boundedHeight - userTurnAllowance)
+    }
+}
+
+struct ConversationThreadPositioningState: Equatable {
+    private(set) var anchoredUserMessageID: UUID?
+    private(set) var hasManualScrollSincePlacement = false
+
+    var shouldFollowLatest: Bool {
+        anchoredUserMessageID == nil && !hasManualScrollSincePlacement
+    }
+
+    mutating func beginUserTurn(messageID: UUID) {
+        anchoredUserMessageID = messageID
+        hasManualScrollSincePlacement = false
+    }
+
+    mutating func noteManualScroll() {
+        hasManualScrollSincePlacement = true
+    }
+
+    mutating func resetForThreadChange() {
+        anchoredUserMessageID = nil
+        hasManualScrollSincePlacement = false
+    }
+}
+
 struct ConversationComposerTextInsets: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, ConversationComposerLayout.textHorizontalInset)
             .padding(.vertical, ConversationComposerLayout.textVerticalInset)
             .contentShape(Rectangle())
-    }
-}
-
-private struct AvatarOverlayInteractionShape: Shape {
-    // Assistant response actions occupy the compact leading lane. The avatar and its
-    // controls remain interactive across the larger trailing portion of the stage.
-    private static let leadingPassThroughFraction: CGFloat = 0.34
-
-    func path(in rect: CGRect) -> Path {
-        let leadingWidth = rect.width * Self.leadingPassThroughFraction
-        return Path(
-            CGRect(
-                x: rect.minX + leadingWidth,
-                y: rect.minY,
-                width: rect.width - leadingWidth,
-                height: rect.height
-            )
-        )
     }
 }
 
@@ -101,6 +132,8 @@ struct ConversationView: View {
     @State private var expandsComposerForEditing = false
     @State private var readAloudMessageID: UUID?
     @State private var assistantReplyDeliveryBoundary = AssistantReplyDeliveryBoundary()
+    @State private var userTurnPlacementBoundary = ConversationUserTurnPlacementBoundary()
+    @State private var threadPositioning = ConversationThreadPositioningState()
     @State private var activeSessionImagePreviews: [UUID: UIImage] = [:]
     @State private var activeSessionImagePreviewOrder: [UUID] = []
     @State private var warmEarEnabled = OpenClamWarmEarControl.isEnabled
@@ -116,8 +149,9 @@ struct ConversationView: View {
 
     var body: some View {
         ZStack {
-            ScrollViewReader { proxy in
-                ScrollView {
+            GeometryReader { threadViewport in
+                ScrollViewReader { proxy in
+                    ScrollView {
                     LazyVStack(spacing: 14) {
                         ForEach(conversation.messages) { message in
                             messageBubble(message)
@@ -209,6 +243,17 @@ struct ConversationView: View {
                         attachmentTray
                     }
 
+                    if threadPositioning.anchoredUserMessageID != nil {
+                        Color.clear
+                            .frame(
+                                height: ConversationThreadLayout.responseReserveHeight(
+                                    viewportHeight: threadViewport.size.height,
+                                    usesAccessibilityType: dynamicTypeSize.isAccessibilitySize
+                                )
+                            )
+                            .accessibilityHidden(true)
+                    }
+
                     Color.clear.frame(height: 4).id("bottom")
                 }
                 .padding(.horizontal, 16)
@@ -217,12 +262,16 @@ struct ConversationView: View {
                 .disabled(conversation.isWorking || commandModel.isExecuting || activeRequestTask != nil)
                 .background(alignment: .topLeading) {
                     ConversationThreadInteractionObserver(
-                        onInteraction: avatarInteractions.noteThreadInteraction
+                        onInteraction: avatarInteractions.noteThreadInteraction,
+                        onManualScroll: {
+                            threadPositioning.noteManualScroll()
+                        }
                     )
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
                 }
             }
+            .accessibilityIdentifier("openclam-conversation-thread")
             .defaultScrollAnchor(isFreshConversation ? .top : .bottom)
             .scrollDismissesKeyboard(.interactively)
             .background(assistantBackground)
@@ -234,13 +283,21 @@ struct ConversationView: View {
                 revealPendingEmailReview(using: proxy)
             }
             .onChange(of: assistantReplyDeliverySnapshot) { _, snapshot in
-                if !isFreshConversation {
+                let newUserMessageID = userTurnPlacementBoundary.observe(snapshot)
+                if let newUserMessageID {
+                    placeNewUserTurn(
+                        newUserMessageID,
+                        using: proxy
+                    )
+                } else if !isFreshConversation, threadPositioning.shouldFollowLatest {
                     scrollToLatest(using: proxy)
                 }
                 deliverNewAssistantReply(from: snapshot)
             }
             .onChange(of: conversation.isWorking) { _, _ in
-                scrollToLatest(using: proxy)
+                if threadPositioning.shouldFollowLatest {
+                    scrollToLatest(using: proxy)
+                }
             }
             .onChange(of: confirmedActionNotice) { _, notice in
                 if notice != nil {
@@ -250,13 +307,17 @@ struct ConversationView: View {
             .onChange(of: isComposerFocused) { _, focused in
                 if focused {
                     expandsComposerForEditing = true
-                    scrollToLatest(using: proxy)
+                    if threadPositioning.shouldFollowLatest {
+                        scrollToLatest(using: proxy)
+                    }
                 } else {
                     expandsComposerForEditing = false
                 }
             }
             .onChange(of: stagedAttachments.count) { _, _ in
-                scrollToLatest(using: proxy)
+                if threadPositioning.shouldFollowLatest {
+                    scrollToLatest(using: proxy)
+                }
             }
             .onChange(of: conversation.pendingScreenContextSubmission?.reviewID) { _, submissionID in
                 guard submissionID != nil else { return }
@@ -268,20 +329,21 @@ struct ConversationView: View {
             }
             .onAppear {
                 assistantReplyDeliveryBoundary.prime(with: assistantReplyDeliverySnapshot)
+                userTurnPlacementBoundary.prime(with: assistantReplyDeliverySnapshot)
+                threadPositioning.resetForThreadChange()
                 if !isFreshConversation {
                     scrollToLatest(using: proxy, animated: false)
                 }
             }
+                }
             }
 
             avatarOverlay
                 .zIndex(2)
                 .ignoresSafeArea()
-                // The avatar stage supports pinch and vertical-opacity gestures, but its
-                // transparent full-screen bounds must not swallow the assistant actions on
-                // the leading side of the conversation. Keep the visible avatar/right rail
-                // interactive while allowing ordinary chat controls to receive real taps.
-                .contentShape(.interaction, AvatarOverlayInteractionShape())
+                // The overlay publishes hit regions only for the visible avatar
+                // silhouette and actual rail controls. Its transparent geometry
+                // must never replace the conversation's native scroll surface.
         }
         .navigationTitle(conversation.currentThreadTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -397,6 +459,7 @@ struct ConversationView: View {
         }
         .onChange(of: conversation.historyController.selectedThreadID) { previousID, selectedID in
             guard previousID != nil, previousID != selectedID else { return }
+            threadPositioning.resetForThreadChange()
             resetComposerForChatChange()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -476,10 +539,22 @@ struct ConversationView: View {
                     assistantMessageActions(message)
                 }
             }
+            .accessibilityIdentifier(messageAccessibilityIdentifier(for: message))
+            .accessibilityValue(message.text)
             if message.role == .assistant { Spacer(minLength: 18) }
         }
         .accessibilityElement(children: .contain)
         .frame(maxWidth: .infinity)
+    }
+
+    private func messageAccessibilityIdentifier(
+        for message: ConversationMessage
+    ) -> String {
+        if message.role == .user,
+           message.id == conversation.messages.last(where: { $0.role == .user })?.id {
+            return "openclam-latest-user-message"
+        }
+        return "openclam-thread-message-\(message.id.uuidString)"
     }
 
     @ViewBuilder
@@ -2512,6 +2587,30 @@ struct ConversationView: View {
         }
     }
 
+    private func placeNewUserTurn(
+        _ messageID: UUID,
+        using proxy: ScrollViewProxy
+    ) {
+        threadPositioning.beginUserTurn(messageID: messageID)
+        Task { @MainActor in
+            // The message and its response reserve enter the lazy stack in the
+            // same update. Yield once so ScrollView measures both before asking
+            // it to place the submitted bubble at the top.
+            await Task.yield()
+            guard threadPositioning.anchoredUserMessageID == messageID,
+                  !threadPositioning.hasManualScrollSincePlacement else {
+                return
+            }
+            if reduceMotion {
+                proxy.scrollTo(messageID, anchor: .top)
+            } else {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo(messageID, anchor: .top)
+                }
+            }
+        }
+    }
+
     private func revealPendingEmailReview(using proxy: ScrollViewProxy) {
         Task { @MainActor in
             await Task.yield()
@@ -2630,6 +2729,44 @@ struct AssistantReplyDeliveryBoundary {
     }
 }
 
+/// Tracks only genuine appends in the selected thread. A restored history or a
+/// thread switch establishes a new baseline and must never reposition content.
+/// Scanning the appended suffix also handles a fast local reply where SwiftUI
+/// observes the user and assistant messages in one coalesced update.
+struct ConversationUserTurnPlacementBoundary {
+    private var isPrimed = false
+    private var threadID: UUID?
+    private var messages: [AssistantReplyDeliverySnapshot.MessageSignature] = []
+
+    mutating func prime(with snapshot: AssistantReplyDeliverySnapshot) {
+        isPrimed = true
+        threadID = snapshot.threadID
+        messages = snapshot.messages
+    }
+
+    mutating func observe(_ snapshot: AssistantReplyDeliverySnapshot) -> UUID? {
+        guard isPrimed else {
+            prime(with: snapshot)
+            return nil
+        }
+
+        let previousThreadID = threadID
+        let previousMessages = messages
+        prime(with: snapshot)
+
+        guard snapshot.threadID == previousThreadID,
+              snapshot.messages.count > previousMessages.count,
+              Array(snapshot.messages.prefix(previousMessages.count)) == previousMessages else {
+            return nil
+        }
+
+        return snapshot.messages
+            .dropFirst(previousMessages.count)
+            .last(where: { $0.role == .user })?
+            .id
+    }
+}
+
 enum LocalAttachmentPreviewFactory {
     static let maximumPixelDimension: CGFloat = 384
     static let maximumCachedPreviewCount = 16
@@ -2703,9 +2840,13 @@ private struct OpenClamCameraPicker: UIViewControllerRepresentable {
 @MainActor
 private struct ConversationThreadInteractionObserver: UIViewRepresentable {
     let onInteraction: () -> Void
+    let onManualScroll: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onInteraction: onInteraction)
+        Coordinator(
+            onInteraction: onInteraction,
+            onManualScroll: onManualScroll
+        )
     }
 
     func makeUIView(context: Context) -> ProbeView {
@@ -2717,6 +2858,7 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
 
     func updateUIView(_ uiView: ProbeView, context: Context) {
         context.coordinator.onInteraction = onInteraction
+        context.coordinator.onManualScroll = onManualScroll
         uiView.coordinator = context.coordinator
         uiView.scheduleAttachment()
     }
@@ -2760,13 +2902,18 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onInteraction: () -> Void
+        var onManualScroll: () -> Void
 
         private weak var scrollView: UIScrollView?
         private var tapGesture: UITapGestureRecognizer?
         private var lastScrollSignal = -TimeInterval.infinity
 
-        init(onInteraction: @escaping () -> Void) {
+        init(
+            onInteraction: @escaping () -> Void,
+            onManualScroll: @escaping () -> Void
+        ) {
             self.onInteraction = onInteraction
+            self.onManualScroll = onManualScroll
         }
 
         func attach(from probe: UIView) {
@@ -2817,7 +2964,11 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
         @objc private func scrollPanChanged(_ gesture: UIPanGestureRecognizer) {
             let now = ProcessInfo.processInfo.systemUptime
             switch gesture.state {
-            case .began, .ended, .cancelled:
+            case .began:
+                onManualScroll()
+                lastScrollSignal = now
+                onInteraction()
+            case .ended, .cancelled:
                 lastScrollSignal = now
                 onInteraction()
             case .changed where now - lastScrollSignal >= 0.15:

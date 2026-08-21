@@ -2700,6 +2700,22 @@ async def api_config_set(body: dict):
             raise HTTPException(422, f"unsupported direct {k} provider")
         provider_changed = bool(blk.get("provider")) and \
             blk.get("provider") != (cur.get(k) or {}).get("provider")
+        if k == "stt":
+            selected_provider = blk.get("provider") \
+                or (cur.get("stt") or {}).get("provider")
+            if provider_changed and "language" not in blk:
+                blk["language"] = P.stt_language_catalog(
+                    selected_provider
+                )["default_language"]
+            selected_language = blk.get("language")
+            if selected_language is None:
+                selected_language = (cur.get("stt") or {}).get("language")
+            try:
+                blk["language"] = P.validate_stt_language(
+                    selected_provider, selected_language
+                )
+            except RuntimeError as error:
+                raise HTTPException(422, str(error)) from error
         requested_key = blk.get("api_key")
         if requested_key == "__clear__" or (provider_changed and not requested_key):
             # "__clear__" rides through to the vault, which deletes the

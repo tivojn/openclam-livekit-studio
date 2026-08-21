@@ -119,8 +119,11 @@ class MoveRuntime(unittest.TestCase):
         self.assertIn("const toggleMove = () => {", renderer)
         self.assertIn("if (!motion.move)", renderer)
         self.assertIn("moveUntil = performance.now()", renderer)
-        self.assertIn("if (pointOnHead({ x: event.clientX, y: event.clientY })) toggleMove();",
-                      renderer)
+        self.assertIn(
+            "const action = avatarDoubleClickActionAt({ x: event.clientX, y: event.clientY });",
+            renderer,
+        )
+        self.assertIn("if (action === 'move') toggleMove();", renderer)
         self.assertIn("movesButton.addEventListener('click', toggleMove)", renderer)
         self.assertIn("shell.onPetMoves(toggleMove)", renderer)
         preload = (ROOT / "electron" / "preload.cjs").read_text()

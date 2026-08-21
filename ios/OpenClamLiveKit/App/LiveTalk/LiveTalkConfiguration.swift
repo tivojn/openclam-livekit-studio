@@ -233,7 +233,7 @@ enum LiveTalkCatalog {
     )
     static let managedSTT = option(
         .stt, .managed, "livekit", "deepgram/nova-3",
-        "LiveKit managed", "Managed STT", "Deepgram Nova-3 through LiveKit Inference",
+        "LiveKit managed", "Managed STT", "Auto multilingual Deepgram Nova-3 through LiveKit Inference · supports Chinese and English",
         language: .multilingual
     )
     static let managedTTS = option(
@@ -299,11 +299,16 @@ enum LiveTalkCatalog {
         option(.stt, .byok, "openai", "gpt-4o-mini-transcribe", "OpenAI", "OpenAI STT", "GPT-4o mini transcribe · Chinese", credential: .openAI, language: .chinese),
         option(.stt, .byok, "openai", "whisper-1", "OpenAI", "Whisper 1", "OpenAI Whisper 1 · English", credential: .openAI, language: .english),
         option(.stt, .byok, "openai", "whisper-1", "OpenAI", "Whisper 1", "OpenAI Whisper 1 · Chinese", credential: .openAI, language: .chinese),
-        // xAI STT detects spoken languages independently. Its pinned `language`
-        // constructor value controls text formatting, whose reviewed list omits zh.
-        option(.stt, .byok, "xai", "grok-transcribe", "xAI", "xAI STT", "Grok multilingual transcription", credential: .xAI, language: .english),
-        option(.stt, .byok, "deepgram", "nova-3", "Deepgram", "Deepgram", "Nova-3 multilingual", credential: .deepgram, language: .multilingual),
+        // The LiveKit xAI plugin always sends a language value. `en` is the
+        // reviewed formatting hint; recognition remains automatic within
+        // xAI's exact 25-language list and does not include Chinese.
+        option(.stt, .byok, "xai", "grok-transcribe", "xAI", "xAI STT", "Automatic recognition for xAI’s 25 supported languages · Chinese unavailable", credential: .xAI, language: .english),
+        option(.stt, .byok, "deepgram", "nova-3", "Deepgram", "Deepgram", "Nova-3 Auto multilingual · supports Chinese and English", credential: .deepgram, language: .multilingual),
+        option(.stt, .byok, "deepgram", "nova-3", "Deepgram", "Deepgram · English", "Nova-3 English recognition", credential: .deepgram, language: .english),
+        option(.stt, .byok, "deepgram", "nova-3", "Deepgram", "Deepgram · Chinese", "Nova-3 Chinese recognition", credential: .deepgram, language: .chinese),
         option(.stt, .byok, "elevenlabs", "scribe_v2_realtime", "ElevenLabs", "ElevenLabs STT", "Scribe v2 realtime", credential: .elevenLabs, language: .multilingual),
+        option(.stt, .byok, "elevenlabs", "scribe_v2_realtime", "ElevenLabs", "ElevenLabs STT · English", "Scribe v2 realtime · English", credential: .elevenLabs, language: .english),
+        option(.stt, .byok, "elevenlabs", "scribe_v2_realtime", "ElevenLabs", "ElevenLabs STT · Chinese", "Scribe v2 realtime · Chinese", credential: .elevenLabs, language: .chinese),
     ]
 
     private static let ttsOptions: [LiveTalkProviderOption] = managedTTSOptions + [
@@ -317,7 +322,7 @@ enum LiveTalkCatalog {
         option(.tts, .byok, "xai", "xai-tts", "xAI", "xAI TTS · Sal", "Expressive multilingual Sal voice", credential: .xAI, voice: "sal", language: .automatic),
         option(.tts, .byok, "gemini", "gemini-3.1-flash-tts-preview", "Google Gemini", "Gemini TTS", "Gemini 3.1 Flash TTS · Sadachbia", credential: .gemini, voice: "Sadachbia"),
         option(.tts, .byok, "gemini", "gemini-3.1-flash-tts-preview", "Google Gemini", "Gemini TTS · Kore", "Gemini 3.1 Flash TTS · Kore", credential: .gemini, voice: "Kore"),
-        option(.tts, .byok, "deepgram", "aura-2-andromeda-en", "Deepgram", "Deepgram TTS", "Aura-2 Andromeda", credential: .deepgram, voice: "aura-2-andromeda-en"),
+        option(.tts, .byok, "deepgram", "aura-2-andromeda-en", "Deepgram", "Deepgram TTS", "Aura-2 Andromeda is English-only; choose a multilingual speaking voice for Chinese replies", credential: .deepgram, voice: "aura-2-andromeda-en"),
         option(.tts, .byok, "elevenlabs", "eleven_flash_v2_5", "ElevenLabs", "ElevenLabs TTS", "Flash v2.5 default voice", credential: .elevenLabs, voice: "EXAVITQu4vr4xnSDxMaL"),
         option(.tts, .byok, "elevenlabs", "eleven_flash_v2_5", "ElevenLabs", "ElevenLabs Flash", "Flash v2.5 reviewed voice", credential: .elevenLabs, voice: "JBFqnCBsd6RMkjVDRZzb"),
         option(.tts, .byok, "elevenlabs", "eleven_multilingual_v2", "ElevenLabs", "ElevenLabs Multilingual", "Multilingual v2 reviewed voice", credential: .elevenLabs, voice: "JBFqnCBsd6RMkjVDRZzb"),
@@ -358,6 +363,7 @@ enum LiveTalkCatalog {
             language = try LiveTalkLanguageResolver.resolve(
                 stage: stage,
                 provider: selection.provider,
+                selectedLanguage: selection.language,
                 composerLanguageCode: composerLanguageCode
             )
         } catch {
@@ -444,6 +450,7 @@ enum LiveTalkLanguageResolver {
     static func resolve(
         stage: LiveTalkStage,
         provider: AIProviderID,
+        selectedLanguage: String? = nil,
         composerLanguageCode: String?
     ) throws -> LiveTalkLanguage? {
         switch stage {
@@ -454,12 +461,32 @@ enum LiveTalkLanguageResolver {
         case .stt:
             switch provider {
             case .deepgram, .elevenLabs:
-                return .multilingual
+                switch selectedLanguage {
+                case LiveTalkLanguage.english.rawValue:
+                    return .english
+                case LiveTalkLanguage.chinese.rawValue:
+                    return .chinese
+                case nil, LiveTalkLanguage.automatic.rawValue,
+                     LiveTalkLanguage.multilingual.rawValue:
+                    return .multilingual
+                default:
+                    throw LiveTalkConfigurationError.avatarLanguageNotSupported(
+                        provider,
+                        selectedLanguage
+                    )
+                }
             case .xAI:
-                // xAI transcribes multilingual speech regardless of this value;
-                // its STT language parameter is only a formatting hint.
+                // The plugin's required `en` value is only a formatting hint.
+                // It cannot expand xAI recognition beyond the documented
+                // 25-language set, which excludes Chinese.
                 return .english
             case .openAI:
+                if selectedLanguage == LiveTalkLanguage.english.rawValue {
+                    return .english
+                }
+                if selectedLanguage == LiveTalkLanguage.chinese.rawValue {
+                    return .chinese
+                }
                 guard let language = LiveTalkLanguage.explicitRecognitionLanguage(
                     for: composerLanguageCode
                 ) else {
@@ -503,6 +530,7 @@ enum LiveTalkConfigurationResolver {
                 let language = try LiveTalkLanguageResolver.resolve(
                     stage: stage,
                     provider: avatarSelection.provider,
+                    selectedLanguage: avatarSelection.language,
                     composerLanguageCode: composerLanguageCode
                 )
                 guard let option = LiveTalkCatalog.option(

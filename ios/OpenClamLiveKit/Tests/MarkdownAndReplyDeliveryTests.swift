@@ -71,6 +71,102 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
         )
     }
 
+    func testNewUserTurnPlacementFindsTheNewestAppendInALongHistory() throws {
+        let threadID = UUID()
+        let history = (0..<120).map { index in
+            message(index.isMultiple(of: 2) ? .assistant : .user, "History \(index)")
+        }
+        let newestUser = message(.user, "Newest submitted turn")
+        let immediateReply = message(.assistant, "Immediate local reply")
+        var boundary = ConversationUserTurnPlacementBoundary()
+        boundary.prime(with: snapshot(threadID: threadID, messages: history))
+
+        XCTAssertEqual(
+            boundary.observe(
+                snapshot(
+                    threadID: threadID,
+                    messages: history + [newestUser, immediateReply]
+                )
+            ),
+            newestUser.id,
+            "A coalesced local reply must not hide the user turn that owns top placement."
+        )
+        XCTAssertNil(
+            boundary.observe(
+                snapshot(
+                    threadID: threadID,
+                    messages: history + [newestUser, immediateReply]
+                )
+            )
+        )
+    }
+
+    func testUserTurnPlacementDoesNotTreatRestoredHistoryAsANewSend() {
+        let firstThreadID = UUID()
+        let secondThreadID = UUID()
+        let welcome = message(.assistant, "Welcome")
+        var boundary = ConversationUserTurnPlacementBoundary()
+        boundary.prime(with: snapshot(threadID: firstThreadID, messages: [welcome]))
+
+        XCTAssertNil(
+            boundary.observe(
+                snapshot(
+                    threadID: secondThreadID,
+                    messages: [welcome, message(.user, "Restored user turn")]
+                )
+            )
+        )
+    }
+
+    func testManualScrollSuspendsAutomaticFollowingUntilTheNextUserTurn() {
+        var state = ConversationThreadPositioningState()
+        XCTAssertTrue(state.shouldFollowLatest)
+
+        let firstUser = UUID()
+        state.beginUserTurn(messageID: firstUser)
+        XCTAssertEqual(state.anchoredUserMessageID, firstUser)
+        XCTAssertFalse(state.shouldFollowLatest)
+
+        state.noteManualScroll()
+        XCTAssertTrue(state.hasManualScrollSincePlacement)
+        XCTAssertFalse(state.shouldFollowLatest)
+
+        let nextUser = UUID()
+        state.beginUserTurn(messageID: nextUser)
+        XCTAssertEqual(state.anchoredUserMessageID, nextUser)
+        XCTAssertFalse(state.hasManualScrollSincePlacement)
+        XCTAssertFalse(state.shouldFollowLatest)
+
+        state.resetForThreadChange()
+        XCTAssertNil(state.anchoredUserMessageID)
+        XCTAssertTrue(state.shouldFollowLatest)
+    }
+
+    func testUserTurnResponseReserveAdaptsToViewportAndAccessibilityType() {
+        let phone = ConversationThreadLayout.responseReserveHeight(
+            viewportHeight: 700,
+            usesAccessibilityType: false
+        )
+        let tallPhone = ConversationThreadLayout.responseReserveHeight(
+            viewportHeight: 900,
+            usesAccessibilityType: false
+        )
+        let accessibility = ConversationThreadLayout.responseReserveHeight(
+            viewportHeight: 360,
+            usesAccessibilityType: true
+        )
+
+        XCTAssertEqual(phone, 660, accuracy: 0.001)
+        XCTAssertEqual(tallPhone, 860, accuracy: 0.001)
+        XCTAssertEqual(
+            accessibility,
+            ConversationThreadLayout.minimumAccessibilityResponseReserve,
+            accuracy: 0.001,
+            "Large Dynamic Type must retain enough response room even with a short keyboard viewport."
+        )
+        XCTAssertGreaterThan(tallPhone, phone)
+    }
+
     func testBlockParserPreservesNativeMarkdownStructure() {
         let source = """
         # Heading

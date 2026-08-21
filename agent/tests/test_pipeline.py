@@ -615,7 +615,7 @@ def test_openai_stt_models_reach_the_non_realtime_constructor(model: str) -> Non
     assert pipeline.stt.capabilities.streaming is False
 
 
-def test_xai_stt_keeps_its_reviewed_multilingual_formatting_hint() -> None:
+def test_xai_stt_keeps_en_formatting_hint_without_claiming_chinese_support() -> None:
     payload = claim_payload()
     payload["profile"]["stt"] = {
         "source": "byok",
@@ -628,8 +628,9 @@ def test_xai_stt_keeps_its_reviewed_multilingual_formatting_hint() -> None:
     pipeline = create_pipeline(claim_for(payload))
 
     assert isinstance(pipeline.stt, xai.STT)
-    # xAI transcribes multilingual speech regardless of this value; in the
-    # pinned plugin it is the provider's inverse-text-formatting language.
+    # Recognition is automatic only within xAI's documented 25-language set.
+    # This required value is the plugin's inverse-text-formatting hint; it must
+    # never be changed to auto, multi, or zh (Chinese is not supported).
     assert pipeline.stt._opts.language == "en"
 
 

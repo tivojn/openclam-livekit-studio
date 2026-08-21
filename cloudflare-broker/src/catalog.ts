@@ -69,6 +69,9 @@ export const PROFILE_CATALOG = {
       },
       xai: {
         "grok-transcribe": {
+          // Required by the pinned plugin as an inverse-text-formatting hint.
+          // Recognition is automatic only within xAI's documented 25-language
+          // set and excludes Chinese; auto/multi/zh are deliberately not tuples.
           default_language: "en",
           languages: ["en"],
         },

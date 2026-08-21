@@ -75,6 +75,9 @@ for (const required of [
   "ipcMain.handle('openclam:avatar-store-thumbnail'",
   "ipcMain.handle('openclam:avatar-store-download'",
   "ipcMain.handle('openclam:avatar-store-cancel'",
+  "ipcMain.handle('openclam:set-pet-opacity'",
+  "ipcMain.handle('openclam:avatar-changed'",
+  "ipcMain.handle('openclam:companion-changed'",
   'function openSettings()',
   'function guardNavigation(window, kind)',
 ]) {
@@ -145,6 +148,12 @@ assert.equal(petClickThroughPreference({ petClickThrough: 'false' }, true), true
   'invalid persisted values must fall back to the safe product default');
 assert.match(main, /petClickThrough: true/,
   'fresh default state must ship with click-through gaps enabled');
+assert.match(main,
+  /function recoverCompanion\(\)[\s\S]{0,1200}state\.petClickThrough = true;/,
+  'Recover Avatar must restore the enabled click-through-gaps product default');
+assert.doesNotMatch(main,
+  /function recoverCompanion\(\)[\s\S]{0,1200}state\.petClickThrough = false;/,
+  'Recover Avatar must not silently disable click-through gaps');
 
 // An inactive transparent pet accepts the first composer click, then the
 // renderer explicitly makes that pet the key window so macOS sends it text.
@@ -288,7 +297,10 @@ for (const required of [
   'setLiveTalk',
   'exportAvatar',
   'saveMotionAsset',
+  'setPetOpacity',
   'setPetRoam',
+  'avatarChanged',
+  'companionChanged',
 ]) {
   assert.ok(preload.includes(required), `missing renderer bridge: ${required}`);
 }

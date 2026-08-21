@@ -70,6 +70,11 @@ struct AIVoiceDescriptor: Identifiable, Equatable, Sendable {
     let displayName: String
 }
 
+struct AISpeechRecognitionLanguageOption: Identifiable, Equatable, Sendable {
+    let id: String
+    let displayName: String
+}
+
 enum AIProviderRegistry {
     static let descriptors: [AIProviderDescriptor] = [
         .init(
@@ -149,7 +154,7 @@ enum AIProviderRegistry {
             documentationURL: URL(string: "https://docs.x.ai/developers/models")!,
             capabilities: [.llm, .textToSpeech, .speechToText, .imageGeneration, .videoGeneration, .webSearch],
             availability: .available,
-            availabilityNote: "Includes Grok language models, X Search, and the official REST speech and transcription endpoints.",
+            availabilityNote: "Includes Grok language models, X Search, and the official REST speech and transcription endpoints. Grok Transcribe automatically detects only its documented 25 languages; Chinese is not supported.",
             agentResponsesEndpoint: URL(string: "https://api.x.ai/v1/responses")!,
             modelListEndpoint: URL(string: "https://api.x.ai/v1/models")!,
             defaultModels: [
@@ -220,10 +225,12 @@ enum AIProviderRegistry {
             documentationURL: URL(string: "https://developers.deepgram.com/docs")!,
             capabilities: [.textToSpeech, .speechToText],
             availability: .available,
-            availabilityNote: "Used only for Live Talk when you explicitly choose your own Deepgram key.",
+            availabilityNote: "Nova-3 can transcribe tap-to-talk with automatic multilingual detection, including Chinese and English. A personal Deepgram key is required outside managed Live Talk.",
             agentResponsesEndpoint: nil,
             modelListEndpoint: nil,
-            defaultModels: [:]
+            defaultModels: [
+                .speechToText: ["nova-3"],
+            ]
         ),
         .init(
             id: .soniox,
@@ -443,6 +450,7 @@ enum AIProviderRegistry {
              (.xAI, .textToSpeech), (.xAI, .speechToText),
              (.openRouter, .textToSpeech), (.openRouter, .speechToText),
              (.gemini, .textToSpeech),
+             (.deepgram, .speechToText),
              (.elevenLabs, .textToSpeech), (.elevenLabs, .speechToText),
              (.soniox, .textToSpeech), (.soniox, .speechToText):
             return true
@@ -461,6 +469,7 @@ enum AIProviderRegistry {
              (.xAI, .textToSpeech), (.xAI, .speechToText),
              (.openRouter, .textToSpeech), (.openRouter, .speechToText),
              (.gemini, .textToSpeech),
+             (.deepgram, .speechToText),
              (.elevenLabs, .textToSpeech), (.elevenLabs, .speechToText),
              (.soniox, .textToSpeech), (.soniox, .speechToText):
             return true
@@ -480,6 +489,12 @@ enum AIProviderRegistry {
         capability: AICapability
     ) -> String? {
         switch (provider, capability) {
+        case (.apple, .speechToText):
+            return "Apple Dictation follows one selected locale. Automatic means this iPhone’s current language; choose English or Chinese here before speaking another language."
+        case (.deepgram, .speechToText):
+            return "Auto multilingual uses Nova-3 language detection and supports mixed Chinese and English speech."
+        case (.xAI, .speechToText):
+            return "Automatic detection covers exactly Arabic, Czech, Danish, Dutch, English, Filipino, French, German, Hindi, Indonesian, Italian, Japanese, Korean, Macedonian, Malay, Persian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish, and Vietnamese. Chinese is not supported; choose Deepgram for Chinese or mixed Chinese and English. A specific language here is an xAI formatting hint, not a way to add an unsupported language."
         case (.openAI, .videoGeneration):
             return "OpenAI currently lists Sora 2 as a legacy model. This build saves the preference only and does not submit generation requests."
         case (_, .imageGeneration), (_, .videoGeneration):
@@ -495,6 +510,92 @@ enum AIProviderRegistry {
         }
     }
 
+    static func speechRecognitionLanguageOptions(
+        for provider: AIProviderID
+    ) -> [AISpeechRecognitionLanguageOption] {
+        switch provider {
+        case .apple:
+            return [
+                .init(id: "auto", displayName: "Device language (automatic)"),
+                .init(id: "en", displayName: "English"),
+                .init(id: "zh", displayName: "Chinese"),
+            ]
+        case .deepgram:
+            return [
+                .init(id: "multi", displayName: "Auto multilingual · Chinese + English"),
+                .init(id: "en", displayName: "English"),
+                .init(id: "zh", displayName: "Chinese"),
+            ]
+        case .xAI:
+            return [
+                .init(id: "auto", displayName: "Automatic · 25 languages, no Chinese"),
+                .init(id: "ar", displayName: "Arabic"),
+                .init(id: "cs", displayName: "Czech"),
+                .init(id: "da", displayName: "Danish"),
+                .init(id: "nl", displayName: "Dutch"),
+                .init(id: "en", displayName: "English"),
+                .init(id: "fil", displayName: "Filipino"),
+                .init(id: "fr", displayName: "French"),
+                .init(id: "de", displayName: "German"),
+                .init(id: "hi", displayName: "Hindi"),
+                .init(id: "id", displayName: "Indonesian"),
+                .init(id: "it", displayName: "Italian"),
+                .init(id: "ja", displayName: "Japanese"),
+                .init(id: "ko", displayName: "Korean"),
+                .init(id: "mk", displayName: "Macedonian"),
+                .init(id: "ms", displayName: "Malay"),
+                .init(id: "fa", displayName: "Persian"),
+                .init(id: "pl", displayName: "Polish"),
+                .init(id: "pt", displayName: "Portuguese"),
+                .init(id: "ro", displayName: "Romanian"),
+                .init(id: "ru", displayName: "Russian"),
+                .init(id: "es", displayName: "Spanish"),
+                .init(id: "sv", displayName: "Swedish"),
+                .init(id: "th", displayName: "Thai"),
+                .init(id: "tr", displayName: "Turkish"),
+                .init(id: "vi", displayName: "Vietnamese"),
+            ]
+        case .openAI, .openRouter, .elevenLabs, .soniox:
+            return [
+                .init(id: "auto", displayName: "Automatic language detection"),
+                .init(id: "en", displayName: "English"),
+                .init(id: "zh", displayName: "Chinese"),
+            ]
+        default:
+            return [.init(id: "auto", displayName: "Automatic")]
+        }
+    }
+
+    static func defaultSpeechRecognitionLanguage(for provider: AIProviderID) -> String {
+        provider == .deepgram ? "multi" : "auto"
+    }
+
+    static func speechRecognitionLanguageLabel(for selection: AIServiceSelection) -> String {
+        let selected = selection.language
+            ?? defaultSpeechRecognitionLanguage(for: selection.provider)
+        return speechRecognitionLanguageOptions(for: selection.provider)
+            .first(where: { $0.id == selected })?.displayName
+            ?? selected
+    }
+
+    static func speechRecognitionRequestLanguage(
+        for selection: AIServiceSelection,
+        locale: Locale = .current
+    ) -> String? {
+        let selected = selection.language
+            ?? defaultSpeechRecognitionLanguage(for: selection.provider)
+        if selection.provider == .apple, selected == "auto" {
+            return locale.identifier
+        }
+        if selection.provider == .deepgram, selected == "auto" {
+            return "multi"
+        }
+        if selected == "auto" {
+            return nil
+        }
+        return selected
+    }
+
     static func provider(forResponsesEndpoint rawEndpoint: String) -> AIProviderID? {
         let normalized = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         return descriptors.first(where: { $0.agentResponsesEndpoint?.absoluteString == normalized })?.id
@@ -505,11 +606,18 @@ struct AIServiceSelection: Codable, Equatable, Sendable {
     var provider: AIProviderID
     var model: String
     var voice: String?
+    var language: String?
 
-    init(provider: AIProviderID, model: String, voice: String? = nil) {
+    init(
+        provider: AIProviderID,
+        model: String,
+        voice: String? = nil,
+        language: String? = nil
+    ) {
         self.provider = provider
         self.model = model
         self.voice = voice
+        self.language = language
     }
 
     func validated(for capability: AICapability) throws -> Self {
@@ -547,7 +655,31 @@ struct AIServiceSelection: Codable, Equatable, Sendable {
         } else {
             normalizedVoice = nil
         }
-        return .init(provider: provider, model: normalizedModel, voice: normalizedVoice)
+
+        let normalizedLanguage: String?
+        if capability == .speechToText,
+           let rawLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawLanguage.isEmpty {
+            let canonicalLanguage = provider == .deepgram && rawLanguage == "auto"
+                ? "multi"
+                : rawLanguage
+            guard AIProviderRegistry.speechRecognitionLanguageOptions(for: provider)
+                .contains(where: { $0.id == canonicalLanguage }) else {
+                throw AIProviderSettingsError.unsupportedSpeechLanguage(
+                    provider,
+                    rawLanguage
+                )
+            }
+            normalizedLanguage = canonicalLanguage
+        } else {
+            normalizedLanguage = nil
+        }
+        return .init(
+            provider: provider,
+            model: normalizedModel,
+            voice: normalizedVoice,
+            language: normalizedLanguage
+        )
     }
 }
 
@@ -693,6 +825,7 @@ enum AIProviderSettingsError: LocalizedError, Equatable {
     case missingModel
     case invalidModel
     case invalidVoice
+    case unsupportedSpeechLanguage(AIProviderID, String)
     case missingAPIKey
     case unsupportedCapability(AIProviderID, AICapability)
     case agentRuntimeUnavailable(AIProviderID)
@@ -707,6 +840,11 @@ enum AIProviderSettingsError: LocalizedError, Equatable {
             return "Use a model name of 128 characters or fewer without spaces or control characters."
         case .invalidVoice:
             return "Choose a valid voice."
+        case .unsupportedSpeechLanguage(let provider, let language):
+            if provider == .xAI, language == "zh" {
+                return "xAI Grok Transcribe does not support Chinese. Choose Deepgram Auto multilingual for Chinese or mixed Chinese and English."
+            }
+            return "\(AIProviderRegistry.descriptor(for: provider).displayName) does not support the selected speech-recognition language. Choose another language or provider."
         case .missingAPIKey:
             return "Paste an access key, or save one before testing the connection."
         case .unsupportedCapability(let provider, let capability):

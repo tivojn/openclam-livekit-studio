@@ -54,8 +54,9 @@ EXPECTED_CATALOG_SELECTIONS = {
                         ("en", "zh"),
                     ),
                     ("byok", "openai", "whisper-1", ("en", "zh")),
-                    # xAI STT detects speech language independently. `en` is
-                    # the pinned plugin's reviewed inverse-text-formatting hint.
+                    # xAI recognizes only its documented 25-language set and
+                    # excludes Chinese. `en` is the pinned plugin's required
+                    # inverse-text-formatting hint, not a capability claim.
                     ("byok", "xai", "grok-transcribe", ("en",)),
                 )
                 for language in languages

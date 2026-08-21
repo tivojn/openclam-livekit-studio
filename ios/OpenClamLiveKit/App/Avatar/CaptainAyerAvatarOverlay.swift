@@ -71,6 +71,73 @@ struct OpenClamAvatarMotionSessionState: Equatable, Sendable {
     }
 }
 
+struct OpenClamAvatarMotionLayout: Equatable, Sendable {
+    let playerFrame: CGRect
+    let clippingBounds: CGRect
+}
+
+enum OpenClamAvatarMotionLayoutPolicy {
+    /// Ara's retained Edge Idle alpha reaches x=525 in its 720px-wide clip.
+    /// Anchoring that subject edge, rather than the transparent movie edge,
+    /// puts her supporting foot against the trailing screen boundary. On a
+    /// portrait phone this is the requested ~12% player-width trailing shift;
+    /// the normalized anchor continues to work in landscape and split sizes.
+    static let edgeIdleSubjectTrailingFraction: CGFloat = 525.0 / 720.0
+
+    static func layout(
+        kind: OpenClamAvatarMotionKind,
+        availableSize: CGSize,
+        pixelSize: CGSize
+    ) -> OpenClamAvatarMotionLayout {
+        let availableWidth = finiteNonnegative(availableSize.width)
+        let availableHeight = finiteNonnegative(availableSize.height)
+        let sourceWidth = finiteNonnegative(pixelSize.width)
+        let sourceHeight = finiteNonnegative(pixelSize.height)
+        let clippingBounds = CGRect(
+            origin: .zero,
+            size: CGSize(width: availableWidth, height: availableHeight)
+        )
+
+        guard availableWidth > 0,
+              availableHeight > 0,
+              sourceWidth > 0,
+              sourceHeight > 0 else {
+            return OpenClamAvatarMotionLayout(
+                playerFrame: .zero,
+                clippingBounds: clippingBounds
+            )
+        }
+
+        // The transparent movie always receives the entire available height.
+        // Matching its native aspect ratio avoids resizeAspectFill cropping
+        // inside a narrower intermediate stage.
+        let playerWidth = availableHeight * sourceWidth / sourceHeight
+        let originX: CGFloat
+        switch kind {
+        case .edgeIdle:
+            originX = availableWidth
+                - playerWidth * edgeIdleSubjectTrailingFraction
+        case .walk, .moves:
+            originX = (availableWidth - playerWidth) / 2
+        }
+
+        return OpenClamAvatarMotionLayout(
+            playerFrame: CGRect(
+                x: originX,
+                y: 0,
+                width: playerWidth,
+                height: availableHeight
+            ),
+            clippingBounds: clippingBounds
+        )
+    }
+
+    private static func finiteNonnegative(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite, value > 0 else { return 0 }
+        return value
+    }
+}
+
 @MainActor
 private final class OpenClamTransparentMotionUIView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
@@ -539,7 +606,24 @@ struct CaptainAyerAvatarOverlay: View {
                         x: proxy.size.width / 2,
                         y: stageTop + stageHeight / 2
                     )
+                    // Hidden mode removes this stage from layout entirely; this
+                    // explicit gate also prevents a transition frame from
+                    // retaining its silhouette gesture while fading out.
+                    .allowsHitTesting(!isAvatarHidden)
                     .transition(.opacity)
+
+                    if let kind = motionSession.activeKind,
+                       let fileURL = motionFileURL(for: kind),
+                       let asset = avatar.motion(kind) {
+                        motionLayer(
+                            kind: kind,
+                            fileURL: fileURL,
+                            pixelSize: asset.pixelSize.cgSize,
+                            availableSize: proxy.size
+                        )
+                        .zIndex(10)
+                        .transition(.opacity)
+                    }
                 }
 
                 if showsOpacityPanel, !isRailFolded {
@@ -651,33 +735,23 @@ struct CaptainAyerAvatarOverlay: View {
     }
 
     private func avatarStage(width: CGFloat, height: CGFloat) -> some View {
-        ZStack {
-            OpenClamCatalogAvatarStage(
-                avatar: avatar,
-                controller: controller,
-                reactions: faceReactions,
-                faceMirror: faceMirror,
-                presentation: .expanded,
-                allowsGazeTracking: !faceMirror.isEnabled
-                    && !gestureState.isPinching
-                    && !gestureState.hasOpacityDrag,
-                showsArtwork: motionSession.activeKind == nil,
-                renderOpacity: opacity,
-                onVerticalOpacityChanged: updateOpacityDrag,
-                onVerticalOpacityEnded: endOpacityDrag,
-                onMagnificationChanged: updatePinch,
-                onMagnificationEnded: endPinch,
-                onInteraction: noteAvatarInteraction
-            )
-
-            if let kind = motionSession.activeKind,
-               let fileURL = motionFileURL(for: kind) {
-                OpenClamTransparentMotionPlayer(fileURL: fileURL, kind: kind)
-                    .opacity(opacity)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
-        }
+        OpenClamCatalogAvatarStage(
+            avatar: avatar,
+            controller: controller,
+            reactions: faceReactions,
+            faceMirror: faceMirror,
+            presentation: .expanded,
+            allowsGazeTracking: !faceMirror.isEnabled
+                && !gestureState.isPinching
+                && !gestureState.hasOpacityDrag,
+            showsArtwork: motionSession.activeKind == nil,
+            renderOpacity: opacity,
+            onVerticalOpacityChanged: updateOpacityDrag,
+            onVerticalOpacityEnded: endOpacityDrag,
+            onMagnificationChanged: updatePinch,
+            onMagnificationEnded: endPinch,
+            onInteraction: noteAvatarInteraction
+        )
         .frame(width: width, height: height)
         .scaleEffect(scale, anchor: isHeadAnchored ? .top : .center)
         .compositingGroup()
@@ -686,6 +760,39 @@ struct CaptainAyerAvatarOverlay: View {
         // it obscures otherwise reachable chat controls in Switch Control and
         // UI automation. The compact rail control below owns the adjustable
         // opacity semantics; physical vertical swiping remains on the stage.
+        .accessibilityHidden(true)
+    }
+
+    private func motionLayer(
+        kind: OpenClamAvatarMotionKind,
+        fileURL: URL,
+        pixelSize: CGSize,
+        availableSize: CGSize
+    ) -> some View {
+        let layout = OpenClamAvatarMotionLayoutPolicy.layout(
+            kind: kind,
+            availableSize: availableSize,
+            pixelSize: pixelSize
+        )
+        return ZStack(alignment: .topLeading) {
+            OpenClamTransparentMotionPlayer(fileURL: fileURL, kind: kind)
+                .frame(
+                    width: layout.playerFrame.width,
+                    height: layout.playerFrame.height
+                )
+                .position(
+                    x: layout.playerFrame.midX,
+                    y: layout.playerFrame.midY
+                )
+        }
+        .frame(
+            width: layout.clippingBounds.width,
+            height: layout.clippingBounds.height,
+            alignment: .topLeading
+        )
+        .clipped()
+        .opacity(opacity)
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
@@ -1124,10 +1231,6 @@ struct CaptainAyerAvatarOverlay: View {
             headAnchoredBeforeMotion = isHeadAnchored
         }
         faceReactions.cancelAll()
-        animate(.framing) {
-            scale = CaptainAyerOverlayTuning.initialScale
-            isHeadAnchored = false
-        }
 
         guard !kind.loops else { return }
         let expectedKind = kind

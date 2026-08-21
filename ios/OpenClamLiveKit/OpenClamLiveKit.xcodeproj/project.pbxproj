@@ -27,6 +27,7 @@
 		16939C3FF3CC5F3F4D059C82 /* PrepareScreenContextIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A849614AD3532D1F9283D4D5 /* PrepareScreenContextIntent.swift */; };
 		176CD78411141FA4FB3E863C /* ConversationAttachmentDescriptor+AgentAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B42DB8D9C2E097F7675C16BB /* ConversationAttachmentDescriptor+AgentAttachment.swift */; };
 		177D436AC89B09442D73AF5B /* OpenClamAvatarStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7EA90413EB570E0098B4467 /* OpenClamAvatarStoreTests.swift */; };
+		1ACF040C181B41A5B600AFDF /* AvatarAgentSaveDismissUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FF8C2ED54A3B4E23F09FF5 /* AvatarAgentSaveDismissUITests.swift */; };
 		1AE3846DB4C7291D47C2DA99 /* ScreenContextIntakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C78B0B2E0DEB18AA5FA3663 /* ScreenContextIntakeTests.swift */; };
 		1F1E87A5E31968411C9B7769 /* ScreenPTTService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9243F96877E4D994612FDA3A /* ScreenPTTService.swift */; };
 		1FC78473D4AE45B205090CCB /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = A6638CF445F12D11761B1380 /* LiveKit */; };
@@ -259,6 +260,7 @@
 		3F84B37DE1C6BB0AB1FC248C /* CloudVoiceServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVoiceServiceTests.swift; sourceTree = "<group>"; };
 		3FC28AB4A5774A9C00E46718 /* ActivityRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityRecord.swift; sourceTree = "<group>"; };
 		40CD059FB38A43FA0162C372 /* ProviderAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAPIClientTests.swift; sourceTree = "<group>"; };
+		40FF8C2ED54A3B4E23F09FF5 /* AvatarAgentSaveDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAgentSaveDismissUITests.swift; sourceTree = "<group>"; };
 		418712F0FFB181B068F92B0F /* ScreenContextReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextReviewView.swift; sourceTree = "<group>"; };
 		44E30497D59C3CAC6878FDAF /* OpenClamLiveKit.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenClamLiveKit.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		45D1FD93733AB5A6ECE6E9E7 /* LocalAssistantServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAssistantServices.swift; sourceTree = "<group>"; };
@@ -714,6 +716,7 @@
 		AC3AD13964C44317B125D11B /* UITests */ = {
 			isa = PBXGroup;
 			children = (
+				40FF8C2ED54A3B4E23F09FF5 /* AvatarAgentSaveDismissUITests.swift */,
 				BCBCC79F5B012AA08CDE90DE /* OpenClamConversationUITests.swift */,
 			);
 			path = UITests;
@@ -1059,6 +1062,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1ACF040C181B41A5B600AFDF /* AvatarAgentSaveDismissUITests.swift in Sources */,
 				609779AFBB764DC82CF01668 /* OpenClamConversationUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1224,14 +1228,14 @@
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-context-share";
 				PRODUCT_NAME = OpenClamLiveKitShareExtension;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Share";
@@ -1309,13 +1313,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1327,14 +1331,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-context-share";
 				PRODUCT_NAME = OpenClamLiveKitShareExtension;
 				SDKROOT = iphoneos;
@@ -1400,14 +1404,14 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget";
 				PRODUCT_NAME = OpenClamLiveKitScreenVoiceWidget;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Widget";
@@ -1422,14 +1426,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.keyboard;
 				PRODUCT_NAME = OpenClamLiveKitKeyboard;
 				SDKROOT = iphoneos;
@@ -1462,14 +1466,14 @@
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot.keyboard;
 				PRODUCT_NAME = OpenClamLiveKitKeyboard;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Keyboard";
@@ -1550,14 +1554,14 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget";
 				PRODUCT_NAME = OpenClamLiveKitScreenVoiceWidget;
 				SDKROOT = iphoneos;
@@ -1575,13 +1579,13 @@
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionheart.openclam.livekitpilot;
 				PROVISIONING_PROFILE_SPECIFIER = "OpenClam LiveKit Pilot Development Main";
 				SDKROOT = iphoneos;

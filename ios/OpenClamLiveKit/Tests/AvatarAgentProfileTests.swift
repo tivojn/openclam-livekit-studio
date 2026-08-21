@@ -474,6 +474,126 @@ final class AvatarAgentProfileTests: XCTestCase {
         }
     }
 
+    func testAvatarEditorSaveGateRejectsDuplicateAndTerminalSubmissions() {
+        var gate = AvatarAgentEditorSaveGate()
+
+        XCTAssertTrue(gate.canSubmit)
+        XCTAssertTrue(gate.begin())
+        XCTAssertFalse(gate.begin(), "A second tap must not start another write.")
+        XCTAssertFalse(gate.canSubmit)
+
+        gate.fail()
+        XCTAssertTrue(gate.canSubmit, "A failed save must remain retryable.")
+        XCTAssertTrue(gate.begin())
+        gate.succeed()
+
+        XCTAssertFalse(gate.canSubmit)
+        XCTAssertFalse(
+            gate.begin(),
+            "A successful save stays terminal while the editor dismisses."
+        )
+        gate.fail()
+        XCTAssertFalse(
+            gate.canSubmit,
+            "Late callbacks must not resurrect a successfully closed editor."
+        )
+    }
+
+    func testAvatarEditorSavePersistsProtectedAndImportedProfiles() throws {
+        let configuration = makeConfiguration()
+
+        var protectedDraft = configuration.profile(for: "captain-ayer")
+        protectedDraft.displayName = "Captain Ayer Saved"
+        protectedDraft.userPrompt = "Prefer concise replies."
+        let protectedSaved = try AvatarAgentEditorSaveOperation.persist(
+            draft: protectedDraft,
+            configuration: configuration,
+            avatarIsAvailable: true
+        )
+        XCTAssertEqual(protectedSaved.displayName, "Captain Ayer Saved")
+        XCTAssertEqual(
+            configuration.avatarAgentProfiles["captain-ayer"],
+            protectedSaved
+        )
+
+        let importedID = "installed-save-test"
+        configuration.activateAvatar(
+            id: importedID,
+            displayName: "Installed Save Test"
+        )
+        var importedDraft = configuration.profile(for: importedID)
+        importedDraft.systemPrompt = "Keep this installed avatar persona."
+        let importedSaved = try AvatarAgentEditorSaveOperation.persist(
+            draft: importedDraft,
+            configuration: configuration,
+            avatarIsAvailable: true
+        )
+        XCTAssertEqual(
+            configuration.avatarAgentProfiles[importedID],
+            importedSaved
+        )
+    }
+
+    func testAvatarEditorValidationFailureKeepsDraftAndPersistedProfileIntact() {
+        let configuration = makeConfiguration()
+        let original = configuration.profile(for: "captain-ayer")
+        var invalidDraft = original
+        invalidDraft.displayName = String(repeating: "A", count: 65)
+
+        XCTAssertThrowsError(
+            try AvatarAgentEditorSaveOperation.persist(
+                draft: invalidDraft,
+                configuration: configuration,
+                avatarIsAvailable: true
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? AvatarAgentProfileError,
+                .invalidDisplayName
+            )
+        }
+        XCTAssertEqual(invalidDraft.displayName.count, 65)
+        XCTAssertEqual(
+            configuration.avatarAgentProfiles["captain-ayer"],
+            original
+        )
+    }
+
+    func testUnavailableAvatarCannotBeResurrectedByStaleEditorSave() {
+        let configuration = makeConfiguration()
+        let importedID = "deleted-save-test"
+        configuration.activateAvatar(
+            id: importedID,
+            displayName: "Deleted Save Test"
+        )
+        var staleDraft = configuration.profile(for: importedID)
+        staleDraft.userPrompt = "This stale draft must never return."
+
+        configuration.removeImportedAvatarProfile(
+            id: importedID,
+            availableIdentities: AvatarAgentIdentity.defaultPack
+        )
+        XCTAssertNil(configuration.avatarAgentProfiles[importedID])
+
+        XCTAssertThrowsError(
+            try AvatarAgentEditorSaveOperation.persist(
+                draft: staleDraft,
+                configuration: configuration,
+                avatarIsAvailable: false
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? AvatarAgentEditorSaveError,
+                .avatarUnavailable
+            )
+        }
+        XCTAssertNil(configuration.avatarAgentProfiles[importedID])
+        XCTAssertEqual(
+            configuration.activeAvatarID,
+            AvatarAgentIdentity.defaultID
+        )
+    }
+
     private func makeConfiguration() -> AIConfigurationModel {
         let suite = "AvatarAgentProfileTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

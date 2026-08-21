@@ -39,16 +39,12 @@ final class ScreenVoicePTTAnswerSpeaker: NSObject, ScreenVoicePTTSpeaking,
                 try await speakWithApple(normalized)
             } else {
                 let service = try makeCloudService(for: selection.provider)
-                let voice = selection.voice
-                    ?? AIProviderRegistry.defaultVoice(for: selection.provider)
-                    ?? "alloy"
                 let task = Task {
                     try await service.synthesize(
-                        .init(
+                        CloudSpeechSynthesisRequestResolver.resolve(
                             text: normalized,
-                            model: selection.model,
-                            voice: voice,
-                            languageCode: Locale.current.language.languageCode?.identifier
+                            selection: selection,
+                            localeLanguageCode: Locale.current.language.languageCode?.identifier
                         )
                     )
                 }

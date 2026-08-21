@@ -163,8 +163,13 @@ final class ScreenVoicePTTQuestionTranscriber: ScreenVoicePTTQuestionTranscribin
     private func makeBackend(
         selection: AIServiceSelection
     ) throws -> any ScreenVoicePTTTranscriptionBackend {
+        let language = AIProviderRegistry.speechRecognitionRequestLanguage(
+            for: selection
+        )
         if selection.provider == .apple {
-            return AppleScreenVoicePTTTranscriptionBackend()
+            return AppleScreenVoicePTTTranscriptionBackend(
+                languageCode: language
+            )
         }
 
         do {
@@ -181,7 +186,6 @@ final class ScreenVoicePTTQuestionTranscriber: ScreenVoicePTTQuestionTranscribin
             provider: selection.provider,
             vault: credentialVault
         )
-        let language = Locale.current.language.languageCode?.identifier
         switch selection.provider {
         case .soniox where selection.model == SonioxRealtimeSpeechToTextService.model:
             return SonioxScreenVoicePTTTranscriptionBackend(
@@ -213,6 +217,14 @@ final class ScreenVoicePTTQuestionTranscriber: ScreenVoicePTTQuestionTranscribin
                 model: selection.model,
                 languageCode: language
             )
+        case .deepgram:
+            return BufferedScreenVoicePTTTranscriptionBackend(
+                service: DeepgramCloudSpeechToTextService(
+                    credentialStore: credentialStore
+                ),
+                model: selection.model,
+                languageCode: language
+            )
         case .elevenLabs:
             return BufferedScreenVoicePTTTranscriptionBackend(
                 service: ElevenLabsCloudVoiceService(credentialStore: credentialStore),
@@ -227,6 +239,7 @@ final class ScreenVoicePTTQuestionTranscriber: ScreenVoicePTTQuestionTranscribin
 
 @MainActor
 private final class AppleScreenVoicePTTTranscriptionBackend: ScreenVoicePTTTranscriptionBackend {
+    private let languageCode: String?
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -235,13 +248,18 @@ private final class AppleScreenVoicePTTTranscriptionBackend: ScreenVoicePTTTrans
     private var stopFinalReceived = false
     private var recognitionError: Error?
 
+    init(languageCode: String?) {
+        self.languageCode = languageCode
+    }
+
     func start() async throws {
         let status = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
         try Task.checkCancellation()
         guard status == .authorized else { throw ScreenVoicePTTError.speechPermissionDenied }
-        guard let recognizer = SFSpeechRecognizer(locale: .current), recognizer.isAvailable else {
+        let locale = languageCode.map(Locale.init(identifier:)) ?? .current
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
             throw ScreenVoicePTTError.speechRecognitionUnavailable
         }
 

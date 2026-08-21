@@ -2229,7 +2229,10 @@ function recoverCompanion() {
     state.petHomeBounds = null;
   }
   state.petOpacity = 0.5;
-  state.petClickThrough = false;
+  // Recovery restores product defaults too. The opaque avatar remains directly
+  // draggable, while empty pixels must continue to pass clicks through to the
+  // desktop just as they do on a fresh install.
+  state.petClickThrough = true;
   state.petLocked = false;
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const area = display.workArea;

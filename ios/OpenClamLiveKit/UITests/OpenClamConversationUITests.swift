@@ -49,6 +49,20 @@ final class OpenClamConversationUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
 
+        // This journey validates chat controls, not avatar overlap. A user-
+        // imported full-width avatar may legitimately cover the leading
+        // response-action lane, so hide the avatar through the real UI first.
+        let hideAvatar = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'Hide '")
+        ).firstMatch
+        if hideAvatar.waitForExistence(timeout: 1) {
+            hideAvatar.tap()
+            let showAvatar = app.buttons.matching(
+                NSPredicate(format: "label BEGINSWITH 'Show '")
+            ).firstMatch
+            XCTAssertTrue(showAvatar.waitForExistence(timeout: 2))
+        }
+
         let selectableText = app.textViews.matching(
             identifier: "openclam-selectable-message-text"
         ).firstMatch
@@ -57,16 +71,14 @@ final class OpenClamConversationUITests: XCTestCase {
             "Assistant text must use the native selectable text surface."
         )
 
-        let copy = app.buttons.matching(
-            NSPredicate(format: "label == %@", "Copy assistant response")
-        ).firstMatch
-        let readAloud = app.buttons.matching(
-            NSPredicate(format: "label == %@", "Read assistant response aloud")
-        ).firstMatch
-        XCTAssertTrue(copy.waitForExistence(timeout: 2))
-        XCTAssertTrue(readAloud.waitForExistence(timeout: 2))
-        XCTAssertTrue(copy.isHittable)
-        XCTAssertTrue(readAloud.isHittable)
+        let copy = try XCTUnwrap(
+            firstHittableButton(label: "Copy assistant response", timeout: 3),
+            "The visible assistant response must expose Copy."
+        )
+        let readAloud = try XCTUnwrap(
+            firstHittableButton(label: "Read assistant response aloud", timeout: 3),
+            "The visible assistant response must expose Read Aloud."
+        )
         XCTAssertTrue(readAloud.isEnabled)
         XCTAssertGreaterThanOrEqual(copy.frame.height, 44)
         XCTAssertGreaterThanOrEqual(readAloud.frame.height, 44)
@@ -135,9 +147,9 @@ final class OpenClamConversationUITests: XCTestCase {
             )
             capture(attachmentName)
 
-            // Keep several complete mouth cues on screen for screenshot/video
-            // acceptance while proving the control remains cancellable.
-            Thread.sleep(forTimeInterval: 3)
+            // Assert and cancel the control while the current utterance is
+            // active. Waiting a fixed three seconds made this depend on the
+            // persisted reply length rather than the speech lifecycle.
             XCTAssertTrue(stop.isHittable)
             stop.tap()
             XCTAssertTrue(play.waitForExistence(timeout: 3))
@@ -582,16 +594,123 @@ final class OpenClamConversationUITests: XCTestCase {
             ).firstMatch.waitForExistence(timeout: 2)
         )
 
-        // With the avatar truly hidden, the thread owns one-finger drags.
+        // The dedicated invisible-scroll journey below exercises physical
+        // bidirectional drags with real scrollable history. This fresh thread
+        // has no scroll range, so use a thread tap here to keep this test
+        // focused on rail wake behavior and Warm Ear independence.
         XCTAssertTrue(waitForValue("Idle", on: rail, timeout: 6))
-        let scrollStart = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.56)
-        )
-        let scrollEnd = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.32)
-        )
-        scrollStart.press(forDuration: 0.05, thenDragTo: scrollEnd)
+        app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.42)
+        ).tap()
         XCTAssertTrue(waitForValue("Visible", on: rail, timeout: 2))
+    }
+
+    func testInvisibleAvatarReturnsPhysicalVerticalSwipesToTheThread() throws {
+        startFreshChat()
+        for index in 1...4 {
+            sendLocalMessage("Thank you — invisible scroll history turn \(index).")
+        }
+
+        let latestUser = app.descendants(matching: .any)[
+            "openclam-latest-user-message"
+        ]
+        XCTAssertTrue(latestUser.waitForExistence(timeout: 3))
+
+        let hideAvatar = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'Hide '")
+        ).firstMatch
+        XCTAssertTrue(hideAvatar.waitForExistence(timeout: 2))
+        hideAvatar.tap()
+        XCTAssertTrue(
+            app.buttons.matching(
+                NSPredicate(format: "label BEGINSWITH 'Show '")
+            ).firstMatch.waitForExistence(timeout: 2)
+        )
+
+        let before = latestUser.frame.minY
+        // The composer intentionally keeps the keyboard open after Send. Keep
+        // the physical drag inside the visible thread rather than beginning
+        // on the keyboard, which would exercise keyboard gesture handling.
+        let swipeUpStart = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.50)
+        )
+        let swipeUpEnd = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.18)
+        )
+        swipeUpStart.press(forDuration: 0.06, thenDragTo: swipeUpEnd)
+
+        let movedUp = expectation(
+            for: NSPredicate { _, _ in
+                !latestUser.isHittable || latestUser.frame.minY < before - 44
+            },
+            evaluatedWith: nil
+        )
+        wait(for: [movedUp], timeout: 3)
+        let afterUp = latestUser.frame.minY
+
+        let swipeDownStart = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.20)
+        )
+        let swipeDownEnd = app.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.52)
+        )
+        swipeDownStart.press(forDuration: 0.06, thenDragTo: swipeDownEnd)
+
+        let movedDown = expectation(
+            for: NSPredicate { _, _ in
+                latestUser.frame.minY > afterUp + 44
+            },
+            evaluatedWith: nil
+        )
+        wait(for: [movedDown], timeout: 3)
+        capture("invisible-avatar-thread-swipe")
+    }
+
+    func testNewestUserTurnAnchorsAtTopWithLongHistoryAndDynamicType() throws {
+        app.terminate()
+        app.launchArguments += [
+            "-UIPreferredContentSizeCategoryName",
+            "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge",
+        ]
+        app.launch()
+        XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
+        startFreshChat()
+
+        for index in 1...5 {
+            sendLocalMessage("Thank you — long history turn \(index).")
+        }
+        let finalTurn = "Thank you for checking this deliberately long final message at the largest accessibility text size. It should stay on the trailing side and begin near the top while leaving room below for the answer."
+        sendLocalMessage(finalTurn)
+
+        let thread = app.scrollViews["openclam-conversation-thread"]
+        let latestUser = app.descendants(matching: .any)[
+            "openclam-latest-user-message"
+        ]
+        XCTAssertTrue(thread.waitForExistence(timeout: 3))
+        XCTAssertTrue(latestUser.waitForExistence(timeout: 3))
+        XCTAssertTrue(latestUser.isHittable)
+        XCTAssertGreaterThan(
+            latestUser.frame.midX,
+            app.frame.midX,
+            "The submitted user bubble must remain aligned to the trailing side."
+        )
+        XCTAssertGreaterThanOrEqual(latestUser.frame.minY, thread.frame.minY - 4)
+        XCTAssertLessThanOrEqual(
+            latestUser.frame.minY,
+            thread.frame.minY + 128,
+            "The newest submitted turn must be placed near the top of the visible thread."
+        )
+
+        let oldGreeting = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH[c] 'Ask anything'")
+        ).firstMatch
+        XCTAssertTrue(
+            !oldGreeting.exists
+                || !oldGreeting.isHittable
+                || oldGreeting.frame.maxY <= thread.frame.minY,
+            "Older entries must be pushed above the visible thread after a new send."
+        )
+        capture("dynamic-type-user-turn-top-anchor")
     }
 
     func testVisibleAvatarStageSwipeChangesOpacityAndLeavesCanvasGapsScrollable() throws {
@@ -633,12 +752,13 @@ final class OpenClamConversationUITests: XCTestCase {
         opacity.adjust(toNormalizedSliderPosition: 0.25)
         let before = String(describing: opacity.value ?? "")
         // This is deliberately an app-coordinate drag through the avatar's
-        // lower-body hit region, not a drag on the accessibility Slider.
+        // left-leg hit region, not the transparent gap between both legs and
+        // not a drag on the accessibility Slider.
         let stageStart = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.55)
+            withNormalizedOffset: CGVector(dx: 0.43, dy: 0.55)
         )
         let stageEnd = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.20)
+            withNormalizedOffset: CGVector(dx: 0.43, dy: 0.20)
         )
         stageStart.press(forDuration: 0.06, thenDragTo: stageEnd)
 
@@ -835,6 +955,8 @@ final class OpenClamConversationUITests: XCTestCase {
     }
 
     func testLiveTalkUsesOnePersistentPhoneControlOnTheAvatarRail() throws {
+        startFreshChat()
+
         let phone = app.buttons["openclam-live-talk-rail-button"]
         let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
         XCTAssertTrue(phone.waitForExistence(timeout: 3))
@@ -895,6 +1017,66 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(waitForLabel("Fold avatar tools", on: foldControl, timeout: 3))
         XCTAssertTrue(foldControl.isHittable)
         capture("avatar-rail-fold-show-and-starter-clearance")
+    }
+
+    private func startFreshChat() {
+        app.buttons["Open sidebar"].tap()
+        XCTAssertTrue(app.textFields["Search chats"].waitForExistence(timeout: 3))
+        let newChat = app.buttons["New chat"]
+        XCTAssertTrue(newChat.isHittable)
+        newChat.tap()
+        XCTAssertTrue(app.navigationBars["New chat"].waitForExistence(timeout: 3))
+    }
+
+    private func firstHittableButton(
+        label: String,
+        timeout: TimeInterval
+    ) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        let query = app.buttons.matching(
+            NSPredicate(format: "label == %@", label)
+        )
+
+        repeat {
+            if let visible = query.allElementsBoundByIndex.reversed().first(
+                where: \.isHittable
+            ) {
+                return visible
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
+
+        return nil
+    }
+
+    private func sendLocalMessage(_ text: String) {
+        let compactPrompt = app.buttons["Message the AI assistant"]
+        if compactPrompt.waitForExistence(timeout: 0.5) {
+            compactPrompt.tap()
+        }
+
+        let composer = app.textFields["Message the AI assistant"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertTrue(composer.isHittable)
+        composer.tap()
+        composer.typeText(text)
+
+        let send = app.buttons["Send message"]
+        XCTAssertTrue(send.waitForExistence(timeout: 2))
+        XCTAssertTrue(send.isHittable)
+        send.tap()
+
+        let latestUser = app.descendants(matching: .any)[
+            "openclam-latest-user-message"
+        ]
+        let delivered = expectation(
+            for: NSPredicate { _, _ in
+                latestUser.exists
+                    && String(describing: latestUser.value ?? "").contains(text)
+            },
+            evaluatedWith: nil
+        )
+        wait(for: [delivered], timeout: 4)
     }
 
     private func waitForValue(

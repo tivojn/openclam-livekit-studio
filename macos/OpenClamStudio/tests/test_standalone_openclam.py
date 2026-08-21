@@ -91,6 +91,62 @@ class StandaloneProviderTests(unittest.TestCase):
         self.assertEqual(loaded["image"]["provider"], "")
         self.assertNotIn("live", loaded)
 
+    def test_exact_legacy_managed_english_stt_migrates_once_to_multilingual(self):
+        config = {
+            "livekit": {
+                "stt": {
+                    "source": "managed",
+                    "provider": "livekit",
+                    "model": "deepgram/nova-3",
+                    "language": "en",
+                },
+            },
+        }
+
+        self.assertTrue(P._migrate_legacy_managed_livekit_stt_default(config))
+        self.assertEqual("multi", config["livekit"]["stt"]["language"])
+        self.assertTrue(
+            config["ui"][P.LIVEKIT_STT_DEFAULT_MIGRATION_KEY]
+        )
+        self.assertFalse(P._migrate_legacy_managed_livekit_stt_default(config))
+
+        # After the marker exists, a deliberate managed-English choice stays.
+        config["livekit"]["stt"]["language"] = "en"
+        self.assertFalse(P._migrate_legacy_managed_livekit_stt_default(config))
+        self.assertEqual("en", config["livekit"]["stt"]["language"])
+
+    def test_livekit_stt_migration_preserves_byok_and_other_english_choices(self):
+        cases = (
+            {
+                "source": "byok",
+                "provider": "deepgram",
+                "model": "nova-3",
+                "language": "en",
+            },
+            {
+                "source": "byok",
+                "provider": "openai",
+                "model": "gpt-4o-transcribe",
+                "language": "en",
+            },
+            {
+                "source": "managed",
+                "provider": "livekit",
+                "model": "different-model",
+                "language": "en",
+            },
+        )
+        for selection in cases:
+            with self.subTest(selection=selection):
+                config = {"livekit": {"stt": copy.deepcopy(selection)}}
+                self.assertTrue(
+                    P._migrate_legacy_managed_livekit_stt_default(config)
+                )
+                self.assertEqual(selection, config["livekit"]["stt"])
+                self.assertTrue(
+                    config["ui"][P.LIVEKIT_STT_DEFAULT_MIGRATION_KEY]
+                )
+
     def test_load_atomically_rewrites_removed_blocks_out_of_the_config_file(self):
         stale = {
             "llm": {"provider": "ollama"},

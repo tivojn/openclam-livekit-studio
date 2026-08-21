@@ -25,7 +25,7 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
     }
 
     func testPackAverageMatchesTheTwoAuthorizedBundledAvatars() {
-        XCTAssertEqual(OpenClamAvatarCatalog.averageIncludedByteCount, 12_399_490)
+        XCTAssertEqual(OpenClamAvatarCatalog.averageIncludedByteCount, 13_046_499)
         XCTAssertLessThan(OpenClamAvatarCatalog.averageIncludedByteCount, 14_000_000)
     }
 

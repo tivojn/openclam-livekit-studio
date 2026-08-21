@@ -863,7 +863,13 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
         self.assertEqual(
             on_disk["livekit"]["pilot_app_token"], credentials.MARKER
         )
-        self.assertEqual(on_disk["ui"], {"design": "quiet"})
+        self.assertEqual(
+            on_disk["ui"],
+            {
+                "design": "quiet",
+                P.LIVEKIT_STT_DEFAULT_MIGRATION_KEY: True,
+            },
+        )
         self.assertEqual(loaded["livekit"]["pilot_app_token"], PILOT_TOKEN)
         self.assertNotIn(PILOT_TOKEN, json.dumps(on_disk))
         self.assertNotIn(PILOT_TOKEN, opened.text + saved.text)

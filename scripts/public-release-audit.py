@@ -220,7 +220,11 @@ CAPTAIN_AYER_BINARY_HASHES = {
         "4d5f8df80fc45343673d36f03d841f102a328ab2b2ec49af1e1cacaf2efef45a",
 }
 
-ARA_BINARY_HASHES = {
+# v1.0.1 shipped the original Ara asset set. The current tree must never use
+# these binaries again, but descendants of the public v1.0.1 commit retain the
+# exact blobs in reachable history. History accepts only these explicit
+# path/hash pairs; no wildcard or unknown Ara binary is approved.
+HISTORICAL_ARA_V1_0_1_BINARY_HASHES = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/body.png"):
         "3850b113b8181a3c18c497d33de91dd16a42c47d701e48c6c89a9a29b7921432",
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-left.png"):
@@ -261,6 +265,51 @@ ARA_BINARY_HASHES = {
         "271339f71da95141a844f1ffc19fe6ec0735b7c4ffcf8ef355af173c66beef1c",
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-sil.jpg"):
         "32023cdddc2b1d24e9ed47bdf092b0cb1d8edec0f69fe7b8584c837eb72b02e7",
+}
+
+# v1.0.2 ships the current brown-blazer Ara asset set. These are the only Ara
+# binaries approved in the current source tree.
+ARA_BINARY_HASHES = {
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/body.png"):
+        "365d91dab92866c6bf976e90971eb8d4c0af1b0a8e977163e47945e264bf0dc3",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-left.png"):
+        "f60e4b2de9197c5790239e3189ed960f1d758a33d4ab4c6dced93bc7bd070bfe",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-right.png"):
+        "17def36bef479e6762d57f961671771cdf68ff5080fdf7a672c0e6d0f92cf6bd",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/eye-left.png"):
+        "ef14733dfeb9657c0bc7f0b4c39f330a574bfcaf7fc046af19d7c023baa2c671",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/eye-right.png"):
+        "620cf2e4db34089a1f006be3e91454877969d6b12557b0ac0b72bf153161d6fe",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/gaze-left-atlas.png"):
+        "6f61eae78a287e93d8dd3497ecfb35ec54bd4c106767fd530edcd9ae98c9c3ee",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/gaze-right-atlas.png"):
+        "6bc1732094df77eff1a63adda77bb121c6195da6ee752a42d1a61429430360c0",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/head-mask.png"):
+        "4f179461401257989735e26692c28dc39d14d3f83caea8a84ea7a34b3c750b88",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/motion-edge-idle.mov"):
+        "d94013aa1b3e6aad84fae823f0cd7c8ecd84b5ac6cb994f364afe9dbe6fee971",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/motion-moves.mov"):
+        "ad838c39d11d9eaec7410a4cf67e2d53f236a8afb452fd9b6ccbaf1b400f6957",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/thumbnail.jpg"):
+        "2a6520f7e94baf93788341d453acc9a432a3ced85b8d654fdffd5e425269cc2a",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-E.jpg"):
+        "204d6b07757ad6d104f685a2c57c1d9c33d12535d8e57579057e5bb4b4ba65c2",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-FF.jpg"):
+        "64d169d22abda344d79043453830e572966993c3632059be9419e785837e75f2",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-RR.jpg"):
+        "b5b6fc8c67eb6fa3205399a524480d9a043333edabba49db15aeb30814cc5dea",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-TH.jpg"):
+        "89dfa4d8341379ae17917dfd32f1f8dc72782fdb99d711b35ad3be30dc5db68b",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-aa.jpg"):
+        "66005d9aa4ec3e93feda02052778abd3132ba12d87eaefcb62184833282ea00a",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-ih.jpg"):
+        "d15b23029fa98821728ce9d097fa89fbb6fdedbe4aba06584ac0a4d187118779",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-nn.jpg"):
+        "a5cfa54c5527abec635a4cc50f56b971df3f50503de0bcf9e240e0b6f5335768",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-ou.jpg"):
+        "a208a2d7fdaf23b1cc346cfddafe1fb3bc2440f40a824fb14c6a6d03cc8ba33c",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-sil.jpg"):
+        "08df7b7dc0cbd5ceaa5d71d086237ed14120be14ffc3bb132960e72545c13804",
 }
 
 DETERMINISTIC_FIXTURE_BINARY_HASHES = {
@@ -318,7 +367,7 @@ REQUIRED_AVATAR_BINARY_HASHES = {
     **ARA_BINARY_HASHES,
 }
 AUTHORIZED_AVATAR_LEDGER_SHA256 = (
-    "33273896e003a63252d6bd44f257b2c45519933c20cd6329d75f8ff3dbfc2d8b"
+    "7ed8c407fd07c6899b1e75f25879e9b1390848b260dbcf9eb576ae2e74866a16"
 )
 ALLOWED_BINARY_HASHES = {
     **BRANDING_AND_RUNTIME_BINARY_HASHES,
@@ -742,6 +791,10 @@ def audit_bytes(relative: Path, raw: bytes) -> list[str]:
 
 
 def audit_history_bytes(relative: Path, raw: bytes) -> list[str]:
+    historical_ara_hash = HISTORICAL_ARA_V1_0_1_BINARY_HASHES.get(relative)
+    if historical_ara_hash is not None \
+            and hashlib.sha256(raw).hexdigest() == historical_ara_hash:
+        return []
     historical_hash = HISTORICAL_SYNTHETIC_GUIDE_HASHES.get(relative)
     if historical_hash is None:
         return audit_bytes(relative, raw)

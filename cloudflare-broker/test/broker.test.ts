@@ -790,6 +790,14 @@ describe("broker", () => {
       "gpt-4o-mini-transcribe",
       "whisper-1",
     ]);
+    expect(PROFILE_CATALOG.stt.managed.livekit["deepgram/nova-3"]).toEqual({
+      default_language: "multi",
+      languages: ["multi", "en", "zh"],
+    });
+    expect(PROFILE_CATALOG.stt.byok.xai["grok-transcribe"]).toEqual({
+      default_language: "en",
+      languages: ["en"],
+    });
     expect(PROFILE_CATALOG.tts.byok.xai["xai-tts"]).toEqual({
       default_voice: "ara",
       voices: ["ara", "eve", "leo", "rex", "sal"],

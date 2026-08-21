@@ -560,6 +560,10 @@ final class AIConfigurationModel: ObservableObject {
             return XAICloudVoiceService(credentialStore: credentialStore)
         case .openRouter:
             return OpenRouterCloudVoiceService(credentialStore: credentialStore)
+        case .deepgram:
+            return DeepgramCloudSpeechToTextService(
+                credentialStore: credentialStore
+            )
         case .elevenLabs:
             return ElevenLabsCloudVoiceService(credentialStore: credentialStore)
         case .soniox:

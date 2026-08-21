@@ -54,23 +54,23 @@ enum OpenClamAvatarCatalog {
     private static let ara = OpenClamAvatarDescriptor(
         avatarID: .ara,
         displayName: "Ara",
-        sourceSlug: "ara",
+        sourceSlug: "ara-2",
         sourceRelativeRuntimePath: "bundled/ara",
-        includedByteCount: 13_856_550,
+        includedByteCount: 15_150_569,
         geometry: rig(
             body: size(864, 1_152),
             transform: transform(
-                a: 0.2020784, b: 0.0069517,
-                c: -0.0069517, d: 0.2020784,
-                tx: 330.7539131, ty: -4.8994852
+                a: 0.1832646, b: -0.0058198,
+                c: 0.0058198, d: 0.1832646,
+                tx: 337.4508185, ty: 6.4314091
             ),
-            faceBounds: rect(385, 66, 97, 125),
-            leftEye: rect(551, 481, 171, 101),
-            rightEye: rect(331, 471, 174, 104),
-            leftBrow: rect(555, 425, 200, 112),
-            rightBrow: rect(290, 410, 230, 122),
-            leftGaze: rect(580, 512, 108, 56),
-            rightGaze: rect(364, 502, 114, 57)
+            faceBounds: rect(391, 68, 85, 111),
+            leftEye: rect(555, 494, 169, 106),
+            rightEye: rect(333, 485, 178, 105),
+            leftBrow: rect(561, 439, 195, 112),
+            rightBrow: rect(293, 424, 231, 122),
+            leftGaze: rect(584, 525, 106, 57),
+            rightGaze: rect(366, 516, 116, 57)
         ),
         compatibility: standardCompatibility,
         assets: bundledAssets(directory: "ara"),

@@ -108,14 +108,17 @@ final class SpeechOutputDelegateProxy: NSObject,
         _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance
     ) {
-        completeApple(utterance)
+        completeApple(utterance, errorMessage: nil)
     }
 
     func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         didCancel utterance: AVSpeechUtterance
     ) {
-        completeApple(utterance)
+        completeApple(
+            utterance,
+            errorMessage: "Speech playback was cancelled before this part finished."
+        )
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -132,11 +135,14 @@ final class SpeechOutputDelegateProxy: NSObject,
         )
     }
 
-    private func completeApple(_ utterance: AVSpeechUtterance) {
+    private func completeApple(
+        _ utterance: AVSpeechUtterance,
+        errorMessage: String?
+    ) {
         guard let generation = appleGenerations.removeValue(
             forKey: ObjectIdentifier(utterance)
         ) else { return }
-        onCompletion?(generation, nil)
+        onCompletion?(generation, errorMessage)
     }
 
     private func completeCloud(_ player: AVAudioPlayer, errorMessage: String?) {
@@ -144,6 +150,53 @@ final class SpeechOutputDelegateProxy: NSObject,
             forKey: ObjectIdentifier(player)
         ) else { return }
         onCompletion?(generation, errorMessage)
+    }
+}
+
+/// Tracks exactly one active speech part. Audio is never synthesized for the next part until the
+/// current player/utterance confirms completion, so a long reply does not accumulate audio data.
+struct SpeechOutputSequence: Equatable, Sendable {
+    struct ActivePart: Equatable, Sendable {
+        let number: Int
+        let total: Int
+        let chunk: CloudSpeechTextChunk
+    }
+
+    let generation: Int
+    let chunks: [CloudSpeechTextChunk]
+    private(set) var nextIndex = 0
+    private(set) var activeIndex: Int?
+
+    init(generation: Int, chunks: [CloudSpeechTextChunk]) {
+        precondition(!chunks.isEmpty)
+        self.generation = generation
+        self.chunks = chunks
+    }
+
+    mutating func beginNextPart() -> ActivePart? {
+        guard activeIndex == nil, nextIndex < chunks.count else { return nil }
+        let index = nextIndex
+        activeIndex = index
+        nextIndex += 1
+        return .init(number: index + 1, total: chunks.count, chunk: chunks[index])
+    }
+
+    /// Returns true only after the final active part completes successfully.
+    mutating func completeActivePart() -> Bool {
+        guard activeIndex != nil else { return false }
+        activeIndex = nil
+        return nextIndex == chunks.count
+    }
+
+    var activePartNumber: Int? {
+        activeIndex.map { $0 + 1 }
+    }
+
+    var totalPartCount: Int { chunks.count }
+
+    func failureMessage(detail: String) -> String {
+        let part = activePartNumber ?? min(nextIndex + 1, totalPartCount)
+        return "Speech stopped at part \(part) of \(totalPartCount): \(detail) Tap Read Aloud to retry from the beginning."
     }
 }
 
@@ -187,6 +240,10 @@ final class ConversationModel: ObservableObject {
     private var cloudAudioPlayer: AVAudioPlayer?
     private var cloudAudioPlayerGeneration: Int?
     private var cloudSpeechTask: Task<Void, Never>?
+    private var speechOutputSequence: SpeechOutputSequence?
+    private var cloudSpeechService: (any CloudTextToSpeechServicing)?
+    private var cloudSpeechSelection: AIServiceSelection?
+    private var cloudSpeechLanguageCode: String?
 #if DEBUG
     private(set) var speechOutputStopCount = 0
 #endif
@@ -227,7 +284,7 @@ final class ConversationModel: ObservableObject {
         attachmentPreparationService = try? AttachmentPreparationService()
         isTTSEnabled = preferences.bool(forKey: Self.ttsEnabledPreferenceKey)
         speechOutputDelegate.onCompletion = { [weak self] generation, errorMessage in
-            self?.completeSpeechOutput(generation: generation, errorMessage: errorMessage)
+            self?.completeSpeechPart(generation: generation, errorMessage: errorMessage)
         }
         speechOutputDelegate.onAppleSpeechStarted = { [weak self] generation in
             self?.captainAyerAvatar.begin(generation: generation)
@@ -463,13 +520,45 @@ final class ConversationModel: ObservableObject {
         _ text: String,
         using aiConfiguration: AIConfigurationModel?
     ) {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
+        let selection = aiConfiguration?.effectiveSettings.textToSpeech
+        let provider = selection?.provider ?? .apple
+        let plan: CloudSpeechTextPlan
+        do {
+            plan = try CloudSpeechTextPlanner.plan(text, provider: provider)
+        } catch {
+            speechOutputError = error.localizedDescription
+            return
+        }
+        guard !plan.chunks.isEmpty else { return }
+
+        let service: (any CloudTextToSpeechServicing)?
+        if provider == .apple {
+            service = nil
+        } else {
+            do {
+                service = try aiConfiguration?.makeCloudTextToSpeechService()
+                guard service != nil, selection != nil else {
+                    throw AIProviderSettingsError.agentRuntimeUnavailable(provider)
+                }
+            } catch {
+                stopSpeechOutput()
+                speechOutputError = error.localizedDescription
+                return
+            }
+        }
+
         stopSpeechOutput()
         speechOutputError = nil
         let generation = speechOutputLifecycle.begin()
+        speechOutputSequence = .init(generation: generation, chunks: plan.chunks)
+        cloudSpeechService = service
+        cloudSpeechSelection = selection
+        cloudSpeechLanguageCode = Locale.current.language.languageCode?.identifier
         isSpeechOutputActive = true
-        captainAyerAvatar.prepare(text: value, generation: generation)
+        guard let part = prepareNextSpeechPart(generation: generation) else {
+            finishSpeechOutput(generation: generation, errorMessage: nil)
+            return
+        }
 
 #if DEBUG
         let holdsUITestPreparation = ProcessInfo.processInfo.arguments.contains(
@@ -483,41 +572,7 @@ final class ConversationModel: ObservableObject {
             return
         }
 #endif
-
-        guard let aiConfiguration,
-              aiConfiguration.effectiveSettings.textToSpeech.provider != .apple else {
-            speakWithApple(value, generation: generation)
-            return
-        }
-
-        do {
-            let service = try aiConfiguration.makeCloudTextToSpeechService()
-            let request = try Self.cloudSpeechSynthesisRequest(
-                text: value,
-                selection: aiConfiguration.effectiveSettings.textToSpeech,
-                localeLanguageCode: Locale.current.language.languageCode?.identifier
-            )
-            cloudSpeechTask = Task { @MainActor [weak self] in
-                do {
-                    let audio = try await service.synthesize(request)
-                    try Task.checkCancellation()
-                    try self?.playCloudSpeech(audio, generation: generation)
-                } catch is CancellationError {
-                    self?.completeSpeechOutput(generation: generation, errorMessage: nil)
-                    return
-                } catch {
-                    self?.completeSpeechOutput(
-                        generation: generation,
-                        errorMessage: error.localizedDescription
-                    )
-                }
-            }
-        } catch {
-            completeSpeechOutput(
-                generation: generation,
-                errorMessage: error.localizedDescription
-            )
-        }
+        performSpeechPart(part, generation: generation)
     }
 
     nonisolated static func cloudSpeechSynthesisRequest(
@@ -525,18 +580,77 @@ final class ConversationModel: ObservableObject {
         selection: AIServiceSelection,
         localeLanguageCode: String?
     ) throws -> CloudSpeechSynthesisRequest {
-        let validated = try selection.validated(for: .textToSpeech)
-        return .init(
+        try CloudSpeechSynthesisRequestResolver.resolve(
             text: text,
-            model: validated.model,
-            voice: validated.voice
-                ?? AIProviderRegistry.defaultVoice(for: validated.provider)
-                ?? "default",
-            // xAI's official REST Voice API supports `auto`; omitting the language lets the
-            // adapter send that value instead of forcing the iPhone's current locale onto
-            // multilingual assistant text.
-            languageCode: validated.provider == .xAI ? nil : localeLanguageCode
+            selection: selection,
+            localeLanguageCode: localeLanguageCode
         )
+    }
+
+    private func prepareNextSpeechPart(
+        generation: Int
+    ) -> SpeechOutputSequence.ActivePart? {
+        guard speechOutputLifecycle.isCurrent(generation),
+              var sequence = speechOutputSequence,
+              sequence.generation == generation,
+              let part = sequence.beginNextPart() else {
+            return nil
+        }
+        speechOutputSequence = sequence
+        captainAyerAvatar.prepare(text: part.chunk.text, generation: generation)
+        return part
+    }
+
+    private func performSpeechPart(
+        _ part: SpeechOutputSequence.ActivePart,
+        generation: Int
+    ) {
+        guard speechOutputLifecycle.isCurrent(generation) else { return }
+        guard let service = cloudSpeechService else {
+            speakWithApple(part.chunk.text, generation: generation)
+            return
+        }
+        guard let selection = cloudSpeechSelection else {
+            failSpeechPart(
+                generation: generation,
+                errorMessage: "The selected speech provider is no longer available."
+            )
+            return
+        }
+
+        do {
+            let request = try Self.cloudSpeechSynthesisRequest(
+                text: part.chunk.text,
+                selection: selection,
+                localeLanguageCode: cloudSpeechLanguageCode
+            )
+            cloudSpeechTask = Task { @MainActor [weak self] in
+                do {
+                    let audio = try await service.synthesize(request)
+                    try Task.checkCancellation()
+                    try self?.playCloudSpeech(audio, generation: generation)
+                } catch is CancellationError {
+                    // Explicit stop/replacement invalidates the generation before cancelling this
+                    // task. A stale cancellation must not advance or finish the replacement.
+                    guard let self,
+                          self.speechOutputLifecycle.isCurrent(generation) else { return }
+                    self.failSpeechPart(
+                        generation: generation,
+                        errorMessage: "Speech preparation was cancelled."
+                    )
+                } catch {
+                    self?.failSpeechPart(
+                        generation: generation,
+                        errorMessage: error.localizedDescription
+                    )
+                }
+            }
+        } catch {
+            failSpeechPart(
+                generation: generation,
+                errorMessage: error.localizedDescription
+            )
+        }
     }
 
     private func speakWithApple(_ value: String, generation: Int) {
@@ -546,7 +660,7 @@ final class ConversationModel: ObservableObject {
             try session.setActive(true)
             speechOutputLifecycle.markAudioSessionActive(for: generation)
         } catch {
-            completeSpeechOutput(
+            failSpeechPart(
                 generation: generation,
                 errorMessage: error.localizedDescription
             )
@@ -568,6 +682,10 @@ final class ConversationModel: ObservableObject {
         }
         cloudSpeechTask?.cancel()
         cloudSpeechTask = nil
+        speechOutputSequence = nil
+        cloudSpeechService = nil
+        cloudSpeechSelection = nil
+        cloudSpeechLanguageCode = nil
         speechOutputDelegate.invalidateAll()
         let player = cloudAudioPlayer
         cloudAudioPlayer = nil
@@ -608,7 +726,48 @@ final class ConversationModel: ObservableObject {
         captainAyerAvatar.begin(generation: generation, duration: player.duration)
     }
 
-    private func completeSpeechOutput(generation: Int, errorMessage: String?) {
+    private func completeSpeechPart(generation: Int, errorMessage: String?) {
+        guard speechOutputLifecycle.isCurrent(generation),
+              var sequence = speechOutputSequence,
+              sequence.generation == generation,
+              sequence.activePartNumber != nil else { return }
+        cloudSpeechTask = nil
+        if cloudAudioPlayerGeneration == generation {
+            cloudAudioPlayer = nil
+            cloudAudioPlayerGeneration = nil
+        }
+        if let errorMessage {
+            failSpeechPart(generation: generation, errorMessage: errorMessage)
+            return
+        }
+
+        let completed = sequence.completeActivePart()
+        speechOutputSequence = sequence
+        if completed {
+            finishSpeechOutput(generation: generation, errorMessage: nil)
+            return
+        }
+        guard let nextPart = prepareNextSpeechPart(generation: generation) else {
+            failSpeechPart(
+                generation: generation,
+                errorMessage: "The next speech part could not be prepared."
+            )
+            return
+        }
+        performSpeechPart(nextPart, generation: generation)
+    }
+
+    private func failSpeechPart(generation: Int, errorMessage: String) {
+        guard speechOutputLifecycle.isCurrent(generation),
+              let sequence = speechOutputSequence,
+              sequence.generation == generation else { return }
+        finishSpeechOutput(
+            generation: generation,
+            errorMessage: sequence.failureMessage(detail: errorMessage)
+        )
+    }
+
+    private func finishSpeechOutput(generation: Int, errorMessage: String?) {
         guard speechOutputLifecycle.finish(generation) else { return }
         isSpeechOutputActive = false
         captainAyerAvatar.finish(generation: generation)
@@ -618,6 +777,10 @@ final class ConversationModel: ObservableObject {
             cloudAudioPlayerGeneration = nil
         }
         cloudSpeechTask = nil
+        speechOutputSequence = nil
+        cloudSpeechService = nil
+        cloudSpeechSelection = nil
+        cloudSpeechLanguageCode = nil
         if let errorMessage {
             speechOutputError = errorMessage
         }
@@ -905,7 +1068,10 @@ final class ConversationModel: ObservableObject {
 
     func speakPronunciation() {
         guard isTTSEnabled, let pronunciation else { return }
-        synthesizer.stopSpeaking(at: .immediate)
+        // Pronunciation shares the Apple synthesizer with assistant read-aloud. Invalidate the
+        // active generation and its delegate registrations before stopping that utterance, so its
+        // inevitable cancellation callback cannot fail a replaced multi-part response.
+        stopSpeechOutput()
         let utterance = AVSpeechUtterance(string: pronunciation.text)
         utterance.rate = 0.38
         if let code = pronunciation.languageCode,

@@ -94,6 +94,7 @@ DEFAULTS = {
 # config migration or get written back through a generic partial save.
 CONFIG_BLOCKS = frozenset((*DEFAULTS, "ui", "keys", "key_checks"))
 _normalization_pending = [False]
+LIVEKIT_STT_DEFAULT_MIGRATION_KEY = "livekit_stt_auto_multilingual_v1"
 
 # Image inference is deliberately narrower than the app's language-model
 # integrations. These are the exact reviewed generation/edit contracts, not
@@ -122,11 +123,71 @@ PINNED_IMAGE_BASES = {
 XAI_API_BASE = "https://api.x.ai/v1"
 XAI_CLI_PROXY_BASE = "https://cli-chat-proxy.grok.com/v1"
 XAI_OAUTH_LLM_MODELS = ("grok-4.6", "grok-build")
+XAI_STT_LANGUAGE_CODES = (
+    "ar", "cs", "da", "nl", "en", "fil", "fr", "de", "hi", "id",
+    "it", "ja", "ko", "mk", "ms", "fa", "pl", "pt", "ro", "ru",
+    "es", "sv", "th", "tr", "vi",
+)
+STT_LANGUAGE_LABELS = {
+    "auto": "Automatic language detection",
+    "multi": "Auto multilingual · Chinese + English",
+    "ar": "Arabic", "cs": "Czech", "da": "Danish", "nl": "Dutch",
+    "en": "English", "fil": "Filipino", "fr": "French", "de": "German",
+    "hi": "Hindi", "id": "Indonesian", "it": "Italian", "ja": "Japanese",
+    "ko": "Korean", "mk": "Macedonian", "ms": "Malay", "fa": "Persian",
+    "pl": "Polish", "pt": "Portuguese", "ro": "Romanian", "ru": "Russian",
+    "es": "Spanish", "sv": "Swedish", "th": "Thai", "tr": "Turkish",
+    "vi": "Vietnamese", "zh": "Chinese",
+}
 _MAX_XAI_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_XAI_TEXT_CHARS = 128_000
 _MAX_XAI_INPUT_CHARS = 1_000_000
 _MAX_XAI_IMAGE_DATA_CHARS = 32 * 1024 * 1024
 _API_KEY_METHODS = frozenset({"api_key", "api-key", "apikey"})
+
+
+def stt_language_catalog(provider):
+    """Return the closed language picker for one direct PTT provider."""
+    if provider == "mlx_whisper":
+        default, codes = "auto", ("auto", "en", "zh")
+        automatic_label = "Auto multilingual · local Whisper"
+    elif provider == "deepgram":
+        default, codes = "multi", ("multi", "en", "zh")
+        automatic_label = STT_LANGUAGE_LABELS["multi"]
+    elif provider == "xai":
+        default, codes = "auto", ("auto", *XAI_STT_LANGUAGE_CODES)
+        automatic_label = "Automatic · 25 languages, no Chinese"
+    else:
+        default, codes = "auto", ("auto", "en", "zh")
+        automatic_label = STT_LANGUAGE_LABELS["auto"]
+    choices = [
+        {
+            "id": code,
+            "label": automatic_label if code == default else STT_LANGUAGE_LABELS[code],
+        }
+        for code in codes
+    ]
+    return {"default_language": default, "languages": choices}
+
+
+def validate_stt_language(provider, language):
+    selected = str(language or stt_language_catalog(provider)["default_language"]).strip()
+    # Older provider-neutral PTT settings stored `auto` for Deepgram. Nova-3's
+    # reviewed multilingual wire value is `multi`; canonicalize that one
+    # equivalent legacy value rather than dropping the whole saved provider.
+    if provider == "deepgram" and selected == "auto":
+        selected = "multi"
+    allowed = {row["id"] for row in stt_language_catalog(provider)["languages"]}
+    if selected not in allowed:
+        if provider == "xai" and selected == "zh":
+            raise RuntimeError(
+                "xAI Grok Transcribe does not support Chinese. Choose local Whisper "
+                "Auto multilingual or Deepgram Auto multilingual before recording."
+            )
+        raise RuntimeError(
+            "Choose a supported speech-recognition language for this provider"
+        )
+    return selected
 
 
 def _xai_oauth_manager():
@@ -437,6 +498,34 @@ def _merge(base, over):
     return out
 
 
+def _migrate_legacy_managed_livekit_stt_default(config):
+    """Move only the exact old managed-English default to multilingual.
+
+    The durable marker makes this a one-time upgrade. Once it exists, a user
+    can deliberately select managed English and it remains untouched. BYOK
+    English and every other provider/model/language tuple are never changed.
+    """
+    if not isinstance(config, dict):
+        return False
+    ui = config.get("ui")
+    if not isinstance(ui, dict):
+        ui = {}
+        config["ui"] = ui
+    if ui.get(LIVEKIT_STT_DEFAULT_MIGRATION_KEY) is True:
+        return False
+    livekit = config.get("livekit")
+    stt = livekit.get("stt") if isinstance(livekit, dict) else None
+    if stt == {
+        "source": "managed",
+        "provider": "livekit",
+        "model": "deepgram/nova-3",
+        "language": "en",
+    }:
+        stt["language"] = "multi"
+    ui[LIVEKIT_STT_DEFAULT_MIGRATION_KEY] = True
+    return True
+
+
 def _read_config_file():
     dirty = False
     try:
@@ -458,6 +547,7 @@ def _read_config_file():
     # and give only a truly blank strict-model lane its reviewed default. A
     # nonblank unsupported ID stays visible until the user replaces it.
     dirty = _normalise_legacy_image_block(config.get("image")) or dirty
+    dirty = _migrate_legacy_managed_livekit_stt_default(config) or dirty
     for name in list(config):
         if name not in CONFIG_BLOCKS:
             config.pop(name, None)
@@ -686,23 +776,39 @@ PROVIDERS = {
     ],
     "stt": [
         dict(id="mlx_whisper", label="Whisper (MLX, local)", local=True, key=False, base="",
+             **stt_language_catalog("mlx_whisper"),
              note="Bundled 4-bit multilingual model. Runs fully offline on the Metal GPU; "
-                  "the app never downloads a model while listening."),
+                  "the app never downloads a model while listening. Auto multilingual "
+                  "detects Chinese, English, and other Whisper languages."),
         dict(id="soniox", label="Soniox Realtime", key=True, base="",
+             **stt_language_catalog("soniox"),
              note="Direct realtime dictation; the API key remains in Keychain."),
-        dict(id="openai", label="OpenAI", key=True, base="https://api.openai.com/v1"),
+        dict(id="openai", label="OpenAI", key=True, base="https://api.openai.com/v1",
+             **stt_language_catalog("openai")),
         dict(id="xai", label="xAI Grok", key=True, base=XAI_API_BASE,
              **_xai_catalog_fields(),
-             note="Grok speech recognition through the shared xAI sign-in."),
+             **stt_language_catalog("xai"),
+             note="Grok automatically recognizes exactly 25 documented languages: "
+                  "Arabic, Czech, Danish, Dutch, English, Filipino, French, German, "
+                  "Hindi, Indonesian, Italian, Japanese, Korean, Macedonian, Malay, "
+                  "Persian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, "
+                  "Thai, Turkish, and Vietnamese. Chinese is not supported; choose "
+                  "local Whisper or Deepgram for Chinese."),
         dict(id="groq", label="Groq", key=True, base="https://api.groq.com/openai/v1",
+             **stt_language_catalog("groq"),
              note="Whisper large v3, very fast."),
         dict(id="gemini", label="Google Gemini", key=True,
-             base="https://generativelanguage.googleapis.com/v1beta"),
+             base="https://generativelanguage.googleapis.com/v1beta",
+             **stt_language_catalog("gemini")),
         dict(id="deepgram", label="Deepgram Nova", key=True,
-             base="https://api.deepgram.com/v1"),
+             base="https://api.deepgram.com/v1",
+             **stt_language_catalog("deepgram"),
+             note="Nova-3 Auto multilingual supports Chinese and English code-switching."),
         dict(id="elevenlabs", label="ElevenLabs Scribe", key=True,
-             base="https://api.elevenlabs.io/v1"),
-        dict(id="custom", label="Custom (OpenAI-compatible)", key=False, base=""),
+             base="https://api.elevenlabs.io/v1",
+             **stt_language_catalog("elevenlabs")),
+        dict(id="custom", label="Custom (OpenAI-compatible)", key=False, base="",
+             **stt_language_catalog("custom")),
     ],
     # Media generation has direct providers only. A blank default is
     # deliberate: generation refuses to run until one is configured.
@@ -1988,7 +2094,11 @@ async def hear(raw, filename, c):
 async def _hear_direct(raw, filename, c):
     p = c.get("provider")
     base, key = _base("stt", c), c.get("api_key") or ""
-    model, lang = c.get("model") or "", c.get("language") or "en"
+    model = c.get("model") or ""
+    # Reject a provider/language mismatch before opening a microphone upload
+    # request. In particular, xAI automatic recognition excludes Chinese;
+    # its language field is a formatting hint, not a capability override.
+    lang = validate_stt_language(p, c.get("language"))
 
     if p == "soniox":
         if not key:
@@ -2033,11 +2143,20 @@ async def _hear_direct(raw, filename, c):
         base, headers, _secret, _mode = await _resolve_xai_auth()
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", os.path.basename(
             str(filename or "audio.webm")))[:160] or "audio.webm"
+        # Recognition language is provider-side automatic within xAI's exact
+        # 25-language list. Automatic mode omits both optional fields; an
+        # explicit supported code enables xAI's inverse-text-formatting hint.
+        # Never send `auto`, `multi`, or an unsupported language as if it
+        # could expand recognition beyond that fixed list.
+        data = {}
+        if lang != "auto":
+            data = {"language": lang, "format": "true"}
         async with httpx.AsyncClient(
                 timeout=120, follow_redirects=False, trust_env=False) as x:
             r = await _xai_bounded_request(
                 x, "POST", f"{base}/stt", headers=headers,
                 files={"file": (safe_name, bytes(raw), "application/octet-stream")},
+                data=data,
                 action="speech transcription")
         text = str(r.json().get("text") or "").strip()
         if len(text) > _MAX_XAI_TEXT_CHARS:
@@ -2057,9 +2176,11 @@ async def _hear_direct(raw, filename, c):
 
     # OpenAI-compatible multipart
     if p == "deepgram":
-        params = {"model": model or "nova-3", "smart_format": "true"}
-        if lang and lang != "auto":
-            params["language"] = lang
+        params = {
+            "model": model or "nova-3",
+            "smart_format": "true",
+            "language": "multi" if lang in ("auto", "multi") else lang,
+        }
         async with httpx.AsyncClient(timeout=120) as x:
             r = await x.post(f"{base}/listen", params=params,
                              headers={"Authorization": f"Token {key}",

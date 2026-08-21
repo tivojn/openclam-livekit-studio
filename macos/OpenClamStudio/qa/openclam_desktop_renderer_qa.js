@@ -43,12 +43,13 @@ assert.match(source, /data-state="idle" aria-label="Start Live Talk"/);
 assert.match(source, /setLiveButton\('connected'\)/);
 assert.match(source, /if \(live\) stopLiveTalk\('ended'\); else startLiveTalk\(\)/);
 
-// Chat/PTT must be discoverable before an avatar exists. The onboarding layer
-// stays below the rail and composer, and both the rail and card expose one
-// explicit entry point without creating another Live Talk surface.
-assert.equal((source.match(/id="chatButton"/g) || []).length, 1);
+// The old rail chat shortcut is now a local avatar carousel. Chat/PTT remains
+// discoverable before an avatar exists through the canvas/menu and the empty
+// card, without creating another Live Talk surface.
+assert.equal((source.match(/id="avatarCarouselButton"/g) || []).length, 1);
+assert.equal((source.match(/id="chatButton"/g) || []).length, 0);
 assert.equal((source.match(/id="emptyChat"/g) || []).length, 1);
-assert.match(source, /aria-label="Open Chat and Push to Talk"/);
+assert.match(source, /aria-label="Switch to next avatar"/);
 assert.match(source, /Chat &amp; Push to Talk/);
 assert.match(source, /#emptyState \{[\s\S]{0,100}z-index: 25;/);
 assert.match(source, /#chatDock \{[\s\S]{0,100}z-index: 35;/);
@@ -75,6 +76,51 @@ assert.match(source, /@media \(max-width: 520px\) \{[\s\S]{0,440}#emptyState \{[
 assert.match(source, /document\.getElementById\('emptyChat'\)\.addEventListener\('click', \(\) => openChat\(true\)\)/);
 assert.match(source, /composer\.addEventListener\('pointerdown',[\s\S]{0,180}shell\.focusPetWindow\(\)/,
   'Clicking the composer must activate its transparent pet window before typing');
+const persistentSecondaryRule = [...source.matchAll(/html\.pet-mode #rail \.secondary\s*\{([^}]+)\}/g)]
+  .map(match => match[1]).at(-1);
+assert.ok(persistentSecondaryRule, 'normal pet mode must define persistent Moves and Walk controls');
+assert.match(persistentSecondaryRule, /opacity:\s*1;/);
+assert.match(persistentSecondaryRule, /visibility:\s*visible;/);
+assert.match(persistentSecondaryRule, /pointer-events:\s*auto;/);
+assert.doesNotMatch(source, /html\.pet-mode(?:[^\n{]*) #rail \.secondary\s*\{[^}]*opacity:\s*0;/,
+  'normal pet mode must not fade the secondary rail buttons out');
+
+const avatarCarouselSource = inline[1].match(
+  /(const avatarCarouselCandidates = listing =>[\s\S]*?\n    };)\n\n    const setAvatarCarouselAvailability/,
+);
+assert.ok(avatarCarouselSource, 'avatar carousel ordering must remain independently testable');
+const avatarCarousel = new Function(
+  `'use strict'; ${avatarCarouselSource[1]}; return { avatarCarouselCandidates, nextAvatarInCarousel };`,
+)();
+const avatarListing = {
+  active: 'ara', companion: 'ayer',
+  avatars: [
+    { slug: 'draft', status: 'draft', has_runtime: true },
+    { slug: 'broken', status: 'ready', has_runtime: false },
+    { slug: 'george', name: 'George', status: 'ready', has_runtime: true },
+    { slug: 'ayer', name: 'Ayer', status: 'ready', has_runtime: true },
+    { slug: 'ara', name: 'Ara', status: 'ready', has_runtime: true },
+  ],
+};
+assert.deepEqual(
+  avatarCarousel.avatarCarouselCandidates(avatarListing).map(avatar => avatar.slug),
+  ['ara', 'ayer', 'george'],
+  'only complete ready runtimes may enter the deterministic carousel',
+);
+assert.equal(avatarCarousel.nextAvatarInCarousel(avatarListing).slug, 'ayer');
+assert.equal(avatarCarousel.nextAvatarInCarousel(
+  { ...avatarListing, active: 'george' },
+).slug, 'ara', 'the primary carousel must wrap');
+assert.equal(avatarCarousel.nextAvatarInCarousel(avatarListing, true).slug, 'george',
+  'the companion carousel must skip the primary avatar');
+assert.equal(avatarCarousel.nextAvatarInCarousel({
+  active: 'ara', avatars: [{ slug: 'ara', status: 'ready', has_runtime: true }],
+}), null, 'a carousel with no alternative must disable itself');
+assert.match(source, /const path = isCompanion \? '\/api\/avatar\/companion' : '\/api\/avatar\/activate';/);
+assert.match(source, /const changed = isCompanion \? shell\.companionChanged : shell\.avatarChanged;/);
+assert.equal((source.match(/avatarCarouselButton\.addEventListener\('click', cycleAvatar\)/g) || []).length, 1);
+assert.doesNotMatch(source, /avatarCarouselButton\.addEventListener\('click',[\s\S]{0,100}openChat/,
+  'the replacement carousel control must not retain the old chat action');
 
 // Ordinary chat, hold-to-talk, explicit read-aloud, and the LiveKit room all
 // stay on authenticated same-origin routes (Electron injects the auth header).
@@ -1026,6 +1072,50 @@ assert.match(source, /publishAvatarZoom\('move'\)/);
 assert.match(source, /publishAvatarZoom\('end'\)/);
 assert.match(source, /canvas\.addEventListener\('wheel', handleAvatarPinch, \{ passive: false \}\)/);
 
+// Double-click affordances use source-body regions only after the exact
+// canvas pixel passes alpha hit-testing: head = Moves, chest = Opacity +,
+// upper leg = Walk, and lower calf/foot = Opacity −.
+const avatarDoubleClickSource = inline[1].match(
+  /(const avatarBodyDoubleClickAction = \(local, geometry\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(avatarDoubleClickSource, 'body-relative double-click policy must remain independently testable');
+const avatarBodyDoubleClickAction = new Function(
+  `'use strict'; ${avatarDoubleClickSource[1]}; return avatarBodyDoubleClickAction;`,
+)();
+const clickGeometry = {
+  hasBody: true, width: 100, height: 100,
+  metadata: { bounds: [20, 0, 60, 100], alignment: { face_bounds: [40, 5, 20, 20] } },
+};
+assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 10 }, clickGeometry), 'move');
+assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 35 }, clickGeometry), 'opacity-up');
+assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 60 }, clickGeometry), 'walk');
+assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 90 }, clickGeometry), 'opacity-down');
+assert.equal(avatarBodyDoubleClickAction({ x: 10, y: 35 }, clickGeometry), null,
+  'an arm-height click outside the chest must not change opacity');
+assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 10 }, {
+  ...clickGeometry, hasBody: false,
+}), 'move', 'a face-only avatar keeps the head gesture');
+const steppedOpacitySource = inline[1].match(
+  /(const steppedAvatarOpacity = \(current, direction\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(steppedOpacitySource, 'opacity steps must remain independently testable');
+const steppedAvatarOpacity = new Function(
+  `'use strict'; ${steppedOpacitySource[1]}; return steppedAvatarOpacity;`,
+)();
+assert.equal(steppedAvatarOpacity(.5, 1), .62);
+assert.equal(steppedAvatarOpacity(.5, -1), .38);
+assert.equal(steppedAvatarOpacity(.98, 1), 1);
+assert.equal(steppedAvatarOpacity(.15, -1), .15);
+assert.match(source, /if \(!geometry \|\| !paintedAvatarAt\(\{ \.\.\.point, inside: true \}\)\) return null;/,
+  'transparent gaps must never acquire a body-region gesture');
+assert.match(source, /else if \(action === 'opacity-up'\) void adjustAvatarOpacity\(1\);/);
+assert.match(source, /else if \(action === 'opacity-down'\) void adjustAvatarOpacity\(-1\);/);
+assert.match(source, /const state = await shell\.setPetOpacity\(next\);/);
+assert.match(source, /canvas\.addEventListener\('dblclick', event => \{\n      clearTimeout\(avatarTapTimer\);/,
+  'the first click must not open and resize chat underneath a double-click gesture');
+assert.match(source, /avatarTapTimer = setTimeout\(\(\) => \{[\s\S]{0,180}openChat\(false\);[\s\S]{0,80}\}, 300\);/,
+  'an ordinary body click must still open chat after the double-click arbitration window');
+
 // Transparent-window behavior stays explicit and bounded to local shell APIs.
 for (const bridge of [
   'onPetPointer',
@@ -1038,6 +1128,7 @@ for (const bridge of [
   'movePetDrag',
   'endPetDrag',
   'showPetMenu',
+  'setPetOpacity',
   'setPetZoomLive',
 ]) {
   assert.ok(source.includes(bridge), `missing desktop shell bridge: ${bridge}`);
