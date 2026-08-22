@@ -212,6 +212,30 @@ struct SpeechOutputSequence: Equatable, Sendable {
     }
 }
 
+/// One bounded, user-facing status for an OpenClaw turn. It carries only a safe
+/// progress summary, never hidden reasoning, prompts, tool arguments, or logs.
+struct RemoteAgentActivityPresentation: Identifiable, Equatable, Sendable {
+    enum Phase: String, Equatable, Sendable {
+        case connecting
+        case queued
+        case working
+        case usingTool
+        case finalizing
+        case downloading
+        case reconnecting
+        case needsAttention
+        case cancelling
+    }
+
+    let id: UUID
+    let phase: Phase
+    let title: String
+    let detail: String?
+    let showsProgress: Bool
+    let allowsRetry: Bool
+    let allowsCancel: Bool
+}
+
 @MainActor
 final class ConversationModel: ObservableObject {
     @Published private(set) var messages: [ConversationMessage] = ConversationModel.freshConversationMessages {
@@ -223,6 +247,7 @@ final class ConversationModel: ObservableObject {
     /// Ephemeral cumulative remote reply. It is never written to history; only the authoritative
     /// completion becomes one assistant message.
     @Published private(set) var streamingAssistantReply: String?
+    @Published private(set) var remoteAgentActivity: RemoteAgentActivityPresentation?
     @Published private(set) var screenshotData: Data?
     @Published var observedText = ""
     @Published var screenshotAIShareText = ""
@@ -478,6 +503,8 @@ final class ConversationModel: ObservableObject {
     }
 
     private func resetTransientCardsForChatChange() {
+        streamingAssistantReply = nil
+        remoteAgentActivity = nil
         screenshotData = nil
         observedText = ""
         screenshotAIShareText = ""
@@ -885,7 +912,8 @@ final class ConversationModel: ObservableObject {
     func submit(
         _ rawInput: String,
         aiConfiguration: AIConfigurationModel? = nil,
-        agentConnections: AgentConnectionModel? = nil
+        agentConnections: AgentConnectionModel? = nil,
+        onSubmissionSaved: (() -> Void)? = nil
     ) async {
         guard canAcceptUserTurn else { return }
         let input = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -897,6 +925,47 @@ final class ConversationModel: ObservableObject {
            let remoteBinding = aiConfiguration.conversationRoute(
             for: historyController.selectedThreadID
            ).connectorBinding {
+            if let agentConnections {
+                do {
+                    if let pending = try agentConnections.pendingTurn(
+                        forConnectionID: remoteBinding.connectionID
+                    ) {
+                        if pending.conversationID == historyController.selectedThreadID {
+                            remoteAgentActivity = .init(
+                                id: pending.turnID,
+                                phase: .needsAttention,
+                                title: "Finish the saved OpenClaw message first",
+                                detail: "Retry or cancel it below. Your new draft is still in the composer and has not been sent.",
+                                showsProgress: false,
+                                allowsRetry: true,
+                                allowsCancel: true
+                            )
+                        } else {
+                            remoteAgentActivity = .init(
+                                id: pending.turnID,
+                                phase: .needsAttention,
+                                title: "Finish the saved OpenClaw message first",
+                                detail: "Open its original chat to retry or cancel it. This new message has not been sent.",
+                                showsProgress: false,
+                                allowsRetry: false,
+                                allowsCancel: false
+                            )
+                        }
+                        return
+                    }
+                } catch {
+                    remoteAgentActivity = .init(
+                        id: UUID(),
+                        phase: .needsAttention,
+                        title: "OpenClaw recovery needs attention",
+                        detail: error.localizedDescription,
+                        showsProgress: false,
+                        allowsRetry: true,
+                        allowsCancel: false
+                    )
+                    return
+                }
+            }
             await preparePresentationForNewTurn(preserving: .unknown)
             let submittedMessage = ConversationMessage(
                 role: .user,
@@ -904,13 +973,27 @@ final class ConversationModel: ObservableObject {
                 isEligibleForAIContext: false
             )
             messages.append(submittedMessage)
+            remoteAgentActivity = .init(
+                id: submittedMessage.id,
+                phase: .connecting,
+                title: "Connecting to OpenClaw",
+                detail: remoteBinding.displayName,
+                showsProgress: true,
+                allowsRetry: false,
+                allowsCancel: true
+            )
             isWorking = true
             defer { isWorking = false }
             guard await persistConversationHistory() else {
-                reply(
-                    "OpenClam could not safely save this message, so it was not sent to OpenClaw.",
-                    isEligibleForAIContext: false,
-                    historyPersistence: .ephemeral
+                messages.removeAll { $0.id == submittedMessage.id }
+                remoteAgentActivity = .init(
+                    id: submittedMessage.id,
+                    phase: .needsAttention,
+                    title: "Message not sent",
+                    detail: "OpenClam could not safely save this message. Try again after storage is available.",
+                    showsProgress: false,
+                    allowsRetry: false,
+                    allowsCancel: false
                 )
                 return
             }
@@ -918,7 +1001,8 @@ final class ConversationModel: ObservableObject {
                 input,
                 binding: remoteBinding,
                 submittedMessageID: submittedMessage.id,
-                agentConnections: agentConnections
+                agentConnections: agentConnections,
+                onSubmissionSaved: onSubmissionSaved
             )
             return
         }
@@ -962,6 +1046,7 @@ final class ConversationModel: ObservableObject {
             isEligibleForAIContext: !authorization.requestsReplySuggestions
         )
         messages.append(submittedMessage)
+        onSubmissionSaved?()
         isWorking = true
         defer { isWorking = false }
         await submitToAgent(
@@ -975,18 +1060,35 @@ final class ConversationModel: ObservableObject {
         _ input: String,
         binding: AvatarAgentConnectorBinding,
         submittedMessageID: UUID,
-        agentConnections: AgentConnectionModel?
+        agentConnections: AgentConnectionModel?,
+        onSubmissionSaved: (() -> Void)?
     ) async {
         streamingAssistantReply = nil
         defer { streamingAssistantReply = nil }
         guard let agentConnections,
               let conversationID = historyController.selectedThreadID else {
-            reply(AgentConnectorError.missingConnection.localizedDescription,
-                  isEligibleForAIContext: false)
+            remoteAgentActivity = .init(
+                id: UUID(),
+                phase: .needsAttention,
+                title: "OpenClaw is not connected",
+                detail: AgentConnectorError.missingConnection.localizedDescription,
+                showsProgress: false,
+                allowsRetry: false,
+                allowsCancel: false
+            )
             return
         }
         let turnID = UUID()
         let assistantMessageID = UUID()
+        remoteAgentActivity = .init(
+            id: turnID,
+            phase: .connecting,
+            title: "Connecting to OpenClaw",
+            detail: binding.displayName,
+            showsProgress: true,
+            allowsRetry: false,
+            allowsCancel: true
+        )
         do {
             let stream = try agentConnections.streamTurn(
                 binding: binding,
@@ -1000,16 +1102,16 @@ final class ConversationModel: ObservableObject {
                 stream,
                 connectionID: binding.connectionID,
                 turnID: turnID,
+                userMessageID: submittedMessageID,
                 assistantMessageID: assistantMessageID,
-                agentConnections: agentConnections
+                agentConnections: agentConnections,
+                onSubmissionSaved: onSubmissionSaved
             )
         } catch {
-            await reconcileRemoteAgentFailure(
+            await reconcileUnstoredRemoteSubmission(
                 error,
-                connectionID: binding.connectionID,
-                turnID: turnID,
-                assistantMessageID: assistantMessageID,
-                agentConnections: agentConnections
+                userMessageID: submittedMessageID,
+                activityID: turnID
             )
         }
     }
@@ -1027,20 +1129,33 @@ final class ConversationModel: ObservableObject {
         do {
             guard let value = try agentConnections.pendingTurn(
                 for: conversationID
-            ) else { return }
+            ) else {
+                remoteAgentActivity = nil
+                return
+            }
             pending = value
         } catch {
-            appendRemoteRecoveryNotice(
-                error.localizedDescription,
-                id: UUID()
+            remoteAgentActivity = .init(
+                id: UUID(),
+                phase: .needsAttention,
+                title: "OpenClaw recovery needs attention",
+                detail: error.localizedDescription,
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: false
             )
             return
         }
         guard aiConfiguration.conversationRoute(for: conversationID)
             == .remote(pending.binding) else {
-            appendRemoteRecoveryNotice(
-                "This saved OpenClaw message belongs to a different chat route, so it was not resumed.",
-                id: pending.assistantMessageID
+            remoteAgentActivity = .init(
+                id: pending.turnID,
+                phase: .needsAttention,
+                title: "Saved message belongs to another route",
+                detail: "OpenClam did not send or move it. Restore the original OpenClaw agent for this chat.",
+                showsProgress: false,
+                allowsRetry: false,
+                allowsCancel: false
             )
             return
         }
@@ -1052,6 +1167,7 @@ final class ConversationModel: ObservableObject {
                 connectionID: pending.connectionID,
                 turnID: pending.turnID
             )
+            remoteAgentActivity = nil
             return
         }
 
@@ -1070,14 +1186,28 @@ final class ConversationModel: ObservableObject {
             )
         }
         guard await persistConversationHistory() else {
-            appendRemoteRecoveryNotice(
-                "OpenClam could not safely restore the saved message yet. It has not been sent again.",
-                id: pending.assistantMessageID
+            remoteAgentActivity = .init(
+                id: pending.turnID,
+                phase: .needsAttention,
+                title: "Saved message is waiting",
+                detail: "OpenClam could not safely restore its chat history yet. It was not sent again.",
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: true
             )
             return
         }
 
         isWorking = true
+        remoteAgentActivity = .init(
+            id: pending.turnID,
+            phase: .reconnecting,
+            title: "Reconnecting to OpenClaw",
+            detail: "Resuming the original saved message without sending it twice.",
+            showsProgress: true,
+            allowsRetry: false,
+            allowsCancel: true
+        )
         defer {
             isWorking = false
             streamingAssistantReply = nil
@@ -1088,8 +1218,10 @@ final class ConversationModel: ObservableObject {
                 stream,
                 connectionID: pending.connectionID,
                 turnID: pending.turnID,
+                userMessageID: pending.userMessageID,
                 assistantMessageID: pending.assistantMessageID,
-                agentConnections: agentConnections
+                agentConnections: agentConnections,
+                onSubmissionSaved: nil
             )
         } catch {
             await reconcileRemoteAgentFailure(
@@ -1102,25 +1234,214 @@ final class ConversationModel: ObservableObject {
         }
     }
 
+    func cancelPendingRemoteTurnIfNeeded(
+        aiConfiguration: AIConfigurationModel,
+        agentConnections: AgentConnectionModel
+    ) async {
+        guard isHistoryReady,
+              !isWorking,
+              let conversationID = historyController.selectedThreadID else {
+            return
+        }
+        let pending: AgentConnectorPendingTurn
+        do {
+            guard let value = try agentConnections.pendingTurn(
+                for: conversationID
+            ) else {
+                remoteAgentActivity = nil
+                return
+            }
+            pending = value
+        } catch {
+            remoteAgentActivity = .init(
+                id: UUID(),
+                phase: .needsAttention,
+                title: "Cancellation needs attention",
+                detail: error.localizedDescription,
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: false
+            )
+            return
+        }
+        guard aiConfiguration.conversationRoute(for: conversationID)
+            == .remote(pending.binding) else {
+            remoteAgentActivity = .init(
+                id: pending.turnID,
+                phase: .needsAttention,
+                title: "Restore the original OpenClaw route",
+                detail: "OpenClam will not cancel a saved turn through a different agent route.",
+                showsProgress: false,
+                allowsRetry: false,
+                allowsCancel: false
+            )
+            return
+        }
+
+        isWorking = true
+        remoteAgentActivity = .init(
+            id: pending.turnID,
+            phase: .cancelling,
+            title: "Cancelling the saved OpenClaw turn",
+            detail: "Waiting for OpenClaw to safely record the cancellation.",
+            showsProgress: true,
+            allowsRetry: false,
+            allowsCancel: false
+        )
+        let cancellationTask = Task { @MainActor in
+            try await agentConnections.cancelPendingTurn(
+                connectionID: pending.connectionID,
+                turnID: pending.turnID
+            )
+        }
+        do {
+            try await cancellationTask.value
+        } catch {
+            isWorking = false
+            remoteAgentActivity = .init(
+                id: pending.turnID,
+                phase: .needsAttention,
+                title: "Cancellation saved",
+                detail: "OpenClam will finish cancelling this exact turn when the connection returns.",
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: false
+            )
+            return
+        }
+        isWorking = false
+
+        do {
+            if try agentConnections.pendingTurn(
+                connectionID: pending.connectionID,
+                turnID: pending.turnID
+            ) != nil {
+                await recoverPendingRemoteTurnIfNeeded(
+                    aiConfiguration: aiConfiguration,
+                    agentConnections: agentConnections
+                )
+                return
+            }
+        } catch {
+            remoteAgentActivity = .init(
+                id: pending.turnID,
+                phase: .needsAttention,
+                title: "Cancellation completed — cleanup is waiting",
+                detail: error.localizedDescription,
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: false
+            )
+            return
+        }
+
+        messages.removeAll { $0.id == pending.assistantMessageID }
+        reply(
+            "That OpenClaw message was cancelled.",
+            id: pending.assistantMessageID,
+            isEligibleForAIContext: false
+        )
+        if await persistConversationHistory() {
+            remoteAgentActivity = nil
+        } else {
+            remoteAgentActivity = .init(
+                id: pending.turnID,
+                phase: .needsAttention,
+                title: "Cancellation completed — saving is waiting",
+                detail: nil,
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: false
+            )
+        }
+    }
+
     private func consumeRemoteAgentStream(
         _ stream: AsyncThrowingStream<AgentConnectorStreamEvent, Error>,
         connectionID: UUID,
         turnID: UUID,
+        userMessageID: UUID,
         assistantMessageID: UUID,
-        agentConnections: AgentConnectionModel
+        agentConnections: AgentConnectionModel,
+        onSubmissionSaved: (() -> Void)?
     ) async {
+        var didReportSubmissionSaved = false
         do {
             var completedText: String?
+            var attachmentOrder: [UUID] = []
+            var attachmentsByID: [UUID: ConversationAttachmentDescriptor] = [:]
             for try await event in stream {
                 try Task.checkCancellation()
                 switch event {
+                case .submissionSaved:
+                    if !didReportSubmissionSaved {
+                        didReportSubmissionSaved = true
+                        onSubmissionSaved?()
+                    }
                 case .accepted:
-                    break
+                    remoteAgentActivity = .init(
+                        id: turnID,
+                        phase: .working,
+                        title: "OpenClaw is working",
+                        detail: nil,
+                        showsProgress: true,
+                        allowsRetry: false,
+                        allowsCancel: true
+                    )
+                case let .activity(update):
+                    guard let status = update.status else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    remoteAgentActivity = activityPresentation(
+                        status: status,
+                        turnID: turnID
+                    )
+                case .activityCleared:
+                    remoteAgentActivity = .init(
+                        id: turnID,
+                        phase: .working,
+                        title: "OpenClaw is working",
+                        detail: nil,
+                        showsProgress: true,
+                        allowsRetry: false,
+                        allowsCancel: true
+                    )
+                case let .attachment(stored):
+                    let metadata = stored.metadata
+                    if attachmentsByID[metadata.attachmentID] == nil {
+                        attachmentOrder.append(metadata.attachmentID)
+                    }
+                    attachmentsByID[metadata.attachmentID] = .init(
+                        id: metadata.attachmentID,
+                        kind: Self.attachmentKind(for: metadata.mediaType),
+                        displayName: metadata.fileName,
+                        mimeType: metadata.mediaType,
+                        sourceByteCount: metadata.byteCount,
+                        connectorArtifact: metadata.conversationReference
+                    )
+                    remoteAgentActivity = .init(
+                        id: turnID,
+                        phase: .downloading,
+                        title: "File received securely",
+                        detail: metadata.fileName,
+                        showsProgress: true,
+                        allowsRetry: false,
+                        allowsCancel: true
+                    )
                 case let .cumulativeText(text):
                     guard completedText == nil else {
                         throw AgentConnectorError.invalidFrame
                     }
                     streamingAssistantReply = text
+                    remoteAgentActivity = .init(
+                        id: turnID,
+                        phase: .finalizing,
+                        title: "Receiving OpenClaw’s response",
+                        detail: nil,
+                        showsProgress: true,
+                        allowsRetry: false,
+                        allowsCancel: true
+                    )
                 case let .completed(text):
                     guard completedText == nil else {
                         throw AgentConnectorError.invalidFrame
@@ -1135,6 +1456,7 @@ final class ConversationModel: ObservableObject {
             reply(
                 completedText,
                 id: assistantMessageID,
+                attachments: attachmentOrder.compactMap { attachmentsByID[$0] },
                 isEligibleForAIContext: false
             )
             if await persistConversationHistory() {
@@ -1142,8 +1464,27 @@ final class ConversationModel: ObservableObject {
                     connectionID: connectionID,
                     turnID: turnID
                 )
+                remoteAgentActivity = nil
+            } else {
+                remoteAgentActivity = .init(
+                    id: turnID,
+                    phase: .needsAttention,
+                    title: "Reply received — saving is waiting",
+                    detail: "OpenClam will reconcile this reply into the chat before clearing the saved turn.",
+                    showsProgress: false,
+                    allowsRetry: true,
+                    allowsCancel: false
+                )
             }
         } catch {
+            if !didReportSubmissionSaved {
+                await reconcileUnstoredRemoteSubmission(
+                    error,
+                    userMessageID: userMessageID,
+                    activityID: turnID
+                )
+                return
+            }
             await reconcileRemoteAgentFailure(
                 error,
                 connectionID: connectionID,
@@ -1152,6 +1493,89 @@ final class ConversationModel: ObservableObject {
                 agentConnections: agentConnections
             )
         }
+    }
+
+    private func reconcileUnstoredRemoteSubmission(
+        _ error: Error,
+        userMessageID: UUID,
+        activityID: UUID
+    ) async {
+        messages.removeAll { $0.id == userMessageID }
+        _ = await persistConversationHistory()
+        remoteAgentActivity = .init(
+            id: activityID,
+            phase: .needsAttention,
+            title: "OpenClaw message was not saved",
+            detail: error.localizedDescription,
+            showsProgress: false,
+            allowsRetry: false,
+            allowsCancel: false
+        )
+    }
+
+    private func activityPresentation(
+        status: AgentConnectorActivityStatus,
+        turnID: UUID
+    ) -> RemoteAgentActivityPresentation {
+        let phase: RemoteAgentActivityPresentation.Phase
+        let title: String
+        var detail: String? = nil
+        switch status {
+        case .thinking:
+            (phase, title) = (.working, "OpenClaw is thinking")
+        case .planning:
+            (phase, title) = (.working, "OpenClaw is planning")
+        case .searching:
+            (phase, title) = (.usingTool, "OpenClaw is searching")
+        case .reading:
+            (phase, title) = (.usingTool, "OpenClaw is reading")
+        case .editing:
+            (phase, title) = (.usingTool, "OpenClaw is editing")
+        case .runningAction:
+            (phase, title) = (.usingTool, "OpenClaw is running an action")
+        case .usingTools:
+            (phase, title) = (.usingTool, "OpenClaw is using tools")
+        case .creatingMedia:
+            (phase, title) = (.usingTool, "OpenClaw is creating media")
+        case .preparingFiles:
+            (phase, title) = (.downloading, "OpenClaw is preparing files")
+        case .waitingForApproval:
+            (phase, title) = (.queued, "OpenClaw is waiting for approval")
+            detail = "Approve or reject it on your OpenClaw host."
+        case .finalizing:
+            (phase, title) = (.finalizing, "OpenClaw is finishing the response")
+        }
+        return .init(
+            id: turnID,
+            phase: phase,
+            title: title,
+            detail: detail,
+            showsProgress: status != .waitingForApproval,
+            allowsRetry: false,
+            allowsCancel: true
+        )
+    }
+
+    private static func attachmentKind(
+        for mediaType: String
+    ) -> ConversationAttachmentDescriptor.Kind {
+        if mediaType.hasPrefix("image/") { return .image }
+        if mediaType.hasPrefix("video/") { return .video }
+        return .file
+    }
+
+    private static func conversationAttachment(
+        _ stored: AgentConnectorStoredAttachment
+    ) -> ConversationAttachmentDescriptor {
+        let metadata = stored.metadata
+        return .init(
+            id: metadata.attachmentID,
+            kind: attachmentKind(for: metadata.mediaType),
+            displayName: metadata.fileName,
+            mimeType: metadata.mediaType,
+            sourceByteCount: metadata.byteCount,
+            connectorArtifact: metadata.conversationReference
+        )
     }
 
     private func reconcileRemoteAgentFailure(
@@ -1201,13 +1625,26 @@ final class ConversationModel: ObservableObject {
             || cancellationWasPersisted
             || connectorError == .recoveryExpired
 
+        let shouldDiscardPendingAttachments = connectorError == .recoveryExpired
+            || terminal?.kind == .failed
+        if shouldDiscardPendingAttachments {
+            await agentConnections.deleteArtifacts(
+                (pendingTurn?.attachments ?? [])
+                    .map(\.metadata.conversationReference)
+            )
+        }
+
         messages.removeAll { $0.id == assistantMessageID }
         let text: String
+        var durableAttachments: [ConversationAttachmentDescriptor] = []
         if let terminal {
             switch terminal.kind {
             case .completed:
                 text = terminal.text
                     ?? AgentConnectorError.invalidFrame.localizedDescription
+                durableAttachments = (pendingTurn?.attachments ?? []).map(
+                    Self.conversationAttachment
+                )
             case .failed:
                 text = terminal.message
                     ?? AgentConnectorError.invalidFrame.localizedDescription
@@ -1220,9 +1657,29 @@ final class ConversationModel: ObservableObject {
         } else {
             text = resolvedError.localizedDescription
         }
+
+        guard isDurableOutcome else {
+            let cancellationIsWaiting = originalError is CancellationError
+                && pendingTurn?.cancelFrame != nil
+            remoteAgentActivity = .init(
+                id: turnID,
+                phase: .needsAttention,
+                title: cancellationIsWaiting
+                    ? "Cancellation saved"
+                    : "OpenClaw is unavailable",
+                detail: cancellationIsWaiting
+                    ? "OpenClam will finish cancelling this exact turn when the connection returns."
+                    : "Your original message is saved. Retry it here; OpenClam will not create a second turn.",
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: !cancellationIsWaiting
+            )
+            return
+        }
         reply(
             text,
             id: assistantMessageID,
+            attachments: durableAttachments,
             isEligibleForAIContext: false,
             historyPersistence: isDurableOutcome ? .history : .ephemeral
         )
@@ -1231,17 +1688,18 @@ final class ConversationModel: ObservableObject {
                 connectionID: connectionID,
                 turnID: turnID
             )
+            remoteAgentActivity = nil
+        } else if isDurableOutcome {
+            remoteAgentActivity = .init(
+                id: turnID,
+                phase: .needsAttention,
+                title: "OpenClaw result is waiting to save",
+                detail: "Retry after chat storage is available. The remote turn will not run again.",
+                showsProgress: false,
+                allowsRetry: true,
+                allowsCancel: false
+            )
         }
-    }
-
-    private func appendRemoteRecoveryNotice(_ text: String, id: UUID) {
-        messages.removeAll { $0.id == id }
-        reply(
-            text,
-            id: id,
-            isEligibleForAIContext: false,
-            historyPersistence: .ephemeral
-        )
     }
 
     private func shouldAlwaysHandleLocally(_ intent: ConversationIntent) -> Bool {
@@ -2090,6 +2548,7 @@ final class ConversationModel: ObservableObject {
     private func reply(
         _ text: String,
         id: UUID = UUID(),
+        attachments: [ConversationAttachmentDescriptor] = [],
         isEligibleForAIContext: Bool = false,
         historyPersistence: ConversationMessage.HistoryPersistence = .history
     ) {
@@ -2098,6 +2557,7 @@ final class ConversationModel: ObservableObject {
                 id: id,
                 role: .assistant,
                 text: text,
+                attachments: attachments,
                 isEligibleForAIContext: isEligibleForAIContext,
                 historyPersistence: historyPersistence
             )

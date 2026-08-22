@@ -522,7 +522,7 @@ ALLOWED_SOURCE_BUILD_FILES = {
     Path("macos/OpenClamStudio/build/entitlements.mac.plist"),
 }
 
-# OpenClaw package installs require JavaScript entrypoints. These two bounded,
+# OpenClaw package installs require JavaScript entrypoints. These bounded,
 # reproducibly generated files are the complete reviewed runtime surface; any
 # other generated `dist` path remains fail-closed.
 ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS = {
@@ -530,6 +530,7 @@ ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS = {
     Path("openclaw-plugin-openclam/dist/index.js"),
     Path("openclaw-plugin-openclam/dist/setup-entry.js"),
     Path("openclaw-plugin-openclam/dist/src"),
+    Path("openclaw-plugin-openclam/dist/src/attachment-upload.js"),
     Path("openclaw-plugin-openclam/dist/src/bridge-client.js"),
     Path("openclaw-plugin-openclam/dist/src/channel-base.js"),
     Path("openclaw-plugin-openclam/dist/src/channel.js"),
@@ -539,6 +540,7 @@ ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS = {
     Path("openclaw-plugin-openclam/dist/src/credentials.js"),
     Path("openclaw-plugin-openclam/dist/src/gateway.js"),
     Path("openclaw-plugin-openclam/dist/src/inbound.js"),
+    Path("openclaw-plugin-openclam/dist/src/media.js"),
     Path("openclaw-plugin-openclam/dist/src/pairing.js"),
     Path("openclaw-plugin-openclam/dist/src/protocol.js"),
     Path("openclaw-plugin-openclam/dist/src/runtime.js"),

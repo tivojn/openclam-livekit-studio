@@ -7,7 +7,9 @@ OpenClaw's normal account binding and session pipeline.
 
 The bridge is a relay and pairing boundary, not an AI server. It never receives
 OpenClaw Gateway credentials, model-provider credentials, speech-provider
-credentials, or local tool approvals. Connector v1 transports text only.
+credentials, or local tool approvals. Legacy Connector v1 remains text-only;
+new iOS builds may negotiate safe activity and private attachment extensions on
+each turn without re-pairing.
 
 ## Compatibility
 
@@ -126,6 +128,20 @@ credential or bridge bootstrap token.
 - Each `accountId` is routed with standard OpenClaw account-scoped bindings.
 - A stable OpenClam conversation ID maps to a stable OpenClaw session route.
 - Partial replies are sent as cumulative `assistant.delta` snapshots.
+- Updated clients receive a single coalesced activity card using fixed safe
+  categories such as Thinking, Searching, Editing, and Preparing files. The
+  adapter never forwards plan text, reasoning, tool names, arguments, output,
+  commands, or local paths as progress.
+- Generated media is resolved only with OpenClaw's official agent-scoped
+  outbound-media helpers. The plugin advertises channel media support, uploads
+  validated files privately to the bridge, waits for durable attachment
+  metadata receipts, and sends metadata before the final reply. It never reads
+  an arbitrary filesystem path or sends a local source path/URL to iOS.
+- Attachment delivery is capped at eight files, 32 MiB per file, and 64 MiB per
+  turn. Sensitive live-only media fails closed and is never persisted as a
+  normal OpenClam attachment. Media-only turns receive a neutral caption.
+- A legacy client that did not advertise capabilities receives only established
+  frame kinds and a fixed upgrade notice when generated media is omitted.
 - Cumulative snapshots are coalesced and capped per turn so a slow phone cannot
   create an unbounded adapter or bridge backlog. Terminal replies take priority.
 - Every admitted turn ends with exactly one `assistant.completed` or

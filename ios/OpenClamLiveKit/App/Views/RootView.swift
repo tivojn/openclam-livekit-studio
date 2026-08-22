@@ -13,6 +13,7 @@ struct RootView: View {
     @State private var showsSidebar = false
     @State private var avatarSwitchTask: Task<Void, Never>?
     @State private var connectorRouteChangeTask: Task<Void, Never>?
+    @State private var connectorDeletionNotice: String?
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -72,6 +73,9 @@ struct RootView: View {
         }
         .task {
             await conversation.ensureHistoryReady()
+            await agentConnections.reconcileArtifacts(
+                referencedBy: conversation.historyController.allMessages
+            )
             await restoreActiveAvatarThread()
             await routePendingScreenContextIfNeeded()
         }
@@ -82,6 +86,17 @@ struct RootView: View {
                     await restoreActiveAvatarThread()
                     await routePendingScreenContextIfNeeded()
             }
+        }
+        .alert(
+            "OpenClaw chat",
+            isPresented: Binding(
+                get: { connectorDeletionNotice != nil },
+                set: { if !$0 { connectorDeletionNotice = nil } }
+            )
+        ) {
+            Button("OK") { connectorDeletionNotice = nil }
+        } message: {
+            Text(connectorDeletionNotice ?? "This chat cannot be deleted yet.")
         }
     }
 
@@ -148,8 +163,26 @@ struct RootView: View {
                     },
                     onDeleteChat: { id in
                         Task {
+                            do {
+                                if let reason = try agentConnections
+                                    .threadDeletionBlockReason(for: id) {
+                                    connectorDeletionNotice = reason
+                                    return
+                                }
+                            } catch {
+                                connectorDeletionNotice = error.localizedDescription
+                                return
+                            }
+                            let deletedMessages = conversation.historyController.messages(in: id)
                             aiConfiguration.removeThread(id)
                             await conversation.deleteChat(id: id)
+                            if !conversation.historyController.summaries.contains(where: {
+                                $0.id == id
+                            }) {
+                                await agentConnections.deleteArtifacts(
+                                    referencedBy: deletedMessages
+                                )
+                            }
                             registerSelectedThreadForActiveAvatar()
                         }
                     },

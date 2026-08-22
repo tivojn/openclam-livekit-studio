@@ -9,6 +9,8 @@ import {
 } from "../src/crypto";
 import worker from "../src/index";
 import type {
+  AttachmentBlobRecord,
+  AttachmentRecord,
   ConnectorFrame,
   PairingRecord,
   PendingFrame,
@@ -174,6 +176,99 @@ function frame(
 
 function send(socket: WebSocket, value: ConnectorFrame): void {
   socket.send(JSON.stringify(value));
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer),
+  );
+  return [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function fileNameBase64Url(fileName: string): string {
+  const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(fileName)));
+  return encoded.replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+}
+
+function attachmentUploadHeaders(params: {
+  token: string;
+  conversationId: string;
+  turnId: string;
+  fileName: string;
+  mediaType: string;
+  bytes: Uint8Array;
+  sha256: string;
+}): Headers {
+  return new Headers({
+    Authorization: `Bearer ${params.token}`,
+    "Content-Length": String(params.bytes.byteLength),
+    "Content-Type": params.mediaType,
+    "X-OpenClam-Conversation-Id": params.conversationId,
+    "X-OpenClam-File-Name-B64": fileNameBase64Url(params.fileName),
+    "X-OpenClam-SHA256": params.sha256,
+    "X-OpenClam-Turn-Id": params.turnId,
+  });
+}
+
+function internalAttachmentHeaders(record: AttachmentBlobRecord): Headers {
+  return new Headers({
+    "Content-Length": String(record.byteCount),
+    "X-OpenClam-Attachment-Id": record.attachmentId,
+    "X-OpenClam-Byte-Count": String(record.byteCount),
+    "X-OpenClam-Connection-Id": record.connectionId,
+    "X-OpenClam-Created-At": String(record.createdAt),
+    "X-OpenClam-Expires-At": String(record.expiresAt),
+    "X-OpenClam-File-Name-B64": fileNameBase64Url(record.fileName),
+    "X-OpenClam-Media-Type": record.mediaType,
+    "X-OpenClam-SHA256": record.sha256,
+  });
+}
+
+async function eventually(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error("test_timeout");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+async function activeAttachmentTurn(): Promise<{
+  created: CreatedPairing;
+  redeemed: RedeemedPairing;
+  client: WebSocket;
+  adapter: WebSocket;
+  conversationId: string;
+  turnId: string;
+}> {
+  const { created, redeemed } = await paired();
+  const client = await openSocket("client", created.connectionId, redeemed.clientToken);
+  const adapter = await openSocket("adapter", created.connectionId, created.adapterToken);
+  const conversationId = crypto.randomUUID();
+  const turnId = crypto.randomUUID();
+  const forwardedSubmit = message(adapter);
+  send(client, frame(
+    created.connectionId,
+    "turn.submit",
+    1,
+    {
+      turnId,
+      accountId: "main",
+      text: "Create an attachment",
+      capabilities: ["activity-v1", "attachments-v1"],
+    },
+    conversationId,
+  ));
+  expect(JSON.parse((await forwardedSubmit).data as string).kind).toBe("turn.submit");
+  const forwardedAcceptance = message(client);
+  send(adapter, frame(
+    created.connectionId,
+    "turn.accepted",
+    1,
+    { turnId },
+    conversationId,
+  ));
+  expect(JSON.parse((await forwardedAcceptance).data as string).kind).toBe("turn.accepted");
+  return { created, redeemed, client, adapter, conversationId, turnId };
 }
 
 describe("HTTP pairing contract", () => {
@@ -1394,6 +1489,24 @@ describe("authenticated connector WebSockets", () => {
     expect(pairingStorage).toEqual([]);
   });
 
+  it("accepts a zero-byte DELETE body stream from an external client", async () => {
+    const { created } = await paired();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+    const deleted = await worker.fetch(
+      new Request(`https://bridge.test/v1/connectors/${created.connectionId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${created.adapterToken}` },
+        body,
+      }),
+      env,
+    );
+    expect(deleted.status).toBe(204);
+  });
+
   it("cannot resurrect a session when revocation races an in-flight frame", async () => {
     const connectionId = crypto.randomUUID();
     const clientToken = "client-token-that-is-long-enough-for-the-auth-validator";
@@ -1520,6 +1633,424 @@ describe("authenticated connector WebSockets", () => {
     expect(outcome.revokeStatus).toBe(204);
     expect(outcome.storageKeys).toEqual([]);
     expect(outcome.reconnectStatus).toBe(404);
+  });
+});
+
+describe("authenticated attachment relay", () => {
+  it("accepts a 160-code-point filename at the four-byte UTF-8 boundary", async () => {
+    const active = await activeAttachmentTurn();
+    const attachmentId = crypto.randomUUID();
+    const fileName = "📋".repeat(160);
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const sha256 = await sha256Hex(bytes);
+    expect([...fileName]).toHaveLength(160);
+    expect(fileNameBase64Url(fileName).length).toBeGreaterThan(640);
+
+    const uploaded = await request(
+      `/v1/adapters/${active.created.connectionId}/attachments/${attachmentId}`,
+      {
+        method: "PUT",
+        headers: attachmentUploadHeaders({
+          token: active.created.adapterToken,
+          conversationId: active.conversationId,
+          turnId: active.turnId,
+          fileName,
+          mediaType: "image/png",
+          bytes,
+          sha256,
+        }),
+        body: bytes,
+      },
+    );
+
+    expect(uploaded.status).toBe(201);
+    expect((await uploaded.json<{ fileName: string }>()).fileName).toBe(fileName);
+  });
+
+  it("retries the same upload idempotently, authorizes only the paired client, and deletes after ACK", async () => {
+    const active = await activeAttachmentTurn();
+    const attachmentId = crypto.randomUUID();
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const sha256 = await sha256Hex(bytes);
+    const path = `/v1/adapters/${active.created.connectionId}/attachments/${attachmentId}`;
+    const upload = () => request(path, {
+      method: "PUT",
+      headers: attachmentUploadHeaders({
+        token: active.created.adapterToken,
+        conversationId: active.conversationId,
+        turnId: active.turnId,
+        fileName: "ara.png",
+        mediaType: "image/png",
+        bytes,
+        sha256,
+      }),
+      body: bytes,
+    });
+
+    const first = await upload();
+    expect(first.status).toBe(201);
+    const metadata = await first.json<{
+      v: 1;
+      attachmentId: string;
+      fileName: string;
+      mediaType: string;
+      byteCount: number;
+      sha256: string;
+      downloadPath: string;
+      expiresAt: number;
+    }>();
+    const retry = await upload();
+    expect(retry.status).toBe(201);
+    expect(await retry.json()).toEqual(metadata);
+
+    const attachmentForward = message(active.client);
+    send(active.adapter, frame(
+      active.created.connectionId,
+      "assistant.attachment",
+      2,
+      { turnId: active.turnId, ...metadata, v: undefined },
+      active.conversationId,
+    ));
+    const delivered = JSON.parse((await attachmentForward).data as string) as ConnectorFrame;
+    expect(delivered.kind).toBe("assistant.attachment");
+    expect(delivered.payload).toEqual({
+      turnId: active.turnId,
+      attachmentId,
+      fileName: "ara.png",
+      mediaType: "image/png",
+      byteCount: bytes.byteLength,
+      sha256,
+      downloadPath: `/v1/connectors/${active.created.connectionId}/attachments/${attachmentId}`,
+      expiresAt: metadata.expiresAt,
+    });
+
+    const other = await paired();
+    const downloadPath = metadata.downloadPath;
+    expect((await request(downloadPath, {
+      headers: { Authorization: `Bearer ${active.created.adapterToken}` },
+    })).status).toBe(401);
+    expect((await request(downloadPath, {
+      headers: { Authorization: `Bearer ${other.redeemed.clientToken}` },
+    })).status).toBe(401);
+    expect((await request(`${downloadPath}?token=forbidden`, {
+      headers: { Authorization: `Bearer ${active.redeemed.clientToken}` },
+    })).status).toBe(400);
+    expect((await request(downloadPath, {
+      headers: {
+        Authorization: `Bearer ${active.redeemed.clientToken}`,
+        Range: "bytes=0-1",
+      },
+    })).status).toBe(400);
+
+    const downloaded = await request(downloadPath, {
+      headers: { Authorization: `Bearer ${active.redeemed.clientToken}` },
+    });
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers.get("Content-Type")).toBe("image/png");
+    expect(downloaded.headers.get("Content-Length")).toBe(String(bytes.byteLength));
+    expect(downloaded.headers.get("Cache-Control")).toContain("no-store");
+    expect(downloaded.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes);
+
+    send(active.client, frame(
+      active.created.connectionId,
+      "ack",
+      2,
+      { ackSeq: 2 },
+    ));
+    await eventually(async () => (await request(downloadPath, {
+      headers: { Authorization: `Bearer ${active.redeemed.clientToken}` },
+    })).status === 404);
+
+    const completionForward = message(active.client);
+    send(active.adapter, frame(
+      active.created.connectionId,
+      "assistant.completed",
+      3,
+      { turnId: active.turnId, text: "Created 1 file." },
+      active.conversationId,
+    ));
+    expect(JSON.parse((await completionForward).data as string).kind).toBe(
+      "assistant.completed",
+    );
+
+    const sessionStub = env.CONNECTOR_SESSIONS.get(
+      env.CONNECTOR_SESSIONS.idFromName(active.created.connectionId),
+    );
+    const stored = await runInDurableObject(
+      sessionStub,
+      async (_instance, state) => state.storage.get<SessionRecord>("session"),
+    );
+    expect(stored?.attachments ?? []).toEqual([]);
+    const blobStub = env.ATTACHMENTS.get(
+      env.ATTACHMENTS.idFromName(`${active.created.connectionId}:${attachmentId}`),
+    );
+    const blobKeys = await runInDurableObject(
+      blobStub,
+      async (_instance, state) => [...(await state.storage.list()).keys()],
+    );
+    expect(blobKeys).toEqual([]);
+  });
+
+  it("validates long JSON and split UTF-8 prefixes without buffering a full attachment", async () => {
+    const cases = [
+      {
+        fileName: "large.json",
+        mediaType: "application/json",
+        bytes: new TextEncoder().encode(JSON.stringify({ value: "a".repeat(12_000) })),
+      },
+      {
+        fileName: "split.txt",
+        mediaType: "text/plain",
+        bytes: new TextEncoder().encode(`${"a".repeat(8_191)}🙂tail`),
+      },
+    ];
+    for (const value of cases) {
+      const connectionId = crypto.randomUUID();
+      const attachmentId = crypto.randomUUID();
+      const now = Date.now();
+      const record: AttachmentBlobRecord = {
+        v: 1,
+        connectionId,
+        attachmentId,
+        fileName: value.fileName,
+        mediaType: value.mediaType,
+        byteCount: value.bytes.byteLength,
+        sha256: await sha256Hex(value.bytes),
+        chunkCount: Math.ceil(value.bytes.byteLength / (512 * 1_024)),
+        createdAt: now,
+        expiresAt: now + 60_000,
+      };
+      const blobStub = env.ATTACHMENTS.get(
+        env.ATTACHMENTS.idFromName(`${connectionId}:${attachmentId}`),
+      );
+      const response = await blobStub.fetch("https://attachment.internal/internal/upload", {
+        method: "PUT",
+        headers: internalAttachmentHeaders(record),
+        body: value.bytes,
+      });
+      expect(response.status).toBe(201);
+      const downloaded = await blobStub.fetch("https://attachment.internal/internal/download");
+      expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(value.bytes);
+      expect(await runDurableObjectAlarm(blobStub)).toBe(true);
+      expect(await runInDurableObject(
+        blobStub,
+        async (_instance, state) => [...(await state.storage.list()).keys()],
+      )).toEqual([]);
+    }
+  });
+
+  it("cleans partial uploads and removes ready blobs when a connector is revoked", async () => {
+    const partialConnectionId = crypto.randomUUID();
+    const partialAttachmentId = crypto.randomUUID();
+    const now = Date.now();
+    const declaredBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const partialRecord: AttachmentBlobRecord = {
+      v: 1,
+      connectionId: partialConnectionId,
+      attachmentId: partialAttachmentId,
+      fileName: "partial.png",
+      mediaType: "image/png",
+      byteCount: declaredBytes.byteLength,
+      sha256: await sha256Hex(declaredBytes),
+      chunkCount: 1,
+      createdAt: now,
+      expiresAt: now + 60_000,
+    };
+    const partialStub = env.ATTACHMENTS.get(
+      env.ATTACHMENTS.idFromName(`${partialConnectionId}:${partialAttachmentId}`),
+    );
+    const shortBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(declaredBytes.slice(0, 4));
+        controller.close();
+      },
+    });
+    const partialResponse = await partialStub.fetch(
+      "https://attachment.internal/internal/upload",
+      {
+        method: "PUT",
+        headers: internalAttachmentHeaders(partialRecord),
+        body: shortBody,
+      },
+    );
+    expect(partialResponse.status).toBe(400);
+    expect(await runInDurableObject(
+      partialStub,
+      async (_instance, state) => [...(await state.storage.list()).keys()],
+    )).toEqual([]);
+
+    const active = await activeAttachmentTurn();
+    const attachmentId = crypto.randomUUID();
+    const bytes = declaredBytes;
+    const sha256 = await sha256Hex(bytes);
+    const uploaded = await request(
+      `/v1/adapters/${active.created.connectionId}/attachments/${attachmentId}`,
+      {
+        method: "PUT",
+        headers: attachmentUploadHeaders({
+          token: active.created.adapterToken,
+          conversationId: active.conversationId,
+          turnId: active.turnId,
+          fileName: "revoke.png",
+          mediaType: "image/png",
+          bytes,
+          sha256,
+        }),
+        body: bytes,
+      },
+    );
+    expect(uploaded.status).toBe(201);
+    const revoked = await request(`/v1/connectors/${active.created.connectionId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${active.created.adapterToken}` },
+    });
+    expect(revoked.status).toBe(204);
+    const blobStub = env.ATTACHMENTS.get(
+      env.ATTACHMENTS.idFromName(`${active.created.connectionId}:${attachmentId}`),
+    );
+    expect(await runInDurableObject(
+      blobStub,
+      async (_instance, state) => [...(await state.storage.list()).keys()],
+    )).toEqual([]);
+  });
+
+  it("removes announced attachment bytes and pending metadata on a failed turn", async () => {
+    const active = await activeAttachmentTurn();
+    const attachmentId = crypto.randomUUID();
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const sha256 = await sha256Hex(bytes);
+    const uploaded = await request(
+      `/v1/adapters/${active.created.connectionId}/attachments/${attachmentId}`,
+      {
+        method: "PUT",
+        headers: attachmentUploadHeaders({
+          token: active.created.adapterToken,
+          conversationId: active.conversationId,
+          turnId: active.turnId,
+          fileName: "failed.png",
+          mediaType: "image/png",
+          bytes,
+          sha256,
+        }),
+        body: bytes,
+      },
+    );
+    const metadata = await uploaded.json<Record<string, unknown>>();
+    const attachmentForward = message(active.client);
+    send(active.adapter, frame(
+      active.created.connectionId,
+      "assistant.attachment",
+      2,
+      { turnId: active.turnId, ...metadata, v: undefined },
+      active.conversationId,
+    ));
+    expect(JSON.parse((await attachmentForward).data as string).kind).toBe(
+      "assistant.attachment",
+    );
+    const errorForward = message(active.client);
+    send(active.adapter, frame(
+      active.created.connectionId,
+      "turn.error",
+      3,
+      {
+        turnId: active.turnId,
+        code: "agent_failed",
+        message: "OpenClaw could not complete this reply.",
+        retryable: true,
+      },
+      active.conversationId,
+    ));
+    expect(JSON.parse((await errorForward).data as string).kind).toBe("turn.error");
+
+    const sessionStub = env.CONNECTOR_SESSIONS.get(
+      env.CONNECTOR_SESSIONS.idFromName(active.created.connectionId),
+    );
+    await eventually(async () => {
+      const stored = await runInDurableObject(
+        sessionStub,
+        async (_instance, state) => state.storage.get<SessionRecord>("session"),
+      );
+      return (stored?.attachments?.length ?? 0) === 0 &&
+        !stored?.pending.some((pending) => pending.kind === "assistant.attachment");
+    });
+    const blobStub = env.ATTACHMENTS.get(
+      env.ATTACHMENTS.idFromName(`${active.created.connectionId}:${attachmentId}`),
+    );
+    expect(await runInDurableObject(
+      blobStub,
+      async (_instance, state) => [...(await state.storage.list()).keys()],
+    )).toEqual([]);
+  });
+
+  it("enforces eight files and 64 MiB per turn in the session reservation", async () => {
+    const active = await activeAttachmentTurn();
+    const sessionStub = env.CONNECTOR_SESSIONS.get(
+      env.CONNECTOR_SESSIONS.idFromName(active.created.connectionId),
+    );
+    const now = Date.now();
+    const base = {
+      conversationId: active.conversationId,
+      turnId: active.turnId,
+      fileName: "file.bin",
+      mediaType: "application/zip",
+      sha256: "a".repeat(64),
+      createdAt: now,
+      expiresAt: now + 60_000,
+    };
+    const reserve = (value: Record<string, unknown>) => sessionStub.fetch(
+      "https://session.internal/internal/attachments/reserve",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${active.created.adapterToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(value),
+      },
+    );
+    for (let index = 0; index < 8; index += 1) {
+      const attachmentId = crypto.randomUUID();
+      expect((await reserve({
+        ...base,
+        attachmentId,
+        byteCount: 1,
+        downloadPath:
+          `/v1/connectors/${active.created.connectionId}/attachments/${attachmentId}`,
+      })).status).toBe(201);
+    }
+    const ninthId = crypto.randomUUID();
+    expect((await reserve({
+      ...base,
+      attachmentId: ninthId,
+      byteCount: 1,
+      downloadPath: `/v1/connectors/${active.created.connectionId}/attachments/${ninthId}`,
+    })).status).toBe(413);
+
+    await runInDurableObject(sessionStub, async (_instance, state) => {
+      const stored = await state.storage.get<SessionRecord>("session");
+      if (stored === undefined) throw new Error("missing session");
+      const sized = [0, 1].map((index) => {
+        const attachmentId = crypto.randomUUID();
+        return {
+          ...base,
+          attachmentId,
+          byteCount: 32 * 1_024 * 1_024,
+          downloadPath:
+            `/v1/connectors/${active.created.connectionId}/attachments/${attachmentId}`,
+          state: "uploading",
+        } satisfies AttachmentRecord;
+      });
+      await state.storage.put("session", { ...stored, attachments: sized });
+    });
+    const overTotalId = crypto.randomUUID();
+    expect((await reserve({
+      ...base,
+      attachmentId: overTotalId,
+      byteCount: 1,
+      downloadPath:
+        `/v1/connectors/${active.created.connectionId}/attachments/${overTotalId}`,
+    })).status).toBe(413);
   });
 });
 

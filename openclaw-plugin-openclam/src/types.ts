@@ -6,6 +6,37 @@ export const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 export const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
+export type ConnectorCapability = "activity-v1" | "attachments-v1";
+
+export type ActivityStatus =
+  | "thinking"
+  | "planning"
+  | "searching"
+  | "reading"
+  | "editing"
+  | "running_action"
+  | "using_tools"
+  | "creating_media"
+  | "preparing_files"
+  | "waiting_for_approval"
+  | "finalizing";
+
+export type OpenClamAttachment = {
+  attachmentId: string;
+  fileName: string;
+  mediaType: string;
+  byteCount: number;
+  sha256: string;
+  downloadPath: string;
+  expiresAt: number;
+};
+
+export type OpenClamAttachmentUpload = {
+  fileName: string;
+  mediaType: string;
+  buffer: Buffer;
+};
+
 export type OpenClamAccountConfig = {
   enabled?: boolean;
   agentId: string;
@@ -70,6 +101,9 @@ export type FrameKind =
   | "turn.submit"
   | "turn.accepted"
   | "assistant.delta"
+  | "assistant.activity.upsert"
+  | "assistant.activity.clear"
+  | "assistant.attachment"
   | "assistant.completed"
   | "turn.cancel"
   | "turn.error";
@@ -124,6 +158,7 @@ export type TurnSubmitFrame = ConnectorFrame & {
     turnId: string;
     accountId: string;
     text: string;
+    capabilities?: ConnectorCapability[];
   };
 };
 

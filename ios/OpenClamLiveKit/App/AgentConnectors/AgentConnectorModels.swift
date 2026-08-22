@@ -365,6 +365,15 @@ struct AgentConnectorOrigin: Equatable, Hashable, Sendable {
             .appendingPathComponent("connectors", isDirectory: true)
             .appendingPathComponent(connectionID.uuidString.lowercased(), isDirectory: false)
     }
+
+    func attachmentURL(connectionID: UUID, attachmentID: UUID) -> URL {
+        httpsURL
+            .appendingPathComponent("v1", isDirectory: true)
+            .appendingPathComponent("connectors", isDirectory: true)
+            .appendingPathComponent(connectionID.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent("attachments", isDirectory: true)
+            .appendingPathComponent(attachmentID.uuidString.lowercased(), isDirectory: false)
+    }
 }
 
 struct AgentConnectorTurnRequest: Equatable, Sendable {
@@ -401,8 +410,111 @@ struct AgentConnectorTurnRequest: Equatable, Sendable {
     }
 }
 
+enum AgentConnectorActivityStatus: String, Codable, Equatable, Sendable {
+    case thinking
+    case planning
+    case searching
+    case reading
+    case editing
+    case runningAction = "running_action"
+    case usingTools = "using_tools"
+    case creatingMedia = "creating_media"
+    case preparingFiles = "preparing_files"
+    case waitingForApproval = "waiting_for_approval"
+    case finalizing
+}
+
+struct AgentConnectorActivityUpdate: Codable, Equatable, Sendable {
+    let revision: Int
+    let status: AgentConnectorActivityStatus?
+
+    func validated() throws -> Self {
+        guard (1 ... 100_000).contains(revision) else {
+            throw AgentConnectorError.invalidFrame
+        }
+        return self
+    }
+}
+
+struct AgentConnectorAttachmentMetadata: Codable, Equatable, Sendable {
+    static let maximumByteCount = 32 * 1_024 * 1_024
+
+    let connectionID: UUID
+    let turnID: UUID
+    let attachmentID: UUID
+    let fileName: String
+    let mediaType: String
+    let byteCount: Int
+    let sha256: String
+    let expiresAtMilliseconds: Int64
+
+    var downloadPath: String {
+        "/v1/connectors/\(connectionID.uuidString.lowercased())/attachments/\(attachmentID.uuidString.lowercased())"
+    }
+
+    func validated(nowMilliseconds: Int64? = nil) throws -> Self {
+        let trimmedName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalidName = trimmedName.isEmpty
+            || trimmedName != fileName
+            || fileName.count > 160
+            || fileName == "."
+            || fileName == ".."
+            || fileName.contains("/")
+            || fileName.contains("\\")
+            || fileName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        guard !invalidName,
+              mediaType == mediaType.lowercased(),
+              mediaType.count <= 127,
+              mediaType.range(
+                of: #"^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$"#,
+                options: .regularExpression
+              ) != nil,
+              (1 ... Self.maximumByteCount).contains(byteCount),
+              sha256.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
+              (1 ... 9_007_199_254_740_991).contains(expiresAtMilliseconds),
+              nowMilliseconds.map({ expiresAtMilliseconds > $0 }) ?? true else {
+            throw AgentConnectorError.invalidFrame
+        }
+        return self
+    }
+
+    var conversationReference: ConversationConnectorArtifactReference {
+        .init(
+            connectionID: connectionID,
+            attachmentID: attachmentID,
+            sha256: sha256,
+            expiresAtMilliseconds: expiresAtMilliseconds
+        )
+    }
+}
+
+struct AgentConnectorStoredAttachment: Codable, Equatable, Sendable {
+    let metadata: AgentConnectorAttachmentMetadata
+    /// App-private key relative to the connector artifact root. Never an absolute path.
+    let assetKey: String
+
+    func validated() throws -> Self {
+        _ = try metadata.validated()
+        let expectedPrefix = metadata.connectionID.uuidString.lowercased()
+            + "/" + metadata.attachmentID.uuidString.lowercased() + "/"
+        guard assetKey.hasPrefix(expectedPrefix),
+              !assetKey.hasPrefix("/"),
+              !assetKey.contains(".."),
+              !assetKey.contains("\\") else {
+            throw AgentConnectorError.invalidFrame
+        }
+        return self
+    }
+}
+
 enum AgentConnectorStreamEvent: Equatable, Sendable {
+    /// The exact submit frame is now in the device-only durable outbox. The composer
+    /// may clear without risking loss even if the network is unavailable afterward.
+    case submissionSaved
     case accepted
+    case activity(AgentConnectorActivityUpdate)
+    case activityCleared(revision: Int)
+    case attachment(AgentConnectorStoredAttachment)
     case cumulativeText(String)
     case completed(String)
 }
@@ -419,6 +531,9 @@ enum AgentConnectorError: LocalizedError, Equatable {
     case connectionUnavailable
     case redirected
     case responseTooLarge
+    case attachmentExpired
+    case attachmentUnavailable
+    case attachmentIntegrityFailed
     case frameTooLarge
     case invalidFrame
     case staleOrDuplicateFrame
@@ -453,6 +568,12 @@ enum AgentConnectorError: LocalizedError, Equatable {
             "The OpenClaw connector tried to redirect the secure connection."
         case .responseTooLarge:
             "The OpenClaw connector returned an oversized response."
+        case .attachmentExpired:
+            "This OpenClaw file is no longer available to download."
+        case .attachmentUnavailable:
+            "The OpenClaw file could not be downloaded securely."
+        case .attachmentIntegrityFailed:
+            "The OpenClaw file did not match its verified description and was not opened."
         case .frameTooLarge:
             "The OpenClaw connector sent an oversized message."
         case .invalidFrame, .staleOrDuplicateFrame:

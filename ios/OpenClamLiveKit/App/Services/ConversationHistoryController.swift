@@ -19,6 +19,11 @@ final class ConversationHistoryController: ObservableObject {
     var selectedThreadID: UUID? { state.selectedThreadID }
     var selectedThread: ConversationThread? { state.selectedThread }
     var selectedMessages: [ConversationMessage] { selectedThread?.messages ?? [] }
+    var allMessages: [ConversationMessage] { state.threads.flatMap(\.messages) }
+
+    func messages(in threadID: UUID) -> [ConversationMessage] {
+        state.threads.first(where: { $0.id == threadID })?.messages ?? []
+    }
 
     @discardableResult
     func start(initialMessages: [ConversationMessage] = []) async -> ConversationHistoryState? {

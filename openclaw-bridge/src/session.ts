@@ -10,6 +10,7 @@ import { HttpError } from "./errors";
 import type {
   AccountDescriptor,
   ActiveTurn,
+  AttachmentRecord,
   ConnectorFrame,
   FrameKind,
   RelayPersistedReceipt,
@@ -35,6 +36,9 @@ const ADAPTER_KINDS = new Set([
   "heartbeat",
   "turn.accepted",
   "assistant.delta",
+  "assistant.activity.upsert",
+  "assistant.activity.clear",
+  "assistant.attachment",
   "assistant.completed",
   "turn.error",
 ]);
@@ -42,10 +46,16 @@ const RELAY_RECEIPT_KINDS = new Set<FrameKind>([
   "turn.submit",
   "turn.accepted",
   "assistant.delta",
+  "assistant.activity.upsert",
+  "assistant.activity.clear",
+  "assistant.attachment",
   "assistant.completed",
   "turn.cancel",
   "turn.error",
 ]);
+const MAX_ATTACHMENTS_PER_TURN = 8;
+const MAX_ATTACHMENTS_PER_SESSION = 64;
+const MAX_ATTACHMENT_BYTES_PER_TURN = 64 * 1_024 * 1_024;
 
 interface InternalCreateRequest {
   connectionId: string;
@@ -68,6 +78,12 @@ interface InternalExpireRequest {
   connectionId: string;
   unpairedCleanupAt: number;
   now: number;
+}
+
+type InternalAttachmentRequest = Omit<AttachmentRecord, "state">;
+
+interface InternalAttachmentMutationRequest {
+  attachmentId: string;
 }
 
 interface SocketAttachment {
@@ -213,6 +229,28 @@ export class ConnectorSession extends DurableObject<Env> {
       }
       return this.connectWebSocket(request, role);
     }
+    if (request.method === "POST" && url.pathname === "/internal/attachments/reserve") {
+      return this.reserveAttachment(
+        request,
+        await request.json<InternalAttachmentRequest>(),
+      );
+    }
+    if (request.method === "POST" && url.pathname === "/internal/attachments/commit") {
+      return this.commitAttachment(
+        request,
+        await request.json<InternalAttachmentMutationRequest>(),
+      );
+    }
+    if (request.method === "POST" && url.pathname === "/internal/attachments/abort") {
+      return this.abortAttachment(
+        request,
+        await request.json<InternalAttachmentMutationRequest>(),
+      );
+    }
+    const attachmentMatch = /^\/internal\/attachments\/([0-9a-f-]{36})$/.exec(url.pathname);
+    if (request.method === "GET" && attachmentMatch?.[1] !== undefined) {
+      return this.authorizeAttachmentDownload(request, attachmentMatch[1]);
+    }
     if (request.method === "DELETE" && url.pathname === "/internal/delete") {
       return this.revoke(request);
     }
@@ -232,6 +270,15 @@ export class ConnectorSession extends DurableObject<Env> {
     if (this.hasExpiredActiveTurn(record, now)) {
       await this.deleteSession("turn_expired");
       return;
+    }
+    const expiredAttachmentIds = (record.attachments ?? [])
+      .filter(
+        (attachment) =>
+          attachment.expiresAt <= now || attachment.state === "acknowledged",
+      )
+      .map((attachment) => attachment.attachmentId);
+    if (expiredAttachmentIds.length > 0) {
+      await this.deleteAttachmentBlobs(record.connectionId, expiredAttachmentIds);
     }
     const cleaned = this.cleanup(record, now);
     await this.persistSession(cleaned);
@@ -414,6 +461,177 @@ export class ConnectorSession extends DurableObject<Env> {
     return secureEqual(candidate, expected);
   }
 
+  private attachmentRequestValid(
+    record: SessionRecord,
+    value: InternalAttachmentRequest,
+    now: number,
+  ): boolean {
+    return (
+      typeof value.attachmentId === "string" &&
+      typeof value.conversationId === "string" &&
+      typeof value.turnId === "string" &&
+      typeof value.fileName === "string" &&
+      typeof value.mediaType === "string" &&
+      Number.isSafeInteger(value.byteCount) &&
+      value.byteCount >= 1 &&
+      value.byteCount <= 32 * 1_024 * 1_024 &&
+      typeof value.sha256 === "string" &&
+      typeof value.downloadPath === "string" &&
+      Number.isSafeInteger(value.createdAt) &&
+      Number.isSafeInteger(value.expiresAt) &&
+      value.createdAt <= now + 60_000 &&
+      value.expiresAt > now &&
+      value.expiresAt <= value.createdAt + 7 * 24 * 60 * 60 * 1_000 &&
+      value.downloadPath ===
+        `/v1/connectors/${record.connectionId}/attachments/${value.attachmentId}`
+    );
+  }
+
+  private sameAttachment(
+    left: AttachmentRecord,
+    right: InternalAttachmentRequest,
+  ): boolean {
+    return (
+      left.attachmentId === right.attachmentId &&
+      left.conversationId === right.conversationId &&
+      left.turnId === right.turnId &&
+      left.fileName === right.fileName &&
+      left.mediaType === right.mediaType &&
+      left.byteCount === right.byteCount &&
+      left.sha256 === right.sha256 &&
+      left.downloadPath === right.downloadPath
+    );
+  }
+
+  private async reserveAttachment(
+    request: Request,
+    value: InternalAttachmentRequest,
+  ): Promise<Response> {
+    const stored = await this.ctx.storage.get<SessionRecord>(SESSION_KEY);
+    if (stored === undefined) return json({ error: "not_found" }, 404);
+    if (!(await this.authenticates(request, stored, "adapter"))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    const now = Date.now();
+    if (!this.attachmentRequestValid(stored, value, now)) {
+      return json({ error: "invalid_request" }, 400);
+    }
+    const record = this.cleanup(stored, now);
+    const existing = record.attachments?.find(
+      (attachment) => attachment.attachmentId === value.attachmentId,
+    );
+    if (existing !== undefined) {
+      if (!this.sameAttachment(existing, value)) return json({ error: "conflict" }, 409);
+      return json({ attachment: existing, idempotent: true });
+    }
+    const active = record.activeTurns.find(
+      (turn) =>
+        turn.turnId === value.turnId && turn.conversationId === value.conversationId,
+    );
+    if (
+      active?.accepted !== true ||
+      !active.capabilities?.includes("attachments-v1")
+    ) {
+      return json({ error: "attachment_not_allowed" }, 409);
+    }
+    const turnAttachments = (record.attachments ?? []).filter(
+      (attachment) => attachment.turnId === value.turnId,
+    );
+    if (
+      (record.attachments?.length ?? 0) >= MAX_ATTACHMENTS_PER_SESSION ||
+      turnAttachments.length >= MAX_ATTACHMENTS_PER_TURN ||
+      turnAttachments.reduce((total, attachment) => total + attachment.byteCount, 0) +
+        value.byteCount > MAX_ATTACHMENT_BYTES_PER_TURN
+    ) {
+      return json({ error: "attachment_limit" }, 413);
+    }
+    const attachment: AttachmentRecord = { ...value, state: "uploading" };
+    const updated = {
+      ...record,
+      attachments: [...(record.attachments ?? []), attachment],
+    };
+    await this.persistSession(updated);
+    await this.scheduleCleanup(updated);
+    return json({ attachment }, 201);
+  }
+
+  private async commitAttachment(
+    request: Request,
+    value: InternalAttachmentMutationRequest,
+  ): Promise<Response> {
+    const record = await this.ctx.storage.get<SessionRecord>(SESSION_KEY);
+    if (record === undefined) return json({ error: "not_found" }, 404);
+    if (!(await this.authenticates(request, record, "adapter"))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    const index = (record.attachments ?? []).findIndex(
+      (attachment) => attachment.attachmentId === value.attachmentId,
+    );
+    const attachment = record.attachments?.[index];
+    if (attachment === undefined) return json({ error: "not_found" }, 404);
+    if (attachment.state === "announced" || attachment.state === "acknowledged") {
+      return json({ attachment, idempotent: true });
+    }
+    const ready: AttachmentRecord = { ...attachment, state: "ready" };
+    const updated = {
+      ...record,
+      attachments: (record.attachments ?? []).map((item, current) =>
+        current === index ? ready : item,
+      ),
+    };
+    await this.persistSession(updated);
+    await this.scheduleCleanup(updated);
+    return json({ attachment: ready });
+  }
+
+  private async abortAttachment(
+    request: Request,
+    value: InternalAttachmentMutationRequest,
+  ): Promise<Response> {
+    const record = await this.ctx.storage.get<SessionRecord>(SESSION_KEY);
+    if (record === undefined) return json({ error: "not_found" }, 404);
+    if (!(await this.authenticates(request, record, "adapter"))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    const attachment = record.attachments?.find(
+      (item) => item.attachmentId === value.attachmentId,
+    );
+    if (attachment?.state === "announced" || attachment?.state === "acknowledged") {
+      return json({ error: "conflict" }, 409);
+    }
+    const updated = {
+      ...record,
+      attachments: (record.attachments ?? []).filter(
+        (item) => item.attachmentId !== value.attachmentId,
+      ),
+    };
+    await this.persistSession(updated);
+    await this.scheduleCleanup(updated);
+    return new Response(null, { status: 204 });
+  }
+
+  private async authorizeAttachmentDownload(
+    request: Request,
+    attachmentId: string,
+  ): Promise<Response> {
+    const record = await this.ctx.storage.get<SessionRecord>(SESSION_KEY);
+    if (record === undefined) return json({ error: "not_found" }, 404);
+    if (!(await this.authenticates(request, record, "client"))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    const attachment = record.attachments?.find(
+      (item) => item.attachmentId === attachmentId,
+    );
+    if (
+      attachment === undefined ||
+      attachment.state !== "announced" ||
+      attachment.expiresAt <= Date.now()
+    ) {
+      return json({ error: "not_found" }, 404);
+    }
+    return json({ attachment });
+  }
+
   private async handleWebSocketMessage(
     webSocket: WebSocket,
     message: string | ArrayBuffer,
@@ -500,9 +718,28 @@ export class ConnectorSession extends DurableObject<Env> {
         return;
       }
       record = this.recordInbound(record, role, frame, digest, now);
+      const acknowledgedAttachmentIds = role === "client"
+        ? record.pending
+            .filter(
+              (pending) =>
+                pending.from === "adapter" &&
+                pending.seq <= ackSeq &&
+                pending.kind === "assistant.attachment" &&
+                pending.attachmentId !== undefined,
+            )
+            .map((pending) => pending.attachmentId as string)
+        : [];
       record.pending = record.pending.filter(
         (pending) => !(pending.from === opposite(role) && pending.seq <= ackSeq),
       );
+      if (acknowledgedAttachmentIds.length > 0) {
+        const acknowledged = new Set(acknowledgedAttachmentIds);
+        record.attachments = (record.attachments ?? []).map((attachment) =>
+          acknowledged.has(attachment.attachmentId)
+            ? { ...attachment, state: "acknowledged" }
+            : attachment,
+        );
+      }
       if (role === "client") {
         record.acknowledgedAdapterSeq = Math.max(
           record.acknowledgedAdapterSeq,
@@ -516,6 +753,20 @@ export class ConnectorSession extends DurableObject<Env> {
       }
       await this.persistSession(record);
       await this.scheduleCleanup(record);
+      if (acknowledgedAttachmentIds.length > 0) {
+        const deleted = await this.deleteAttachmentBlobs(
+          record.connectionId,
+          acknowledgedAttachmentIds,
+        );
+        if (deleted.length > 0) {
+          const removed = new Set(deleted);
+          record.attachments = (record.attachments ?? []).filter(
+            (attachment) => !removed.has(attachment.attachmentId),
+          );
+          await this.persistSession(record);
+          await this.scheduleCleanup(record);
+        }
+      }
       return;
     }
 
@@ -535,6 +786,11 @@ export class ConnectorSession extends DurableObject<Env> {
       return;
     }
 
+    const failedAttachmentIds = role === "adapter" && frame.kind === "turn.error"
+      ? (record.attachments ?? [])
+          .filter((attachment) => attachment.turnId === turnId)
+          .map((attachment) => attachment.attachmentId)
+      : [];
     const lifecycle = this.applyTurnLifecycle(record, role, frame, now);
     if (typeof lifecycle === "string") {
       this.close(webSocket, 1008, lifecycle);
@@ -548,6 +804,7 @@ export class ConnectorSession extends DurableObject<Env> {
       this.sendToActiveRole(record, opposite(role), encodedFrame);
       return;
     }
+    record.pending = this.coalescePending(record.pending, role, frame);
     if (record.pending.length >= maxPendingFrames(this.env)) {
       this.close(webSocket, 1013, "pending_limit");
       return;
@@ -565,12 +822,20 @@ export class ConnectorSession extends DurableObject<Env> {
       messageId: frame.messageId,
       encrypted,
       expiresAt: now + pendingTtlMilliseconds(this.env),
+      kind: frame.kind,
+      ...(turnId === undefined ? {} : { turnId }),
+      ...(frame.kind === "assistant.attachment"
+        ? { attachmentId: frame.payload.attachmentId as string }
+        : {}),
     });
     await this.persistSession(record);
     await this.scheduleCleanup(record);
 
     this.sendRelayReceipt(webSocket, record.connectionId, frame.seq, frame.messageId);
     this.sendToActiveRole(record, opposite(role), encodedFrame);
+    if (failedAttachmentIds.length > 0) {
+      await this.deleteAttachmentBlobs(record.connectionId, failedAttachmentIds);
+    }
   }
 
   private sendRelayReceipt(
@@ -602,6 +867,61 @@ export class ConnectorSession extends DurableObject<Env> {
         // The durable pending copy will be replayed on reconnect.
       }
     }
+  }
+
+  private coalescePending(
+    pending: SessionRecord["pending"],
+    role: SocketRole,
+    frame: ConnectorFrame,
+  ): SessionRecord["pending"] {
+    const turnId = frameTurnId(frame);
+    if (role !== "adapter" || turnId === undefined) return pending;
+    if (frame.kind === "assistant.delta") {
+      return pending.filter(
+        (item) =>
+          item.from !== role ||
+          item.kind !== "assistant.delta" ||
+          item.turnId !== turnId,
+      );
+    }
+    if (
+      frame.kind === "assistant.activity.upsert" ||
+      frame.kind === "assistant.activity.clear"
+    ) {
+      return pending.filter(
+        (item) =>
+          item.from !== role ||
+          item.turnId !== turnId ||
+          (item.kind !== "assistant.activity.upsert" &&
+            item.kind !== "assistant.activity.clear"),
+      );
+    }
+    return pending;
+  }
+
+  private attachmentStub(connectionId: string, attachmentId: string): DurableObjectStub {
+    return this.env.ATTACHMENTS.get(
+      this.env.ATTACHMENTS.idFromName(`${connectionId}:${attachmentId}`),
+    );
+  }
+
+  private async deleteAttachmentBlobs(
+    connectionId: string,
+    attachmentIds: string[],
+  ): Promise<string[]> {
+    const deleted: string[] = [];
+    for (const attachmentId of new Set(attachmentIds)) {
+      try {
+        const response = await this.attachmentStub(connectionId, attachmentId).fetch(
+          "https://attachment.internal/internal/delete",
+          { method: "DELETE" },
+        );
+        if (response.status === 204) deleted.push(attachmentId);
+      } catch {
+        // The attachment's own alarm is the bounded cleanup fallback.
+      }
+    }
+    return deleted;
   }
 
   private kindAllowed(role: SocketRole, frame: ConnectorFrame): boolean {
@@ -673,7 +993,19 @@ export class ConnectorSession extends DurableObject<Env> {
         ...record,
         activeTurns: [
           ...record.activeTurns,
-          { conversationId, turnId, startedAt: now, lastActivityAt: now },
+          {
+            conversationId,
+            turnId,
+            startedAt: now,
+            lastActivityAt: now,
+            ...(Array.isArray(frame.payload.capabilities)
+              ? {
+                  capabilities: frame.payload.capabilities as NonNullable<
+                    ActiveTurn["capabilities"]
+                  >,
+                }
+              : {}),
+          },
         ],
       };
     }
@@ -706,8 +1038,64 @@ export class ConnectorSession extends DurableObject<Env> {
         lastActivityAt: now,
       });
     }
+    if (
+      frame.kind === "assistant.activity.upsert" ||
+      frame.kind === "assistant.activity.clear"
+    ) {
+      if (active.accepted !== true) return "turn_not_accepted";
+      if (!active.capabilities?.includes("activity-v1")) return "capability_not_negotiated";
+      const revision = frame.payload.revision as number;
+      if (revision <= (active.lastActivityRevision ?? 0)) return "revision_replay";
+      return this.replaceTurn(record, activeIndex, {
+        ...active,
+        lastActivityRevision: revision,
+        lastActivityAt: now,
+      });
+    }
+    if (frame.kind === "assistant.attachment") {
+      if (active.accepted !== true) return "turn_not_accepted";
+      if (!active.capabilities?.includes("attachments-v1")) {
+        return "capability_not_negotiated";
+      }
+      const attachmentId = frame.payload.attachmentId as string;
+      const attachmentIndex = (record.attachments ?? []).findIndex(
+        (item) => item.attachmentId === attachmentId,
+      );
+      const attachment = record.attachments?.[attachmentIndex];
+      if (
+        attachment === undefined ||
+        attachment.state !== "ready" ||
+        attachment.turnId !== turnId ||
+        attachment.conversationId !== conversationId ||
+        attachment.fileName !== frame.payload.fileName ||
+        attachment.mediaType !== frame.payload.mediaType ||
+        attachment.byteCount !== frame.payload.byteCount ||
+        attachment.sha256 !== frame.payload.sha256 ||
+        attachment.downloadPath !== frame.payload.downloadPath ||
+        attachment.expiresAt !== frame.payload.expiresAt ||
+        attachment.expiresAt <= now
+      ) {
+        return "attachment_mismatch";
+      }
+      return {
+        ...this.replaceTurn(record, activeIndex, { ...active, lastActivityAt: now }),
+        attachments: (record.attachments ?? []).map((item, index) =>
+          index === attachmentIndex ? { ...item, state: "announced" } : item,
+        ),
+      };
+    }
     if (frame.kind === "assistant.completed") {
       if (active.accepted !== true) return "turn_not_accepted";
+      if (
+        record.attachments?.some(
+          (attachment) =>
+            attachment.turnId === turnId &&
+            attachment.state !== "announced" &&
+            attachment.state !== "acknowledged",
+        )
+      ) {
+        return "attachment_pending";
+      }
       return {
         ...record,
         activeTurns: record.activeTurns.filter((_, index) => index !== activeIndex),
@@ -721,6 +1109,13 @@ export class ConnectorSession extends DurableObject<Env> {
       return {
         ...record,
         activeTurns: record.activeTurns.filter((_, index) => index !== activeIndex),
+        pending: record.pending.filter(
+          (pending) =>
+            pending.turnId !== turnId || pending.kind !== "assistant.attachment",
+        ),
+        attachments: (record.attachments ?? []).filter(
+          (attachment) => attachment.turnId !== turnId,
+        ),
         settledTurns: [
           ...(record.settledTurns ?? []).filter((turn) => turn.turnId !== turnId),
           { conversationId, turnId, settledAt: now },
@@ -752,6 +1147,9 @@ export class ConnectorSession extends DurableObject<Env> {
       settledTurns: (record.settledTurns ?? []).filter(
         (turn) => turn.settledAt + pendingTtlMilliseconds(this.env) > now,
       ),
+      attachments: (record.attachments ?? []).filter(
+        (attachment) => attachment.expiresAt > now,
+      ),
     };
   }
 
@@ -768,6 +1166,11 @@ export class ConnectorSession extends DurableObject<Env> {
       ),
       ...(record.settledTurns ?? []).map(
         (turn) => turn.settledAt + pendingTtlMilliseconds(this.env),
+      ),
+      ...(record.attachments ?? []).map((attachment) =>
+        attachment.state === "acknowledged"
+          ? Math.min(attachment.expiresAt, Date.now() + 60_000)
+          : attachment.expiresAt,
       ),
     ];
     if (timestamps.length === 0) {
@@ -791,6 +1194,13 @@ export class ConnectorSession extends DurableObject<Env> {
   private async deleteSession(
     reason: "pairing_expired" | "revoked" | "turn_expired",
   ): Promise<void> {
+    const record = await this.ctx.storage.get<SessionRecord>(SESSION_KEY);
+    if (record !== undefined && (record.attachments?.length ?? 0) > 0) {
+      await this.deleteAttachmentBlobs(
+        record.connectionId,
+        (record.attachments ?? []).map((attachment) => attachment.attachmentId),
+      );
+    }
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     for (const socket of this.ctx.getWebSockets()) {

@@ -20,6 +20,9 @@ const FRAME_KINDS = new Set<FrameKind>([
   "turn.submit",
   "turn.accepted",
   "assistant.delta",
+  "assistant.activity.upsert",
+  "assistant.activity.clear",
+  "assistant.attachment",
   "assistant.completed",
   "turn.cancel",
   "turn.error",
@@ -108,14 +111,25 @@ export function parseBridgeInbound(raw: string, expectedConnectionId: string): B
     return value as ClientFrame;
   }
   if (!UUID_PATTERN.test(String(value.conversationId))) throw new Error("invalid_frame");
-  if (!exactKeys(value.payload, kind === "turn.submit" ? ["turnId", "accountId", "text"] : ["turnId"])) {
+  if (!exactKeys(
+    value.payload,
+    kind === "turn.submit" ? ["turnId", "accountId", "text"] : ["turnId"],
+    kind === "turn.submit" ? ["capabilities"] : [],
+  )) {
     throw new Error("invalid_frame");
   }
   if (!UUID_PATTERN.test(String(value.payload.turnId))) throw new Error("invalid_frame");
   if (kind === "turn.submit") {
     if (
       !IDENTIFIER_PATTERN.test(String(value.payload.accountId)) ||
-      !validString(value.payload.text, 1, MAX_TEXT_LENGTH)
+      !validString(value.payload.text, 1, MAX_TEXT_LENGTH) ||
+      (value.payload.capabilities !== undefined &&
+        (!Array.isArray(value.payload.capabilities) ||
+          value.payload.capabilities.length > 2 ||
+          new Set(value.payload.capabilities).size !== value.payload.capabilities.length ||
+          value.payload.capabilities.some(
+            (capability) => capability !== "activity-v1" && capability !== "attachments-v1",
+          )))
     ) {
       throw new Error("invalid_frame");
     }

@@ -1209,4 +1209,139 @@ describe("OpenClam bridge client", () => {
     secondController.abort();
     await secondAttached;
   });
+
+  it("capability-gates activity and persists attachment metadata before the terminal", async () => {
+    async function run(capabilities?: Array<"activity-v1" | "attachments-v1">) {
+      const connectionId = randomUUID();
+      const conversationId = randomUUID();
+      const turnId = randomUUID();
+      const attachmentId = randomUUID();
+      let persisted = initialAdapterState(connectionId);
+      const socket = new FakeSocket();
+      const controller = new AbortController();
+      const account: ResolvedOpenClamAccount = {
+        accountId: "ara",
+        agentId: "research",
+        displayName: "Ara",
+        enabled: true,
+        configured: true,
+        bridgeUrl: "https://bridge.example",
+        connectionId,
+        adapterTokenFile: "/private/token",
+        stateFile: "/private/state",
+      };
+      const uploadAttachment = vi.fn(async () => ({
+        v: 1,
+        attachmentId,
+        fileName: "ara.png",
+        mediaType: "image/png",
+        byteCount: 8,
+        sha256: "a".repeat(64),
+        downloadPath: `/v1/connectors/${connectionId}/attachments/${attachmentId}`,
+        expiresAt: Date.now() + 60_000,
+      }));
+      const client = new OpenClamBridgeClient(
+        connectionId,
+        account.bridgeUrl,
+        account.adapterTokenFile,
+        account.stateFile,
+        {
+          readCredential: async () => "T".repeat(48),
+          readState: async () => structuredClone(persisted),
+          writeState: async (_path, next) => {
+            persisted = structuredClone(next);
+          },
+          createSocket: () => {
+            queueMicrotask(() => socket.open());
+            return socket as unknown as WebSocket;
+          },
+          reconnectDelay: () => 60_000,
+          uploadAttachment,
+          dispatchTurn: async ({ sink }) => {
+            await sink.activity("preparing_files");
+            if (capabilities?.includes("attachments-v1")) {
+              await sink.attachment({
+                fileName: "ara.png",
+                mediaType: "image/png",
+                buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+              });
+            }
+            await sink.completed(capabilities?.includes("attachments-v1")
+              ? "Created 1 file."
+              : "Legacy answer");
+          },
+        },
+      );
+      const attached = client.attach({
+        cfg: {},
+        accountId: "ara",
+        account,
+        abortSignal: controller.signal,
+        getStatus: () => ({ accountId: "ara" }),
+        setStatus: vi.fn(),
+      } as unknown as ChannelGatewayContext<ResolvedOpenClamAccount>);
+      await waitFor(() => socket.readyState === 1);
+      socket.receive(JSON.stringify({
+        v: 1,
+        kind: "turn.submit",
+        connectionId,
+        conversationId,
+        messageId: randomUUID(),
+        seq: 1,
+        sentAt: Date.now(),
+        payload: {
+          turnId,
+          accountId: "ara",
+          text: "Create a file",
+          ...(capabilities === undefined ? {} : { capabilities }),
+        },
+      }));
+      await waitFor(() => persisted.completedTurnIds.includes(turnId));
+      const frames = decode(socket);
+      controller.abort();
+      await attached;
+      return { frames, uploadAttachment };
+    }
+
+    const capable = await run(["activity-v1", "attachments-v1"]);
+    const kinds = capable.frames.map((frame) => frame.kind);
+    expect(kinds).toContain("assistant.activity.upsert");
+    expect(kinds.indexOf("assistant.attachment")).toBeGreaterThan(-1);
+    expect(kinds.indexOf("assistant.attachment")).toBeLessThan(
+      kinds.indexOf("assistant.completed"),
+    );
+    expect(capable.uploadAttachment).toHaveBeenCalledTimes(1);
+    const attachmentFrame = capable.frames.find((frame) =>
+      frame.kind === "assistant.attachment"
+    );
+    expect(attachmentFrame?.payload).toMatchObject({
+      turnId: expect.any(String),
+      attachmentId: expect.any(String),
+      fileName: "ara.png",
+      mediaType: "image/png",
+      byteCount: 8,
+      sha256: "a".repeat(64),
+    });
+    expect(Object.keys(attachmentFrame?.payload ?? {}).sort()).toEqual([
+      "attachmentId",
+      "byteCount",
+      "downloadPath",
+      "expiresAt",
+      "fileName",
+      "mediaType",
+      "sha256",
+      "turnId",
+    ]);
+    expect(attachmentFrame?.payload).not.toHaveProperty("v");
+    expect(JSON.stringify(capable.frames)).not.toContain("/private/");
+    expect(JSON.stringify(capable.frames)).not.toContain("file://");
+
+    const legacy = await run();
+    expect(legacy.frames.filter((frame) =>
+      frame.kind === "assistant.activity.upsert" ||
+      frame.kind === "assistant.activity.clear" ||
+      frame.kind === "assistant.attachment"
+    )).toHaveLength(0);
+    expect(legacy.uploadAttachment).not.toHaveBeenCalled();
+  });
 });

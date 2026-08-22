@@ -1,5 +1,6 @@
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { buildRuntimeAccountStatusSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import {
   applyOpenClamAccountConfig,
   getOpenClamConfig,
@@ -32,6 +33,7 @@ export function createOpenClamChannelBase(): OpenClamBase {
     capabilities: {
       chatTypes: ["direct"],
       blockStreaming: true,
+      media: true,
     },
     reload: { configPrefixes: ["channels.openclam", "bindings"] },
     configSchema: openClamPluginConfigSchema,
@@ -46,6 +48,7 @@ export function createOpenClamChannelBase(): OpenClamBase {
       inspectAccount: (cfg, accountId) => {
         const account = resolveOpenClamAccount(cfg, accountId);
         return {
+          accountId: account.accountId,
           enabled: account.enabled,
           configured: account.configured,
           tokenStatus: account.adapterTokenFile ? "file" : "missing",
@@ -120,14 +123,18 @@ export function createOpenClamChannelBase(): OpenClamBase {
         configured: account.configured,
         connected: snapshot.connected === true,
       }),
-      buildAccountSnapshot: ({ account }) => ({
-        accountId: account.accountId,
-        name: account.displayName,
-        enabled: account.enabled,
-        configured: account.configured,
-        baseUrl: account.bridgeUrl,
-        credentialSource: account.adapterTokenFile ? "file" : "missing",
-      }),
+      buildAccountSnapshot: ({ account, cfg, runtime, probe }) => {
+        const resolved = resolveOpenClamAccount(cfg, account.accountId);
+        return {
+          accountId: resolved.accountId,
+          name: resolved.displayName,
+          enabled: resolved.enabled,
+          configured: resolved.configured,
+          baseUrl: resolved.bridgeUrl,
+          credentialSource: resolved.adapterTokenFile ? "file" : "missing",
+          ...buildRuntimeAccountStatusSnapshot({ runtime, probe }),
+        };
+      },
     },
   };
 }

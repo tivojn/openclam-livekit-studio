@@ -11,6 +11,7 @@
 		03F4BB914198040E5590A90B /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A287448E84ACD6A8C56415B /* RootView.swift */; };
 		047A15CD57090ED21F384DA4 /* ScreenVoicePTTIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70C3729E5828F58D957F3EC5 /* ScreenVoicePTTIntent.swift */; };
 		07AD04BBD10E31E2D081C3CA /* LiveTalkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A301263A30EE57A7807848 /* LiveTalkTests.swift */; };
+		08F4B6DD43E9CDC48D2FAEB7 /* AgentConnectorArtifactService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EC2FB5E00BA1AA0283FC730 /* AgentConnectorArtifactService.swift */; };
 		090B896C110C954C9CA9BB35 /* AgentCommandCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FED0299EB8F29F000CAB6B56 /* AgentCommandCatalogTests.swift */; };
 		0A317EAA718906B62BFAF413 /* CaptainAyerAvatarStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04FDE776990744B476BF9B2 /* CaptainAyerAvatarStage.swift */; };
 		0C62433EAA8F108A6D78C44C /* LiveTalkSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2153C9971249BF69F3F6A0E /* LiveTalkSessionController.swift */; };
@@ -149,6 +150,7 @@
 		D201C001ECC8DC5FF32E7079 /* OpenClamAvatarCarouselLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178F26711C3AE985F5F3B1E5 /* OpenClamAvatarCarouselLayout.swift */; };
 		D221930FEAB3F4D1144D65BF /* ScreenContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0AC9D181F3A871AB81DA66B /* ScreenContextModels.swift */; };
 		D27ACDA474A63DA241096B59 /* OpenClamAvatarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EAAB33AAD7BE3F3FBC14557 /* OpenClamAvatarStore.swift */; };
+		D645043BF1462B3522B6A957 /* AgentConnectorArtifactThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6537729B850E38DBAB57D8F /* AgentConnectorArtifactThumbnailCache.swift */; };
 		D6F2763B5919C3C412AC781C /* CapabilitiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E8C3A7126F7FDF4796B888 /* CapabilitiesView.swift */; };
 		D75EABF4C76B91F53F350B49 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 537938234F1C1C22840F3CFA /* ZIPFoundation */; };
 		D7A0A2FB1AD3033B4478129E /* AttachmentPreparationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C017C2C540B23E8D12F1A71 /* AttachmentPreparationService.swift */; };
@@ -335,6 +337,7 @@
 		8BBC3FC29D1197887EF291B0 /* DeviceActionShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceActionShortcut.swift; sourceTree = "<group>"; };
 		8C7A2546723B5A45015AF9E7 /* CaptainAyerFaceReactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceReactionTests.swift; sourceTree = "<group>"; };
 		8E235549721689AFF0399FD9 /* AIProviderSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIProviderSettingsTests.swift; sourceTree = "<group>"; };
+		8EC2FB5E00BA1AA0283FC730 /* AgentConnectorArtifactService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnectorArtifactService.swift; sourceTree = "<group>"; };
 		9243F96877E4D994612FDA3A /* ScreenPTTService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPTTService.swift; sourceTree = "<group>"; };
 		928586A0D5C3E8C89AF5EC3D /* CaptainAyerFaceReactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceReactions.swift; sourceTree = "<group>"; };
 		9430AE28E95E970B2EE12B5D /* AppAliasSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAliasSettingsView.swift; sourceTree = "<group>"; };
@@ -396,6 +399,7 @@
 		E6601B958F0E45D033058BAC /* ScreenVoicePTTVAD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTVAD.swift; sourceTree = "<group>"; };
 		F01385E52A0F212F0CE089D1 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		F12F93E793FF5A134183C528 /* CaptainAyerFaceMirrorModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceMirrorModels.swift; sourceTree = "<group>"; };
+		F6537729B850E38DBAB57D8F /* AgentConnectorArtifactThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnectorArtifactThumbnailCache.swift; sourceTree = "<group>"; };
 		F9100BE4F25B68FD044463A9 /* EventKitAgentMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentMapper.swift; sourceTree = "<group>"; };
 		FA66D491F291D7F5D177966D /* OpenAIResponsesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesClient.swift; sourceTree = "<group>"; };
 		FD54C9DD4A4979F5A6147815 /* ContactEmailToolService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactEmailToolService.swift; sourceTree = "<group>"; };
@@ -709,6 +713,8 @@
 			children = (
 				0A006C4B551833C644FDCE8A /* AgentConnectionModel.swift */,
 				0C3AA4F557654DA917775DD7 /* AgentConnector.swift */,
+				8EC2FB5E00BA1AA0283FC730 /* AgentConnectorArtifactService.swift */,
+				F6537729B850E38DBAB57D8F /* AgentConnectorArtifactThumbnailCache.swift */,
 				9D0341D4975EFF707D9E4814 /* AgentConnectorModels.swift */,
 				20B259D0CDEF48344924AD57 /* AgentConnectorOutboxVault.swift */,
 				534AACE56CD13C5605E4F4F6 /* AgentConnectorPairingClient.swift */,
@@ -1121,6 +1127,8 @@
 				0EBF6278A3D3737BDEE1A686 /* AgentCommandCatalog.swift in Sources */,
 				D061ACF7B9BB0A7F715D754C /* AgentConnectionModel.swift in Sources */,
 				4E4D70BD01108AF73E48BA0D /* AgentConnector.swift in Sources */,
+				08F4B6DD43E9CDC48D2FAEB7 /* AgentConnectorArtifactService.swift in Sources */,
+				D645043BF1462B3522B6A957 /* AgentConnectorArtifactThumbnailCache.swift in Sources */,
 				628A942218A48398BFB7CEFB /* AgentConnectorModels.swift in Sources */,
 				9B43AF8FC16A2DFA155F73B5 /* AgentConnectorOutboxVault.swift in Sources */,
 				5C3009311D2EEC146C7FFAC5 /* AgentConnectorPairingClient.swift in Sources */,
@@ -1268,7 +1276,7 @@
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1353,7 +1361,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1371,7 +1379,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1444,7 +1452,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1466,7 +1474,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1506,7 +1514,7 @@
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1594,7 +1602,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1619,7 +1627,7 @@
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

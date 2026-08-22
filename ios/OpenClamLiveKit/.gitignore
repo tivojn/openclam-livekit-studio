@@ -1,3 +1,4 @@
 Config/LiveTalk.local.xcconfig
 Config/AgentConnector.local.xcconfig
 .derived-data-live-talk/
+.wrangler/

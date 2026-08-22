@@ -18,7 +18,8 @@
     "PENDING_FRAME_TTL_SECONDS": "900",
     "ACTIVE_TURN_IDLE_TTL_SECONDS": "900",
     "ACTIVE_TURN_MAX_DURATION_SECONDS": "3600",
-    "MAX_PENDING_FRAMES": "16"
+    "MAX_PENDING_FRAMES": "16",
+    "ATTACHMENT_TTL_SECONDS": "86400"
   },
   "durable_objects": {
     "bindings": [
@@ -29,6 +30,10 @@
       {
         "name": "CONNECTOR_SESSIONS",
         "class_name": "ConnectorSession"
+      },
+      {
+        "name": "ATTACHMENTS",
+        "class_name": "ConnectorAttachment"
       }
     ]
   },
@@ -36,6 +41,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["PairingCoordinator", "ConnectorSession"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ConnectorAttachment"]
     }
   ]
 }

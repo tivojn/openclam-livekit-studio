@@ -902,7 +902,7 @@ struct AvatarAgentEditorView: View {
         } header: {
             Text("Chat agent")
         } footer: {
-            Text("On iPhone uses this app’s saved language model and reviewed iPhone tools. OpenClaw sends text only to the selected remote agent—no attachments, local tools, provider keys, or automatic fallback. Changing this choice starts a new chat; old chats keep their original route.")
+            Text("On iPhone uses this app’s saved language model and reviewed iPhone tools. OpenClaw sends your typed or dictated text to the selected remote agent—never screenshots, local tools, provider keys, or an automatic fallback. Its replies can show live progress and include verified generated files. Changing this choice starts a new chat; old chats keep their original route.")
         }
     }
 

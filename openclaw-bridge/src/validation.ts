@@ -1,6 +1,8 @@
 import { invalidRequest } from "./errors";
 import type {
   AccountDescriptor,
+  ActivityStatus,
+  ConnectorCapability,
   ConnectorFrame,
   CreatePairingRequest,
   FrameKind,
@@ -10,18 +12,43 @@ import type {
 export const CREATE_BODY_LIMIT_BYTES = 16_384;
 export const REDEEM_BODY_LIMIT_BYTES = 2_048;
 export const FRAME_LIMIT_BYTES = 65_536;
+export const MAX_ATTACHMENT_BYTES = 33_554_432;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const PAIRING_CODE = /^OC-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
 const SAFE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/;
+const DOWNLOAD_PATH = /^\/v1\/connectors\/([0-9a-f-]{36})\/attachments\/([0-9a-f-]{36})$/;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
+const FILE_NAME_SEPARATOR = /[\\/]/u;
+const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
+  "activity-v1",
+  "attachments-v1",
+]);
+const ACTIVITY_STATUSES = new Set<ActivityStatus>([
+  "thinking",
+  "planning",
+  "searching",
+  "reading",
+  "editing",
+  "running_action",
+  "using_tools",
+  "creating_media",
+  "preparing_files",
+  "waiting_for_approval",
+  "finalizing",
+]);
 const FRAME_KINDS = new Set<FrameKind>([
   "ack",
   "heartbeat",
   "turn.submit",
   "turn.accepted",
   "assistant.delta",
+  "assistant.activity.upsert",
+  "assistant.activity.clear",
+  "assistant.attachment",
   "assistant.completed",
   "turn.cancel",
   "turn.error",
@@ -72,6 +99,18 @@ function uuid(value: unknown): string {
 function positiveInteger(value: unknown): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) invalidRequest();
   return value as number;
+}
+
+function parseCapabilities(value: unknown): ConnectorCapability[] {
+  if (!Array.isArray(value) || value.length > 2) invalidRequest();
+  const capabilities = value.map((item) => {
+    if (typeof item !== "string" || !CONNECTOR_CAPABILITIES.has(item as ConnectorCapability)) {
+      invalidRequest();
+    }
+    return item as ConnectorCapability;
+  });
+  if (new Set(capabilities).size !== capabilities.length) invalidRequest();
+  return capabilities;
 }
 
 function nonnegativeInteger(value: unknown): number {
@@ -145,13 +184,16 @@ function parsePayload(
     return { ackSeq: positiveInteger(value.ackSeq) };
   }
   if (kind === "turn.submit") {
-    exactKeys(value, ["turnId", "accountId", "text"]);
+    exactKeys(value, ["turnId", "accountId", "text"], ["capabilities"]);
     const accountId = boundedString(value.accountId, 1, 64);
     if (!IDENTIFIER.test(accountId)) invalidRequest();
     return {
       turnId: uuid(value.turnId),
       accountId,
       text: boundedString(value.text, 1, 32_000, true),
+      ...(value.capabilities === undefined
+        ? {}
+        : { capabilities: parseCapabilities(value.capabilities) }),
     };
   }
   if (kind === "assistant.delta") {
@@ -169,6 +211,69 @@ function parsePayload(
     return {
       turnId: uuid(value.turnId),
       text: boundedString(value.text, 1, 32_000, true),
+    };
+  }
+  if (kind === "assistant.activity.upsert") {
+    exactKeys(value, ["turnId", "revision", "status"]);
+    const revision = positiveInteger(value.revision);
+    if (
+      revision > 100_000 ||
+      typeof value.status !== "string" ||
+      !ACTIVITY_STATUSES.has(value.status as ActivityStatus)
+    ) {
+      invalidRequest();
+    }
+    return {
+      turnId: uuid(value.turnId),
+      revision,
+      status: value.status,
+    };
+  }
+  if (kind === "assistant.activity.clear") {
+    exactKeys(value, ["turnId", "revision"]);
+    const revision = positiveInteger(value.revision);
+    if (revision > 100_000) invalidRequest();
+    return { turnId: uuid(value.turnId), revision };
+  }
+  if (kind === "assistant.attachment") {
+    exactKeys(value, [
+      "turnId",
+      "attachmentId",
+      "fileName",
+      "mediaType",
+      "byteCount",
+      "sha256",
+      "downloadPath",
+      "expiresAt",
+    ]);
+    const attachmentId = uuid(value.attachmentId);
+    const fileName = boundedString(value.fileName, 1, 160);
+    const mediaType = boundedString(value.mediaType, 3, 127);
+    const byteCount = positiveInteger(value.byteCount);
+    const sha256 = boundedString(value.sha256, 64, 64);
+    const downloadPath = boundedString(value.downloadPath, 100, 100);
+    const expiresAt = nonnegativeInteger(value.expiresAt);
+    const match = DOWNLOAD_PATH.exec(downloadPath);
+    if (
+      byteCount > 33_554_432 ||
+      FILE_NAME_SEPARATOR.test(fileName) ||
+      fileName === "." ||
+      fileName === ".." ||
+      !MEDIA_TYPE.test(mediaType) ||
+      !SHA256.test(sha256) ||
+      match?.[2] !== attachmentId
+    ) {
+      invalidRequest();
+    }
+    return {
+      turnId: uuid(value.turnId),
+      attachmentId,
+      fileName,
+      mediaType,
+      byteCount,
+      sha256,
+      downloadPath,
+      expiresAt,
     };
   }
   if (kind === "turn.error") {
@@ -227,4 +332,71 @@ export function bearerToken(request: Request): string | null {
 
 export function uuidPath(value: string): boolean {
   return UUID.test(value);
+}
+
+export type AttachmentUploadInput = {
+  attachmentId: string;
+  conversationId: string;
+  turnId: string;
+  fileName: string;
+  mediaType: string;
+  byteCount: number;
+  sha256: string;
+};
+
+function decodeBase64UrlUtf8(value: string): string {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) invalidRequest();
+  try {
+    const normalized = value.replace(/-/gu, "+").replace(/_/gu, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const bytes = Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    invalidRequest();
+  }
+}
+
+export function parseAttachmentUpload(
+  request: Request,
+  attachmentIdPath: string,
+): AttachmentUploadInput {
+  const conversationId = uuid(request.headers.get("X-OpenClam-Conversation-Id"));
+  const turnId = uuid(request.headers.get("X-OpenClam-Turn-Id"));
+  const fileName = boundedString(
+    decodeBase64UrlUtf8(
+      boundedString(request.headers.get("X-OpenClam-File-Name-B64"), 1, 1_024),
+    ),
+    1,
+    160,
+  );
+  const mediaType = boundedString(request.headers.get("Content-Type"), 3, 127);
+  const sha256 = boundedString(request.headers.get("X-OpenClam-SHA256"), 64, 64);
+  const contentLength = request.headers.get("Content-Length");
+  if (
+    !uuidPath(attachmentIdPath) ||
+    FILE_NAME_SEPARATOR.test(fileName) ||
+    fileName === "." ||
+    fileName === ".." ||
+    !MEDIA_TYPE.test(mediaType) ||
+    !SHA256.test(sha256) ||
+    contentLength === null ||
+    !/^[1-9][0-9]*$/u.test(contentLength) ||
+    request.headers.has("Content-Encoding") ||
+    request.body === null
+  ) {
+    invalidRequest();
+  }
+  const byteCount = Number(contentLength);
+  if (!Number.isSafeInteger(byteCount) || byteCount > MAX_ATTACHMENT_BYTES) {
+    invalidRequest();
+  }
+  return {
+    attachmentId: attachmentIdPath,
+    conversationId,
+    turnId,
+    fileName,
+    mediaType,
+    byteCount,
+    sha256,
+  };
 }

@@ -1,6 +1,30 @@
 import { resolveInboundRouteEnvelopeBuilderWithRuntime } from "openclaw/plugin-sdk/inbound-envelope";
 import { MAX_TEXT_LENGTH, truncateUnicode } from "./protocol.js";
+import { loadOpenClamMedia, MAX_ATTACHMENT_BYTES_PER_TURN, MAX_ATTACHMENTS_PER_TURN, uniqueMediaSources, } from "./media.js";
 import { getOpenClamRuntime } from "./runtime.js";
+const HIDDEN_REPLY_KEYS = [
+    "isReasoning",
+    "isCommentary",
+    "isStatusNotice",
+    "isCompactionNotice",
+    "isFallbackNotice",
+];
+function toolActivity(name) {
+    const normalized = name?.toLowerCase() ?? "";
+    if (/(search|browser|web|query)/u.test(normalized))
+        return "searching";
+    if (/(read|find|list|view|inspect|open)/u.test(normalized))
+        return "reading";
+    if (/(edit|write|patch|replace|update)/u.test(normalized))
+        return "editing";
+    if (/(image|video|audio|media|render|selfie|photo)/u.test(normalized)) {
+        return "creating_media";
+    }
+    if (/(file|document|pdf|ppt|slide|sheet|archive|export)/u.test(normalized)) {
+        return "preparing_files";
+    }
+    return "running_action";
+}
 function mergeObservedText(current, incoming, delta) {
     if (!incoming)
         return current;
@@ -22,6 +46,37 @@ function mergeFinalText(current, incoming) {
     if (current.endsWith(trimmed))
         return current;
     return `${current}\n\n${trimmed}`;
+}
+function replaceExactMediaReferences(text, replacements) {
+    let safe = text;
+    for (const [source, replacement] of replacements) {
+        if (source)
+            safe = safe.split(source).join(replacement);
+    }
+    return safe;
+}
+function containsPrivatePathReference(text) {
+    return /(?:file:\/\/|(?:^|[^A-Za-z0-9_])[A-Za-z]:[\\/]|\\\\[^\s\\]+\\[^\s\\]+|(?:^|[^A-Za-z0-9_./-])\/(?!\/)[^\s)\]}>]+)/u
+        .test(text);
+}
+function redactPrivatePathReferences(text) {
+    return text
+        .replace(/file:\/\/[^\s)\]}>]+/gu, "attached file")
+        .replace(/(^|[^A-Za-z0-9_])[A-Za-z]:[\\/][^\s)\]}>]+/gu, (_match, prefix) => `${prefix}attached file`)
+        .replace(/\\\\[^\s\\]+\\[^\s)\]}>]+/gu, "attached file")
+        .replace(/(^|[^A-Za-z0-9_./-])\/(?!\/)[^\s)\]}>]+/gu, (_match, prefix) => `${prefix}attached file`);
+}
+function rememberMediaReplacement(replacements, source, replacement) {
+    replacements.set(source, replacement);
+    try {
+        const parsed = new URL(source);
+        if (parsed.protocol === "file:") {
+            replacements.set(decodeURIComponent(parsed.pathname), replacement);
+        }
+    }
+    catch {
+        // Non-URL local media references are already stored exactly above.
+    }
 }
 export async function dispatchOpenClamTurn(params) {
     const channelRuntime = getOpenClamRuntime().channel;
@@ -72,6 +127,15 @@ export async function dispatchOpenClamTurn(params) {
     });
     let observed = "";
     let finalObserved = "";
+    let attachmentCount = 0;
+    let attachmentBytes = 0;
+    let legacyMediaOmitted = false;
+    let deliveryFailure;
+    const stagedAttachments = [];
+    const deliveredSources = new Set();
+    const mediaReferenceReplacements = new Map();
+    const supportsAttachments = frame.payload.capabilities?.includes("attachments-v1") === true;
+    const loadMedia = params.loadMedia ?? loadOpenClamMedia;
     await channelRuntime.inbound.dispatchReply({
         cfg: params.ctx.cfg,
         channel: "openclam",
@@ -84,9 +148,56 @@ export async function dispatchOpenClamTurn(params) {
         dispatchReplyWithBufferedBlockDispatcher: channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher,
         delivery: {
             deliver: async (payload) => {
+                if (deliveryFailure !== undefined)
+                    throw new Error(deliveryFailure);
+                if (payload?.isError === true) {
+                    deliveryFailure = "upstream_reply_error";
+                    stagedAttachments.length = 0;
+                    throw new Error(deliveryFailure);
+                }
+                if (payload?.sensitiveMedia === true) {
+                    deliveryFailure = "sensitive_media_unsupported";
+                    stagedAttachments.length = 0;
+                    throw new Error(deliveryFailure);
+                }
+                if (HIDDEN_REPLY_KEYS.some((key) => payload?.[key] === true) ||
+                    payload?.ttsSupplement !== undefined) {
+                    return;
+                }
+                const sources = uniqueMediaSources(payload?.mediaUrl, payload?.mediaUrls)
+                    .filter((source) => !deliveredSources.has(source));
                 const delivered = payload?.text?.trim() ?? "";
                 if (delivered) {
                     finalObserved = truncateUnicode(mergeFinalText(finalObserved, delivered), MAX_TEXT_LENGTH);
+                }
+                if (sources.length === 0)
+                    return;
+                if (!supportsAttachments) {
+                    legacyMediaOmitted = true;
+                    for (const source of sources) {
+                        deliveredSources.add(source);
+                        rememberMediaReplacement(mediaReferenceReplacements, source, "attached file");
+                    }
+                    return;
+                }
+                for (const source of sources) {
+                    if (attachmentCount >= MAX_ATTACHMENTS_PER_TURN) {
+                        throw new Error("attachment_limit");
+                    }
+                    await params.sink.activity("preparing_files");
+                    const attachment = await loadMedia({
+                        cfg: params.ctx.cfg,
+                        agentId: route.agentId,
+                        source,
+                    });
+                    if (attachmentBytes + attachment.buffer.byteLength > MAX_ATTACHMENT_BYTES_PER_TURN) {
+                        throw new Error("attachment_limit");
+                    }
+                    stagedAttachments.push(attachment);
+                    deliveredSources.add(source);
+                    rememberMediaReplacement(mediaReferenceReplacements, source, attachment.fileName);
+                    attachmentCount += 1;
+                    attachmentBytes += attachment.buffer.byteLength;
                 }
             },
             onError: () => {
@@ -95,11 +206,43 @@ export async function dispatchOpenClamTurn(params) {
         },
         replyOptions: {
             abortSignal: params.signal,
+            suppressDefaultToolProgressMessages: true,
+            allowToolLifecycleWhenProgressHidden: true,
+            forceToolResultProgress: true,
+            onReplyStart: async () => params.sink.activity("thinking"),
+            onPlanUpdate: async () => params.sink.activity("planning"),
+            onToolStart: async (payload) => params.sink.activity(toolActivity(payload.name)),
+            onItemEvent: async (payload) => {
+                const status = `${payload.status ?? ""} ${payload.phase ?? ""}`.toLowerCase();
+                await params.sink.activity(status.includes("approval") || status.includes("waiting")
+                    ? "waiting_for_approval"
+                    : toolActivity(payload.name ?? payload.kind));
+            },
+            onApprovalEvent: async () => params.sink.activity("waiting_for_approval"),
+            onCommandOutput: async () => params.sink.activity("running_action"),
+            onPatchSummary: async () => params.sink.activity("editing"),
+            onCompactionStart: async () => params.sink.activity("thinking"),
+            onCompactionEnd: async () => params.sink.activity("finalizing"),
+            onAssistantMessageStart: async () => params.sink.activity("finalizing"),
             onPartialReply: async (payload) => {
-                const next = mergeObservedText(observed, payload.text ?? "", payload.delta);
+                const partial = payload;
+                if (deliveryFailure !== undefined ||
+                    partial.isError === true ||
+                    partial.sensitiveMedia === true ||
+                    HIDDEN_REPLY_KEYS.some((key) => partial[key] === true) ||
+                    partial.ttsSupplement !== undefined) {
+                    return;
+                }
+                for (const source of uniqueMediaSources(undefined, payload.mediaUrls)) {
+                    rememberMediaReplacement(mediaReferenceReplacements, source, "attached file");
+                }
+                const next = replaceExactMediaReferences(mergeObservedText(observed, payload.text ?? "", payload.delta), mediaReferenceReplacements);
                 if (next === observed)
                     return;
                 observed = truncateUnicode(next, MAX_TEXT_LENGTH);
+                if (containsPrivatePathReference(observed))
+                    return;
+                await params.sink.clearActivity();
                 await params.sink.partial(observed);
             },
         },
@@ -110,7 +253,20 @@ export async function dispatchOpenClamTurn(params) {
             },
         },
     });
-    const completed = truncateUnicode((finalObserved || observed).trim(), MAX_TEXT_LENGTH);
+    if (deliveryFailure !== undefined)
+        throw new Error(deliveryFailure);
+    for (const attachment of stagedAttachments) {
+        await params.sink.activity("preparing_files");
+        await params.sink.attachment(attachment);
+    }
+    let completedBase = redactPrivatePathReferences(replaceExactMediaReferences(finalObserved || observed, mediaReferenceReplacements));
+    if (legacyMediaOmitted) {
+        completedBase = mergeFinalText(completedBase, "Update OpenClam to receive this file.");
+    }
+    const fallback = attachmentCount > 0
+        ? `Created ${attachmentCount} ${attachmentCount === 1 ? "file" : "files"}.`
+        : "";
+    const completed = truncateUnicode((completedBase || fallback).trim(), MAX_TEXT_LENGTH);
     if (!completed)
         throw new Error("empty_reply");
     await params.sink.completed(completed);

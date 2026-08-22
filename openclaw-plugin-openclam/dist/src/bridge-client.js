@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { uploadOpenClamAttachment } from "./attachment-upload.js";
 import { readAdapterCredential, readAdapterState, writeAdapterState, } from "./credentials.js";
 import { dispatchOpenClamTurn } from "./inbound.js";
 import { createFrame, encodeFrame, encodeFrameWithTextBudget, MAX_TEXT_LENGTH, parseBridgeInbound, safeTurnErrorPayload, truncateUnicode, } from "./protocol.js";
@@ -9,12 +10,15 @@ const defaultDependencies = {
     createSocket: (url, options) => new WebSocket(url, options),
     dispatchTurn: dispatchOpenClamTurn,
     reconnectDelay: (attempt) => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)),
+    uploadAttachment: uploadOpenClamAttachment,
 };
 const DELTA_INTERVAL_MS = 200;
 const MAX_DELTA_FRAMES_PER_TURN = 12;
 const MAX_OUTBOUND_QUEUE = 64;
 const MAX_ACTIVE_TURNS = 8;
 const RECOVERY_MARKER_TTL_MS = 15 * 60 * 1_000;
+const ACTIVITY_INTERVAL_MS = 750;
+const MAX_ACTIVITY_FRAMES_PER_TURN = 32;
 function buildEventsUrl(bridgeUrl, connectionId) {
     const base = new URL(bridgeUrl);
     if (base.username || base.password || base.search || base.hash || base.pathname !== "/") {
@@ -71,6 +75,7 @@ export class OpenClamBridgeClient {
     relayOutbox = new Map();
     turnTasks = new Set();
     deltaTasks = new Set();
+    activityTasks = new Set();
     deps;
     state;
     token = "";
@@ -129,6 +134,8 @@ export class OpenClamBridgeClient {
         for (const active of this.activeTurns.values()) {
             if (active.deltaTimer)
                 clearTimeout(active.deltaTimer);
+            if (active.activityTimer)
+                clearTimeout(active.activityTimer);
             active.controller.abort();
         }
         for (const pending of this.relayOutbox.values())
@@ -136,6 +143,7 @@ export class OpenClamBridgeClient {
         this.relayOutbox.clear();
         await Promise.all([...this.turnTasks]);
         await Promise.all([...this.deltaTasks]);
+        await Promise.all([...this.activityTasks]);
         await this.recoveryTask.catch(() => undefined);
         await this.stateTask.catch(() => undefined);
     }
@@ -196,6 +204,7 @@ export class OpenClamBridgeClient {
                 this.flushPendingTransmissions();
                 this.detach(this.send("heartbeat", { lastReceivedSeq: this.requireState().lastReceivedSeq }, undefined, undefined, false), "heartbeat_failed");
                 this.detach(this.flushActiveDeltas(), "delta_flush_failed");
+                this.flushActiveActivities();
                 this.detach(this.recoverInterruptedTurns(), "recovery_failed");
                 heartbeat = setInterval(() => {
                     if (socket.readyState === WebSocket.OPEN)
@@ -232,6 +241,9 @@ export class OpenClamBridgeClient {
                     if (active.deltaTimer)
                         clearTimeout(active.deltaTimer);
                     active.deltaTimer = undefined;
+                    if (active.activityTimer)
+                        clearTimeout(active.activityTimer);
+                    active.activityTimer = undefined;
                 }
                 this.updateAllStatuses({ connected: false, lastDisconnect: { at: Date.now(), status: code } });
                 this.log("info", `disconnected code=${code}`);
@@ -332,6 +344,9 @@ export class OpenClamBridgeClient {
             lastDeltaText: "",
             lastDeltaAt: 0,
             deltaCount: 0,
+            activityRevision: 0,
+            activityCount: 0,
+            lastActivityFrameAt: 0,
         };
         this.activeTurns.set(turnId, active);
         await this.mutateState((next) => {
@@ -403,10 +418,21 @@ export class OpenClamBridgeClient {
                 frame,
                 signal: active.controller.signal,
                 sink: {
+                    activity: async (status) => {
+                        await this.offerActivity(active, status);
+                    },
+                    clearActivity: async () => {
+                        await this.offerActivity(active, null);
+                    },
                     partial: async (text) => {
                         if (active.terminal || active.controller.signal.aborted)
                             return;
                         await this.offerDelta(active, truncateUnicode(text, MAX_TEXT_LENGTH));
+                    },
+                    attachment: async (attachment) => {
+                        if (active.terminal || active.controller.signal.aborted)
+                            return;
+                        await this.deliverAttachment(active, attachment);
                     },
                     completed: async (text) => {
                         if (active.terminal || active.controller.signal.aborted)
@@ -435,6 +461,46 @@ export class OpenClamBridgeClient {
                         code,
                         message: "This agent mapping changed. Pair OpenClam again.",
                         retryable: false,
+                    });
+                }
+                else if (code === "sensitive_media_unsupported") {
+                    active.terminalPersisted = await this.beginTerminal(active, "turn.error", safeTurnErrorPayload({
+                        turnId: frame.payload.turnId,
+                        code,
+                        message: "Sensitive live-only media cannot be saved in OpenClam.",
+                        retryable: false,
+                    }), {
+                        code,
+                        message: "Sensitive live-only media cannot be saved in OpenClam.",
+                        retryable: false,
+                    });
+                }
+                else if (code === "attachment_limit" ||
+                    code === "attachment_size_invalid" ||
+                    code === "attachment_type_unsupported") {
+                    active.terminalPersisted = await this.beginTerminal(active, "turn.error", safeTurnErrorPayload({
+                        turnId: frame.payload.turnId,
+                        code,
+                        message: "This generated file cannot be delivered to OpenClam.",
+                        retryable: false,
+                    }), {
+                        code,
+                        message: "This generated file cannot be delivered to OpenClam.",
+                        retryable: false,
+                    });
+                }
+                else if (code === "attachment_upload_failed" ||
+                    code === "invalid_attachment_response" ||
+                    code === "attachment_delivery_failed") {
+                    active.terminalPersisted = await this.beginTerminal(active, "turn.error", safeTurnErrorPayload({
+                        turnId: frame.payload.turnId,
+                        code: "attachment_delivery_failed",
+                        message: "The generated file could not be delivered. Please try again.",
+                        retryable: true,
+                    }), {
+                        code: "attachment_delivery_failed",
+                        message: "The generated file could not be delivered. Please try again.",
+                        retryable: true,
                     });
                 }
                 else if (active.controller.signal.aborted) {
@@ -466,6 +532,7 @@ export class OpenClamBridgeClient {
         }
         finally {
             this.clearDeltaTimer(active);
+            this.clearActivityTimer(active);
             if (active.terminalTask) {
                 active.terminalPersisted = await active.terminalTask;
             }
@@ -591,6 +658,122 @@ export class OpenClamBridgeClient {
             clearTimeout(active.deltaTimer);
         active.deltaTimer = undefined;
         active.pendingDelta = undefined;
+    }
+    supports(active, capability) {
+        return active.frame.payload.capabilities?.includes(capability) === true;
+    }
+    clearActivityTimer(active) {
+        if (active.activityTimer)
+            clearTimeout(active.activityTimer);
+        active.activityTimer = undefined;
+        active.pendingActivityStatus = undefined;
+    }
+    async offerActivity(active, status) {
+        if (!this.supports(active, "activity-v1") ||
+            active.terminal ||
+            active.controller.signal.aborted ||
+            active.activityCount >= MAX_ACTIVITY_FRAMES_PER_TURN ||
+            status === active.pendingActivityStatus ||
+            (active.pendingActivityStatus === undefined && status === active.lastActivityStatus)) {
+            return;
+        }
+        active.pendingActivityStatus = status;
+        this.scheduleActivity(active);
+    }
+    scheduleActivity(active) {
+        if (this.lifecycle.signal.aborted ||
+            active.terminal ||
+            active.controller.signal.aborted ||
+            active.activityCount >= MAX_ACTIVITY_FRAMES_PER_TURN ||
+            active.pendingActivityStatus === undefined ||
+            active.activityTimer ||
+            active.activityTask ||
+            this.socket?.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        const remaining = ACTIVITY_INTERVAL_MS - (Date.now() - active.lastActivityFrameAt);
+        if (remaining <= 0) {
+            this.detach(this.flushActivity(active), "activity_flush_failed");
+            return;
+        }
+        active.activityTimer = setTimeout(() => {
+            active.activityTimer = undefined;
+            this.detach(this.flushActivity(active), "activity_flush_failed");
+        }, remaining);
+    }
+    flushActivity(active) {
+        if (active.activityTask)
+            return active.activityTask;
+        const task = this.performActivityFlush(active);
+        active.activityTask = task;
+        this.activityTasks.add(task);
+        const settled = () => {
+            if (active.activityTask === task)
+                active.activityTask = undefined;
+            this.activityTasks.delete(task);
+            if (active.pendingActivityStatus !== undefined)
+                this.scheduleActivity(active);
+        };
+        void task.then(settled, settled);
+        return task;
+    }
+    async performActivityFlush(active) {
+        if (this.lifecycle.signal.aborted ||
+            active.terminal ||
+            active.controller.signal.aborted ||
+            active.activityCount >= MAX_ACTIVITY_FRAMES_PER_TURN ||
+            this.socket?.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        const status = active.pendingActivityStatus;
+        if (status === undefined)
+            return;
+        active.pendingActivityStatus = undefined;
+        const revision = active.activityRevision + 1;
+        const persisted = await this.sendAwaitingRelayPersistence(status === null ? "assistant.activity.clear" : "assistant.activity.upsert", status === null
+            ? { turnId: active.frame.payload.turnId, revision }
+            : { turnId: active.frame.payload.turnId, revision, status }, active.frame.conversationId, undefined, active.controller.signal);
+        if (persisted) {
+            active.activityRevision = revision;
+            active.activityCount += 1;
+            active.lastActivityStatus = status;
+            active.lastActivityFrameAt = Date.now();
+        }
+        else if (!active.terminal && !active.controller.signal.aborted) {
+            active.pendingActivityStatus ??= status;
+        }
+    }
+    flushActiveActivities() {
+        for (const active of this.activeTurns.values()) {
+            this.scheduleActivity(active);
+        }
+    }
+    async deliverAttachment(active, attachment) {
+        if (!this.supports(active, "attachments-v1")) {
+            throw new Error("attachment_delivery_failed");
+        }
+        const frame = active.frame;
+        const uploaded = await this.deps.uploadAttachment({
+            bridgeUrl: this.bridgeUrl,
+            connectionId: this.connectionId,
+            token: this.token,
+            conversationId: frame.conversationId,
+            turnId: frame.payload.turnId,
+            attachment,
+            signal: active.controller.signal,
+        });
+        const persisted = await this.sendAwaitingRelayPersistence("assistant.attachment", {
+            turnId: frame.payload.turnId,
+            attachmentId: uploaded.attachmentId,
+            fileName: uploaded.fileName,
+            mediaType: uploaded.mediaType,
+            byteCount: uploaded.byteCount,
+            sha256: uploaded.sha256,
+            downloadPath: uploaded.downloadPath,
+            expiresAt: uploaded.expiresAt,
+        }, frame.conversationId, undefined, active.controller.signal);
+        if (!persisted)
+            throw new Error("attachment_delivery_failed");
     }
     async offerDelta(active, text) {
         if (!text ||

@@ -532,12 +532,16 @@ actor ConversationHistoryStore {
             return value.range(of: pattern, options: .regularExpression) == nil ? nil : value
         }
         let byteCount = attachment.sourceByteCount.flatMap { $0 >= 0 ? $0 : nil }
+        let connectorArtifact = attachment.connectorArtifact.flatMap {
+            try? $0.validated()
+        }
         return ConversationAttachmentDescriptor(
             id: attachment.id,
             kind: attachment.kind,
             displayName: displayName,
             mimeType: mimeType,
-            sourceByteCount: byteCount
+            sourceByteCount: byteCount,
+            connectorArtifact: connectorArtifact
         )
     }
 

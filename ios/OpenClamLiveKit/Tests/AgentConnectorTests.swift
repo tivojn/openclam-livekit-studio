@@ -1,3 +1,5 @@
+import CryptoKit
+import UIKit
 import XCTest
 @testable import OpenClamLiveKit
 
@@ -191,7 +193,10 @@ final class AgentConnectorTests: XCTestCase {
         for try await event in stream { events.append(event) }
         XCTAssertEqual(
             events,
-            [.accepted, .cumulativeText("Hel"), .cumulativeText("Hello"), .completed("Hello")]
+            [
+                .submissionSaved, .accepted, .cumulativeText("Hel"),
+                .cumulativeText("Hello"), .completed("Hello"),
+            ]
         )
     }
 
@@ -389,7 +394,7 @@ final class AgentConnectorTests: XCTestCase {
 
         XCTAssertEqual(
             events,
-            [.accepted, .cumulativeText("Hel"), .completed("Hello")]
+            [.submissionSaved, .accepted, .cumulativeText("Hel"), .completed("Hello")]
         )
         XCTAssertEqual(sockets.connectionCount, 2)
         let sent = sockets.sentFrames
@@ -461,7 +466,7 @@ final class AgentConnectorTests: XCTestCase {
             events.append(event)
         }
 
-        XCTAssertEqual(events, [.accepted, .completed("Stored once")])
+        XCTAssertEqual(events, [.submissionSaved, .accepted, .completed("Stored once")])
         XCTAssertEqual(sockets.connectionCount, 2)
         let submitTexts = sockets.sentTexts.filter { text in
             guard let data = text.data(using: .utf8),
@@ -545,7 +550,7 @@ final class AgentConnectorTests: XCTestCase {
             events.append(event)
         }
 
-        XCTAssertEqual(events, [.accepted, .completed("Completed")])
+        XCTAssertEqual(events, [.submissionSaved, .accepted, .completed("Completed")])
         XCTAssertEqual(sockets.connectionCount, 2)
         XCTAssertEqual(
             sockets.sentFrames.filter { $0.kind == "turn.submit" }.count,
@@ -705,6 +710,7 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertEqual(
             events,
             [
+                .submissionSaved,
                 .accepted,
                 .cumulativeText("Current partial"),
                 .completed("Current final"),
@@ -917,7 +923,7 @@ final class AgentConnectorTests: XCTestCase {
             events.append(event)
         }
 
-        XCTAssertEqual(events, [.accepted, .completed("Recovered")])
+        XCTAssertEqual(events, [.submissionSaved, .accepted, .completed("Recovered")])
         XCTAssertEqual(
             sockets.sentFrames.filter { $0.kind == "turn.submit" }.map(\.seq),
             [2]
@@ -1014,7 +1020,7 @@ final class AgentConnectorTests: XCTestCase {
             events.append(event)
         }
 
-        XCTAssertEqual(events, [.accepted, .completed("Ran once")])
+        XCTAssertEqual(events, [.submissionSaved, .accepted, .completed("Ran once")])
         let firstSubmit = try XCTUnwrap(firstSockets.sentTexts.first)
         let replayedSubmit = try XCTUnwrap(secondSockets.sentTexts.first)
         XCTAssertEqual(firstSubmit, replayedSubmit)
@@ -1383,6 +1389,31 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertThrowsError(
             try AgentConnectorTokenValidator.normalized(String(repeating: "+", count: 48))
         )
+
+        let attachmentWithSensitivity: [String: Any] = [
+            "v": 1,
+            "kind": "assistant.attachment",
+            "connectionId": UUID().uuidString.lowercased(),
+            "conversationId": UUID().uuidString.lowercased(),
+            "messageId": UUID().uuidString.lowercased(),
+            "seq": 1,
+            "sentAt": 1,
+            "payload": [
+                "turnId": UUID().uuidString.lowercased(),
+                "attachmentId": UUID().uuidString.lowercased(),
+                "fileName": "private.png",
+                "mediaType": "image/png",
+                "byteCount": 1,
+                "sha256": String(repeating: "a", count: 64),
+                "downloadPath": "/v1/connectors/x/attachments/y",
+                "expiresAt": 2,
+                "sensitiveMedia": true,
+            ],
+        ]
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            AgentConnectorWireFrame.self,
+            from: JSONSerialization.data(withJSONObject: attachmentWithSensitivity)
+        ))
     }
 
     func testRemoteConversationRoutesPronunciationAndMapsTextOnlyToConnector() async throws {
@@ -1478,6 +1509,1107 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertFalse(submitted.isEligibleForAIContext)
     }
 
+    func testNewSubmitAdvertisesSafeActivityAndAttachmentCapabilities() async throws {
+        let suite = "AgentConnectorTests.capabilities.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connectionID = UUID()
+        let conversationID = UUID()
+        let turnID = UUID()
+        let accepted = try encodedFrame(
+            kind: "turn.accepted",
+            seq: 1,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased())
+        )
+        let activity = try encodedFrame(
+            kind: "assistant.activity.upsert",
+            seq: 2,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(
+                turnID: turnID.uuidString.lowercased(),
+                revision: 1,
+                status: AgentConnectorActivityStatus.preparingFiles.rawValue
+            )
+        )
+        let clear = try encodedFrame(
+            kind: "assistant.activity.clear",
+            seq: 3,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased(), revision: 2)
+        )
+        let completed = try encodedFrame(
+            kind: "assistant.completed",
+            seq: 4,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased(), text: "Ready")
+        )
+        let sockets = ScriptedSocketConnector(scripts: [[
+            .text(accepted), .text(activity), .text(clear), .text(completed),
+        ]])
+        let connector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: .init(defaults: defaults, storagePrefix: "cursor.\(UUID())"),
+            outboxVault: InMemoryAgentConnectorOutboxVault(),
+            socketConnector: sockets,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0)
+        )
+        var events: [AgentConnectorStreamEvent] = []
+        for try await event in connector.streamTurn(
+            .init(
+                connectionID: connectionID,
+                conversationID: conversationID,
+                turnID: turnID,
+                accountID: "primary",
+                text: "Create the report"
+            ),
+            clientToken: String(repeating: "t", count: 48)
+        ) {
+            events.append(event)
+        }
+        XCTAssertEqual(
+            sockets.sentFrames.first(where: { $0.kind == "turn.submit" })?.payload.capabilities,
+            ["activity-v1", "attachments-v1"]
+        )
+        XCTAssertEqual(events, [
+            .submissionSaved,
+            .accepted,
+            .activity(.init(revision: 1, status: .preparingFiles)),
+            .activityCleared(revision: 2),
+            .completed("Ready"),
+        ])
+    }
+
+    func testAcceptedSavedBeforeAckRelaunchAcknowledgesReplayAndCompletes() async throws {
+        let suite = "AgentConnectorTests.accepted-before-ack.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connectionID = UUID()
+        let conversationID = UUID()
+        let turnID = UUID()
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        var pending = try makePendingTurn(
+            connectionID: connectionID,
+            conversationID: conversationID,
+            turnID: turnID,
+            createdAt: 1_000
+        )
+        pending.turnAccepted = true
+        try outbox.save(pending)
+        let accepted = try encodedFrame(
+            kind: "turn.accepted",
+            seq: 1,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased())
+        )
+        let completed = try encodedFrame(
+            kind: "assistant.completed",
+            seq: 2,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased(), text: "Recovered")
+        )
+        let sockets = ScriptedSocketConnector(scripts: [[
+            .text(accepted), .text(completed),
+        ]])
+        let connector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: .init(defaults: defaults, storagePrefix: "cursor.\(UUID())"),
+            outboxVault: outbox,
+            socketConnector: sockets,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
+            nowMilliseconds: { 1_000 }
+        )
+        var events: [AgentConnectorStreamEvent] = []
+        for try await event in connector.streamTurn(
+            pending.request,
+            clientToken: String(repeating: "t", count: 48)
+        ) {
+            events.append(event)
+        }
+        XCTAssertEqual(events, [.submissionSaved, .completed("Recovered")])
+        XCTAssertEqual(
+            sockets.sentFrames.compactMap { $0.kind == "ack" ? $0.payload.ackSeq : nil },
+            [1, 2]
+        )
+    }
+
+    func testActivitySavedBeforeAckRelaunchAcknowledgesMatchingReplayOnce() async throws {
+        let suite = "AgentConnectorTests.activity-before-ack.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connectionID = UUID()
+        let conversationID = UUID()
+        let turnID = UUID()
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        let persistedActivity = try AgentConnectorActivityUpdate(
+            revision: 1,
+            status: .preparingFiles
+        ).validated()
+        var pending = try makePendingTurn(
+            connectionID: connectionID,
+            conversationID: conversationID,
+            turnID: turnID,
+            createdAt: 1_000
+        )
+        pending.turnAccepted = true
+        pending.activity = persistedActivity
+        try outbox.save(pending)
+        let cursor = AgentConnectorCursorStore(
+            defaults: defaults,
+            storagePrefix: "cursor.\(UUID())"
+        )
+        cursor.acknowledgeInbound(1, connectionID: connectionID)
+        let replayedActivity = try encodedFrame(
+            kind: "assistant.activity.upsert",
+            seq: 2,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(
+                turnID: turnID.uuidString.lowercased(),
+                revision: 1,
+                status: AgentConnectorActivityStatus.preparingFiles.rawValue
+            )
+        )
+        let completed = try encodedFrame(
+            kind: "assistant.completed",
+            seq: 3,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased(), text: "Recovered")
+        )
+        let sockets = ScriptedSocketConnector(scripts: [[
+            .text(replayedActivity), .text(completed),
+        ]])
+        let connector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: cursor,
+            outboxVault: outbox,
+            socketConnector: sockets,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
+            nowMilliseconds: { 1_000 }
+        )
+        var events: [AgentConnectorStreamEvent] = []
+        for try await event in connector.streamTurn(
+            pending.request,
+            clientToken: String(repeating: "t", count: 48)
+        ) {
+            events.append(event)
+        }
+        XCTAssertEqual(events, [
+            .submissionSaved, .activity(persistedActivity), .completed("Recovered"),
+        ])
+        XCTAssertEqual(
+            sockets.sentFrames.compactMap { $0.kind == "ack" ? $0.payload.ackSeq : nil },
+            [2, 3]
+        )
+    }
+
+    func testPersistedActivityReplayWithSameRevisionDifferentStatusFailsClosed() async throws {
+        let suite = "AgentConnectorTests.activity-replay-mismatch.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connectionID = UUID()
+        let conversationID = UUID()
+        let turnID = UUID()
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        var pending = try makePendingTurn(
+            connectionID: connectionID,
+            conversationID: conversationID,
+            turnID: turnID,
+            createdAt: 1_000
+        )
+        pending.turnAccepted = true
+        pending.activity = try AgentConnectorActivityUpdate(
+            revision: 1,
+            status: .planning
+        ).validated()
+        try outbox.save(pending)
+        let mismatch = try encodedFrame(
+            kind: "assistant.activity.upsert",
+            seq: 1,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(
+                turnID: turnID.uuidString.lowercased(),
+                revision: 1,
+                status: AgentConnectorActivityStatus.searching.rawValue
+            )
+        )
+        let sockets = ScriptedSocketConnector(scripts: [[.text(mismatch)]])
+        let connector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: .init(defaults: defaults, storagePrefix: "cursor.\(UUID())"),
+            outboxVault: outbox,
+            socketConnector: sockets,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
+            nowMilliseconds: { 1_000 }
+        )
+        var events: [AgentConnectorStreamEvent] = []
+        do {
+            for try await event in connector.streamTurn(
+                pending.request,
+                clientToken: String(repeating: "t", count: 48)
+            ) {
+                events.append(event)
+            }
+            XCTFail("A same-revision activity with different state must fail closed")
+        } catch {
+            XCTAssertEqual(error as? AgentConnectorError, .invalidFrame)
+        }
+        XCTAssertEqual(events, [.submissionSaved, .activity(pending.activity!)])
+        XCTAssertFalse(sockets.sentFrames.contains { $0.kind == "ack" })
+    }
+
+    func testAttachmentPersistsBeforeAckAndSurvivesRelaunchToCompletion() async throws {
+        let suite = "AgentConnectorTests.attachment-relaunch.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now: Int64 = 1_000
+        let connectionID = UUID()
+        let conversationID = UUID()
+        let turnID = UUID()
+        let metadata = makeAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: turnID,
+            expiresAt: now + 60_000
+        )
+        let accepted = try encodedFrame(
+            kind: "turn.accepted",
+            seq: 1,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased())
+        )
+        let attachment = try makeAttachmentFrame(
+            seq: 2,
+            conversationID: conversationID,
+            metadata: metadata
+        )
+        let recorder = ConnectorTestRecorder()
+        let outbox = RecordingAgentConnectorOutboxVault(recorder: recorder)
+        let artifacts = RecordingArtifactService(recorder: recorder)
+        let cursor = AgentConnectorCursorStore(
+            defaults: defaults,
+            storagePrefix: "cursor.\(UUID())"
+        )
+        let request = AgentConnectorTurnRequest(
+            connectionID: connectionID,
+            conversationID: conversationID,
+            turnID: turnID,
+            accountID: "primary",
+            text: "Create an image"
+        )
+        let firstSockets = ScriptedSocketConnector(
+            scripts: [[.text(accepted), .text(attachment), .disconnect]],
+            recorder: recorder
+        )
+        let firstConnector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: cursor,
+            outboxVault: outbox,
+            socketConnector: firstSockets,
+            artifactService: artifacts,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
+            nowMilliseconds: { now }
+        )
+        var firstEvents: [AgentConnectorStreamEvent] = []
+        do {
+            for try await event in firstConnector.streamTurn(
+                request,
+                clientToken: String(repeating: "t", count: 48)
+            ) {
+                firstEvents.append(event)
+            }
+            XCTFail("The first process should stop after the verified attachment")
+        } catch {
+            XCTAssertEqual(error as? AgentConnectorError, .connectionUnavailable)
+        }
+        XCTAssertEqual(firstEvents, [
+            .submissionSaved, .accepted,
+            .attachment(try artifacts.storedAttachment(for: metadata)),
+        ])
+        let operations = recorder.operations
+        let downloadIndex = try XCTUnwrap(operations.firstIndex(of: "download"))
+        let persistIndex = try XCTUnwrap(operations.firstIndex(of: "persist-attachment"))
+        let ackIndex = try XCTUnwrap(operations.firstIndex(of: "ack-2"))
+        XCTAssertLessThan(downloadIndex, persistIndex)
+        XCTAssertLessThan(persistIndex, ackIndex)
+        XCTAssertEqual(
+            try outbox.load(connectionID: connectionID, turnID: turnID)?.attachments?.count,
+            1
+        )
+
+        let completed = try encodedFrame(
+            kind: "assistant.completed",
+            seq: 3,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(turnID: turnID.uuidString.lowercased(), text: "Created 1 file.")
+        )
+        let relaunched = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: cursor,
+            outboxVault: outbox,
+            socketConnector: ScriptedSocketConnector(scripts: [[.text(completed)]]),
+            artifactService: artifacts,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
+            nowMilliseconds: { now }
+        )
+        var relaunchedEvents: [AgentConnectorStreamEvent] = []
+        for try await event in relaunched.streamTurn(
+            request,
+            clientToken: String(repeating: "t", count: 48)
+        ) {
+            relaunchedEvents.append(event)
+        }
+        XCTAssertEqual(relaunchedEvents, [
+            .submissionSaved,
+            .attachment(try artifacts.storedAttachment(for: metadata)),
+            .completed("Created 1 file."),
+        ])
+        XCTAssertEqual(artifacts.downloadCount, 1)
+        XCTAssertEqual(
+            try outbox.load(connectionID: connectionID, turnID: turnID)?.terminal,
+            .completed("Created 1 file.")
+        )
+    }
+
+    func testCancellationRacePreservesAttachmentWhenCompletionWins() async throws {
+        let fixture = try makeCancellationAttachmentFixture(terminalKind: .completed)
+        try await fixture.connector.cancelTurn(fixture.request, clientToken: fixture.token)
+        let pending = try XCTUnwrap(
+            fixture.outbox.load(
+                connectionID: fixture.request.connectionID,
+                turnID: fixture.request.turnID
+            )
+        )
+        XCTAssertEqual(pending.attachments?.count, 1)
+        XCTAssertEqual(pending.terminal, .completed("Created 1 file."))
+        XCTAssertEqual(fixture.artifacts.downloadCount, 1)
+        XCTAssertTrue(fixture.artifacts.deletedReferences.isEmpty)
+    }
+
+    func testCancellationRaceDeletesAttachmentWhenTerminalErrorWins() async throws {
+        let fixture = try makeCancellationAttachmentFixture(terminalKind: .failed)
+        try await fixture.connector.cancelTurn(fixture.request, clientToken: fixture.token)
+        let pending = try XCTUnwrap(
+            fixture.outbox.load(
+                connectionID: fixture.request.connectionID,
+                turnID: fixture.request.turnID
+            )
+        )
+        XCTAssertNil(pending.attachments)
+        XCTAssertEqual(
+            pending.terminal,
+            .failed(code: "generation_failed", message: "File generation failed.")
+        )
+        XCTAssertEqual(fixture.artifacts.downloadCount, 1)
+        XCTAssertEqual(fixture.artifacts.deletedReferences.count, 1)
+    }
+
+    func testPreOutboxHistoryFailureRetainsDraftAndLeavesNoUserBubble() async throws {
+        let suite = "AgentConnectorTests.pre-outbox-history.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let gate = ConnectorHistoryFailureGate()
+        let history = ConversationHistoryController(store: .init(
+            fileURL: directory.appendingPathComponent("history.json"),
+            failureInjector: { try gate.check($0) }
+        ))
+        let conversation = ConversationModel(preferences: defaults, historyController: history)
+        let historyIsReady = await conversation.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        let threadID = try XCTUnwrap(history.selectedThreadID)
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "settings.\(UUID())",
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        let binding = makeBinding()
+        configuration.registerThread(
+            threadID,
+            for: configuration.activeAvatarID,
+            route: .remote(binding)
+        )
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID())",
+            origin: nil,
+            connector: StubAgentConnector(),
+            outboxVault: outbox
+        )
+        gate.operation = .persist
+        var submissionWasSaved = false
+        await conversation.submit(
+            "Keep this draft",
+            aiConfiguration: configuration,
+            agentConnections: connections,
+            onSubmissionSaved: { submissionWasSaved = true }
+        )
+        XCTAssertFalse(submissionWasSaved)
+        XCTAssertFalse(conversation.messages.contains { $0.text == "Keep this draft" })
+        XCTAssertTrue(try outbox.loadAll().isEmpty)
+        XCTAssertEqual(conversation.remoteAgentActivity?.title, "Message not sent")
+    }
+
+    func testPendingTurnBlocksNewDraftAndThreadDeletionWithoutDroppingOutbox() async throws {
+        let suite = "AgentConnectorTests.pending-delete.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let history = ConversationHistoryController(
+            store: .init(fileURL: directory.appendingPathComponent("history.json"))
+        )
+        let conversation = ConversationModel(preferences: defaults, historyController: history)
+        let historyIsReady = await conversation.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        let threadID = try XCTUnwrap(history.selectedThreadID)
+        let binding = makeBinding()
+        let pending = try makePendingTurn(
+            connectionID: binding.connectionID,
+            conversationID: threadID,
+            turnID: UUID(),
+            createdAt: 1_000
+        )
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        try outbox.save(pending)
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID())",
+            origin: nil,
+            outboxVault: outbox
+        )
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "settings.\(UUID())",
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        configuration.registerThread(
+            threadID,
+            for: configuration.activeAvatarID,
+            route: .remote(binding)
+        )
+        var submissionWasSaved = false
+        await conversation.submit(
+            "Do not erase this draft",
+            aiConfiguration: configuration,
+            agentConnections: connections,
+            onSubmissionSaved: { submissionWasSaved = true }
+        )
+        XCTAssertFalse(submissionWasSaved)
+        XCTAssertFalse(conversation.messages.contains { $0.text == "Do not erase this draft" })
+        XCTAssertNotNil(try connections.threadDeletionBlockReason(for: threadID))
+        XCTAssertNotNil(try outbox.load(
+            connectionID: pending.connectionID,
+            turnID: pending.turnID
+        ))
+    }
+
+    func testRelaunchCommitsDurableTerminalWithVerifiedAttachmentIntoOriginalChat() async throws {
+        let suite = "AgentConnectorTests.terminal-attachment-history.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let historyURL = directory.appendingPathComponent("history.json")
+        let history = ConversationHistoryController(store: .init(fileURL: historyURL))
+        let conversation = ConversationModel(preferences: defaults, historyController: history)
+        let ready = await conversation.ensureHistoryReady()
+        XCTAssertTrue(ready)
+        let threadID = try XCTUnwrap(history.selectedThreadID)
+        let connectionID = UUID()
+        let turnID = UUID()
+        let metadata = makeAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: turnID,
+            expiresAt: 60_000
+        )
+        let artifacts = RecordingArtifactService()
+        var pending = try makePendingTurn(
+            connectionID: connectionID,
+            conversationID: threadID,
+            turnID: turnID,
+            createdAt: 1_000
+        )
+        pending.turnAccepted = true
+        pending.attachments = [try artifacts.storedAttachment(for: metadata)]
+        pending.terminal = .completed("Created 1 file.")
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        try outbox.save(pending)
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher"
+        )
+        let tokenVault = InMemoryAgentConnectorTokenVault()
+        let origin = try AgentConnectorOrigin("https://bridge.example.com")
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID())",
+            origin: origin,
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            connector: OpenClawAgentConnector(
+                origin: origin,
+                outboxVault: outbox,
+                socketConnector: ScriptedSocketConnector(scripts: []),
+                artifactService: artifacts,
+                nowMilliseconds: { 1_000 }
+            ),
+            artifactService: artifacts,
+            tokenVault: tokenVault,
+            outboxVault: outbox
+        )
+        let paired = try await connections.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "settings.\(UUID())",
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        configuration.registerThread(
+            threadID,
+            for: configuration.activeAvatarID,
+            route: .remote(paired.binding(for: account))
+        )
+        await conversation.recoverPendingRemoteTurnIfNeeded(
+            aiConfiguration: configuration,
+            agentConnections: connections
+        )
+        XCTAssertNil(try outbox.load(connectionID: connectionID, turnID: turnID))
+        let reply = try XCTUnwrap(conversation.messages.first(where: {
+            $0.id == pending.assistantMessageID
+        }))
+        XCTAssertEqual(reply.text, "Created 1 file.")
+        XCTAssertEqual(reply.attachments.first?.connectorArtifact, metadata.conversationReference)
+        let disk = ConversationHistoryController(store: .init(fileURL: historyURL))
+        _ = await disk.start()
+        XCTAssertEqual(
+            disk.selectedMessages.first(where: { $0.id == pending.assistantMessageID })?
+                .attachments.first?.connectorArtifact,
+            metadata.conversationReference
+        )
+    }
+
+    func testExpiredRecoveryDeletesVerifiedPendingArtifactsBeforeClearingOutbox() async throws {
+        let suite = "AgentConnectorTests.expired-artifacts.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let history = ConversationHistoryController(
+            store: .init(fileURL: directory.appendingPathComponent("history.json"))
+        )
+        let conversation = ConversationModel(preferences: defaults, historyController: history)
+        let ready = await conversation.ensureHistoryReady()
+        XCTAssertTrue(ready)
+        let threadID = try XCTUnwrap(history.selectedThreadID)
+        let connectionID = UUID()
+        let turnID = UUID()
+        let artifacts = RecordingArtifactService()
+        let metadata = makeAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: turnID,
+            expiresAt: 2_000_000
+        )
+        var pending = try makePendingTurn(
+            connectionID: connectionID,
+            conversationID: threadID,
+            turnID: turnID,
+            createdAt: 1_000
+        )
+        pending.attachments = [try artifacts.storedAttachment(for: metadata)]
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        try outbox.save(pending)
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher"
+        )
+        let origin = try AgentConnectorOrigin("https://bridge.example.com")
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID())",
+            origin: origin,
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            connector: OpenClawAgentConnector(
+                origin: origin,
+                outboxVault: outbox,
+                socketConnector: ScriptedSocketConnector(scripts: []),
+                artifactService: artifacts,
+                nowMilliseconds: {
+                    1_000 + AgentConnectorPendingTurn.maximumLifetimeMilliseconds
+                }
+            ),
+            artifactService: artifacts,
+            tokenVault: InMemoryAgentConnectorTokenVault(),
+            outboxVault: outbox
+        )
+        let paired = try await connections.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "settings.\(UUID())",
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        configuration.registerThread(
+            threadID,
+            for: configuration.activeAvatarID,
+            route: .remote(paired.binding(for: account))
+        )
+        await conversation.recoverPendingRemoteTurnIfNeeded(
+            aiConfiguration: configuration,
+            agentConnections: connections
+        )
+        XCTAssertNil(try outbox.load(connectionID: connectionID, turnID: turnID))
+        XCTAssertEqual(artifacts.deletedReferences, [metadata.conversationReference])
+        XCTAssertTrue(conversation.messages.contains {
+            $0.id == pending.assistantMessageID
+                && $0.text.contains("recovery window expired")
+        })
+    }
+
+    func testDeliveredArtifactsSurviveAgeDisconnectAndAllThreadReconciliation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AgentConnectorArtifactStore(rootURL: directory)
+        let connectionID = UUID()
+        let first = try persistTestArtifact(
+            store: store,
+            connectionID: connectionID,
+            attachmentID: UUID(),
+            bytes: Data("first".utf8),
+            storedAt: 1
+        )
+        let second = try persistTestArtifact(
+            store: store,
+            connectionID: connectionID,
+            attachmentID: UUID(),
+            bytes: Data("second".utf8),
+            storedAt: 1
+        )
+        let service = OpenClawAgentConnectorArtifactService(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            store: store
+        )
+        let firstMessage = ConversationMessage(
+            role: .assistant,
+            text: "First thread",
+            attachments: [conversationDescriptor(first)]
+        )
+        let secondMessage = ConversationMessage(
+            role: .assistant,
+            text: "Second thread",
+            attachments: [conversationDescriptor(second)]
+        )
+        let defaults = UserDefaults(suiteName: "AgentConnectorTests.artifacts.\(UUID())")!
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher"
+        )
+        let model = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID())",
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            revocationService: StubRevocationService(shouldFail: false),
+            connector: StubAgentConnector(),
+            artifactService: service,
+            tokenVault: InMemoryAgentConnectorTokenVault(),
+            outboxVault: InMemoryAgentConnectorOutboxVault()
+        )
+        _ = try await model.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        await model.reconcileArtifacts(referencedBy: [firstMessage, secondMessage])
+        var firstURL = await service.storedURL(for: first.metadata.conversationReference)
+        var secondURL = await service.storedURL(for: second.metadata.conversationReference)
+        XCTAssertNotNil(firstURL)
+        XCTAssertNotNil(secondURL)
+        await service.pruneInvalidArtifacts()
+        firstURL = await service.storedURL(for: first.metadata.conversationReference)
+        XCTAssertNotNil(firstURL)
+        await model.deleteArtifacts(referencedBy: [firstMessage])
+        firstURL = await service.storedURL(for: first.metadata.conversationReference)
+        secondURL = await service.storedURL(for: second.metadata.conversationReference)
+        XCTAssertNil(firstURL)
+        XCTAssertNotNil(secondURL)
+        try await model.disconnect(connectionID)
+        secondURL = await service.storedURL(for: second.metadata.conversationReference)
+        XCTAssertNotNil(secondURL)
+    }
+
+    func testArtifactDownloadWithoutContentLengthUsesExactFileVerification() async throws {
+        let fixture = try makeArtifactDownloadFixture(contentLengthOffset: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let stored = try await fixture.service.downloadAndStore(
+            fixture.metadata,
+            clientToken: String(repeating: "t", count: 48)
+        )
+
+        let storedURLValue = await fixture.service.storedURL(
+            for: stored.metadata.conversationReference
+        )
+        let storedURL = try XCTUnwrap(storedURLValue)
+        XCTAssertEqual(try Data(contentsOf: storedURL), fixture.bytes)
+    }
+
+    func testArtifactDownloadRejectsPresentMismatchedContentLength() async throws {
+        let fixture = try makeArtifactDownloadFixture(contentLengthOffset: 1)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        do {
+            _ = try await fixture.service.downloadAndStore(
+                fixture.metadata,
+                clientToken: String(repeating: "t", count: 48)
+            )
+            XCTFail("A present mismatched Content-Length must fail closed")
+        } catch {
+            XCTAssertEqual(error as? AgentConnectorError, .attachmentIntegrityFailed)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.artifactsRoot.path))
+    }
+
+    func testPersistedGeneratedImageGetsBoundedRelaunchThumbnail() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("large.jpg")
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2_400, height: 1_200))
+        let image = renderer.image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 2_400, height: 1_200))
+        }
+        let sourceData = try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
+        try sourceData.write(to: source)
+        let firstCache = AgentConnectorArtifactThumbnailCache()
+        let firstData = await firstCache.thumbnailData(
+            for: source,
+            cacheKey: "relaunch-thumbnail"
+        )
+        let first = try XCTUnwrap(firstData)
+        let relaunchedCache = AgentConnectorArtifactThumbnailCache()
+        let relaunchedData = await relaunchedCache.thumbnailData(
+            for: source,
+            cacheKey: "relaunch-thumbnail"
+        )
+        let relaunched = try XCTUnwrap(relaunchedData)
+        let thumbnail = try XCTUnwrap(UIImage(data: relaunched))
+        XCTAssertLessThanOrEqual(max(thumbnail.size.width, thumbnail.size.height), 320)
+        XCTAssertLessThan(relaunched.count, 2 * 1_024 * 1_024)
+        XCTAssertEqual(first, relaunched)
+    }
+
+    private enum CancellationAttachmentTerminalKind {
+        case completed
+        case failed
+    }
+
+    private struct CancellationAttachmentFixture {
+        let connector: OpenClawAgentConnector
+        let request: AgentConnectorTurnRequest
+        let token: String
+        let outbox: InMemoryAgentConnectorOutboxVault
+        let artifacts: RecordingArtifactService
+    }
+
+    private func makeCancellationAttachmentFixture(
+        terminalKind: CancellationAttachmentTerminalKind
+    ) throws -> CancellationAttachmentFixture {
+        let now: Int64 = 1_000
+        let connectionID = UUID()
+        let conversationID = UUID()
+        let turnID = UUID()
+        let metadata = makeAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: turnID,
+            expiresAt: now + 60_000
+        )
+        var pending = try makePendingTurn(
+            connectionID: connectionID,
+            conversationID: conversationID,
+            turnID: turnID,
+            createdAt: now
+        )
+        pending.turnAccepted = true
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        try outbox.save(pending)
+        let suite = "AgentConnectorTests.cancel-attachment.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let cursor = AgentConnectorCursorStore(
+            defaults: defaults,
+            storagePrefix: "cursor.\(UUID())"
+        )
+        XCTAssertEqual(cursor.nextOutbound(connectionID: connectionID), 1)
+        let attachment = try makeAttachmentFrame(
+            seq: 1,
+            conversationID: conversationID,
+            metadata: metadata
+        )
+        let terminal: String
+        switch terminalKind {
+        case .completed:
+            terminal = try encodedFrame(
+                kind: "assistant.completed",
+                seq: 2,
+                connectionID: connectionID,
+                conversationID: conversationID,
+                payload: .init(
+                    turnID: turnID.uuidString.lowercased(),
+                    text: "Created 1 file."
+                )
+            )
+        case .failed:
+            terminal = try encodedFrame(
+                kind: "turn.error",
+                seq: 2,
+                connectionID: connectionID,
+                conversationID: conversationID,
+                payload: .init(
+                    turnID: turnID.uuidString.lowercased(),
+                    code: "generation_failed",
+                    message: "File generation failed.",
+                    retryable: false
+                )
+            )
+        }
+        let artifacts = RecordingArtifactService()
+        let connector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: cursor,
+            outboxVault: outbox,
+            socketConnector: ScriptedSocketConnector(scripts: [[
+                .text(attachment), .text(terminal),
+            ]]),
+            artifactService: artifacts,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
+            nowMilliseconds: { now }
+        )
+        return .init(
+            connector: connector,
+            request: pending.request,
+            token: String(repeating: "t", count: 48),
+            outbox: outbox,
+            artifacts: artifacts
+        )
+    }
+
+    private func makePendingTurn(
+        connectionID: UUID,
+        conversationID: UUID,
+        turnID: UUID,
+        createdAt: Int64
+    ) throws -> AgentConnectorPendingTurn {
+        let messageID = UUID()
+        let userMessageID = UUID()
+        let assistantMessageID = UUID()
+        let userText = "Saved remote message"
+        let encodedText = try encodedFrame(
+            kind: "turn.submit",
+            seq: 1,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            messageID: messageID,
+            payload: .init(
+                turnID: turnID.uuidString.lowercased(),
+                accountID: "primary",
+                capabilities: ["activity-v1", "attachments-v1"],
+                text: userText
+            )
+        )
+        return try AgentConnectorPendingTurn(
+            v: 1,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            turnID: turnID,
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher",
+            userMessageID: userMessageID,
+            assistantMessageID: assistantMessageID,
+            userText: userText,
+            createdAtMilliseconds: createdAt,
+            expiresAtMilliseconds: createdAt
+                + AgentConnectorPendingTurn.maximumLifetimeMilliseconds,
+            submitFrame: .init(sequence: 1, messageID: messageID, text: encodedText),
+            submitDurablyPersisted: true,
+            turnAccepted: false,
+            cancelFrame: nil,
+            terminal: nil
+        ).validated()
+    }
+
+    private func makeAttachmentMetadata(
+        connectionID: UUID,
+        turnID: UUID,
+        attachmentID: UUID = UUID(),
+        expiresAt: Int64
+    ) -> AgentConnectorAttachmentMetadata {
+        .init(
+            connectionID: connectionID,
+            turnID: turnID,
+            attachmentID: attachmentID,
+            fileName: "generated.png",
+            mediaType: "image/png",
+            byteCount: 4,
+            sha256: String(repeating: "a", count: 64),
+            expiresAtMilliseconds: expiresAt
+        )
+    }
+
+    private func makeAttachmentFrame(
+        seq: Int,
+        conversationID: UUID,
+        metadata: AgentConnectorAttachmentMetadata
+    ) throws -> String {
+        try encodedFrame(
+            kind: "assistant.attachment",
+            seq: seq,
+            connectionID: metadata.connectionID,
+            conversationID: conversationID,
+            payload: .init(
+                turnID: metadata.turnID.uuidString.lowercased(),
+                attachmentID: metadata.attachmentID.uuidString.lowercased(),
+                fileName: metadata.fileName,
+                mediaType: metadata.mediaType,
+                byteCount: metadata.byteCount,
+                sha256: metadata.sha256,
+                downloadPath: metadata.downloadPath,
+                expiresAt: metadata.expiresAtMilliseconds
+            )
+        )
+    }
+
+    private func makeArtifactDownloadFixture(
+        contentLengthOffset: Int?
+    ) throws -> ArtifactDownloadFixture {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("download.jpeg")
+        let bytes = Data("verified jpeg fixture".utf8)
+        try bytes.write(to: source)
+        let connectionID = UUID()
+        let attachmentID = UUID()
+        let metadata = AgentConnectorAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: UUID(),
+            attachmentID: attachmentID,
+            fileName: "ara.jpeg",
+            mediaType: "image/jpeg",
+            byteCount: bytes.count,
+            sha256: SHA256.hash(data: bytes)
+                .map { String(format: "%02x", $0) }
+                .joined(),
+            expiresAtMilliseconds: 60_000
+        )
+        let origin = try AgentConnectorOrigin("https://bridge.example.com")
+        let artifactsRoot = directory.appendingPathComponent("artifacts", isDirectory: true)
+        let contentLength = contentLengthOffset.map { Int64(bytes.count + $0) }
+        let service = OpenClawAgentConnectorArtifactService(
+            origin: origin,
+            transport: FixedArtifactTransport(transfer: .init(
+                temporaryURL: source,
+                responseURL: origin.attachmentURL(
+                    connectionID: connectionID,
+                    attachmentID: attachmentID
+                ),
+                statusCode: 200,
+                contentType: metadata.mediaType,
+                contentLength: contentLength
+            )),
+            store: AgentConnectorArtifactStore(rootURL: artifactsRoot),
+            nowMilliseconds: { 1_000 }
+        )
+        return .init(
+            directory: directory,
+            artifactsRoot: artifactsRoot,
+            bytes: bytes,
+            metadata: metadata,
+            service: service
+        )
+    }
+
+    private func persistTestArtifact(
+        store: AgentConnectorArtifactStore,
+        connectionID: UUID,
+        attachmentID: UUID,
+        bytes: Data,
+        storedAt: Int64
+    ) throws -> AgentConnectorStoredAttachment {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try bytes.write(to: temporary)
+        let sha = SHA256.hash(data: bytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let metadata = AgentConnectorAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: UUID(),
+            attachmentID: attachmentID,
+            fileName: "result.bin",
+            mediaType: "application/octet-stream",
+            byteCount: bytes.count,
+            sha256: sha,
+            expiresAtMilliseconds: 10_000
+        )
+        return try store.persist(
+            temporaryURL: temporary,
+            metadata: metadata,
+            storedAtMilliseconds: storedAt
+        )
+    }
+
+    private func conversationDescriptor(
+        _ stored: AgentConnectorStoredAttachment
+    ) -> ConversationAttachmentDescriptor {
+        .init(
+            id: stored.metadata.attachmentID,
+            kind: .file,
+            displayName: stored.metadata.fileName,
+            mimeType: stored.metadata.mediaType,
+            sourceByteCount: stored.metadata.byteCount,
+            connectorArtifact: stored.metadata.conversationReference
+        )
+    }
+
     private func makeBinding() -> AvatarAgentConnectorBinding {
         .init(
             connectorID: .openClaw,
@@ -1533,6 +2665,134 @@ final class AgentConnectorTests: XCTestCase {
     }
 }
 
+private struct InjectedConnectorHistoryFailure: Error {}
+
+private struct ArtifactDownloadFixture {
+    let directory: URL
+    let artifactsRoot: URL
+    let bytes: Data
+    let metadata: AgentConnectorAttachmentMetadata
+    let service: OpenClawAgentConnectorArtifactService
+}
+
+private struct FixedArtifactTransport: AgentConnectorArtifactTransporting {
+    let transfer: AgentConnectorArtifactTransfer
+
+    func download(_ request: URLRequest) async throws -> AgentConnectorArtifactTransfer {
+        transfer
+    }
+}
+
+private final class ConnectorHistoryFailureGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedOperation: ConversationHistoryStore.IOOperation?
+
+    var operation: ConversationHistoryStore.IOOperation? {
+        get { lock.withLock { storedOperation } }
+        set { lock.withLock { storedOperation = newValue } }
+    }
+
+    func check(_ operation: ConversationHistoryStore.IOOperation) throws {
+        if lock.withLock({ storedOperation == operation }) {
+            throw InjectedConnectorHistoryFailure()
+        }
+    }
+}
+
+private final class ConnectorTestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+
+    var operations: [String] { lock.withLock { values } }
+
+    func record(_ value: String) {
+        lock.withLock { values.append(value) }
+    }
+}
+
+private final class RecordingAgentConnectorOutboxVault:
+    AgentConnectorOutboxVault,
+    @unchecked Sendable {
+    private let storage = InMemoryAgentConnectorOutboxVault()
+    private let recorder: ConnectorTestRecorder
+
+    init(recorder: ConnectorTestRecorder) {
+        self.recorder = recorder
+    }
+
+    func save(_ turn: AgentConnectorPendingTurn) throws {
+        try storage.save(turn)
+        if turn.attachments?.isEmpty == false {
+            recorder.record("persist-attachment")
+        }
+    }
+
+    func load(connectionID: UUID, turnID: UUID) throws -> AgentConnectorPendingTurn? {
+        try storage.load(connectionID: connectionID, turnID: turnID)
+    }
+
+    func loadAll() throws -> [AgentConnectorPendingTurn] {
+        try storage.loadAll()
+    }
+
+    func delete(connectionID: UUID, turnID: UUID) throws {
+        try storage.delete(connectionID: connectionID, turnID: turnID)
+    }
+}
+
+private final class RecordingArtifactService:
+    AgentConnectorArtifactServicing,
+    @unchecked Sendable {
+    private let lock = NSLock()
+    private let recorder: ConnectorTestRecorder?
+    private var downloads = 0
+    private var deleted: [ConversationConnectorArtifactReference] = []
+
+    init(recorder: ConnectorTestRecorder? = nil) {
+        self.recorder = recorder
+    }
+
+    var downloadCount: Int { lock.withLock { downloads } }
+    var deletedReferences: [ConversationConnectorArtifactReference] {
+        lock.withLock { deleted }
+    }
+
+    func storedAttachment(
+        for metadata: AgentConnectorAttachmentMetadata
+    ) throws -> AgentConnectorStoredAttachment {
+        try AgentConnectorStoredAttachment(
+            metadata: metadata,
+            assetKey: metadata.connectionID.uuidString.lowercased()
+                + "/" + metadata.attachmentID.uuidString.lowercased()
+                + "/content.png"
+        ).validated()
+    }
+
+    func downloadAndStore(
+        _ metadata: AgentConnectorAttachmentMetadata,
+        clientToken: String
+    ) async throws -> AgentConnectorStoredAttachment {
+        _ = try AgentConnectorTokenValidator.normalized(clientToken)
+        lock.withLock { downloads += 1 }
+        recorder?.record("download")
+        return try storedAttachment(for: metadata)
+    }
+
+    func storedURL(for reference: ConversationConnectorArtifactReference) async -> URL? {
+        nil
+    }
+
+    func deleteArtifacts(_ references: [ConversationConnectorArtifactReference]) async {
+        lock.withLock { deleted.append(contentsOf: references) }
+    }
+
+    func deleteArtifacts(connectionID: UUID) async {}
+    func pruneInvalidArtifacts() async {}
+    func reconcileArtifacts(
+        retaining references: [ConversationConnectorArtifactReference]
+    ) async {}
+}
+
 private struct StubPairingService: AgentConnectorPairingServicing {
     let response: AgentConnectorPairingRedeemResponse
 
@@ -1551,6 +2811,7 @@ private struct StubAgentConnector: AgentConnector {
         clientToken: String
     ) -> AsyncThrowingStream<AgentConnectorStreamEvent, Error> {
         AsyncThrowingStream { continuation in
+            continuation.yield(.submissionSaved)
             continuation.yield(.accepted)
             continuation.yield(.cumulativeText("Hel"))
             continuation.yield(.cumulativeText("Hello"))
@@ -1609,11 +2870,16 @@ private enum ScriptedSocketStep {
 private final class ScriptedSocketConnector: AgentConnectorSocketConnecting, @unchecked Sendable {
     private let lock = NSLock()
     private var scripts: [[ScriptedSocketStep]]
+    private let recorder: ConnectorTestRecorder?
     private var sockets: [ScriptedSocket] = []
     private var capturedRequests: [URLRequest] = []
 
-    init(scripts: [[ScriptedSocketStep]]) {
+    init(
+        scripts: [[ScriptedSocketStep]],
+        recorder: ConnectorTestRecorder? = nil
+    ) {
         self.scripts = scripts
+        self.recorder = recorder
     }
 
     var connectionCount: Int { lock.withLock { sockets.count } }
@@ -1634,7 +2900,10 @@ private final class ScriptedSocketConnector: AgentConnectorSocketConnecting, @un
             guard !scripts.isEmpty else {
                 throw AgentConnectorError.connectionUnavailable
             }
-            let socket = ScriptedSocket(steps: scripts.removeFirst())
+            let socket = ScriptedSocket(
+                steps: scripts.removeFirst(),
+                recorder: recorder
+            )
             capturedRequests.append(request)
             sockets.append(socket)
             return socket
@@ -1647,9 +2916,14 @@ private final class ScriptedSocket: AgentConnectorSocket, @unchecked Sendable {
     private var steps: [ScriptedSocketStep]
     private var sent: [String] = []
     private var isClosed = false
+    private let recorder: ConnectorTestRecorder?
 
-    init(steps: [ScriptedSocketStep]) {
+    init(
+        steps: [ScriptedSocketStep],
+        recorder: ConnectorTestRecorder? = nil
+    ) {
         self.steps = steps
+        self.recorder = recorder
     }
 
     var sentTexts: [String] { lock.withLock { sent } }
@@ -1660,6 +2934,12 @@ private final class ScriptedSocket: AgentConnectorSocket, @unchecked Sendable {
                 throw AgentConnectorError.connectionUnavailable
             }
             sent.append(text)
+        }
+        if let data = text.data(using: .utf8),
+           let frame = try? JSONDecoder().decode(AgentConnectorWireFrame.self, from: data),
+           frame.kind == "ack",
+           let sequence = frame.payload.ackSeq {
+            recorder?.record("ack-\(sequence)")
         }
     }
 

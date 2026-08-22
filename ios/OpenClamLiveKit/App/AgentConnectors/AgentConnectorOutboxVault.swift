@@ -66,6 +66,10 @@ struct AgentConnectorPendingTurn: Codable, Equatable, Sendable {
     var turnAccepted: Bool
     var cancelFrame: AgentConnectorEncodedFrame?
     var terminal: AgentConnectorPersistedTerminal?
+    /// Latest safe enum-only status and verified local generated files. Optional fields
+    /// preserve decoding of Build 31 outboxes without migration or re-pairing.
+    var activity: AgentConnectorActivityUpdate? = nil
+    var attachments: [AgentConnectorStoredAttachment]? = nil
 
     var binding: AvatarAgentConnectorBinding {
         .init(
@@ -128,6 +132,22 @@ struct AgentConnectorPendingTurn: Codable, Equatable, Sendable {
             )
         }
         _ = try terminal?.validated()
+        _ = try activity?.validated()
+        let storedAttachments = attachments ?? []
+        guard storedAttachments.count <= 8,
+              storedAttachments.reduce(0, { $0 + $1.metadata.byteCount })
+                <= 64 * 1_024 * 1_024,
+              Set(storedAttachments.map(\.metadata.attachmentID)).count
+                == storedAttachments.count else {
+            throw AgentConnectorError.invalidFrame
+        }
+        for attachment in storedAttachments {
+            let validated = try attachment.validated()
+            guard validated.metadata.connectionID == connectionID,
+                  validated.metadata.turnID == turnID else {
+                throw AgentConnectorError.invalidFrame
+            }
+        }
         return self
     }
 
@@ -158,7 +178,9 @@ struct AgentConnectorPendingTurn: Codable, Equatable, Sendable {
         }
         if kind == "turn.submit" {
             guard frame.payload.accountID == accountID,
-                  frame.payload.text == text else {
+                  frame.payload.text == text,
+                  frame.payload.capabilities == nil
+                    || frame.payload.capabilities == ["activity-v1", "attachments-v1"] else {
                 throw AgentConnectorError.invalidFrame
             }
         }

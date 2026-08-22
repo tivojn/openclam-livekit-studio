@@ -17,8 +17,10 @@ their own deployments and credentials while sharing this wire envelope.
   redemption can return the same credential.
 - Tokens are sent in `Authorization: Bearer ...` headers, never URLs, logs, or
   error bodies.
-- Version 1 transports text only. It does not transport files, screenshots,
-  provider credentials, local iPhone tools, or tool approvals.
+- The base Version 1 contract is text-only. A client may explicitly negotiate
+  the bounded `activity-v1` and `attachments-v1` extensions per turn. Provider
+  credentials, local iPhone tools, tool approvals, reasoning, tool arguments,
+  and tool output never cross this connector.
 
 ## Pairing
 
@@ -113,6 +115,46 @@ each cumulative delta and enforces a one-hour absolute maximum. Expiry deletes
 the connector session and visibly closes both endpoints with `turn_expired`
 rather than silently discarding lifecycle state.
 
+## Optional capabilities
+
+An updated client may add the exact, unique `capabilities` array to
+`turn.submit.payload`. A missing array is the legacy contract. The adapter and
+bridge must emit no extension frame kinds unless that turn advertised the
+matching capability, so an upgraded bridge remains compatible with existing
+paired builds.
+
+`activity-v1` adds one coalesced activity card. The adapter sends only the fixed
+safe status enum in `assistant.activity.upsert`, or `assistant.activity.clear`;
+arbitrary progress text, chain of thought, tool names, arguments, output,
+commands, and paths are forbidden. Activity revisions increase per turn and the
+terminal frame implicitly clears the card.
+
+`attachments-v1` adds authenticated generated-file delivery:
+
+1. The adapter resolves media only through OpenClaw's agent-scoped outbound
+   media API and uploads it with its bearer to
+   `PUT /v1/adapters/{connectionId}/attachments/{attachmentId}`.
+2. The bridge stores bytes in a separate chunked SQLite Durable Object, never in
+   the connector session record or a WebSocket frame. A turn allows at most
+   eight files, 32 MiB each and 64 MiB combined.
+3. The adapter sends durable `assistant.attachment` metadata before
+   `assistant.completed`. Metadata includes only a safe basename, media type,
+   exact byte count, SHA-256, expiry, and the relative private download path;
+   it never includes the source path, URL, or a token.
+4. iOS performs a full authenticated
+   `GET /v1/connectors/{connectionId}/attachments/{attachmentId}`, rejects
+   redirects, verifies the exact type, length, and SHA-256, atomically stores the
+   file, persists chat state, and only then ACKs the attachment frame. A failed
+   download is not ACKed, so metadata replays after reconnect.
+5. The client ACK deletes relay bytes. Turn failure, connector revocation, and
+   the default 24-hour bounded expiry also delete them; the attachment object's
+   own alarm is the cleanup fallback.
+
+Sensitive live-only OpenClaw media is deliberately unsupported in this first
+extension and fails closed with a fixed notice. It is never uploaded or written
+to ordinary iOS chat history. A media-only successful turn uses a neutral
+caption such as `Created 1 file.`
+
 ## Per-avatar routing
 
 Pairing is gateway-scoped. The pairing response advertises allowed OpenClaw
@@ -128,6 +170,9 @@ OpenClam never silently falls back to its local LLM when a remote turn fails.
 ## Privacy and retention
 
 The bridge logs only opaque IDs, event kinds, byte sizes, durations, and status.
-It does not log message text. Pending frames are deleted after acknowledgement or
-their bounded expiry. Version 1 has no transcript history API; OpenClam and
-OpenClaw each retain history according to their own settings.
+It does not log message text, filenames, or source paths. Pending frames are
+deleted after acknowledgement or their bounded expiry. Attachment bytes are
+private bearer-authorized objects with `no-store`/`nosniff` responses and are
+deleted after verified client ACK, failure, revocation, or expiry. Version 1 has
+no transcript history API; OpenClam and OpenClaw each retain history according
+to their own settings.

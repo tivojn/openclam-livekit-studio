@@ -1,5 +1,20 @@
 export type SocketRole = "client" | "adapter";
 
+export type ConnectorCapability = "activity-v1" | "attachments-v1";
+
+export type ActivityStatus =
+  | "thinking"
+  | "planning"
+  | "searching"
+  | "reading"
+  | "editing"
+  | "running_action"
+  | "using_tools"
+  | "creating_media"
+  | "preparing_files"
+  | "waiting_for_approval"
+  | "finalizing";
+
 export interface AccountDescriptor {
   accountId: string;
   agentId: string;
@@ -26,6 +41,9 @@ export type FrameKind =
   | "turn.submit"
   | "turn.accepted"
   | "assistant.delta"
+  | "assistant.activity.upsert"
+  | "assistant.activity.clear"
+  | "assistant.attachment"
   | "assistant.completed"
   | "turn.cancel"
   | "turn.error";
@@ -72,6 +90,7 @@ export interface SessionRecord {
   seenClient: SeenMessage[];
   seenAdapter: SeenMessage[];
   activeTurns: ActiveTurn[];
+  attachments?: AttachmentRecord[];
   settledTurns?: SettledTurn[];
   activeClientSocketId?: string;
   activeAdapterSocketId?: string;
@@ -83,6 +102,9 @@ export interface PendingFrame {
   messageId: string;
   encrypted: EncryptedPayload;
   expiresAt: number;
+  kind?: FrameKind;
+  turnId?: string;
+  attachmentId?: string;
 }
 
 export interface EncryptedPayload {
@@ -113,6 +135,35 @@ export interface ActiveTurn {
   accepted?: boolean;
   lastRevision?: number;
   finalState?: "completed" | "error";
+  capabilities?: ConnectorCapability[];
+  lastActivityRevision?: number;
+}
+
+export interface AttachmentRecord {
+  attachmentId: string;
+  conversationId: string;
+  turnId: string;
+  fileName: string;
+  mediaType: string;
+  byteCount: number;
+  sha256: string;
+  downloadPath: string;
+  createdAt: number;
+  expiresAt: number;
+  state: "uploading" | "ready" | "announced" | "acknowledged";
+}
+
+export interface AttachmentBlobRecord {
+  v: 1;
+  connectionId: string;
+  attachmentId: string;
+  fileName: string;
+  mediaType: string;
+  byteCount: number;
+  sha256: string;
+  chunkCount: number;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface PairingRecord {

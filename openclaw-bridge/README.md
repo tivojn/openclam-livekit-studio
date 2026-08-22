@@ -26,7 +26,7 @@ consistency metadata for OpenClam.
   applies a five-failure, ten-minute throttle to the submitted installation ID.
   Production iOS authentication must bind that ID with App Attest so it cannot
   be freely changed by an attacker.
-- Pending text frames are encrypted with AES-256-GCM. Authenticated data binds
+- Pending WebSocket frames are encrypted with AES-256-GCM. Authenticated data binds
   ciphertext to `connectionId`, direction, and sequence. Frames are deleted
   after cumulative acknowledgement or bounded expiry.
 - No route logs request bodies, frame contents, labels, codes, or credentials.
@@ -140,8 +140,24 @@ byte-for-byte replay awaiting the strict persistence receipt below.
 - At most one authenticated socket per role is active. A newer connection
   replaces the older one.
 
-Version 1 transports text only. It has no attachment, transcript-history,
-local-device-tool, or approval transport.
+The base Version 1 contract remains text-only. `turn.submit` may explicitly
+negotiate `activity-v1` and `attachments-v1`; without that capability the bridge
+rejects and never emits the extension kinds. Activity is a coalesced fixed enum,
+not arbitrary progress text.
+
+Generated files use separate authenticated HTTP routes:
+
+- adapter upload: `PUT /v1/adapters/{connectionId}/attachments/{attachmentId}`;
+- iOS full download: `GET /v1/connectors/{connectionId}/attachments/{attachmentId}`.
+
+Uploads are bound to the active connection, conversation, and turn; allow at
+most eight files, 32 MiB each and 64 MiB per turn; and store 512 KiB chunks in a
+dedicated `ConnectorAttachment` SQLite Durable Object. Bytes never enter the
+single connector session record or WebSocket frames. Download accepts only the
+paired client bearer, no URL token/query/redirect/range, and returns exact
+`Content-Type`/`Content-Length` with `no-store` and `nosniff`. The iOS client
+downloads, verifies SHA-256 and length, atomically persists, then ACKs metadata.
+ACK, turn error, revocation, and the default 24-hour alarm delete the blob.
 
 ## Local verification
 
@@ -152,19 +168,21 @@ cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-The test suite runs against the Workers runtime and both SQLite Durable Object
+The test suite runs against the Workers runtime and all three SQLite Durable Object
 classes. It covers strict schemas and bounds, retry-safe redemption, same- and
 different-installation races, retry-ciphertext expiry, installation throttling,
 raw-token exclusion, role authentication, account routing, exact replay
 receipts, duplicate-final suppression, cumulative acknowledgements, reconnect,
 socket replacement, turn lifecycle, revocation, offline heartbeat pressure,
-AES-GCM storage, wrong authenticated data, and tampering.
+AES-GCM storage, wrong authenticated data, tampering, capability isolation,
+idempotent uploads, private download authorization, streaming prefix checks,
+attachment ACK/error/revocation cleanup, and per-turn size/count limits.
 
 ## Cloudflare configuration
 
 The deployment name is `openclam-openclaw-bridge`. Its only state bindings are
-the independent SQLite Durable Object classes `PairingCoordinator` and
-`ConnectorSession`.
+the independent SQLite Durable Object classes `PairingCoordinator`,
+`ConnectorSession`, and `ConnectorAttachment`.
 
 Set four independent secrets; never add values to `wrangler.jsonc`:
 

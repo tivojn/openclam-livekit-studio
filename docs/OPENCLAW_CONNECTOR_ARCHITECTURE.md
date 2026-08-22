@@ -97,7 +97,10 @@ The wire contract is in [`shared/agent-connector-v1`](../shared/agent-connector-
 - no Telegram dependency or Telegram credential anywhere in the connector;
 - no OpenClaw Gateway owner token at Cloudflare;
 - no LLM/STT/TTS/LiveKit keys at Cloudflare;
-- no attachments, screenshots, clipboard data, or local iPhone tools;
+- no iPhone file uploads, screenshots, clipboard data, or local iPhone tools;
+- generated files may return only through the negotiated, authenticated,
+  size-bounded attachment extension after local type, length, and SHA-256
+  verification; sensitive media is excluded;
 - no remote tool-approval UI;
 - no transcript content in bridge logs;
 - no silent fallback from OpenClaw to a local provider.

@@ -597,6 +597,8 @@ struct CaptainAyerAvatarOverlay: View {
     private var storedFraming = "closeup"
     @AppStorage("captainAyer.overlay.railFolded")
     private var storedRailFolded = false
+    @AppStorage("captainAyer.overlay.hidden")
+    private var storedAvatarHidden = false
 
     @State private var opacity = CaptainAyerOverlayTuning.initialOpacity
     @State private var scale = CaptainAyerOverlayTuning.initialScale
@@ -686,7 +688,7 @@ struct CaptainAyerAvatarOverlay: View {
             opacity = CaptainAyerOverlayTuning.clampedOpacity(storedOpacity)
             isHeadAnchored = storedFraming != "full"
             scale = isHeadAnchored ? 3.4 : CaptainAyerOverlayTuning.initialScale
-            isAvatarHidden = false
+            isAvatarHidden = storedAvatarHidden
             isRailFolded = storedRailFolded
             interactions.connect(wakeRail)
             wakeRail()
@@ -954,6 +956,7 @@ struct CaptainAyerAvatarOverlay: View {
                     }
                     animate(.toggle) {
                         isAvatarHidden.toggle()
+                        storedAvatarHidden = isAvatarHidden
                         if isAvatarHidden {
                             faceMirror.stop()
                             showsOpacityPanel = false

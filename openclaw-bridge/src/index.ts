@@ -1,4 +1,9 @@
-import { readBoundedRequestBody, parseJsonBody } from "./body";
+import {
+  parseJsonBody,
+  readBoundedRequestBody,
+  requireEmptyRequestBody,
+} from "./body";
+import { ConnectorAttachment } from "./attachment";
 import {
   pairingVerifier,
   randomId,
@@ -15,23 +20,28 @@ import {
 } from "./errors";
 import { PairingCoordinator } from "./pairing";
 import { ConnectorSession } from "./session";
-import type { PairingRecord, SocketRole } from "./types";
+import type { AttachmentRecord, PairingRecord, SocketRole } from "./types";
 import {
   bearerToken,
   CREATE_BODY_LIMIT_BYTES,
   parseCreatePairing,
+  parseAttachmentUpload,
   parseRedeemPairing,
   REDEEM_BODY_LIMIT_BYTES,
   uuidPath,
 } from "./validation";
 
-export { ConnectorSession, PairingCoordinator };
+export { ConnectorAttachment, ConnectorSession, PairingCoordinator };
 
 const CREATE_PAIRING_PATH = "/v1/pairings";
 const REDEEM_PAIRING_PATH = "/v1/pairings/redeem";
 const CLIENT_EVENTS_PATH = /^\/v1\/connectors\/([^/]+)\/events$/;
 const ADAPTER_EVENTS_PATH = /^\/v1\/adapters\/([^/]+)\/events$/;
 const DELETE_CONNECTOR_PATH = /^\/v1\/connectors\/([^/]+)$/;
+const ADAPTER_ATTACHMENT_PATH =
+  /^\/v1\/adapters\/([^/]+)\/attachments\/([^/]+)$/;
+const CLIENT_ATTACHMENT_PATH =
+  /^\/v1\/connectors\/([^/]+)\/attachments\/([^/]+)$/;
 const PAIRING_COORDINATOR_NAME = "openclam-agent-connector-v1";
 
 function securityHeaders(headers = new Headers()): Headers {
@@ -70,6 +80,14 @@ function pairingTtlMilliseconds(env: Env): number {
   return seconds * 1_000;
 }
 
+function attachmentTtlMilliseconds(env: Env): number {
+  const seconds = Number(env.ATTACHMENT_TTL_SECONDS);
+  if (!Number.isInteger(seconds) || seconds < 300 || seconds > 7 * 24 * 60 * 60) {
+    throw new HttpError(503, "unavailable");
+  }
+  return seconds * 1_000;
+}
+
 function requireJson(request: Request): void {
   const contentType = request.headers.get("Content-Type") ?? "";
   if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
@@ -95,6 +113,54 @@ function session(env: Env, connectionId: string): DurableObjectStub<ConnectorSes
   return env.CONNECTOR_SESSIONS.get(
     env.CONNECTOR_SESSIONS.idFromName(connectionId),
   );
+}
+
+function attachment(
+  env: Env,
+  connectionId: string,
+  attachmentId: string,
+): DurableObjectStub<ConnectorAttachment> {
+  return env.ATTACHMENTS.get(
+    env.ATTACHMENTS.idFromName(`${connectionId}:${attachmentId}`),
+  );
+}
+
+function authorizationHeaders(request: Request): Headers {
+  const headers = new Headers();
+  const authorization = request.headers.get("Authorization");
+  if (authorization !== null) headers.set("Authorization", authorization);
+  return headers;
+}
+
+function attachmentBlobHeaders(record: AttachmentRecord): Headers {
+  return new Headers({
+    "Content-Length": String(record.byteCount),
+    "X-OpenClam-Attachment-Id": record.attachmentId,
+    "X-OpenClam-Byte-Count": String(record.byteCount),
+    "X-OpenClam-Connection-Id": record.downloadPath.split("/")[3] ?? "",
+    "X-OpenClam-Created-At": String(record.createdAt),
+    "X-OpenClam-Expires-At": String(record.expiresAt),
+    "X-OpenClam-File-Name-B64": btoa(
+      String.fromCharCode(...new TextEncoder().encode(record.fileName)),
+    ).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, ""),
+    "X-OpenClam-Media-Type": record.mediaType,
+    "X-OpenClam-SHA256": record.sha256,
+  });
+}
+
+async function deleteAttachmentBlob(
+  env: Env,
+  connectionId: string,
+  attachmentId: string,
+): Promise<void> {
+  try {
+    await attachment(env, connectionId, attachmentId).fetch(
+      "https://attachment.internal/internal/delete",
+      { method: "DELETE" },
+    );
+  } catch {
+    // The attachment Durable Object alarm remains the bounded cleanup fallback.
+  }
 }
 
 async function createPairing(request: Request, env: Env): Promise<Response> {
@@ -239,7 +305,7 @@ async function deleteConnector(
 ): Promise<Response> {
   validateConfiguration(env);
   if (!uuidPath(connectionId)) return errorResponse("not_found", 404);
-  if (request.body !== null) return errorResponse("invalid_request", 400);
+  await requireEmptyRequestBody(request);
   const headers = new Headers();
   const authorization = request.headers.get("Authorization");
   if (authorization !== null) headers.set("Authorization", authorization);
@@ -271,6 +337,160 @@ async function deleteConnector(
   return errorResponse("unavailable", 503);
 }
 
+async function uploadAttachment(
+  request: Request,
+  env: Env,
+  connectionId: string,
+  attachmentId: string,
+): Promise<Response> {
+  validateConfiguration(env);
+  if (!uuidPath(connectionId) || !uuidPath(attachmentId)) {
+    return errorResponse("not_found", 404);
+  }
+  const input = parseAttachmentUpload(request, attachmentId);
+  const now = Date.now();
+  const candidate: AttachmentRecord = {
+    ...input,
+    downloadPath: `/v1/connectors/${connectionId}/attachments/${attachmentId}`,
+    createdAt: now,
+    expiresAt: now + attachmentTtlMilliseconds(env),
+    state: "uploading",
+  };
+  const authHeaders = authorizationHeaders(request);
+  authHeaders.set("Content-Type", "application/json");
+  const reserve = await session(env, connectionId).fetch(
+    "https://session.internal/internal/attachments/reserve",
+    {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify(candidate),
+    },
+  );
+  if (!reserve.ok) {
+    if (reserve.status === 401) return errorResponse("unauthorized", 401);
+    if (reserve.status === 404) return errorResponse("not_found", 404);
+    if (reserve.status === 413) return errorResponse("invalid_request", 413);
+    if (reserve.status === 409) return errorResponse("invalid_request", 409);
+    return errorResponse("unavailable", 503);
+  }
+  const reserved = await reserve.json<{ attachment?: AttachmentRecord }>();
+  const record = reserved.attachment;
+  if (
+    record === undefined ||
+    record.attachmentId !== input.attachmentId ||
+    record.conversationId !== input.conversationId ||
+    record.turnId !== input.turnId ||
+    record.fileName !== input.fileName ||
+    record.mediaType !== input.mediaType ||
+    record.byteCount !== input.byteCount ||
+    record.sha256 !== input.sha256 ||
+    record.downloadPath !== candidate.downloadPath
+  ) {
+    return errorResponse("unavailable", 503);
+  }
+
+  const blobResponse = await attachment(env, connectionId, attachmentId).fetch(
+    "https://attachment.internal/internal/upload",
+    {
+      method: "PUT",
+      headers: attachmentBlobHeaders(record),
+      body: request.body,
+    },
+  );
+  if (!blobResponse.ok) {
+    await session(env, connectionId).fetch(
+      "https://session.internal/internal/attachments/abort",
+      {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ attachmentId }),
+      },
+    );
+    await deleteAttachmentBlob(env, connectionId, attachmentId);
+    return blobResponse.status === 400 || blobResponse.status === 409
+      ? errorResponse("invalid_request", blobResponse.status)
+      : errorResponse("unavailable", 503);
+  }
+
+  const commit = await session(env, connectionId).fetch(
+    "https://session.internal/internal/attachments/commit",
+    {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ attachmentId }),
+    },
+  );
+  if (!commit.ok) {
+    await deleteAttachmentBlob(env, connectionId, attachmentId);
+    await session(env, connectionId).fetch(
+      "https://session.internal/internal/attachments/abort",
+      {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ attachmentId }),
+      },
+    );
+    return commit.status === 401
+      ? errorResponse("unauthorized", 401)
+      : commit.status === 404
+        ? errorResponse("not_found", 404)
+        : errorResponse("unavailable", 503);
+  }
+  return json(
+    {
+      v: 1,
+      attachmentId: record.attachmentId,
+      fileName: record.fileName,
+      mediaType: record.mediaType,
+      byteCount: record.byteCount,
+      sha256: record.sha256,
+      downloadPath: record.downloadPath,
+      expiresAt: record.expiresAt,
+    },
+    201,
+  );
+}
+
+async function downloadAttachment(
+  request: Request,
+  env: Env,
+  connectionId: string,
+  attachmentId: string,
+): Promise<Response> {
+  validateConfiguration(env);
+  const url = new URL(request.url);
+  if (
+    !uuidPath(connectionId) ||
+    !uuidPath(attachmentId) ||
+    url.search !== "" ||
+    request.headers.has("Range")
+  ) {
+    return errorResponse("invalid_request", 400);
+  }
+  const authorization = authorizationHeaders(request);
+  const allowed = await session(env, connectionId).fetch(
+    `https://session.internal/internal/attachments/${attachmentId}`,
+    { method: "GET", headers: authorization },
+  );
+  if (!allowed.ok) {
+    if (allowed.status === 401) return errorResponse("unauthorized", 401);
+    if (allowed.status === 404) return errorResponse("not_found", 404);
+    return errorResponse("unavailable", 503);
+  }
+  const response = await attachment(env, connectionId, attachmentId).fetch(
+    "https://attachment.internal/internal/download",
+  );
+  if (!response.ok) {
+    return response.status === 404
+      ? errorResponse("not_found", 404)
+      : errorResponse("unavailable", 503);
+  }
+  return new Response(response.body, {
+    status: 200,
+    headers: securityHeaders(new Headers(response.headers)),
+  });
+}
+
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/healthz") {
@@ -290,6 +510,32 @@ async function route(request: Request, env: Env): Promise<Response> {
   const adapterMatch = ADAPTER_EVENTS_PATH.exec(url.pathname);
   if (request.method === "GET" && adapterMatch?.[1] !== undefined) {
     return connectSocket(request, env, adapterMatch[1], "adapter");
+  }
+  const adapterAttachmentMatch = ADAPTER_ATTACHMENT_PATH.exec(url.pathname);
+  if (
+    request.method === "PUT" &&
+    adapterAttachmentMatch?.[1] !== undefined &&
+    adapterAttachmentMatch[2] !== undefined
+  ) {
+    return uploadAttachment(
+      request,
+      env,
+      adapterAttachmentMatch[1],
+      adapterAttachmentMatch[2],
+    );
+  }
+  const clientAttachmentMatch = CLIENT_ATTACHMENT_PATH.exec(url.pathname);
+  if (
+    request.method === "GET" &&
+    clientAttachmentMatch?.[1] !== undefined &&
+    clientAttachmentMatch[2] !== undefined
+  ) {
+    return downloadAttachment(
+      request,
+      env,
+      clientAttachmentMatch[1],
+      clientAttachmentMatch[2],
+    );
   }
   const deleteMatch = DELETE_CONNECTOR_PATH.exec(url.pathname);
   if (request.method === "DELETE" && deleteMatch?.[1] !== undefined) {

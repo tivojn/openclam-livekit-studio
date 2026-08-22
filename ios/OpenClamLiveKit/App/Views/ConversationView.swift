@@ -1,6 +1,8 @@
 import Accessibility
+import AVKit
 import CoreTransferable
 import PhotosUI
+import QuickLook
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -240,6 +242,10 @@ struct ConversationView: View {
     @State private var threadPositioning = ConversationThreadPositioningState()
     @State private var activeSessionImagePreviews: [UUID: UIImage] = [:]
     @State private var activeSessionImagePreviewOrder: [UUID] = []
+    @State private var persistedConnectorImagePreviews: [UUID: UIImage] = [:]
+    @State private var presentedConnectorArtifact: ConnectorArtifactPresentation?
+    @State private var sharedConnectorArtifact: ConnectorArtifactPresentation?
+    @State private var connectorArtifactError: String?
     @State private var warmEarEnabled = OpenClamWarmEarControl.isEnabled
     @StateObject private var avatarInteractions = CaptainAyerOverlayInteractionRelay()
     @StateObject private var liveTalk = LiveTalkSessionController()
@@ -251,200 +257,13 @@ struct ConversationView: View {
     let onShowSettings: () -> Void
     let onShowAISettings: () -> Void
 
-    var body: some View {
+    var body: some View { lifecycleObservedSurface }
+
+    private var baseConversationSurface: some View {
         ZStack {
             GeometryReader { threadViewport in
                 ScrollViewReader { proxy in
-                    ScrollView {
-                    LazyVStack(spacing: 14) {
-                        ForEach(conversation.messages) { message in
-                            threadMessageRow(
-                                message,
-                                viewportWidth: threadViewport.size.width
-                            )
-                        }
-
-                        if conversation.messages.count == 1,
-                           !dynamicTypeSize.isAccessibilitySize {
-                            suggestionRow
-                        }
-
-                        if conversation.isWorking {
-                            workingRow
-                        }
-
-                        if conversation.screenshotData != nil || conversation.pronunciation != nil {
-                            pronunciationCard
-                        }
-
-                        if !conversation.venueResults.isEmpty {
-                            venueCard
-                        }
-
-                        if conversation.pendingNearbySearchQuery != nil {
-                            pendingNearbySearchCard
-                        }
-
-                        if conversation.contactAgentSession.status != .idle {
-                            ContactAgentCard(
-                                session: conversation.contactAgentSession,
-                                providerID: aiConfiguration.effectiveSettings.llm.provider,
-                                providerModel: aiConfiguration.effectiveSettings.model,
-                                onSharedReply: { conversation.recordFeatureReply($0) }
-                            )
-                        }
-
-                        EventKitAgentCard(session: conversation.eventKitAgentSession)
-
-                        if !conversation.nearbyPlaceResults.isEmpty {
-                            nearbyPlacesCard
-                        }
-
-                        if !conversation.replySuggestions.isEmpty {
-                            replySuggestionsCard
-                        }
-
-                        if conversation.researchRequest != nil {
-                            researchCard
-                        }
-
-                        if conversation.pendingSMS != nil {
-                            messageDraftCard
-                        }
-
-                        if conversation.pendingEmail != nil {
-                            emailDraftCard
-                                .id(ConversationReviewRevealPolicy.pendingEmailAnchorID)
-                        }
-
-                        if let proposal = conversation.pendingAppHandoffProposal {
-                            appHandoffCard(proposal)
-                        }
-
-                        if conversation.proposedCommand != nil {
-                            proposedCommandCard
-                        }
-
-                        if conversation.rideDestination != nil {
-                            rideCard
-                        }
-
-                    if let confirmedActionNotice {
-                        confirmedActionReceipt(confirmedActionNotice)
-                    }
-
-                    if let prompt = conversation.pendingShortcutPrompt {
-                        pendingSiriPromptCard(prompt)
-                    }
-
-                    if let submission = conversation.pendingScreenContextSubmission {
-                        pendingScreenContextComposerCard(submission)
-                    }
-
-                    if !stagedAttachments.isEmpty || isLoadingAttachments {
-                        attachmentTray
-                    }
-
-                    if threadPositioning.anchoredUserMessageID != nil {
-                        Color.clear
-                            .frame(
-                                height: ConversationThreadLayout.responseReserveHeight(
-                                    viewportHeight: threadViewport.size.height,
-                                    usesAccessibilityType: dynamicTypeSize.isAccessibilitySize
-                                )
-                            )
-                            .accessibilityHidden(true)
-                    }
-
-                    Color.clear.frame(height: 4).id("bottom")
-                }
-                .padding(.horizontal, ConversationThreadLayout.horizontalContentInset)
-                .padding(.top, isFreshConversation ? 36 : 12)
-                .padding(.bottom, 8)
-                .disabled(conversation.isWorking || commandModel.isExecuting || activeRequestTask != nil)
-                .background(alignment: .topLeading) {
-                    ConversationThreadInteractionObserver(
-                        onInteraction: avatarInteractions.noteThreadInteraction,
-                        onManualScroll: {
-                            threadPositioning.noteManualScroll()
-                        }
-                    )
-                    .frame(width: 1, height: 1)
-                    .allowsHitTesting(false)
-                }
-            }
-            .accessibilityIdentifier("openclam-conversation-thread")
-            .defaultScrollAnchor(isFreshConversation ? .top : .bottom)
-            .scrollDismissesKeyboard(.interactively)
-            .background(assistantBackground)
-            .onChange(of: conversation.pendingEmail?.id) { previousID, currentID in
-                guard ConversationReviewRevealPolicy.shouldRevealPendingEmail(
-                    previousID: previousID,
-                    currentID: currentID
-                ) else { return }
-                revealPendingEmailReview(using: proxy)
-            }
-            .onChange(of: assistantReplyDeliverySnapshot) { _, snapshot in
-                let newUserMessageID = userTurnPlacementBoundary.observe(snapshot)
-                let newAssistantMessageID = deliverNewAssistantReply(from: snapshot)
-                switch threadPositioning.receiveAppendedMessages(
-                    userMessageID: newUserMessageID,
-                    assistantMessageID: newAssistantMessageID
-                ) {
-                case .placeUserTurn(let messageID):
-                    placeNewUserTurn(
-                        messageID,
-                        using: proxy
-                    )
-                case .followLatest:
-                    if !isFreshConversation {
-                        scrollToLatest(using: proxy)
-                    }
-                case .preservePosition:
-                    break
-                }
-            }
-            .onChange(of: conversation.isWorking) { _, _ in
-                if threadPositioning.shouldFollowLatest {
-                    scrollToLatest(using: proxy)
-                }
-            }
-            .onChange(of: confirmedActionNotice) { _, notice in
-                if notice != nil {
-                    scrollToLatest(using: proxy)
-                }
-            }
-            .onChange(of: isComposerFocused) { _, focused in
-                if focused {
-                    expandsComposerForEditing = true
-                    if threadPositioning.shouldFollowLatest {
-                        scrollToLatest(using: proxy)
-                    }
-                } else {
-                    expandsComposerForEditing = false
-                }
-            }
-            .onChange(of: stagedAttachments.count) { _, _ in
-                if threadPositioning.shouldFollowLatest {
-                    scrollToLatest(using: proxy)
-                }
-            }
-            .onChange(of: conversation.pendingScreenContextSubmission?.reviewID) { _, submissionID in
-                guard submissionID != nil else { return }
-                if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let submission = conversation.pendingScreenContextSubmission {
-                    input = submission.instruction
-                }
-                scrollToLatest(using: proxy)
-            }
-            .onAppear {
-                assistantReplyDeliveryBoundary.prime(with: assistantReplyDeliverySnapshot)
-                userTurnPlacementBoundary.prime(with: assistantReplyDeliverySnapshot)
-                threadPositioning.resetForThreadChange()
-                if !isFreshConversation {
-                    scrollToLatest(using: proxy, animated: false)
-                }
-            }
+                    observedThreadScroll(in: threadViewport, proxy: proxy)
                 }
             }
 
@@ -523,6 +342,10 @@ struct ConversationView: View {
                 .accessibilityHint("Opens AI services and iPhone tool settings")
             }
         }
+    }
+
+    private var mediaObservedSurface: some View {
+        baseConversationSurface
         .onChange(of: selectedMedia) { _, items in
             guard !items.isEmpty else { return }
             beginAttachmentPreparation { requestID in
@@ -555,6 +378,16 @@ struct ConversationView: View {
             )
             .ignoresSafeArea()
         }
+        .sheet(item: $presentedConnectorArtifact) { presentation in
+            ConnectorArtifactPreview(presentation: presentation)
+        }
+        .sheet(item: $sharedConnectorArtifact) { presentation in
+            ConnectorArtifactShareSheet(url: presentation.url)
+        }
+    }
+
+    private var conversationObservedSurface: some View {
+        mediaObservedSurface
         .onChange(of: speech.transcript) { _, transcript in
             guard speech.isListening || speech.isTranscribing else { return }
             input = transcript
@@ -593,6 +426,10 @@ struct ConversationView: View {
             threadPositioning.resetForThreadChange()
             resetComposerForChatChange()
         }
+    }
+
+    private var lifecycleObservedSurface: some View {
+        conversationObservedSurface
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 warmEarEnabled = OpenClamWarmEarControl.isEnabled
@@ -629,6 +466,9 @@ struct ConversationView: View {
                 input = submission.instruction
             }
         }
+        .task(id: connectorImageThumbnailSnapshot) {
+            await loadPersistedConnectorImagePreviews()
+        }
         .alert(
             "Live Talk",
             isPresented: Binding(
@@ -642,6 +482,19 @@ struct ConversationView: View {
         } message: {
             Text(liveTalk.errorMessage ?? "Live Talk stopped.")
         }
+        .alert(
+            "OpenClaw file",
+            isPresented: Binding(
+                get: { connectorArtifactError != nil },
+                set: { presented in
+                    if !presented { connectorArtifactError = nil }
+                }
+            )
+        ) {
+            Button("OK") { connectorArtifactError = nil }
+        } message: {
+            Text(connectorArtifactError ?? "The generated file is unavailable.")
+        }
     }
 
     private var assistantBackground: some View {
@@ -651,6 +504,169 @@ struct ConversationView: View {
 
     private var isFreshConversation: Bool {
         conversation.messages.count == 1
+    }
+
+    private func baseThreadScroll(in viewport: GeometryProxy) -> some View {
+        ScrollView {
+            threadContent(in: viewport)
+                .padding(.horizontal, ConversationThreadLayout.horizontalContentInset)
+                .padding(.top, isFreshConversation ? 36 : 12)
+                .padding(.bottom, 8)
+                .disabled(
+                    (conversation.isWorking && conversation.remoteAgentActivity == nil)
+                        || commandModel.isExecuting
+                        || (activeRequestTask != nil && conversation.remoteAgentActivity == nil)
+                )
+                .background(alignment: .topLeading) {
+                    ConversationThreadInteractionObserver(
+                        onInteraction: avatarInteractions.noteThreadInteraction,
+                        onManualScroll: { threadPositioning.noteManualScroll() }
+                    )
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                }
+        }
+        .accessibilityIdentifier("openclam-conversation-thread")
+        .defaultScrollAnchor(isFreshConversation ? .top : .bottom)
+        .scrollDismissesKeyboard(.interactively)
+        .background(assistantBackground)
+    }
+
+    private func deliveryObservedThreadScroll(
+        in viewport: GeometryProxy,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        baseThreadScroll(in: viewport)
+            .onChange(of: conversation.pendingEmail?.id) { previousID, currentID in
+                guard ConversationReviewRevealPolicy.shouldRevealPendingEmail(
+                    previousID: previousID,
+                    currentID: currentID
+                ) else { return }
+                revealPendingEmailReview(using: proxy)
+            }
+            .onChange(of: assistantReplyDeliverySnapshot) { _, snapshot in
+                let newUserMessageID = userTurnPlacementBoundary.observe(snapshot)
+                let newAssistantMessageID = deliverNewAssistantReply(from: snapshot)
+                switch threadPositioning.receiveAppendedMessages(
+                    userMessageID: newUserMessageID,
+                    assistantMessageID: newAssistantMessageID
+                ) {
+                case .placeUserTurn(let messageID):
+                    placeNewUserTurn(messageID, using: proxy)
+                case .followLatest:
+                    if !isFreshConversation { scrollToLatest(using: proxy) }
+                case .preservePosition:
+                    break
+                }
+            }
+            .onChange(of: conversation.isWorking) { _, _ in
+                if threadPositioning.shouldFollowLatest { scrollToLatest(using: proxy) }
+            }
+            .onChange(of: conversation.remoteAgentActivity) { _, activity in
+                if activity != nil, threadPositioning.shouldFollowLatest {
+                    scrollToLatest(using: proxy)
+                }
+            }
+    }
+
+    private func observedThreadScroll(
+        in viewport: GeometryProxy,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        deliveryObservedThreadScroll(in: viewport, proxy: proxy)
+            .onChange(of: confirmedActionNotice) { _, notice in
+                if notice != nil { scrollToLatest(using: proxy) }
+            }
+            .onChange(of: isComposerFocused) { _, focused in
+                expandsComposerForEditing = focused
+                if focused, threadPositioning.shouldFollowLatest {
+                    scrollToLatest(using: proxy)
+                }
+            }
+            .onChange(of: stagedAttachments.count) { _, _ in
+                if threadPositioning.shouldFollowLatest { scrollToLatest(using: proxy) }
+            }
+            .onChange(of: conversation.pendingScreenContextSubmission?.reviewID) {
+                _, submissionID in
+                guard submissionID != nil else { return }
+                if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let submission = conversation.pendingScreenContextSubmission {
+                    input = submission.instruction
+                }
+                scrollToLatest(using: proxy)
+            }
+            .onAppear {
+                assistantReplyDeliveryBoundary.prime(with: assistantReplyDeliverySnapshot)
+                userTurnPlacementBoundary.prime(with: assistantReplyDeliverySnapshot)
+                threadPositioning.resetForThreadChange()
+                if !isFreshConversation {
+                    scrollToLatest(using: proxy, animated: false)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func threadContent(in viewport: GeometryProxy) -> some View {
+        LazyVStack(spacing: 14) {
+            ForEach(conversation.messages) { message in
+                threadMessageRow(message, viewportWidth: viewport.size.width)
+            }
+
+            if conversation.messages.count == 1,
+               !dynamicTypeSize.isAccessibilitySize {
+                suggestionRow
+            }
+            if let activity = conversation.remoteAgentActivity {
+                remoteAgentActivityCard(activity)
+            }
+            if conversation.isWorking,
+               conversation.streamingAssistantReply?.isEmpty == false {
+                workingRow
+            }
+            if conversation.screenshotData != nil || conversation.pronunciation != nil {
+                pronunciationCard
+            }
+            if !conversation.venueResults.isEmpty { venueCard }
+            if conversation.pendingNearbySearchQuery != nil { pendingNearbySearchCard }
+            if conversation.contactAgentSession.status != .idle {
+                ContactAgentCard(
+                    session: conversation.contactAgentSession,
+                    providerID: aiConfiguration.effectiveSettings.llm.provider,
+                    providerModel: aiConfiguration.effectiveSettings.model,
+                    onSharedReply: { conversation.recordFeatureReply($0) }
+                )
+            }
+            EventKitAgentCard(session: conversation.eventKitAgentSession)
+            if !conversation.nearbyPlaceResults.isEmpty { nearbyPlacesCard }
+            if !conversation.replySuggestions.isEmpty { replySuggestionsCard }
+            if conversation.researchRequest != nil { researchCard }
+            if conversation.pendingSMS != nil { messageDraftCard }
+            if conversation.pendingEmail != nil {
+                emailDraftCard.id(ConversationReviewRevealPolicy.pendingEmailAnchorID)
+            }
+            if let proposal = conversation.pendingAppHandoffProposal {
+                appHandoffCard(proposal)
+            }
+            if conversation.proposedCommand != nil { proposedCommandCard }
+            if conversation.rideDestination != nil { rideCard }
+            if let confirmedActionNotice { confirmedActionReceipt(confirmedActionNotice) }
+            if let prompt = conversation.pendingShortcutPrompt { pendingSiriPromptCard(prompt) }
+            if let submission = conversation.pendingScreenContextSubmission {
+                pendingScreenContextComposerCard(submission)
+            }
+            if !stagedAttachments.isEmpty || isLoadingAttachments { attachmentTray }
+            if threadPositioning.anchoredUserMessageID != nil {
+                Color.clear
+                    .frame(
+                        height: ConversationThreadLayout.responseReserveHeight(
+                            viewportHeight: viewport.size.height,
+                            usesAccessibilityType: dynamicTypeSize.isAccessibilitySize
+                        )
+                    )
+                    .accessibilityHidden(true)
+            }
+            Color.clear.frame(height: 4).id("bottom")
+        }
     }
 
     private func threadMessageRow(
@@ -766,10 +782,16 @@ struct ConversationView: View {
         } else {
             MarkdownMessageView(
                 message: message,
-                localImagePreviews: activeSessionImagePreviews,
+                localImagePreviews: messageImagePreviews,
                 onAskAISelection: message.role == .assistant
                     ? { selectedText in stageSelectedTextForAI(selectedText) }
-                    : nil
+                    : nil,
+                onOpenAttachment: { attachment in
+                    presentConnectorArtifact(attachment, forSharing: false)
+                },
+                onShareAttachment: { attachment in
+                    presentConnectorArtifact(attachment, forSharing: true)
+                }
             )
         }
     }
@@ -843,7 +865,7 @@ struct ConversationView: View {
             .accessibilityLabel("OpenClaw response in progress")
             .accessibilityValue(streaming)
             .accessibilityIdentifier("openclam-openclaw-streaming-reply")
-        } else {
+        } else if conversation.remoteAgentActivity == nil {
             HStack(spacing: 10) {
                 ProgressView()
                 Text(currentRemoteBinding == nil
@@ -855,6 +877,114 @@ struct ConversationView: View {
             }
             .padding(.horizontal, 8)
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func remoteAgentActivityCard(
+        _ activity: RemoteAgentActivityPresentation
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if activity.showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: remoteAgentActivityIcon(activity.phase))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(
+                            activity.phase == .needsAttention ? .orange : .secondary
+                        )
+                }
+            }
+            .frame(width: 22, height: 22)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(activity.title)
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let detail = activity.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if activity.allowsRetry || activity.allowsCancel {
+                    HStack(spacing: 10) {
+                        if activity.allowsRetry {
+                            Button("Retry") {
+                                retryRemoteAgentActivity()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("openclam-openclaw-activity-retry")
+                        }
+
+                        if activity.allowsCancel {
+                            Button("Cancel", role: .cancel) {
+                                cancelRemoteAgentActivity()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("openclam-openclaw-activity-cancel")
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            Color(uiColor: .secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.secondary.opacity(0.12))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("openclam-openclaw-activity-card")
+        .id(activity.id)
+    }
+
+    private func remoteAgentActivityIcon(
+        _ phase: RemoteAgentActivityPresentation.Phase
+    ) -> String {
+        switch phase {
+        case .needsAttention:
+            "exclamationmark.triangle.fill"
+        case .downloading:
+            "arrow.down.circle.fill"
+        case .usingTool:
+            "wrench.and.screwdriver.fill"
+        case .cancelling:
+            "xmark.circle.fill"
+        case .connecting, .queued, .working, .finalizing, .reconnecting:
+            "link"
+        }
+    }
+
+    private func retryRemoteAgentActivity() {
+        guard !conversation.isWorking else { return }
+        beginAgentTask {
+            await conversation.recoverPendingRemoteTurnIfNeeded(
+                aiConfiguration: aiConfiguration,
+                agentConnections: agentConnections
+            )
+        }
+    }
+
+    private func cancelRemoteAgentActivity() {
+        if conversation.isWorking {
+            activeRequestTask?.cancel()
+            return
+        }
+        beginAgentTask {
+            await conversation.cancelPendingRemoteTurnIfNeeded(
+                aiConfiguration: aiConfiguration,
+                agentConnections: agentConnections
+            )
         }
     }
 
@@ -1909,7 +2039,7 @@ struct ConversationView: View {
         .accessibilityLabel("Add photo, video, or file")
         .accessibilityHint(currentRemoteBinding == nil
             ? "Opens camera, photo library, and file choices"
-            : "OpenClaw connector chats support text only")
+            : "Messages to OpenClaw are text only. OpenClaw replies can include verified generated files.")
         .accessibilityIdentifier("openclam-attachment-menu")
         .accessibilityValue(
             stagedAttachments.isEmpty
@@ -2546,6 +2676,28 @@ struct ConversationView: View {
         }
     }
 
+    private func presentConnectorArtifact(
+        _ attachment: ConversationAttachmentDescriptor,
+        forSharing: Bool
+    ) {
+        guard attachment.connectorArtifact != nil else { return }
+        Task { @MainActor in
+            guard let url = await agentConnections.storedArtifactURL(for: attachment) else {
+                connectorArtifactError = "This verified OpenClaw file is no longer stored on this iPhone."
+                return
+            }
+            let presentation = ConnectorArtifactPresentation(
+                attachment: attachment,
+                url: url
+            )
+            if forSharing {
+                sharedConnectorArtifact = presentation
+            } else {
+                presentedConnectorArtifact = presentation
+            }
+        }
+    }
+
     private func sendInput(_ submittedValue: String? = nil) {
         guard !conversation.isWorking, !isChatTransitioning else { return }
         conversation.stopSpeechOutput()
@@ -2574,13 +2726,29 @@ struct ConversationView: View {
             return
         }
         if stagedAttachments.isEmpty {
-            input = ""
-            beginAgentTask {
-                await conversation.submit(
-                    value,
-                    aiConfiguration: aiConfiguration,
-                    agentConnections: agentConnections
-                )
+            if currentRemoteBinding != nil {
+                beginAgentTask {
+                    await conversation.submit(
+                        value,
+                        aiConfiguration: aiConfiguration,
+                        agentConnections: agentConnections,
+                        onSubmissionSaved: {
+                            // Do not erase edits made while the secure outbox was being created.
+                            if input.trimmingCharacters(in: .whitespacesAndNewlines) == value {
+                                input = ""
+                            }
+                        }
+                    )
+                }
+            } else {
+                input = ""
+                beginAgentTask {
+                    await conversation.submit(
+                        value,
+                        aiConfiguration: aiConfiguration,
+                        agentConnections: agentConnections
+                    )
+                }
             }
         } else {
             let submittedAttachments = stagedAttachments
@@ -2802,6 +2970,10 @@ struct ConversationView: View {
         showsCamera = false
         showsFileImporter = false
         photoError = nil
+        presentedConnectorArtifact = nil
+        sharedConnectorArtifact = nil
+        connectorArtifactError = nil
+        persistedConnectorImagePreviews = [:]
         modelSelectionError = nil
         suppressesSpeechError = true
         confirmedActionNotice = nil
@@ -2834,6 +3006,45 @@ struct ConversationView: View {
             > LocalAttachmentPreviewFactory.maximumCachedPreviewCount {
             let removedID = activeSessionImagePreviewOrder.removeFirst()
             activeSessionImagePreviews[removedID] = nil
+        }
+    }
+
+    private var messageImagePreviews: [UUID: UIImage] {
+        persistedConnectorImagePreviews.merging(activeSessionImagePreviews) { _, active in
+            active
+        }
+    }
+
+    private var connectorImageThumbnailSnapshot: String {
+        let thread = conversation.historyController.selectedThreadID?.uuidString ?? "none"
+        let artifacts: [String] = conversation.messages
+            .flatMap(\.attachments)
+            .compactMap { attachment -> String? in
+            guard attachment.kind == .image,
+                  let reference = attachment.connectorArtifact else { return nil }
+            return attachment.id.uuidString.lowercased() + ":" + reference.sha256
+            }
+        return ([thread] + artifacts).joined(separator: "|")
+    }
+
+    private func loadPersistedConnectorImagePreviews() async {
+        let descriptors = conversation.messages.flatMap(\.attachments).filter {
+            $0.kind == .image && $0.connectorArtifact != nil
+        }
+        let desiredIDs = Set(descriptors.map(\.id))
+        persistedConnectorImagePreviews = persistedConnectorImagePreviews.filter {
+            desiredIDs.contains($0.key)
+        }
+        for descriptor in descriptors where persistedConnectorImagePreviews[descriptor.id] == nil {
+            guard !Task.isCancelled,
+                  let data = await agentConnections.storedArtifactThumbnailData(for: descriptor),
+                  !Task.isCancelled,
+                  let image = UIImage(data: data),
+                  conversation.messages.flatMap(\.attachments).contains(where: {
+                      $0.id == descriptor.id
+                          && $0.connectorArtifact == descriptor.connectorArtifact
+                  }) else { continue }
+            persistedConnectorImagePreviews[descriptor.id] = image
         }
     }
 
@@ -3318,6 +3529,102 @@ private extension View {
             }
             .shadow(color: .black.opacity(0.035), radius: 8, y: 3)
     }
+}
+
+private struct ConnectorArtifactPresentation: Identifiable {
+    let attachment: ConversationAttachmentDescriptor
+    let url: URL
+
+    var id: UUID { attachment.id }
+}
+
+private struct ConnectorArtifactPreview: View {
+    @Environment(\.dismiss) private var dismiss
+    let presentation: ConnectorArtifactPresentation
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch presentation.attachment.kind {
+                case .image:
+                    // Quick Look owns the full-resolution decode. Inline thread previews use a
+                    // separately bounded, off-main thumbnail cache.
+                    ConnectorQuickLookPreview(url: presentation.url)
+                case .video:
+                    ConnectorVideoPreview(url: presentation.url)
+                case .file, .unknown:
+                    ConnectorQuickLookPreview(url: presentation.url)
+                }
+            }
+            .navigationTitle(presentation.attachment.displayName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .accessibilityIdentifier("openclam-openclaw-file-preview")
+    }
+}
+
+private struct ConnectorVideoPreview: View {
+    @State private var player: AVPlayer
+
+    init(url: URL) {
+        _player = State(initialValue: AVPlayer(url: url))
+    }
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .onDisappear { player.pause() }
+            .accessibilityLabel("Generated video preview")
+    }
+}
+
+private struct ConnectorQuickLookPreview: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(
+        _ uiViewController: QLPreviewController,
+        context: Context
+    ) {}
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let url: URL
+
+        init(url: URL) { self.url = url }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+
+        func previewController(
+            _ controller: QLPreviewController,
+            previewItemAt index: Int
+        ) -> QLPreviewItem {
+            url as NSURL
+        }
+    }
+}
+
+private struct ConnectorArtifactShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIActivityViewController,
+        context: Context
+    ) {}
 }
 
 private struct PickerVideoFile: Transferable {

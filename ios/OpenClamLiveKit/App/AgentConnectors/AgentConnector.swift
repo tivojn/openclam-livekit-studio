@@ -18,41 +18,70 @@ struct AgentConnectorWirePayload: Codable, Sendable {
     var ackSeq: Int?
     var turnID: String?
     var accountID: String?
+    var capabilities: [String]?
     var revision: Int?
+    var status: String?
     var text: String?
     var code: String?
     var message: String?
     var retryable: Bool?
     var lastReceivedSeq: Int?
+    var attachmentID: String?
+    var fileName: String?
+    var mediaType: String?
+    var byteCount: Int?
+    var sha256: String?
+    var downloadPath: String?
+    var expiresAt: Int64?
     private(set) var decodedKeys: Set<String> = []
 
     enum CodingKeys: String, CodingKey {
         case ackSeq
         case turnID = "turnId"
         case accountID = "accountId"
-        case revision, text, code, message, retryable, lastReceivedSeq
+        case capabilities, revision, status, text, code, message, retryable, lastReceivedSeq
+        case attachmentID = "attachmentId"
+        case fileName, mediaType, byteCount, sha256, downloadPath, expiresAt
     }
 
     init(
         ackSeq: Int? = nil,
         turnID: String? = nil,
         accountID: String? = nil,
+        capabilities: [String]? = nil,
         revision: Int? = nil,
+        status: String? = nil,
         text: String? = nil,
         code: String? = nil,
         message: String? = nil,
         retryable: Bool? = nil,
-        lastReceivedSeq: Int? = nil
+        lastReceivedSeq: Int? = nil,
+        attachmentID: String? = nil,
+        fileName: String? = nil,
+        mediaType: String? = nil,
+        byteCount: Int? = nil,
+        sha256: String? = nil,
+        downloadPath: String? = nil,
+        expiresAt: Int64? = nil
     ) {
         self.ackSeq = ackSeq
         self.turnID = turnID
         self.accountID = accountID
+        self.capabilities = capabilities
         self.revision = revision
+        self.status = status
         self.text = text
         self.code = code
         self.message = message
         self.retryable = retryable
         self.lastReceivedSeq = lastReceivedSeq
+        self.attachmentID = attachmentID
+        self.fileName = fileName
+        self.mediaType = mediaType
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        self.downloadPath = downloadPath
+        self.expiresAt = expiresAt
     }
 
     init(from decoder: Decoder) throws {
@@ -61,7 +90,9 @@ struct AgentConnectorWirePayload: Codable, Sendable {
             required: [],
             allowed: [
                 "ackSeq", "turnId", "accountId", "revision", "text",
-                "code", "message", "retryable", "lastReceivedSeq",
+                "capabilities", "status", "code", "message", "retryable",
+                "lastReceivedSeq", "attachmentId", "fileName", "mediaType",
+                "byteCount", "sha256", "downloadPath", "expiresAt",
             ]
         )
         let dynamic = try decoder.container(keyedBy: AgentConnectorAnyWireCodingKey.self)
@@ -77,12 +108,21 @@ struct AgentConnectorWirePayload: Codable, Sendable {
         ackSeq = try decodePresent(Int.self, forKey: .ackSeq)
         turnID = try decodePresent(String.self, forKey: .turnID)
         accountID = try decodePresent(String.self, forKey: .accountID)
+        capabilities = try decodePresent([String].self, forKey: .capabilities)
         revision = try decodePresent(Int.self, forKey: .revision)
+        status = try decodePresent(String.self, forKey: .status)
         text = try decodePresent(String.self, forKey: .text)
         code = try decodePresent(String.self, forKey: .code)
         message = try decodePresent(String.self, forKey: .message)
         retryable = try decodePresent(Bool.self, forKey: .retryable)
         lastReceivedSeq = try decodePresent(Int.self, forKey: .lastReceivedSeq)
+        attachmentID = try decodePresent(String.self, forKey: .attachmentID)
+        fileName = try decodePresent(String.self, forKey: .fileName)
+        mediaType = try decodePresent(String.self, forKey: .mediaType)
+        byteCount = try decodePresent(Int.self, forKey: .byteCount)
+        sha256 = try decodePresent(String.self, forKey: .sha256)
+        downloadPath = try decodePresent(String.self, forKey: .downloadPath)
+        expiresAt = try decodePresent(Int64.self, forKey: .expiresAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -90,12 +130,21 @@ struct AgentConnectorWirePayload: Codable, Sendable {
         try container.encodeIfPresent(ackSeq, forKey: .ackSeq)
         try container.encodeIfPresent(turnID, forKey: .turnID)
         try container.encodeIfPresent(accountID, forKey: .accountID)
+        try container.encodeIfPresent(capabilities, forKey: .capabilities)
         try container.encodeIfPresent(revision, forKey: .revision)
+        try container.encodeIfPresent(status, forKey: .status)
         try container.encodeIfPresent(text, forKey: .text)
         try container.encodeIfPresent(code, forKey: .code)
         try container.encodeIfPresent(message, forKey: .message)
         try container.encodeIfPresent(retryable, forKey: .retryable)
         try container.encodeIfPresent(lastReceivedSeq, forKey: .lastReceivedSeq)
+        try container.encodeIfPresent(attachmentID, forKey: .attachmentID)
+        try container.encodeIfPresent(fileName, forKey: .fileName)
+        try container.encodeIfPresent(mediaType, forKey: .mediaType)
+        try container.encodeIfPresent(byteCount, forKey: .byteCount)
+        try container.encodeIfPresent(sha256, forKey: .sha256)
+        try container.encodeIfPresent(downloadPath, forKey: .downloadPath)
+        try container.encodeIfPresent(expiresAt, forKey: .expiresAt)
     }
 }
 
@@ -184,12 +233,22 @@ struct AgentConnectorWireFrame: Codable, Sendable {
             return keys.isSubset(of: ["lastReceivedSeq"])
         case "turn.submit":
             return keys == ["turnId", "accountId", "text"]
+                || keys == ["turnId", "accountId", "text", "capabilities"]
         case "turn.accepted", "turn.cancel":
             return keys == ["turnId"]
         case "assistant.delta":
             return keys == ["turnId", "revision", "text"]
         case "assistant.completed":
             return keys == ["turnId", "text"]
+        case "assistant.activity.upsert":
+            return keys == ["turnId", "revision", "status"]
+        case "assistant.activity.clear":
+            return keys == ["turnId", "revision"]
+        case "assistant.attachment":
+            return keys == [
+                "turnId", "attachmentId", "fileName", "mediaType", "byteCount",
+                "sha256", "downloadPath", "expiresAt",
+            ]
         case "turn.error":
             return keys == ["turnId", "code", "message", "retryable"]
         default:
@@ -375,7 +434,8 @@ struct AgentConnectorInboundValidator {
               try frame.validatedUUID(frame.connectionID) == connectionID,
               [
                 "ack", "heartbeat", "turn.accepted", "assistant.delta",
-                "assistant.completed", "turn.error",
+                "assistant.completed", "assistant.activity.upsert",
+                "assistant.activity.clear", "assistant.attachment", "turn.error",
               ].contains(frame.kind) else {
             throw AgentConnectorError.invalidFrame
         }
@@ -415,6 +475,43 @@ struct AgentConnectorInboundValidator {
             case "assistant.completed":
                 guard let text = frame.payload.text,
                       !text.isEmpty, text.count <= 32_000 else {
+                    throw AgentConnectorError.invalidFrame
+                }
+            case "assistant.activity.upsert":
+                guard let revision = frame.payload.revision,
+                      (1 ... 100_000).contains(revision),
+                      let rawStatus = frame.payload.status,
+                      AgentConnectorActivityStatus(rawValue: rawStatus) != nil else {
+                    throw AgentConnectorError.invalidFrame
+                }
+            case "assistant.activity.clear":
+                guard let revision = frame.payload.revision,
+                      (1 ... 100_000).contains(revision) else {
+                    throw AgentConnectorError.invalidFrame
+                }
+            case "assistant.attachment":
+                guard let rawAttachmentID = frame.payload.attachmentID,
+                      let attachmentID = try? frame.validatedUUID(rawAttachmentID),
+                      let fileName = frame.payload.fileName,
+                      let mediaType = frame.payload.mediaType,
+                      let byteCount = frame.payload.byteCount,
+                      let sha256 = frame.payload.sha256,
+                      let downloadPath = frame.payload.downloadPath,
+                      let expiresAt = frame.payload.expiresAt,
+                      let decodedTurnID,
+                      let attachment = try? AgentConnectorAttachmentMetadata(
+                        connectionID: connectionID,
+                        turnID: decodedTurnID,
+                        attachmentID: attachmentID,
+                        fileName: fileName,
+                        mediaType: mediaType,
+                        byteCount: byteCount,
+                        sha256: sha256,
+                        expiresAtMilliseconds: expiresAt
+                      ).validated(),
+                      attachment.downloadPath == downloadPath,
+                      expiresAt > frame.sentAt,
+                      expiresAt - frame.sentAt <= 7 * 24 * 60 * 60 * 1_000 else {
                     throw AgentConnectorError.invalidFrame
                 }
             case "turn.error":
@@ -565,6 +662,7 @@ struct OpenClawAgentConnector: AgentConnector, Sendable {
     let cursorStore: AgentConnectorCursorStore
     let outboxVault: any AgentConnectorOutboxVault
     let socketConnector: any AgentConnectorSocketConnecting
+    let artifactService: any AgentConnectorArtifactServicing
     let reconnectPolicy: AgentConnectorReconnectPolicy
     let nowMilliseconds: @Sendable () -> Int64
 
@@ -573,6 +671,7 @@ struct OpenClawAgentConnector: AgentConnector, Sendable {
         cursorStore: AgentConnectorCursorStore = AgentConnectorCursorStore(),
         outboxVault: (any AgentConnectorOutboxVault)? = nil,
         socketConnector: any AgentConnectorSocketConnecting = URLSessionAgentConnectorSocketFactory(),
+        artifactService injectedArtifactService: (any AgentConnectorArtifactServicing)? = nil,
         reconnectPolicy: AgentConnectorReconnectPolicy = .production,
         nowMilliseconds: @escaping @Sendable () -> Int64 = {
             Int64(Date().timeIntervalSince1970 * 1_000)
@@ -584,6 +683,8 @@ struct OpenClawAgentConnector: AgentConnector, Sendable {
             gatewayOrigin: origin.canonicalString
         )
         self.socketConnector = socketConnector
+        artifactService = injectedArtifactService
+            ?? OpenClawAgentConnectorArtifactService(origin: origin)
         self.reconnectPolicy = reconnectPolicy
         self.nowMilliseconds = nowMilliseconds
     }
@@ -599,6 +700,7 @@ struct OpenClawAgentConnector: AgentConnector, Sendable {
             request: request,
             clientToken: clientToken,
             socketConnector: socketConnector,
+            artifactService: artifactService,
             reconnectPolicy: reconnectPolicy,
             nowMilliseconds: nowMilliseconds
         )
@@ -635,6 +737,7 @@ extension OpenClawAgentConnector: AgentConnectorPersistentCancellation {
             request: request,
             clientToken: clientToken,
             socketConnector: socketConnector,
+            artifactService: artifactService,
             reconnectPolicy: reconnectPolicy,
             nowMilliseconds: nowMilliseconds
         )
@@ -649,6 +752,7 @@ private actor OpenClawTurnSession {
     private let request: AgentConnectorTurnRequest
     private let clientToken: String
     private let socketConnector: any AgentConnectorSocketConnecting
+    private let artifactService: any AgentConnectorArtifactServicing
     private let reconnectPolicy: AgentConnectorReconnectPolicy
     private let nowMilliseconds: @Sendable () -> Int64
     private var socket: (any AgentConnectorSocket)?
@@ -656,6 +760,7 @@ private actor OpenClawTurnSession {
     private var pendingTurn: AgentConnectorPendingTurn?
     private var inboundValidator: AgentConnectorInboundValidator
     private var lastRevision = 0
+    private var lastActivityRevision = 0
 
     init(
         origin: AgentConnectorOrigin,
@@ -664,6 +769,7 @@ private actor OpenClawTurnSession {
         request: AgentConnectorTurnRequest,
         clientToken: String,
         socketConnector: any AgentConnectorSocketConnecting,
+        artifactService: any AgentConnectorArtifactServicing,
         reconnectPolicy: AgentConnectorReconnectPolicy,
         nowMilliseconds: @escaping @Sendable () -> Int64
     ) {
@@ -673,6 +779,7 @@ private actor OpenClawTurnSession {
         self.request = request
         self.clientToken = clientToken
         self.socketConnector = socketConnector
+        self.artifactService = artifactService
         self.reconnectPolicy = reconnectPolicy
         self.nowMilliseconds = nowMilliseconds
         inboundValidator = AgentConnectorInboundValidator(
@@ -695,8 +802,12 @@ private actor OpenClawTurnSession {
         _ = try AgentConnectorTokenValidator.normalized(clientToken)
         let durableTurn = try loadOrCreatePendingTurn()
         pendingTurn = durableTurn
+        yield(.submissionSaved)
         if durableTurn.isExpired(at: nowMilliseconds()) {
             throw AgentConnectorError.recoveryExpired
+        }
+        for attachment in durableTurn.attachments ?? [] {
+            yield(.attachment(attachment))
         }
         if let terminal = durableTurn.terminal {
             isTerminal = true
@@ -720,6 +831,15 @@ private actor OpenClawTurnSession {
         if durableTurn.cancelFrame != nil {
             try await flushCancellation()
             throw CancellationError()
+        }
+
+        if let activity = durableTurn.activity {
+            lastActivityRevision = activity.revision
+            if activity.status == nil {
+                yield(.activityCleared(revision: activity.revision))
+            } else {
+                yield(.activity(activity))
+            }
         }
 
         socket = try openSocket()
@@ -823,12 +943,77 @@ private actor OpenClawTurnSession {
                     try await acknowledge(frame)
                     continue
                 case "turn.accepted":
-                    guard !accepted else { throw AgentConnectorError.invalidFrame }
+                    if accepted {
+                        // The accepted bit is saved before its ACK. If the process exits in
+                        // that narrow window, the relay must be able to replay the same
+                        // strictly validated lifecycle event without stranding the turn.
+                        guard pendingTurn?.turnAccepted == true else {
+                            throw AgentConnectorError.invalidFrame
+                        }
+                        try await acknowledge(frame)
+                        continue
+                    }
                     try persistAcceptedTurn()
                     try await acknowledge(frame)
                     accepted = true
                     submitIsDurablyPersisted = true
                     yield(.accepted)
+                case "assistant.activity.upsert":
+                    guard accepted,
+                          let revision = frame.payload.revision,
+                          let rawStatus = frame.payload.status,
+                          let status = AgentConnectorActivityStatus(rawValue: rawStatus) else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    let activity = try AgentConnectorActivityUpdate(
+                        revision: revision,
+                        status: status
+                    ).validated()
+                    if revision == lastActivityRevision {
+                        guard pendingTurn?.activity == activity else {
+                            throw AgentConnectorError.invalidFrame
+                        }
+                        try await acknowledge(frame)
+                        continue
+                    }
+                    guard revision > lastActivityRevision else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    try persistActivity(activity)
+                    try await acknowledge(frame)
+                    lastActivityRevision = revision
+                    yield(.activity(activity))
+                case "assistant.activity.clear":
+                    guard accepted,
+                          let revision = frame.payload.revision else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    let activity = try AgentConnectorActivityUpdate(
+                        revision: revision,
+                        status: nil
+                    ).validated()
+                    if revision == lastActivityRevision {
+                        guard pendingTurn?.activity == activity else {
+                            throw AgentConnectorError.invalidFrame
+                        }
+                        try await acknowledge(frame)
+                        continue
+                    }
+                    guard revision > lastActivityRevision else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    try persistActivity(activity)
+                    try await acknowledge(frame)
+                    lastActivityRevision = revision
+                    yield(.activityCleared(revision: revision))
+                case "assistant.attachment":
+                    guard accepted else { throw AgentConnectorError.invalidFrame }
+                    // The relay may delete its blob as soon as this frame is ACKed. Full GET,
+                    // exact verification, Complete/no-backup storage, and durable turn binding
+                    // therefore all happen before the acknowledgement is sent.
+                    let stored = try await downloadAndPersistAttachment(from: frame)
+                    try await acknowledge(frame)
+                    yield(.attachment(stored))
                 case "assistant.delta":
                     guard accepted,
                           let revision = frame.payload.revision,
@@ -866,6 +1051,13 @@ private actor OpenClawTurnSession {
                           !code.isEmpty, code.count <= 64,
                           !message.isEmpty, message.count <= 240 else {
                         throw AgentConnectorError.invalidFrame
+                    }
+                    let discardedAttachments = pendingTurn?.attachments ?? []
+                    if !discardedAttachments.isEmpty {
+                        await artifactService.deleteArtifacts(
+                            discardedAttachments.map(\.metadata.conversationReference)
+                        )
+                        try clearPendingAttachments()
                     }
                     try persistTerminal(.failed(
                         code: String(code.prefix(64)),
@@ -947,6 +1139,7 @@ private actor OpenClawTurnSession {
             payload: .init(
                 turnID: request.turnID.uuidString.lowercased(),
                 accountID: request.accountID,
+                capabilities: ["activity-v1", "attachments-v1"],
                 text: request.text
             )
         )
@@ -1001,6 +1194,86 @@ private actor OpenClawTurnSession {
         }
         turn.submitDurablyPersisted = true
         turn.terminal = try terminal.validated()
+        try outboxVault.save(turn)
+        pendingTurn = turn
+    }
+
+    private func persistActivity(_ activity: AgentConnectorActivityUpdate) throws {
+        guard var turn = pendingTurn else {
+            throw AgentConnectorError.invalidFrame
+        }
+        turn.activity = try activity.validated()
+        try outboxVault.save(turn)
+        pendingTurn = turn
+    }
+
+    private func downloadAndPersistAttachment(
+        from frame: AgentConnectorWireFrame
+    ) async throws -> AgentConnectorStoredAttachment {
+        guard frame.kind == "assistant.attachment",
+              let rawAttachmentID = frame.payload.attachmentID,
+              let attachmentID = try? frame.validatedUUID(rawAttachmentID),
+              let fileName = frame.payload.fileName,
+              let mediaType = frame.payload.mediaType,
+              let byteCount = frame.payload.byteCount,
+              let sha256 = frame.payload.sha256,
+              let downloadPath = frame.payload.downloadPath,
+              let expiresAt = frame.payload.expiresAt else {
+            throw AgentConnectorError.invalidFrame
+        }
+        let metadata = try AgentConnectorAttachmentMetadata(
+            connectionID: request.connectionID,
+            turnID: request.turnID,
+            attachmentID: attachmentID,
+            fileName: fileName,
+            mediaType: mediaType,
+            byteCount: byteCount,
+            sha256: sha256,
+            expiresAtMilliseconds: expiresAt
+        ).validated(nowMilliseconds: nowMilliseconds())
+        guard metadata.downloadPath == downloadPath else {
+            throw AgentConnectorError.invalidFrame
+        }
+        let stored = try await artifactService.downloadAndStore(
+            metadata,
+            clientToken: clientToken
+        )
+        try persistAttachment(stored)
+        return stored
+    }
+
+    private func persistAttachment(_ rawAttachment: AgentConnectorStoredAttachment) throws {
+        let attachment = try rawAttachment.validated()
+        guard var turn = pendingTurn,
+              attachment.metadata.connectionID == request.connectionID,
+              attachment.metadata.turnID == request.turnID else {
+            throw AgentConnectorError.invalidFrame
+        }
+        var attachments = turn.attachments ?? []
+        if let existing = attachments.first(where: {
+            $0.metadata.attachmentID == attachment.metadata.attachmentID
+        }) {
+            guard existing == attachment else {
+                throw AgentConnectorError.invalidFrame
+            }
+            return
+        }
+        attachments.append(attachment)
+        guard attachments.count <= 8,
+              attachments.reduce(0, { $0 + $1.metadata.byteCount })
+                <= 64 * 1_024 * 1_024 else {
+            throw AgentConnectorError.responseTooLarge
+        }
+        turn.attachments = attachments
+        try outboxVault.save(turn)
+        pendingTurn = turn
+    }
+
+    private func clearPendingAttachments() throws {
+        guard var turn = pendingTurn else {
+            throw AgentConnectorError.invalidFrame
+        }
+        turn.attachments = nil
         try outboxVault.save(turn)
         pendingTurn = turn
     }
@@ -1072,6 +1345,10 @@ private actor OpenClawTurnSession {
                             outboundFrame: cancelFrame
                         )
                         if disposition == .matching {
+                            await artifactService.deleteArtifacts(
+                                (pendingTurn?.attachments ?? [])
+                                    .map(\.metadata.conversationReference)
+                            )
                             try outboxVault.delete(
                                 connectionID: request.connectionID,
                                 turnID: request.turnID
@@ -1095,8 +1372,26 @@ private actor OpenClawTurnSession {
                         throw AgentConnectorError.invalidFrame
                     }
                     let disposition = try inboundValidator.validate(frame)
-                    if disposition != .unrelated,
-                       frame.kind == "assistant.completed",
+                    if disposition == .alreadyAcknowledged {
+                        if frame.kind != "ack" {
+                            try await sendAcknowledgement(frame.seq)
+                        }
+                        continue
+                    }
+                    if disposition == .unrelated {
+                        try await sendAcknowledgement(frame.seq)
+                        cursorStore.acknowledgeInbound(
+                            frame.seq,
+                            connectionID: request.connectionID
+                        )
+                        continue
+                    }
+                    if frame.kind == "assistant.attachment" {
+                        _ = try await downloadAndPersistAttachment(from: frame)
+                        try await acknowledge(frame)
+                        continue
+                    }
+                    if frame.kind == "assistant.completed",
                        let text = frame.payload.text {
                         // The terminal won the race, so preserve it for history
                         // reconciliation instead of overwriting it with cancellation.
@@ -1104,10 +1399,16 @@ private actor OpenClawTurnSession {
                         try await acknowledge(frame)
                         return
                     }
-                    if disposition != .unrelated,
-                       frame.kind == "turn.error",
+                    if frame.kind == "turn.error",
                        let code = frame.payload.code,
                        let message = frame.payload.message {
+                        let discardedAttachments = pendingTurn?.attachments ?? []
+                        if !discardedAttachments.isEmpty {
+                            await artifactService.deleteArtifacts(
+                                discardedAttachments.map(\.metadata.conversationReference)
+                            )
+                            try clearPendingAttachments()
+                        }
                         try persistTerminal(.failed(code: code, message: message))
                         try await acknowledge(frame)
                         return

@@ -14,6 +14,9 @@
         "turn.submit",
         "turn.accepted",
         "assistant.delta",
+        "assistant.activity.upsert",
+        "assistant.activity.clear",
+        "assistant.attachment",
         "assistant.completed",
         "turn.cancel",
         "turn.error",
@@ -32,6 +35,9 @@
     "uuid": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "capability": {
+      "enum": ["activity-v1", "attachments-v1"]
     }
   },
   "allOf": [
@@ -88,7 +94,13 @@
             "properties": {
               "turnId": { "$ref": "#/$defs/uuid" },
               "accountId": { "type": "string", "minLength": 1, "maxLength": 64 },
-              "text": { "type": "string", "minLength": 1, "maxLength": 32000 }
+              "text": { "type": "string", "minLength": 1, "maxLength": 32000 },
+              "capabilities": {
+                "type": "array",
+                "maxItems": 2,
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/capability" }
+              }
             }
           }
         }
@@ -121,6 +133,95 @@
               "turnId": { "$ref": "#/$defs/uuid" },
               "revision": { "type": "integer", "minimum": 1, "maximum": 100000 },
               "text": { "type": "string", "maxLength": 32000 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "assistant.activity.upsert" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId", "revision", "status"],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "revision": { "type": "integer", "minimum": 1, "maximum": 100000 },
+              "status": {
+                "enum": [
+                  "thinking",
+                  "planning",
+                  "searching",
+                  "reading",
+                  "editing",
+                  "running_action",
+                  "using_tools",
+                  "creating_media",
+                  "preparing_files",
+                  "waiting_for_approval",
+                  "finalizing"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "assistant.activity.clear" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId", "revision"],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "revision": { "type": "integer", "minimum": 1, "maximum": 100000 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "assistant.attachment" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "turnId",
+              "attachmentId",
+              "fileName",
+              "mediaType",
+              "byteCount",
+              "sha256",
+              "downloadPath",
+              "expiresAt"
+            ],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "attachmentId": { "$ref": "#/$defs/uuid" },
+              "fileName": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "mediaType": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 127,
+                "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$"
+              },
+              "byteCount": { "type": "integer", "minimum": 1, "maximum": 33554432 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "downloadPath": {
+                "type": "string",
+                "pattern": "^/v1/connectors/[0-9a-f-]{36}/attachments/[0-9a-f-]{36}$"
+              },
+              "expiresAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
             }
           }
         }

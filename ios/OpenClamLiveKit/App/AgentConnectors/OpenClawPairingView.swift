@@ -69,7 +69,7 @@ struct OpenClawPairingView: View {
                     } header: {
                         Text("Pair with OpenClaw")
                     } footer: {
-                        Text("Create a one-time OpenClam pairing code on your OpenClaw host, then enter it here. The code expires quickly and is never saved. OpenClam stores only a revocable, device-only connection token.")
+                        Text("Create a one-time OpenClam pairing code on your OpenClaw host, then enter it here. The code expires quickly and is never saved. OpenClam saves the gateway and agent labels needed for this connection, while its revocable client token stays in device-only Keychain.")
                     }
                 }
 
@@ -82,8 +82,9 @@ struct OpenClawPairingView: View {
                 }
 
                 Section("Privacy boundary") {
-                    Label("Text messages only", systemImage: "text.bubble")
-                    Label("No iPhone tools or attachments", systemImage: "iphone.slash")
+                    Label("Text-only requests", systemImage: "text.bubble")
+                    Label("No iPhone tools or file uploads", systemImage: "iphone.slash")
+                    Label("Verified generated files can be received", systemImage: "doc.badge.arrow.down")
                     Label("No AI provider keys are shared", systemImage: "key.slash")
                 }
             }

@@ -29,10 +29,15 @@ not release inputs. OpenClaw adapter credentials and sequence state are private
 runtime files beneath the OpenClaw state directory and must never enter source
 or release archives.
 
-The OpenClaw connector is text-only and fail-closed. It must not expose a
-Gateway owner token, provider key, attachment, local iPhone tool, or approval
-surface. Pairing credentials are role-scoped and revocable; token verifiers are
-persisted instead of raw bridge tokens; pending text is encrypted and bounded.
+The OpenClaw connector accepts text-only input and is fail-closed. It must not
+expose a Gateway owner token, provider key, local iPhone file or tool, reasoning,
+tool argument or output, or approval surface. A capability-gated extension may
+deliver generated files through authenticated, bounded storage; iOS verifies
+their declared type, length, and SHA-256 before persisting them. Sensitive media
+is excluded. Pairing credentials are role-scoped and revocable; token verifiers
+are persisted instead of raw bridge tokens. Pending relay frames are encrypted
+at rest. Generated-file metadata is bounded, contains no source path or bearer
+credential, and is deleted on acknowledgement, error, revocation, or expiry.
 The pilot requires App Attest and verified-installation rate limiting before
 public-user distribution.
 

@@ -9,15 +9,21 @@ struct MarkdownMessageView: View {
     let message: ConversationMessage
     let localImagePreviews: [UUID: UIImage]
     let onAskAISelection: ((String) -> Void)?
+    let onOpenAttachment: ((ConversationAttachmentDescriptor) -> Void)?
+    let onShareAttachment: ((ConversationAttachmentDescriptor) -> Void)?
 
     init(
         message: ConversationMessage,
         localImagePreviews: [UUID: UIImage] = [:],
-        onAskAISelection: ((String) -> Void)? = nil
+        onAskAISelection: ((String) -> Void)? = nil,
+        onOpenAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil,
+        onShareAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil
     ) {
         self.message = message
         self.localImagePreviews = localImagePreviews
         self.onAskAISelection = onAskAISelection
+        self.onOpenAttachment = onOpenAttachment
+        self.onShareAttachment = onShareAttachment
     }
 
     var body: some View {
@@ -130,7 +136,8 @@ struct MarkdownMessageView: View {
             ? localImagePreviews[attachment.id]
             : nil
 
-        return HStack(alignment: .top, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 10) {
             if let localPreview {
                 Image(uiImage: localPreview)
                     .resizable()
@@ -158,7 +165,9 @@ struct MarkdownMessageView: View {
                         .lineLimit(2)
                 }
                 if attachment.kind == .image, localPreview == nil {
-                    Text("Image preview isn’t stored; metadata only.")
+                    Text(attachment.connectorArtifact == nil
+                         ? "Image preview isn’t stored; metadata only."
+                         : "Tap Open to preview the verified image.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -166,6 +175,37 @@ struct MarkdownMessageView: View {
             }
 
             Spacer(minLength: 0)
+            }
+
+            if attachment.connectorArtifact != nil,
+               onOpenAttachment != nil || onShareAttachment != nil {
+                HStack(spacing: 10) {
+                    if let onOpenAttachment {
+                        Button {
+                            onOpenAttachment(attachment)
+                        } label: {
+                            Label("Open", systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .accessibilityIdentifier(
+                            "openclam-openclaw-file-open-\(attachment.id.uuidString)"
+                        )
+                    }
+                    if let onShareAttachment {
+                        Button {
+                            onShareAttachment(attachment)
+                        } label: {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier(
+                            "openclam-openclaw-file-share-\(attachment.id.uuidString)"
+                        )
+                    }
+                }
+            }
         }
         .padding(8)
         .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
@@ -173,7 +213,9 @@ struct MarkdownMessageView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(.quaternary, lineWidth: 1)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(
+            children: attachment.connectorArtifact == nil ? .combine : .contain
+        )
         .accessibilityLabel(
             attachment.accessibilityDescription
                 + (localPreview == nil || attachment.kind != .image

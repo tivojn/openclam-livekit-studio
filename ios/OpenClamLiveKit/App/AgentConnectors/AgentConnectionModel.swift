@@ -25,6 +25,7 @@ final class AgentConnectionModel: ObservableObject {
     private let connector: (any AgentConnector)?
     private let tokenVault: any AgentConnectorTokenVault
     private let outboxVault: any AgentConnectorOutboxVault
+    private let artifactService: (any AgentConnectorArtifactServicing)?
     private var activeConnectionIDs: Set<UUID> = []
 
     init(
@@ -34,6 +35,7 @@ final class AgentConnectionModel: ObservableObject {
         pairingService injectedPairingService: (any AgentConnectorPairingServicing)? = nil,
         revocationService injectedRevocationService: (any AgentConnectorRevocationServicing)? = nil,
         connector injectedConnector: (any AgentConnector)? = nil,
+        artifactService injectedArtifactService: (any AgentConnectorArtifactServicing)? = nil,
         tokenVault injectedTokenVault: (any AgentConnectorTokenVault)? = nil,
         outboxVault injectedOutboxVault: (any AgentConnectorOutboxVault)? = nil
     ) {
@@ -48,9 +50,13 @@ final class AgentConnectionModel: ObservableObject {
                 )
             pairingService = injectedPairingService ?? OpenClawPairingClient(origin: origin)
             revocationService = injectedRevocationService ?? OpenClawRevocationClient(origin: origin)
+            let resolvedArtifactService = injectedArtifactService
+                ?? OpenClawAgentConnectorArtifactService(origin: origin)
+            artifactService = resolvedArtifactService
             connector = injectedConnector ?? OpenClawAgentConnector(
                 origin: origin,
-                outboxVault: resolvedOutbox
+                outboxVault: resolvedOutbox,
+                artifactService: resolvedArtifactService
             )
             tokenVault = injectedTokenVault ?? KeychainAgentConnectorTokenVault(
                 gatewayOrigin: origin.canonicalString
@@ -60,6 +66,7 @@ final class AgentConnectionModel: ObservableObject {
             pairingService = injectedPairingService
             revocationService = injectedRevocationService
             connector = injectedConnector
+            artifactService = injectedArtifactService
             tokenVault = injectedTokenVault ?? KeychainAgentConnectorTokenVault(
                 gatewayOrigin: "unconfigured"
             )
@@ -73,6 +80,9 @@ final class AgentConnectionModel: ObservableObject {
             connections = decoded.compactMap { try? $0.validated() }
         } else {
             connections = []
+        }
+        if let artifactService {
+            Task { await artifactService.pruneInvalidArtifacts() }
         }
     }
 
@@ -189,6 +199,17 @@ final class AgentConnectionModel: ObservableObject {
         return matches.first
     }
 
+    func pendingTurn(forConnectionID connectionID: UUID) throws
+        -> AgentConnectorPendingTurn? {
+        let matches = try outboxVault.loadAll().filter {
+            $0.connectionID == connectionID
+        }
+        guard matches.count <= 1 else {
+            throw AgentConnectorError.invalidFrame
+        }
+        return matches.first
+    }
+
     func pendingTurn(
         connectionID: UUID,
         turnID: UUID
@@ -231,6 +252,55 @@ final class AgentConnectionModel: ObservableObject {
             throw AgentConnectorError.missingClientToken
         }
         try await cancellation.cancelTurn(turn.request, clientToken: token)
+    }
+
+    func storedArtifactURL(
+        for descriptor: ConversationAttachmentDescriptor
+    ) async -> URL? {
+        guard let reference = descriptor.connectorArtifact else { return nil }
+        return await artifactService?.storedURL(for: reference)
+    }
+
+    func storedArtifactThumbnailData(
+        for descriptor: ConversationAttachmentDescriptor
+    ) async -> Data? {
+        guard descriptor.kind == .image,
+              let reference = descriptor.connectorArtifact,
+              let url = await artifactService?.storedURL(for: reference) else {
+            return nil
+        }
+        return await AgentConnectorArtifactThumbnailCache.shared.thumbnailData(
+            for: url,
+            cacheKey: reference.sha256
+        )
+    }
+
+    func threadDeletionBlockReason(for conversationID: UUID) throws -> String? {
+        guard try pendingTurn(for: conversationID) != nil else { return nil }
+        return "This chat has an OpenClaw message waiting to finish or cancel. Open it and resolve that message before deleting the chat."
+    }
+
+    func deleteArtifacts(
+        _ references: [ConversationConnectorArtifactReference]
+    ) async {
+        await artifactService?.deleteArtifacts(references)
+    }
+
+    func deleteArtifacts(
+        referencedBy messages: [ConversationMessage]
+    ) async {
+        let references = messages.flatMap(\.attachments).compactMap(\.connectorArtifact)
+        await artifactService?.deleteArtifacts(references)
+    }
+
+    func reconcileArtifacts(referencedBy messages: [ConversationMessage]) async {
+        var references = messages.flatMap(\.attachments).compactMap(\.connectorArtifact)
+        if let pending = try? outboxVault.loadAll() {
+            references.append(contentsOf: pending.flatMap { turn in
+                (turn.attachments ?? []).map(\.metadata.conversationReference)
+            })
+        }
+        await artifactService?.reconcileArtifacts(retaining: references)
     }
 
     private func beginStream(

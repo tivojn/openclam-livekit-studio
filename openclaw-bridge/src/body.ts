@@ -61,6 +61,31 @@ export async function readBoundedRequestBody(
   }
 }
 
+export async function requireEmptyRequestBody(request: Request): Promise<void> {
+  const contentLength = request.headers.get("Content-Length");
+  if (
+    contentLength !== null &&
+    (!/^\d+$/.test(contentLength) || Number(contentLength) !== 0)
+  ) {
+    throw new HttpError(400, "invalid_request");
+  }
+  if (request.body === null) return;
+
+  const reader = request.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value.byteLength > 0) {
+        await cancelQuietly(reader);
+        throw new HttpError(400, "invalid_request");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export function parseJsonBody(text: string): unknown {
   try {
     return JSON.parse(text);
