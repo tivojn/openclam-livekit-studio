@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclam.dev/contracts/agent-connector-v1/pairing.schema.json",
+  "title": "OpenClam Agent Connector v1 pairing payloads",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "agentId", "displayName"],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+        },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 }
+      }
+    },
+    "createRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "adapterId", "gatewayLabel", "accounts"],
+      "properties": {
+        "v": { "const": 1 },
+        "adapterId": { "$ref": "#/$defs/uuid" },
+        "gatewayLabel": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "accounts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/account" }
+        }
+      }
+    },
+    "createResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "pairingId", "connectionId", "code", "expiresAt", "adapterToken"],
+      "properties": {
+        "v": { "const": 1 },
+        "pairingId": { "$ref": "#/$defs/uuid" },
+        "connectionId": { "$ref": "#/$defs/uuid" },
+        "code": {
+          "type": "string",
+          "pattern": "^OC-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$"
+        },
+        "expiresAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "adapterToken": { "type": "string", "minLength": 40, "maxLength": 128 }
+      }
+    },
+    "redeemRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "code", "installationId", "deviceLabel"],
+      "properties": {
+        "v": { "const": 1 },
+        "code": {
+          "type": "string",
+          "pattern": "^OC-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$"
+        },
+        "installationId": { "$ref": "#/$defs/uuid" },
+        "deviceLabel": { "type": "string", "minLength": 1, "maxLength": 80 }
+      }
+    },
+    "redeemResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "connectionId", "gatewayLabel", "accounts", "clientToken"],
+      "properties": {
+        "v": { "const": 1 },
+        "connectionId": { "$ref": "#/$defs/uuid" },
+        "gatewayLabel": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "accounts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/account" }
+        },
+        "clientToken": { "type": "string", "minLength": 40, "maxLength": 128 }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_request",
+                "unauthorized",
+                "pairing_expired",
+                "pairing_locked",
+                "pairing_consumed",
+                "not_found",
+                "rate_limited",
+                "unavailable"
+              ]
+            },
+            "message": { "type": "string", "minLength": 1, "maxLength": 160 }
+          }
+        }
+      }
+    }
+  }
+}

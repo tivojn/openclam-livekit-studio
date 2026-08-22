@@ -1,0 +1,6 @@
+// Independent OpenClam Agent Connector bridge. Put the exact HTTPS origin in
+// AgentConnector.local.xcconfig, which is gitignored. Origins with paths,
+// credentials, queries, fragments, redirects, or non-HTTPS schemes are rejected.
+OPENCLAM_AGENT_CONNECTOR_ORIGIN =
+
+#include? "AgentConnector.local.xcconfig"

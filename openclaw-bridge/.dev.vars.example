@@ -1,0 +1,8 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+# Generate bearer/pepper values independently with URL-safe hex:
+# openssl rand -hex 32
+BRIDGE_BOOTSTRAP_TOKEN="replace-with-a-long-random-bootstrap-token"
+PAIRING_CODE_PEPPER="replace-with-a-long-random-pairing-pepper"
+TOKEN_VERIFIER_PEPPER="replace-with-a-long-random-token-pepper"
+# Exactly 32 random bytes, standard base64: openssl rand -base64 32
+PENDING_EVENT_KEK_B64="replace-with-a-32-byte-base64-key"

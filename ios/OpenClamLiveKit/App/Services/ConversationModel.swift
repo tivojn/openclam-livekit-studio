@@ -220,6 +220,9 @@ final class ConversationModel: ObservableObject {
     @Published private(set) var isHistoryReady = false
     @Published private(set) var isChangingChat = false
     @Published private(set) var isWorking = false
+    /// Ephemeral cumulative remote reply. It is never written to history; only the authoritative
+    /// completion becomes one assistant message.
+    @Published private(set) var streamingAssistantReply: String?
     @Published private(set) var screenshotData: Data?
     @Published var observedText = ""
     @Published var screenshotAIShareText = ""
@@ -879,12 +882,46 @@ final class ConversationModel: ObservableObject {
         }
     }
 
-    func submit(_ rawInput: String, aiConfiguration: AIConfigurationModel? = nil) async {
+    func submit(
+        _ rawInput: String,
+        aiConfiguration: AIConfigurationModel? = nil,
+        agentConnections: AgentConnectionModel? = nil
+    ) async {
         guard canAcceptUserTurn else { return }
         let input = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         stopSpeechOutput()
         pendingScreenContextSubmission = nil
+
+        if let aiConfiguration,
+           let remoteBinding = aiConfiguration.conversationRoute(
+            for: historyController.selectedThreadID
+           ).connectorBinding {
+            await preparePresentationForNewTurn(preserving: .unknown)
+            let submittedMessage = ConversationMessage(
+                role: .user,
+                text: input,
+                isEligibleForAIContext: false
+            )
+            messages.append(submittedMessage)
+            isWorking = true
+            defer { isWorking = false }
+            guard await persistConversationHistory() else {
+                reply(
+                    "OpenClam could not safely save this message, so it was not sent to OpenClaw.",
+                    isEligibleForAIContext: false,
+                    historyPersistence: .ephemeral
+                )
+                return
+            }
+            await submitToRemoteAgent(
+                input,
+                binding: remoteBinding,
+                submittedMessageID: submittedMessage.id,
+                agentConnections: agentConnections
+            )
+            return
+        }
 
         let localIntent = router.route(input)
         await preparePresentationForNewTurn(preserving: localIntent)
@@ -931,6 +968,279 @@ final class ConversationModel: ObservableObject {
             using: aiConfiguration,
             latestUserInput: input,
             submittedMessageID: submittedMessage.id
+        )
+    }
+
+    private func submitToRemoteAgent(
+        _ input: String,
+        binding: AvatarAgentConnectorBinding,
+        submittedMessageID: UUID,
+        agentConnections: AgentConnectionModel?
+    ) async {
+        streamingAssistantReply = nil
+        defer { streamingAssistantReply = nil }
+        guard let agentConnections,
+              let conversationID = historyController.selectedThreadID else {
+            reply(AgentConnectorError.missingConnection.localizedDescription,
+                  isEligibleForAIContext: false)
+            return
+        }
+        let turnID = UUID()
+        let assistantMessageID = UUID()
+        do {
+            let stream = try agentConnections.streamTurn(
+                binding: binding,
+                conversationID: conversationID,
+                turnID: turnID,
+                userMessageID: submittedMessageID,
+                assistantMessageID: assistantMessageID,
+                text: input
+            )
+            await consumeRemoteAgentStream(
+                stream,
+                connectionID: binding.connectionID,
+                turnID: turnID,
+                assistantMessageID: assistantMessageID,
+                agentConnections: agentConnections
+            )
+        } catch {
+            await reconcileRemoteAgentFailure(
+                error,
+                connectionID: binding.connectionID,
+                turnID: turnID,
+                assistantMessageID: assistantMessageID,
+                agentConnections: agentConnections
+            )
+        }
+    }
+
+    func recoverPendingRemoteTurnIfNeeded(
+        aiConfiguration: AIConfigurationModel,
+        agentConnections: AgentConnectionModel
+    ) async {
+        guard isHistoryReady,
+              !isWorking,
+              let conversationID = historyController.selectedThreadID else {
+            return
+        }
+        let pending: AgentConnectorPendingTurn
+        do {
+            guard let value = try agentConnections.pendingTurn(
+                for: conversationID
+            ) else { return }
+            pending = value
+        } catch {
+            appendRemoteRecoveryNotice(
+                error.localizedDescription,
+                id: UUID()
+            )
+            return
+        }
+        guard aiConfiguration.conversationRoute(for: conversationID)
+            == .remote(pending.binding) else {
+            appendRemoteRecoveryNotice(
+                "This saved OpenClaw message belongs to a different chat route, so it was not resumed.",
+                id: pending.assistantMessageID
+            )
+            return
+        }
+
+        if historyController.selectedMessages.contains(where: {
+            $0.id == pending.assistantMessageID && $0.role == .assistant
+        }) {
+            try? agentConnections.finishPendingTurn(
+                connectionID: pending.connectionID,
+                turnID: pending.turnID
+            )
+            return
+        }
+
+        if !messages.contains(where: { $0.id == pending.userMessageID }) {
+            messages.append(
+                .init(
+                    id: pending.userMessageID,
+                    role: .user,
+                    text: pending.userText,
+                    date: Date(
+                        timeIntervalSince1970:
+                            TimeInterval(pending.createdAtMilliseconds) / 1_000
+                    ),
+                    isEligibleForAIContext: false
+                )
+            )
+        }
+        guard await persistConversationHistory() else {
+            appendRemoteRecoveryNotice(
+                "OpenClam could not safely restore the saved message yet. It has not been sent again.",
+                id: pending.assistantMessageID
+            )
+            return
+        }
+
+        isWorking = true
+        defer {
+            isWorking = false
+            streamingAssistantReply = nil
+        }
+        do {
+            let stream = try agentConnections.resumePendingTurn(pending)
+            await consumeRemoteAgentStream(
+                stream,
+                connectionID: pending.connectionID,
+                turnID: pending.turnID,
+                assistantMessageID: pending.assistantMessageID,
+                agentConnections: agentConnections
+            )
+        } catch {
+            await reconcileRemoteAgentFailure(
+                error,
+                connectionID: pending.connectionID,
+                turnID: pending.turnID,
+                assistantMessageID: pending.assistantMessageID,
+                agentConnections: agentConnections
+            )
+        }
+    }
+
+    private func consumeRemoteAgentStream(
+        _ stream: AsyncThrowingStream<AgentConnectorStreamEvent, Error>,
+        connectionID: UUID,
+        turnID: UUID,
+        assistantMessageID: UUID,
+        agentConnections: AgentConnectionModel
+    ) async {
+        do {
+            var completedText: String?
+            for try await event in stream {
+                try Task.checkCancellation()
+                switch event {
+                case .accepted:
+                    break
+                case let .cumulativeText(text):
+                    guard completedText == nil else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    streamingAssistantReply = text
+                case let .completed(text):
+                    guard completedText == nil else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    completedText = text
+                }
+            }
+            guard let completedText else {
+                throw AgentConnectorError.connectionUnavailable
+            }
+            messages.removeAll { $0.id == assistantMessageID }
+            reply(
+                completedText,
+                id: assistantMessageID,
+                isEligibleForAIContext: false
+            )
+            if await persistConversationHistory() {
+                try? agentConnections.finishPendingTurn(
+                    connectionID: connectionID,
+                    turnID: turnID
+                )
+            }
+        } catch {
+            await reconcileRemoteAgentFailure(
+                error,
+                connectionID: connectionID,
+                turnID: turnID,
+                assistantMessageID: assistantMessageID,
+                agentConnections: agentConnections
+            )
+        }
+    }
+
+    private func reconcileRemoteAgentFailure(
+        _ originalError: Error,
+        connectionID: UUID,
+        turnID: UUID,
+        assistantMessageID: UUID,
+        agentConnections: AgentConnectionModel
+    ) async {
+        var resolvedError = originalError
+        var cancellationWasPersisted = false
+        if originalError is CancellationError {
+            let cancellationTask = Task { @MainActor in
+                try await agentConnections.cancelPendingTurn(
+                    connectionID: connectionID,
+                    turnID: turnID
+                )
+            }
+            do {
+                try await cancellationTask.value
+            } catch {
+                resolvedError = error
+            }
+            do {
+                cancellationWasPersisted = try agentConnections.pendingTurn(
+                    connectionID: connectionID,
+                    turnID: turnID
+                ) == nil
+            } catch {
+                cancellationWasPersisted = false
+                resolvedError = error
+            }
+        }
+
+        let pendingTurn: AgentConnectorPendingTurn?
+        do {
+            pendingTurn = try agentConnections.pendingTurn(
+                connectionID: connectionID,
+                turnID: turnID
+            )
+        } catch {
+            pendingTurn = nil
+        }
+        let terminal = pendingTurn?.terminal
+        let connectorError = resolvedError as? AgentConnectorError
+        let isDurableOutcome = terminal != nil
+            || cancellationWasPersisted
+            || connectorError == .recoveryExpired
+
+        messages.removeAll { $0.id == assistantMessageID }
+        let text: String
+        if let terminal {
+            switch terminal.kind {
+            case .completed:
+                text = terminal.text
+                    ?? AgentConnectorError.invalidFrame.localizedDescription
+            case .failed:
+                text = terminal.message
+                    ?? AgentConnectorError.invalidFrame.localizedDescription
+            }
+        } else if cancellationWasPersisted {
+            text = "That OpenClaw message was cancelled. It was not sent to the On iPhone model."
+        } else if originalError is CancellationError,
+                  pendingTurn?.cancelFrame != nil {
+            text = "OpenClam saved your cancellation and will finish it when the OpenClaw connection returns."
+        } else {
+            text = resolvedError.localizedDescription
+        }
+        reply(
+            text,
+            id: assistantMessageID,
+            isEligibleForAIContext: false,
+            historyPersistence: isDurableOutcome ? .history : .ephemeral
+        )
+        if isDurableOutcome, await persistConversationHistory() {
+            try? agentConnections.finishPendingTurn(
+                connectionID: connectionID,
+                turnID: turnID
+            )
+        }
+    }
+
+    private func appendRemoteRecoveryNotice(_ text: String, id: UUID) {
+        messages.removeAll { $0.id == id }
+        reply(
+            text,
+            id: id,
+            isEligibleForAIContext: false,
+            historyPersistence: .ephemeral
         )
     }
 
@@ -1346,6 +1656,13 @@ final class ConversationModel: ObservableObject {
         sourceLabel: String
     ) async -> Bool {
         guard canAcceptUserTurn else { return false }
+        guard !usesRemoteAgent(aiConfiguration) else {
+            reply(
+                "OpenClaw connector chats support text only. Start an On iPhone chat to send reviewed screen context.",
+                isEligibleForAIContext: false
+            )
+            return false
+        }
         let instruction = editedInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !instruction.isEmpty,
               instruction.count <= ScreenContextInbox.maximumInstructionCharacters,
@@ -1476,6 +1793,13 @@ final class ConversationModel: ObservableObject {
         using aiConfiguration: AIConfigurationModel
     ) async -> Bool {
         guard canAcceptUserTurn, !attachments.isEmpty else { return false }
+        guard !usesRemoteAgent(aiConfiguration) else {
+            reply(
+                "OpenClaw connector chats support text only. Remove the attachments or start an On iPhone chat.",
+                isEligibleForAIContext: false
+            )
+            return false
+        }
         let instruction = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !instruction.isEmpty else {
             reply("Add an instruction describing what the AI should do with the selected attachment.")
@@ -1563,6 +1887,13 @@ final class ConversationModel: ObservableObject {
 
     func askAIAboutScreenshot(using aiConfiguration: AIConfigurationModel) async {
         guard canAcceptUserTurn else { return }
+        guard !usesRemoteAgent(aiConfiguration) else {
+            reply(
+                "OpenClaw connector chats do not send screenshots or OCR context. Start an On iPhone chat for this request.",
+                isEligibleForAIContext: false
+            )
+            return
+        }
         let text = screenshotAIShareText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             reply("Import a screenshot with readable text, then review the text proposed for AI sharing.")
@@ -1758,11 +2089,13 @@ final class ConversationModel: ObservableObject {
 
     private func reply(
         _ text: String,
+        id: UUID = UUID(),
         isEligibleForAIContext: Bool = false,
         historyPersistence: ConversationMessage.HistoryPersistence = .history
     ) {
         messages.append(
             .init(
+                id: id,
                 role: .assistant,
                 text: text,
                 isEligibleForAIContext: isEligibleForAIContext,
@@ -1925,6 +2258,13 @@ extension ConversationModel {
         using aiConfiguration: AIConfigurationModel
     ) async {
         stopSpeechOutput()
+        guard !usesRemoteAgent(aiConfiguration) else {
+            reply(
+                "OpenClaw connector chats do not send screenshot context. Start an On iPhone chat for this request.",
+                isEligibleForAIContext: false
+            )
+            return
+        }
         do {
             let client = try aiConfiguration.makeClient()
             let executor = ClosureOpenAIToolExecutor { [weak self] call in
@@ -1953,6 +2293,12 @@ extension ConversationModel {
         } catch {
             reply(error.localizedDescription)
         }
+    }
+
+    private func usesRemoteAgent(_ configuration: AIConfigurationModel) -> Bool {
+        configuration.conversationRoute(
+            for: historyController.selectedThreadID
+        ).isRemote
     }
 
     /// Live Talk may stage exactly one reviewed email-draft tool. It enters through the

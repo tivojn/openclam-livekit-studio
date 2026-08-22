@@ -4,6 +4,7 @@ enum OpenClamRoute: Hashable {
     case settings
     case aiServices
     case avatarAgents
+    case agentConnections
     case screenContext
     case appAliases
     case shortcutsAndIntegrations
@@ -33,6 +34,15 @@ struct OpenClamSettingsView: View {
                     )
                 }
                 .accessibilityIdentifier("openclam-avatar-agent-settings-link")
+
+                NavigationLink(value: OpenClamRoute.agentConnections) {
+                    settingsRow(
+                        title: "Agent connections",
+                        detail: "Pair OpenClaw gateways and make their agents available to avatars",
+                        symbol: "link.circle"
+                    )
+                }
+                .accessibilityIdentifier("openclam-agent-connections-settings-link")
             }
 
             Section("iPhone Tools") {

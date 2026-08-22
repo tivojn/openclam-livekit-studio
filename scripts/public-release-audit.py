@@ -34,8 +34,11 @@ ALLOWED_TOP_LEVEL = {
     "agent",
     "cloudflare-broker",
     "contracts",
+    "docs",
     "ios",
     "macos",
+    "openclaw-bridge",
+    "openclaw-plugin-openclam",
     "scripts",
     "shared",
 }
@@ -56,10 +59,20 @@ REQUIRED_FILES = {
     Path("cloudflare-broker/package.json"),
     Path("contracts/live-talk-approved-tuples-v1.json"),
     Path("contracts/release-feature-contract-v1.json"),
+    Path("docs/OPENCLAW_CONNECTOR_ARCHITECTURE.md"),
     Path("ios/OpenClamLiveKit/OpenClamLiveKit.xcodeproj/project.pbxproj"),
     Path("ios/OpenClamLiveKit/project.yml"),
     Path("macos/OpenClamStudio/package-lock.json"),
     Path("macos/OpenClamStudio/package.json"),
+    Path("openclaw-bridge/package-lock.json"),
+    Path("openclaw-bridge/package.json"),
+    Path("openclaw-plugin-openclam/openclaw.plugin.json"),
+    Path("openclaw-plugin-openclam/dist/index.js"),
+    Path("openclaw-plugin-openclam/dist/setup-entry.js"),
+    Path("openclaw-plugin-openclam/package-lock.json"),
+    Path("openclaw-plugin-openclam/package.json"),
+    Path("shared/agent-connector-v1/frame.schema.json"),
+    Path("shared/agent-connector-v1/pairing.schema.json"),
     Path("shared/avatar-package-v2/fixtures/ios-light-golden.avtr"),
     Path("shared/avatar-package-v2/fixtures/ios-light-motion-v3-golden.avtr"),
 }
@@ -509,6 +522,29 @@ ALLOWED_SOURCE_BUILD_FILES = {
     Path("macos/OpenClamStudio/build/entitlements.mac.plist"),
 }
 
+# OpenClaw package installs require JavaScript entrypoints. These two bounded,
+# reproducibly generated files are the complete reviewed runtime surface; any
+# other generated `dist` path remains fail-closed.
+ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS = {
+    Path("openclaw-plugin-openclam/dist"),
+    Path("openclaw-plugin-openclam/dist/index.js"),
+    Path("openclaw-plugin-openclam/dist/setup-entry.js"),
+    Path("openclaw-plugin-openclam/dist/src"),
+    Path("openclaw-plugin-openclam/dist/src/bridge-client.js"),
+    Path("openclaw-plugin-openclam/dist/src/channel-base.js"),
+    Path("openclaw-plugin-openclam/dist/src/channel.js"),
+    Path("openclaw-plugin-openclam/dist/src/channel.setup.js"),
+    Path("openclaw-plugin-openclam/dist/src/cli.js"),
+    Path("openclaw-plugin-openclam/dist/src/config.js"),
+    Path("openclaw-plugin-openclam/dist/src/credentials.js"),
+    Path("openclaw-plugin-openclam/dist/src/gateway.js"),
+    Path("openclaw-plugin-openclam/dist/src/inbound.js"),
+    Path("openclaw-plugin-openclam/dist/src/pairing.js"),
+    Path("openclaw-plugin-openclam/dist/src/protocol.js"),
+    Path("openclaw-plugin-openclam/dist/src/runtime.js"),
+    Path("openclaw-plugin-openclam/dist/src/types.js"),
+}
+
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 
 
@@ -697,6 +733,8 @@ def denied_path_reason(relative: Path) -> str | None:
         return "unreviewed top-level path"
     if relative in DENIED_EXACT_PATHS:
         return "runtime/private file"
+    if relative in ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS:
+        return None
     if any(part in DENIED_DIR_NAMES or part.startswith("dist-") for part in relative.parts):
         return "generated/private directory"
     if "build" in relative.parts and relative not in ALLOWED_SOURCE_BUILD_FILES:
@@ -754,6 +792,8 @@ def denied_directory_reason(relative: Path) -> str | None:
         return "invalid empty path"
     if relative.parts[0] not in ALLOWED_TOP_LEVEL:
         return "unreviewed top-level path"
+    if relative in ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS:
+        return None
     if any(part in DENIED_DIR_NAMES or part.startswith("dist-") for part in relative.parts):
         return "generated/private directory"
     if "build" in relative.parts and relative != Path("macos/OpenClamStudio/build"):

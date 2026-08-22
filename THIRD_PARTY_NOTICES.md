@@ -27,6 +27,16 @@ constraints are in `agent/pyproject.toml`. A distributor must preserve the
 licenses and notices supplied by those packages and review them again whenever
 the locks change.
 
+## OpenClaw connector
+
+The `openclam` channel adapter integrates with OpenClaw, which is distributed
+under the MIT License. The adapter and independent Cloudflare Worker record
+their exact JavaScript dependency versions and integrity hashes in
+`openclaw-plugin-openclam/package-lock.json` and
+`openclaw-bridge/package-lock.json`. Their upstream licenses and notices remain
+in force. The connector does not include or redistribute Telegram code, SDKs,
+or credentials.
+
 ## Models and network services
 
 Bundled or downloaded model weights may have terms separate from their runtime

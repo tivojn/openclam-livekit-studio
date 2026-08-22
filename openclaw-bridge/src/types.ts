@@ -1,0 +1,136 @@
+export type SocketRole = "client" | "adapter";
+
+export interface AccountDescriptor {
+  accountId: string;
+  agentId: string;
+  displayName: string;
+}
+
+export interface CreatePairingRequest {
+  v: 1;
+  adapterId: string;
+  gatewayLabel: string;
+  accounts: AccountDescriptor[];
+}
+
+export interface RedeemPairingRequest {
+  v: 1;
+  code: string;
+  installationId: string;
+  deviceLabel: string;
+}
+
+export type FrameKind =
+  | "ack"
+  | "heartbeat"
+  | "turn.submit"
+  | "turn.accepted"
+  | "assistant.delta"
+  | "assistant.completed"
+  | "turn.cancel"
+  | "turn.error";
+
+export interface ConnectorFrame {
+  v: 1;
+  kind: FrameKind;
+  connectionId: string;
+  conversationId?: string;
+  messageId: string;
+  seq: number;
+  replyTo?: number;
+  sentAt: number;
+  payload: Record<string, unknown>;
+}
+
+export interface RelayPersistedReceipt {
+  v: 1;
+  kind: "relay.persisted";
+  connectionId: string;
+  payload: {
+    senderSeq: number;
+    messageId: string;
+  };
+}
+
+export interface SessionRecord {
+  v: 1;
+  connectionId: string;
+  adapterId: string;
+  gatewayLabel: string;
+  accounts: AccountDescriptor[];
+  adapterTokenVerifier: string;
+  clientTokenVerifier?: string;
+  installationVerifier?: string;
+  createdAt: number;
+  unpairedCleanupAt: number;
+  pairedAt?: number;
+  highestClientSeq: number;
+  highestAdapterSeq: number;
+  acknowledgedClientSeq: number;
+  acknowledgedAdapterSeq: number;
+  pending: PendingFrame[];
+  seenClient: SeenMessage[];
+  seenAdapter: SeenMessage[];
+  activeTurns: ActiveTurn[];
+  settledTurns?: SettledTurn[];
+  activeClientSocketId?: string;
+  activeAdapterSocketId?: string;
+}
+
+export interface PendingFrame {
+  from: SocketRole;
+  seq: number;
+  messageId: string;
+  encrypted: EncryptedPayload;
+  expiresAt: number;
+}
+
+export interface EncryptedPayload {
+  algorithm: "A256GCM";
+  iv: string;
+  ciphertext: string;
+}
+
+export interface SeenMessage {
+  seq: number;
+  messageId: string;
+  digest: string;
+  kind: FrameKind;
+  expiresAt: number;
+}
+
+export interface SettledTurn {
+  conversationId: string;
+  turnId: string;
+  settledAt: number;
+}
+
+export interface ActiveTurn {
+  conversationId: string;
+  turnId: string;
+  startedAt: number;
+  lastActivityAt?: number;
+  accepted?: boolean;
+  lastRevision?: number;
+  finalState?: "completed" | "error";
+}
+
+export interface PairingRecord {
+  v: 1;
+  pairingId: string;
+  connectionId: string;
+  adapterId: string;
+  gatewayLabel: string;
+  accounts: AccountDescriptor[];
+  verifier: string;
+  createdAt: number;
+  expiresAt: number;
+  consumedAt?: number;
+  installationVerifier?: string;
+  encryptedClientToken?: EncryptedPayload;
+}
+
+export interface RedeemFailureRecord {
+  count: number;
+  expiresAt: number;
+}

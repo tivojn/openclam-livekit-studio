@@ -4,6 +4,7 @@ struct RootView: View {
     @EnvironmentObject private var model: AssistantModel
     @EnvironmentObject private var aiConfiguration: AIConfigurationModel
     @EnvironmentObject private var conversation: ConversationModel
+    @EnvironmentObject private var agentConnections: AgentConnectionModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
@@ -11,6 +12,7 @@ struct RootView: View {
     @State private var navigationPath: [OpenClamRoute] = []
     @State private var showsSidebar = false
     @State private var avatarSwitchTask: Task<Void, Never>?
+    @State private var connectorRouteChangeTask: Task<Void, Never>?
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -93,8 +95,11 @@ struct RootView: View {
         case .avatarAgents:
             AvatarAgentSettingsView(
                 configuration: aiConfiguration,
-                onActivate: switchAvatar
+                onActivate: switchAvatar,
+                onConnectorRouteChanged: connectorRouteChanged
             )
+        case .agentConnections:
+            AgentConnectionsSettingsView()
         case .screenContext:
             ContextRootView(
                 feature: screenContextFeature,
@@ -211,6 +216,10 @@ struct RootView: View {
                 await conversation.newChat()
             }
             registerSelectedThreadForActiveAvatar()
+            await conversation.recoverPendingRemoteTurnIfNeeded(
+                aiConfiguration: aiConfiguration,
+                agentConnections: agentConnections
+            )
             if preservesAvatarOverlay {
                 withOptionalAnimation {
                     showsSidebar = false
@@ -231,12 +240,40 @@ struct RootView: View {
         await conversation.selectChat(id: id)
         if conversation.historyController.selectedThreadID == id {
             aiConfiguration.registerThread(id, for: avatarID)
+            await conversation.recoverPendingRemoteTurnIfNeeded(
+                aiConfiguration: aiConfiguration,
+                agentConnections: agentConnections
+            )
         }
     }
 
     private func registerSelectedThreadForActiveAvatar() {
         guard let threadID = conversation.historyController.selectedThreadID else { return }
-        aiConfiguration.registerThread(threadID, for: aiConfiguration.activeAvatarID)
+        aiConfiguration.registerThread(
+            threadID,
+            for: aiConfiguration.activeAvatarID,
+            route: aiConfiguration.activeAvatarProfile.preferredConversationRoute
+        )
+    }
+
+    private func connectorRouteChanged(avatarID: String) {
+        aiConfiguration.requireNewThreadForRouteChange(avatarID: avatarID)
+        guard aiConfiguration.activeAvatarID == avatarID else { return }
+        connectorRouteChangeTask?.cancel()
+        connectorRouteChangeTask = Task { @MainActor in
+            conversation.stopSpeechOutput()
+            while !conversation.canChangeChat {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled,
+                  aiConfiguration.activeAvatarID == avatarID else { return }
+            await conversation.newChat()
+            registerSelectedThreadForActiveAvatar()
+        }
     }
 
     private func restoreActiveAvatarThread() async {
@@ -245,6 +282,15 @@ struct RootView: View {
             await conversation.selectChat(id: threadID)
         }
         registerSelectedThreadForActiveAvatar()
+        if aiConfiguration.activeThreadID(for: aiConfiguration.activeAvatarID) == nil,
+           conversation.canChangeChat {
+            await conversation.newChat()
+            registerSelectedThreadForActiveAvatar()
+        }
+        await conversation.recoverPendingRemoteTurnIfNeeded(
+            aiConfiguration: aiConfiguration,
+            agentConnections: agentConnections
+        )
     }
 
     private func hideSidebar() {

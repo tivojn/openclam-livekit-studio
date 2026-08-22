@@ -57,6 +57,8 @@
 	<string>OpenClam transcribes speech only during an explicit voice request. In Screen Voice, the recognized question is submitted automatically after you stop speaking; ordinary composer dictation remains editable before Send.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>OPENCLAM_AGENT_CONNECTOR_ORIGIN</key>
+	<string>$(OPENCLAM_AGENT_CONNECTOR_ORIGIN)</string>
 	<key>OPENCLAM_LIVETALK_APP_TOKEN</key>
 	<string>$(OPENCLAM_LIVETALK_APP_TOKEN)</string>
 	<key>OPENCLAM_LIVETALK_BROKER_URL</key>

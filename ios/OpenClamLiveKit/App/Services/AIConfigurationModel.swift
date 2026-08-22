@@ -215,6 +215,7 @@ final class AIConfigurationModel: ObservableObject {
                 languageModelOverride: source.languageModelOverride,
                 voiceOverride: source.voiceOverride,
                 speechRecognitionOverride: source.speechRecognitionOverride,
+                agentConnectorBinding: source.agentConnectorBinding,
                 liveTalkPreferences: source.liveTalkPreferences,
                 liveTalkConfiguration: source.liveTalkConfiguration,
                 systemPrompt: source.systemPrompt,
@@ -245,6 +246,9 @@ final class AIConfigurationModel: ObservableObject {
         )
         threads.avatarByThread = threads.avatarByThread.mapValues { avatarID in
             avatarID == sourceID ? target.id : avatarID
+        }
+        if threads.avatarsRequiringNewThread.remove(sourceID) != nil {
+            threads.avatarsRequiringNewThread.insert(target.id)
         }
         if let sourceActiveThread,
            sourceWasActive || threads.activeThreadByAvatar[target.id] == nil {
@@ -307,6 +311,10 @@ final class AIConfigurationModel: ObservableObject {
             availableIDs.contains($0.key)
                 && reconciled.avatarByThread[$0.value] == $0.key
         }
+        // Route snapshots are transcript tombstones, not avatar-catalog state. Keep them
+        // until the history thread itself is deleted so an old remote chat can never be
+        // silently registered under a fallback avatar and sent to a different backend.
+        reconciled.avatarsRequiringNewThread.formIntersection(availableIDs)
         avatarAgentThreads = reconciled
     }
 
@@ -340,12 +348,42 @@ final class AIConfigurationModel: ObservableObject {
         avatarAgentThreads.avatarByThread[threadID]
     }
 
-    func registerThread(_ threadID: UUID, for avatarID: String) {
+    func conversationRoute(for threadID: UUID?) -> AgentConversationRoute {
+        guard let threadID else { return .onDevice }
+        return avatarAgentThreads.routeByThread[threadID] ?? .onDevice
+    }
+
+    func registerThread(
+        _ threadID: UUID,
+        for avatarID: String,
+        route: AgentConversationRoute? = nil
+    ) {
+        let isNewThread = avatarAgentThreads.avatarByThread[threadID] == nil
+            && avatarAgentThreads.routeByThread[threadID] == nil
+        if avatarAgentThreads.avatarsRequiringNewThread.contains(avatarID),
+           !isNewThread {
+            return
+        }
         avatarAgentThreads.activeThreadByAvatar[avatarID] = threadID
         avatarAgentThreads.avatarByThread[threadID] = avatarID
+        if avatarAgentThreads.routeByThread[threadID] == nil {
+            avatarAgentThreads.routeByThread[threadID] = route
+                ?? profile(for: avatarID).preferredConversationRoute
+        }
+        if isNewThread {
+            avatarAgentThreads.avatarsRequiringNewThread.remove(avatarID)
+        }
+    }
+
+    /// A route edit never mutates an existing chat. Removing only the active pointer makes the
+    /// next activation/new-chat inherit the new profile route while history keeps its snapshot.
+    func requireNewThreadForRouteChange(avatarID: String) {
+        avatarAgentThreads.activeThreadByAvatar.removeValue(forKey: avatarID)
+        avatarAgentThreads.avatarsRequiringNewThread.insert(avatarID)
     }
 
     func removeThread(_ threadID: UUID) {
+        avatarAgentThreads.routeByThread.removeValue(forKey: threadID)
         guard let avatarID = avatarAgentThreads.avatarByThread.removeValue(forKey: threadID) else {
             return
         }

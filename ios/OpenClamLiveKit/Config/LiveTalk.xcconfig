@@ -4,4 +4,5 @@ OPENCLAM_LIVETALK_BROKER_URL =
 OPENCLAM_LIVETALK_APP_TOKEN =
 OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST =
 
+#include "AgentConnector.xcconfig"
 #include? "LiveTalk.local.xcconfig"

@@ -17,6 +17,8 @@ node_modules/
 !macos/OpenClamStudio/build/*.plist
 dist/
 dist-*/
+!/openclaw-plugin-openclam/dist/
+!/openclaw-plugin-openclam/dist/**
 /outputs/
 /proof/
 acceptance-output/
@@ -47,6 +49,7 @@ cloudflare-broker/.dev.vars
 cloudflare-broker/.wrangler/
 macos/OpenClamStudio/config.json
 ios/OpenClamLiveKit/Config/LiveTalk.local.xcconfig
+ios/OpenClamLiveKit/Config/AgentConnector.local.xcconfig
 xcuserdata/
 config.env
 cloudflared.yml

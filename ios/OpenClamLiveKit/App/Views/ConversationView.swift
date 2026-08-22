@@ -209,6 +209,7 @@ struct ConversationView: View {
     @EnvironmentObject private var commandModel: AssistantModel
     @EnvironmentObject private var conversation: ConversationModel
     @EnvironmentObject private var aiConfiguration: AIConfigurationModel
+    @EnvironmentObject private var agentConnections: AgentConnectionModel
     @EnvironmentObject private var avatarLibrary: OpenClamAvatarLibrary
     @EnvironmentObject private var keyboardDictationHost: OpenClamKeyboardDictationHostController
     @Environment(\.scenePhase) private var scenePhase
@@ -828,16 +829,33 @@ struct ConversationView: View {
         .accessibilityIdentifier("openclam-assistant-response-actions-\(message.id.uuidString)")
     }
 
+    @ViewBuilder
     private var workingRow: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-            Text("Working with available services…")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Spacer()
+        if let streaming = conversation.streamingAssistantReply,
+           !streaming.isEmpty {
+            HStack(alignment: .top) {
+                Text(streaming)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                Spacer(minLength: 18)
+            }
+            .padding(.horizontal, 2)
+            .accessibilityLabel("OpenClaw response in progress")
+            .accessibilityValue(streaming)
+            .accessibilityIdentifier("openclam-openclaw-streaming-reply")
+        } else {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text(currentRemoteBinding == nil
+                     ? "Working with available services…"
+                     : "Waiting for OpenClaw…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .accessibilityElement(children: .combine)
         }
-        .padding(.horizontal, 8)
-        .accessibilityElement(children: .combine)
     }
 
     private var suggestionRow: some View {
@@ -882,7 +900,11 @@ struct ConversationView: View {
             conversation.stopSpeechOutput()
             confirmedActionNotice = nil
             beginAgentTask {
-                await conversation.submit(prompt, aiConfiguration: aiConfiguration)
+                await conversation.submit(
+                    prompt,
+                    aiConfiguration: aiConfiguration,
+                    agentConnections: agentConnections
+                )
             }
         } label: {
             Label(title, systemImage: icon)
@@ -1885,7 +1907,9 @@ struct ConversationView: View {
                 }
         }
         .accessibilityLabel("Add photo, video, or file")
-        .accessibilityHint("Opens camera, photo library, and file choices")
+        .accessibilityHint(currentRemoteBinding == nil
+            ? "Opens camera, photo library, and file choices"
+            : "OpenClaw connector chats support text only")
         .accessibilityIdentifier("openclam-attachment-menu")
         .accessibilityValue(
             stagedAttachments.isEmpty
@@ -1900,6 +1924,7 @@ struct ConversationView: View {
                 || isRequestActive
                 || isChatTransitioning
                 || conversation.pendingScreenContextSubmission != nil
+                || currentRemoteBinding != nil
         )
     }
 
@@ -1945,11 +1970,31 @@ struct ConversationView: View {
         .disabled(isLoadingAttachments || isChatTransitioning || speech.isTranscribing)
     }
 
+    @ViewBuilder
     private func modelSelectionMenu(
         expandsToWidth: Bool,
         compact: Bool = false
     ) -> some View {
-        Menu {
+        if let binding = currentRemoteBinding {
+            HStack(spacing: 4) {
+                Image(systemName: "link")
+                    .font(.caption.weight(.semibold))
+                Text(binding.displayName)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(.secondary)
+            .frame(
+                minWidth: expandsToWidth ? nil : (compact ? 128 : 116),
+                maxWidth: expandsToWidth ? .infinity : (compact ? 136 : 156),
+                minHeight: 44,
+                alignment: expandsToWidth ? .leading : .center
+            )
+            .accessibilityLabel("OpenClaw agent")
+            .accessibilityValue(binding.displayName)
+        } else {
+            Menu {
             ForEach(languageModelProviders) { provider in
                 Menu(provider.displayName) {
                     ForEach(languageModels(for: provider.id), id: \.self) { model in
@@ -1998,7 +2043,8 @@ struct ConversationView: View {
         .disabled(isRequestActive)
         .accessibilityLabel("Language model")
         .accessibilityValue("\(configuredProviderName), \(configuredModelName)")
-        .accessibilityHint("Choose a provider and model, or open AI Settings")
+            .accessibilityHint("Choose a provider and model, or open AI Settings")
+        }
     }
 
     private var attachmentTray: some View {
@@ -2096,6 +2142,10 @@ struct ConversationView: View {
     }
 
     private var configuredProviderLabel: String {
+        if let binding = currentRemoteBinding,
+           let connection = agentConnections.connection(for: binding) {
+            return "OpenClaw via \(connection.gatewayLabel)"
+        }
         guard let url = URL(string: aiConfiguration.effectiveSettings.endpoint),
               let host = url.host else { return "the configured AI provider" }
         return host + (url.path.isEmpty || url.path == "/" ? "" : url.path)
@@ -2128,6 +2178,7 @@ struct ConversationView: View {
     }
 
     private var configuredModelName: String {
+        if let binding = currentRemoteBinding { return binding.displayName }
         let value = aiConfiguration.effectiveSettings.model.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? "AI" : value
     }
@@ -2144,7 +2195,16 @@ struct ConversationView: View {
     }
 
     private var configuredProviderName: String {
-        AIProviderRegistry.descriptor(for: aiConfiguration.effectiveSettings.llm.provider).displayName
+        if currentRemoteBinding != nil { return "OpenClaw" }
+        return AIProviderRegistry.descriptor(
+            for: aiConfiguration.effectiveSettings.llm.provider
+        ).displayName
+    }
+
+    private var currentRemoteBinding: AvatarAgentConnectorBinding? {
+        aiConfiguration.conversationRoute(
+            for: conversation.historyController.selectedThreadID
+        ).connectorBinding
     }
 
     private var assistantReplyDeliverySnapshot: AssistantReplyDeliverySnapshot {
@@ -2516,7 +2576,11 @@ struct ConversationView: View {
         if stagedAttachments.isEmpty {
             input = ""
             beginAgentTask {
-                await conversation.submit(value, aiConfiguration: aiConfiguration)
+                await conversation.submit(
+                    value,
+                    aiConfiguration: aiConfiguration,
+                    agentConnections: agentConnections
+                )
             }
         } else {
             let submittedAttachments = stagedAttachments

@@ -23,8 +23,14 @@ Users who want complete removal must delete those records separately.
   instructions submitted for that operation.
 - Live Talk sends microphone audio through LiveKit and the selected model and
   speech services.
-- Avatar Store networking is disabled in v1.0.1. Users may still import a local
-  AVTR package explicitly from Files.
+- The reviewed Avatar Store sends catalog and package requests only when the
+  user opens or downloads from the Store. Users may instead import a local AVTR
+  package explicitly from Files.
+- When an avatar is explicitly switched to OpenClaw mode, OpenClam sends that
+  chat's user text and receives streamed reply text through the independently
+  deployed OpenClam bridge. Version 1 sends no audio, files, screenshots,
+  clipboard data, provider credentials, or iPhone tool approvals through this
+  connector.
 
 Provider terms and retention policies apply. Local system voices and bundled
 offline speech recognition keep their respective inference traffic on-device.
@@ -40,6 +46,24 @@ never placed in LiveKit room, participant, or dispatch metadata.
 
 This is bounded cloud exposure, not a claim that a cloud agent can use a key
 without the key leaving the device.
+
+## OpenClaw connector boundary
+
+OpenClaw pairing returns a scoped client credential that is stored in
+ThisDeviceOnly Keychain storage. The bridge stores only credential verifiers.
+Pending text frames are encrypted at rest, deleted after acknowledgement or a
+bounded expiry, and are not written to Worker logs. OpenClam and OpenClaw keep
+their own chat histories under their respective settings; the bridge is not a
+history service.
+
+Each chat records the route that created it. Changing an avatar between On this
+iPhone and OpenClaw, or choosing a different remote agent, starts a new chat so
+one backend does not inherit another backend's transcript. Disconnecting
+revokes the bridge connection before local credentials are removed.
+
+The OpenClaw connector has no Telegram dependency and receives no LiveKit,
+language-model, speech-recognition, or speech-synthesis credentials. Continuous
+Live Talk remains on its separate LiveKit path.
 
 ## Avatars
 

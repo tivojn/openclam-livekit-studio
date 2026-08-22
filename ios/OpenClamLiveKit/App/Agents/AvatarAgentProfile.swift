@@ -25,6 +25,9 @@ struct AvatarAgentProfile: Identifiable, Codable, Equatable, Sendable {
     var languageModelOverride: AIServiceSelection?
     var voiceOverride: AIServiceSelection?
     var speechRecognitionOverride: AIServiceSelection?
+    /// Optional remote chat route. Speech recognition, read-aloud, and Live Talk remain local
+    /// app features; only typed/PTT text turns use this connector.
+    var agentConnectorBinding: AvatarAgentConnectorBinding?
     /// New local preference model. Optional so every profile written by earlier TestFlight builds
     /// decodes without migration loss; nil is interpreted from the legacy exact configuration.
     var liveTalkPreferences: LiveTalkPreferences?
@@ -39,6 +42,7 @@ struct AvatarAgentProfile: Identifiable, Codable, Equatable, Sendable {
         languageModelOverride: AIServiceSelection? = nil,
         voiceOverride: AIServiceSelection? = nil,
         speechRecognitionOverride: AIServiceSelection? = nil,
+        agentConnectorBinding: AvatarAgentConnectorBinding? = nil,
         liveTalkPreferences: LiveTalkPreferences? = nil,
         liveTalkConfiguration: LiveTalkConfiguration? = nil,
         systemPrompt: String = "",
@@ -49,6 +53,7 @@ struct AvatarAgentProfile: Identifiable, Codable, Equatable, Sendable {
         self.languageModelOverride = languageModelOverride
         self.voiceOverride = voiceOverride
         self.speechRecognitionOverride = speechRecognitionOverride
+        self.agentConnectorBinding = agentConnectorBinding
         self.liveTalkPreferences = liveTalkPreferences
         self.liveTalkConfiguration = liveTalkConfiguration
         self.systemPrompt = systemPrompt
@@ -79,11 +84,16 @@ struct AvatarAgentProfile: Identifiable, Codable, Equatable, Sendable {
             speechRecognitionOverride: try speechRecognitionOverride?.validated(
                 for: .speechToText
             ),
+            agentConnectorBinding: try agentConnectorBinding?.validated(),
             liveTalkPreferences: try liveTalkPreferences?.validated(),
             liveTalkConfiguration: try liveTalkConfiguration?.validated(),
             systemPrompt: normalizedSystem,
             userPrompt: normalizedUser
         )
+    }
+
+    var preferredConversationRoute: AgentConversationRoute {
+        agentConnectorBinding.map(AgentConversationRoute.remote) ?? .onDevice
     }
 
     var effectiveLiveTalkPreferences: LiveTalkPreferences {
@@ -166,4 +176,44 @@ struct ActiveAvatarPromptContext: Equatable, Sendable {
 struct AvatarAgentThreadMap: Codable, Equatable, Sendable {
     var activeThreadByAvatar: [String: UUID] = [:]
     var avatarByThread: [UUID: String] = [:]
+    /// Immutable route snapshots. Missing entries are legacy On iPhone chats.
+    var routeByThread: [UUID: AgentConversationRoute] = [:]
+    /// Persisted handoff guard so an interrupted route edit cannot reactivate the old route.
+    var avatarsRequiringNewThread: Set<String> = []
+
+    init(
+        activeThreadByAvatar: [String: UUID] = [:],
+        avatarByThread: [UUID: String] = [:],
+        routeByThread: [UUID: AgentConversationRoute] = [:],
+        avatarsRequiringNewThread: Set<String> = []
+    ) {
+        self.activeThreadByAvatar = activeThreadByAvatar
+        self.avatarByThread = avatarByThread
+        self.routeByThread = routeByThread
+        self.avatarsRequiringNewThread = avatarsRequiringNewThread
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case activeThreadByAvatar, avatarByThread, routeByThread, avatarsRequiringNewThread
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        activeThreadByAvatar = try container.decodeIfPresent(
+            [String: UUID].self,
+            forKey: .activeThreadByAvatar
+        ) ?? [:]
+        avatarByThread = try container.decodeIfPresent(
+            [UUID: String].self,
+            forKey: .avatarByThread
+        ) ?? [:]
+        routeByThread = try container.decodeIfPresent(
+            [UUID: AgentConversationRoute].self,
+            forKey: .routeByThread
+        ) ?? [:]
+        avatarsRequiringNewThread = try container.decodeIfPresent(
+            Set<String>.self,
+            forKey: .avatarsRequiringNewThread
+        ) ?? []
+    }
 }

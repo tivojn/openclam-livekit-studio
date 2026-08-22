@@ -1,0 +1,71 @@
+{
+  "id": "openclam",
+  "name": "OpenClam",
+  "description": "First-class OpenClam channel adapter for OpenClaw",
+  "activation": {
+    "onStartup": false
+  },
+  "channels": ["openclam"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "openclam": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "adapterId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "gatewayLabel": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "bridgeUrl": { "type": "string", "format": "uri" },
+          "connectionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "adapterTokenFile": { "type": "string", "minLength": 1 },
+          "stateFile": { "type": "string", "minLength": 1 },
+          "defaultAccount": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          },
+          "accounts": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["agentId", "displayName"],
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "agentId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+                },
+                "displayName": { "type": "string", "minLength": 1, "maxLength": 80 }
+              }
+            }
+          }
+        }
+      },
+      "uiHints": {
+        "bridgeUrl": { "label": "OpenClam bridge URL" },
+        "connectionId": { "label": "Connection ID", "advanced": true },
+        "adapterTokenFile": { "label": "Adapter credential file", "advanced": true },
+        "stateFile": { "label": "Adapter sequence-state file", "advanced": true },
+        "defaultAccount": { "label": "Default avatar account" }
+      }
+    }
+  }
+}

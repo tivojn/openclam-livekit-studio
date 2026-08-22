@@ -31,6 +31,21 @@
       realtime transport path changes; mocked request data is not sufficient.
 - [ ] Run the broker typecheck and tests.
 - [ ] Run the agent lint and tests.
+- [ ] When OpenClaw connector paths change, run the bridge typecheck,
+      Workers-runtime tests, and Wrangler dry-run; run the channel plugin
+      typecheck and mocked transport/config tests; build the iOS connector and
+      run its pairing, routing, streaming, replay, cancellation, and revocation
+      tests.
+- [ ] Run one visible end-to-end OpenClaw check: redeem a fresh code, select the
+      intended agent, stream and finalize one reply, cancel one turn, reconnect
+      and reconcile replay, disconnect/revoke, and confirm On this iPhone still
+      works without cross-route transcript reuse.
+- [ ] Confirm the OpenClaw bridge is a separate deployment from LiveKit, has no
+      provider/Gateway credentials, persists only verifiers plus encrypted
+      bounded pending text, and has request-content logging disabled.
+- [ ] Do not distribute the connector publicly until App Attest and
+      verified-installation rate limiting protect pairing redemption and client
+      WebSocket upgrades.
 - [ ] Run the complete macOS regression, dependency, license, privacy, native,
       and packaged-runtime checks.
 

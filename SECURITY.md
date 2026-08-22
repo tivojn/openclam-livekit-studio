@@ -11,6 +11,9 @@ projects, signing material, or unredacted logs.
 - Keep provider keys and user tokens in the platform Keychain.
 - Keep broker and LiveKit deployment secrets in the deployment platform's
   secret store.
+- Keep the OpenClaw bridge bootstrap token, pairing pepper, token-verifier
+  pepper, and pending-frame encryption key in that bridge's independent
+  deployment secret store.
 - Never put credentials in source, `.xcconfig`, `.env`, Worker configuration,
   command arguments, logs, room metadata, dispatch metadata, fixtures, or
   release archives.
@@ -20,7 +23,18 @@ projects, signing material, or unredacted logs.
 The ignored local files include `agent/livekit.toml`,
 `cloudflare-broker/.dev.vars`,
 `ios/OpenClamLiveKit/Config/LiveTalk.local.xcconfig`, and
-`macos/OpenClamStudio/config.json`. They are not release inputs.
+`ios/OpenClamLiveKit/Config/AgentConnector.local.xcconfig`,
+`openclaw-bridge/.dev.vars`, and `macos/OpenClamStudio/config.json`. They are
+not release inputs. OpenClaw adapter credentials and sequence state are private
+runtime files beneath the OpenClaw state directory and must never enter source
+or release archives.
+
+The OpenClaw connector is text-only and fail-closed. It must not expose a
+Gateway owner token, provider key, attachment, local iPhone tool, or approval
+surface. Pairing credentials are role-scoped and revocable; token verifiers are
+persisted instead of raw bridge tokens; pending text is encrypted and bounded.
+The pilot requires App Attest and verified-installation rate limiting before
+public-user distribution.
 
 ## Public release requirements
 
@@ -30,7 +44,8 @@ The ignored local files include `agent/livekit.toml`,
    external file/mode/SHA-256 manifest.
 3. For the first public commit, rerun it with `--require-fresh-history` after
    the commit exists.
-4. Run the iOS, broker, agent, and macOS test suites.
+4. Run the iOS, LiveKit broker/agent, OpenClaw bridge/plugin, and macOS test
+   suites appropriate to the changed paths.
 5. Publish no human-likeness asset outside the exact, hash-pinned Captain Ayer
    and Ara paths without documented ownership, consent, and redistribution
    rights. Keep their restricted media license separate from the MIT software

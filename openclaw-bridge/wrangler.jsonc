@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "openclam-openclaw-bridge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false
+    }
+  },
+  "vars": {
+    "PAIRING_TTL_SECONDS": "600",
+    "PENDING_FRAME_TTL_SECONDS": "900",
+    "ACTIVE_TURN_IDLE_TTL_SECONDS": "900",
+    "ACTIVE_TURN_MAX_DURATION_SECONDS": "3600",
+    "MAX_PENDING_FRAMES": "16"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PAIRINGS",
+        "class_name": "PairingCoordinator"
+      },
+      {
+        "name": "CONNECTOR_SESSIONS",
+        "class_name": "ConnectorSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["PairingCoordinator", "ConnectorSession"]
+    }
+  ]
+}

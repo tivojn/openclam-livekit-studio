@@ -1,0 +1,59 @@
+{
+  "name": "@openclam/openclaw-channel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "First-class OpenClam channel adapter for OpenClaw",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "pretest": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
+    "openclaw": "2026.7.1-2",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1-2 <2027"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "setupEntry": "./dist/setup-entry.js",
+    "channel": {
+      "id": "openclam",
+      "label": "OpenClam",
+      "selectionLabel": "OpenClam (paired iPhone)",
+      "detailLabel": "OpenClam",
+      "docsPath": "/channels/openclam",
+      "docsLabel": "openclam",
+      "blurb": "Connect paired OpenClam avatars to OpenClaw agents."
+    }
+  }
+}

@@ -11,14 +11,18 @@ LiveKit broker and agent used for continuous cloud voice.
 | --- | --- |
 | `ios/OpenClamLiveKit` | iOS app, extensions, tests, and XcodeGen project |
 | `macos/OpenClamStudio` | Electron shell, local Python backend, Avatar Studio, tests, and release tooling |
-| `shared` | Versioned avatar-package and avatar-store contracts plus deterministic fixtures |
+| `shared` | Versioned avatar, store, and agent-connector contracts plus deterministic fixtures |
 | `contracts` | Live Talk provider/profile contract shared by clients, broker, and agent |
 | `cloudflare-broker` | Optional Cloudflare Worker for session tokens and one-use BYOK leases |
 | `agent` | Optional LiveKit voice agent that consumes those leases |
+| `openclaw-bridge` | Independent Cloudflare Worker and Durable Objects for OpenClaw pairing and text relay |
+| `openclaw-plugin-openclam` | First-party `openclam` channel adapter for an OpenClaw host |
+| `docs/OPENCLAW_CONNECTOR_ARCHITECTURE.md` | OpenClam ↔ OpenClaw trust, routing, and lifecycle design |
 
 The iPhone and Mac apps are independent. They do not pair or synchronize
 histories, credentials, settings, or avatars. AVTR export/import is an explicit
-file transfer; Avatar Store networking is disabled in v1.0.1.
+file transfer. The reviewed iOS Avatar Store catalog is an explicit network
+feature; imported and downloaded AVTR packages remain local to that app.
 
 ## Privacy-safe source tree
 
@@ -33,8 +37,8 @@ MIT-licensed.
 
 No other human-likeness avatar package or thumbnail may enter this repository
 or its Git history without an equivalent ownership, consent, redistribution,
-provenance, and immutable-hash review. Avatar Store networking is disabled in
-v1.0.1; local AVTR import and deletion remain available.
+provenance, and immutable-hash review. Local AVTR import and deletion remain
+available independently of the reviewed Store catalog.
 
 Run the repository audit before every public commit or release:
 
@@ -106,6 +110,22 @@ metadata. See [`cloudflare-broker/README.md`](cloudflare-broker/README.md).
 The checked-in pilot authentication mode is not a public-production identity
 system. Replace it with App Attest or equivalent installation authentication
 and account-level rate limiting before opening the broker to untrusted clients.
+
+## Optional OpenClaw connection
+
+An avatar can stay **On this iPhone** or be bound explicitly to an agent
+advertised by a paired OpenClaw host. OpenClam uses its own `openclam` channel,
+one-time pairing code, scoped credentials, and independent bridge Worker. It
+does not require a Telegram account, Telegram bot, or publicly reachable
+OpenClaw Gateway. Chat and tap-to-talk send text through this connector; the
+avatar's existing iOS speech recognition and speaking voice remain local
+choices, while Live Talk stays a separate LiveKit feature.
+
+The pilot bridge bootstrap is not sufficient public-user authentication. Add
+App Attest and verified-installation rate limiting before public distribution.
+See [`docs/OPENCLAW_CONNECTOR_ARCHITECTURE.md`](docs/OPENCLAW_CONNECTOR_ARCHITECTURE.md),
+[`openclaw-bridge/README.md`](openclaw-bridge/README.md), and
+[`openclaw-plugin-openclam/README.md`](openclaw-plugin-openclam/README.md).
 
 ## Security, privacy, and licensing
 

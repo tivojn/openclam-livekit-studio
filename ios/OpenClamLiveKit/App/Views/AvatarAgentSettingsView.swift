@@ -109,6 +109,7 @@ struct AvatarAgentSettingsView: View {
     @EnvironmentObject private var avatarLibrary: OpenClamAvatarLibrary
     @ObservedObject var configuration: AIConfigurationModel
     let onActivate: (String, String) -> Void
+    let onConnectorRouteChanged: (String) -> Void
 
     @State private var showsAvatarImporter = false
     @State private var isImportingAvatar = false
@@ -117,10 +118,12 @@ struct AvatarAgentSettingsView: View {
 
     init(
         configuration: AIConfigurationModel,
-        onActivate: @escaping (String, String) -> Void = { _, _ in }
+        onActivate: @escaping (String, String) -> Void = { _, _ in },
+        onConnectorRouteChanged: @escaping (String) -> Void = { _ in }
     ) {
         self.configuration = configuration
         self.onActivate = onActivate
+        self.onConnectorRouteChanged = onConnectorRouteChanged
     }
 
     var body: some View {
@@ -214,7 +217,8 @@ struct AvatarAgentSettingsView: View {
                         AvatarAgentEditorView(
                             configuration: configuration,
                             avatarID: avatar.id,
-                            onActivate: onActivate
+                            onActivate: onActivate,
+                            onConnectorRouteChanged: onConnectorRouteChanged
                         )
                     } label: {
                         agentCard(avatar)
@@ -282,7 +286,9 @@ struct AvatarAgentSettingsView: View {
     private func agentCard(_ avatar: OpenClamAvatarDescriptor) -> some View {
         let profile = configuration.profile(for: avatar.id)
         let effectiveSettings = profile.effectiveSettings(inheriting: configuration.settings)
-        let model = effectiveSettings.llm.model
+        let model = profile.agentConnectorBinding.map {
+            "OpenClaw · \($0.displayName)"
+        } ?? effectiveSettings.llm.model
         let voice = AvatarAgentServicePresentation.voiceName(
             for: effectiveSettings.textToSpeech
         )
@@ -518,9 +524,11 @@ enum AvatarAgentEditorSaveOperation {
 struct AvatarAgentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var avatarLibrary: OpenClamAvatarLibrary
+    @EnvironmentObject private var agentConnections: AgentConnectionModel
     @ObservedObject var configuration: AIConfigurationModel
     let avatarID: String
     let onActivate: (String, String) -> Void
+    let onConnectorRouteChanged: (String) -> Void
 
     @State private var draft: AvatarAgentProfile
     @State private var notice: String?
@@ -529,16 +537,22 @@ struct AvatarAgentEditorView: View {
     @State private var isDeletingAvatar = false
     @State private var deletionNotice: AvatarLibraryNotice?
     @State private var saveGate = AvatarAgentEditorSaveGate()
+    @State private var showsOpenClawPairing = false
+    private let originalConnectorBinding: AvatarAgentConnectorBinding?
 
     init(
         configuration: AIConfigurationModel,
         avatarID: String,
-        onActivate: @escaping (String, String) -> Void
+        onActivate: @escaping (String, String) -> Void,
+        onConnectorRouteChanged: @escaping (String) -> Void = { _ in }
     ) {
         self.configuration = configuration
         self.avatarID = avatarID
         self.onActivate = onActivate
-        _draft = State(initialValue: configuration.profile(for: avatarID))
+        self.onConnectorRouteChanged = onConnectorRouteChanged
+        let profile = configuration.profile(for: avatarID)
+        originalConnectorBinding = profile.agentConnectorBinding
+        _draft = State(initialValue: profile)
     }
 
     var body: some View {
@@ -566,6 +580,8 @@ struct AvatarAgentEditorView: View {
                 }
             }
 
+            agentConnectorSection
+
             Section {
                 Toggle("Use a different language model", isOn: customModelBinding)
                     .accessibilityIdentifier("openclam-avatar-custom-llm-toggle")
@@ -580,8 +596,11 @@ struct AvatarAgentEditorView: View {
             } header: {
                 Text("Language model")
             } footer: {
-                Text("This model writes typed-chat replies and replies after tap-to-talk transcription. Leaving the override off follows Chat & Tap-to-Talk AI Settings.")
+                Text(draft.agentConnectorBinding == nil
+                     ? "This model writes typed-chat replies and replies after tap-to-talk transcription. Leaving the override off follows Chat & Tap-to-Talk AI Settings."
+                     : "OpenClaw writes replies for new connected chats. This saved On iPhone model remains available when you switch this avatar back.")
             }
+            .disabled(draft.agentConnectorBinding != nil)
 
             Section {
                 Toggle("Use a different speaking voice", isOn: customVoiceBinding)
@@ -684,8 +703,11 @@ struct AvatarAgentEditorView: View {
                     limit: AvatarAgentProfile.maximumSystemPromptCharacters
                 )
             } footer: {
-                Text("Persona text can shape the answer but cannot weaken OpenClam’s privacy, confirmation, or tool-safety boundaries.")
+                Text(draft.agentConnectorBinding == nil
+                     ? "Persona text can shape the answer but cannot weaken OpenClam’s privacy, confirmation, or tool-safety boundaries."
+                     : "The selected OpenClaw agent owns its persona. This saved On iPhone prompt is not sent to OpenClaw.")
             }
+            .disabled(draft.agentConnectorBinding != nil)
 
             Section {
                 promptEditor(
@@ -695,8 +717,11 @@ struct AvatarAgentEditorView: View {
                     limit: AvatarAgentProfile.maximumUserPromptCharacters
                 )
             } footer: {
-                Text("This is stored as user-authored context. Only the message you send in the chat can authorize an iPhone action.")
+                Text(draft.agentConnectorBinding == nil
+                     ? "This is stored as user-authored context. Only the message you send in the chat can authorize an iPhone action."
+                     : "The selected OpenClaw agent owns its standing instructions. This saved On iPhone prompt is not sent to OpenClaw.")
             }
+            .disabled(draft.agentConnectorBinding != nil)
 
             Section {
                 Button("Reset this agent", role: .destructive) {
@@ -781,9 +806,14 @@ struct AvatarAgentEditorView: View {
             titleVisibility: .visible
         ) {
             Button("Reset Agent", role: .destructive) {
+                let changedRoute = configuration.profile(for: avatarID)
+                    .agentConnectorBinding != nil
                 configuration.resetAvatarProfile(avatarID)
                 draft = configuration.profile(for: avatarID)
                 notice = "Reset to shared chat settings and LiveKit managed Live Talk."
+                if changedRoute {
+                    onConnectorRouteChanged(avatarID)
+                }
             }
             .disabled(!saveGate.canSubmit || isDeletingAvatar)
             Button("Cancel", role: .cancel) {}
@@ -808,11 +838,72 @@ struct AvatarAgentEditorView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
+        .sheet(isPresented: $showsOpenClawPairing) {
+            OpenClawPairingView { binding in
+                draft.agentConnectorBinding = binding
+            }
+            .environmentObject(agentConnections)
+        }
     }
 
     private var deletionDisplayName: String {
         avatarLibrary.avatar(id: avatarID)?.displayName
             ?? draft.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @ViewBuilder
+    private var agentConnectorSection: some View {
+        Section {
+            if let selected = draft.agentConnectorBinding {
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("OpenClaw")
+                        Text(selected.displayName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "link.circle.fill")
+                        .foregroundStyle(.green)
+                }
+
+                if !agentConnections.availableBindings.isEmpty {
+                    Picker("OpenClaw agent", selection: Binding(
+                        get: { selected },
+                        set: { draft.agentConnectorBinding = $0 }
+                    )) {
+                        ForEach(agentConnections.availableBindings, id: \.self) { binding in
+                            Text(binding.displayName).tag(binding)
+                        }
+                    }
+                    .accessibilityIdentifier("openclam-avatar-openclaw-agent-picker")
+                }
+
+                Button("Use On iPhone for new chats") {
+                    draft.agentConnectorBinding = nil
+                }
+            } else {
+                Label("On iPhone", systemImage: "iphone")
+                Button("Use an OpenClaw agent") {
+                    if let first = agentConnections.availableBindings.first {
+                        draft.agentConnectorBinding = first
+                    } else {
+                        showsOpenClawPairing = true
+                    }
+                }
+                .disabled(!agentConnections.isConfigured)
+                .accessibilityIdentifier("openclam-avatar-use-openclaw")
+            }
+
+            Button("Pair another OpenClaw gateway") {
+                showsOpenClawPairing = true
+            }
+            .disabled(!agentConnections.isConfigured)
+        } header: {
+            Text("Chat agent")
+        } footer: {
+            Text("On iPhone uses this app’s saved language model and reviewed iPhone tools. OpenClaw sends text only to the selected remote agent—no attachments, local tools, provider keys, or automatic fallback. Changing this choice starts a new chat; old chats keep their original route.")
+        }
     }
 
     private var isAvatarAvailable: Bool {
@@ -1334,6 +1425,9 @@ struct AvatarAgentEditorView: View {
                 configuration: configuration,
                 avatarIsAvailable: isAvatarAvailable
             )
+            if draft.agentConnectorBinding != originalConnectorBinding {
+                onConnectorRouteChanged(avatarID)
+            }
             saveGate.succeed()
             dismiss()
         } catch {

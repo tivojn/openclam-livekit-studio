@@ -5,6 +5,7 @@ struct OpenClamLiveKitApp: App {
     @StateObject private var model = AssistantModel()
     @StateObject private var conversation = ConversationModel()
     @StateObject private var aiConfiguration = AIConfigurationModel()
+    @StateObject private var agentConnections = AgentConnectionModel()
     @StateObject private var avatarLibrary = OpenClamAvatarLibrary.shared
     @StateObject private var keyboardDictationHost = OpenClamKeyboardDictationHostController()
     @Environment(\.scenePhase) private var scenePhase
@@ -15,6 +16,7 @@ struct OpenClamLiveKitApp: App {
                 .environmentObject(model)
                 .environmentObject(conversation)
                 .environmentObject(aiConfiguration)
+                .environmentObject(agentConnections)
                 .environmentObject(avatarLibrary)
                 .environmentObject(keyboardDictationHost)
                 .sheet(item: $keyboardDictationHost.activeRequest) { request in

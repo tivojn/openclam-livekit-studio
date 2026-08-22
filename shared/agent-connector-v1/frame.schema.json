@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclam.dev/contracts/agent-connector-v1/frame.schema.json",
+  "title": "OpenClam Agent Connector v1 frame",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "kind", "connectionId", "payload"],
+  "properties": {
+    "v": { "const": 1 },
+    "kind": {
+      "enum": [
+        "ack",
+        "heartbeat",
+        "turn.submit",
+        "turn.accepted",
+        "assistant.delta",
+        "assistant.completed",
+        "turn.cancel",
+        "turn.error",
+        "relay.persisted"
+      ]
+    },
+    "connectionId": { "$ref": "#/$defs/uuid" },
+    "conversationId": { "$ref": "#/$defs/uuid" },
+    "messageId": { "$ref": "#/$defs/uuid" },
+    "seq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "replyTo": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "sentAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "payload": { "type": "object", "maxProperties": 16 }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "relay.persisted" } } },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["conversationId"] },
+            { "required": ["messageId"] },
+            { "required": ["seq"] },
+            { "required": ["replyTo"] },
+            { "required": ["sentAt"] }
+          ]
+        },
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["senderSeq", "messageId"],
+            "properties": {
+              "senderSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+              "messageId": { "$ref": "#/$defs/uuid" }
+            }
+          }
+        }
+      },
+      "else": { "required": ["messageId", "seq", "sentAt"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "ack" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ackSeq"],
+            "properties": {
+              "ackSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "turn.submit" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId", "accountId", "text"],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "accountId": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "text": { "type": "string", "minLength": 1, "maxLength": 32000 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "turn.accepted" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId"],
+            "properties": { "turnId": { "$ref": "#/$defs/uuid" } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "assistant.delta" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId", "revision", "text"],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "revision": { "type": "integer", "minimum": 1, "maximum": 100000 },
+              "text": { "type": "string", "maxLength": 32000 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "assistant.completed" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId", "text"],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "text": { "type": "string", "minLength": 1, "maxLength": 32000 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "turn.cancel" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId"],
+            "properties": { "turnId": { "$ref": "#/$defs/uuid" } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "turn.error" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId", "code", "message", "retryable"],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "message": { "type": "string", "minLength": 1, "maxLength": 240 },
+              "retryable": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "heartbeat" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "lastReceivedSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

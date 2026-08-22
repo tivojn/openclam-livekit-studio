@@ -1,0 +1,862 @@
+import WebSocket from "ws";
+import { readAdapterCredential, readAdapterState, writeAdapterState, } from "./credentials.js";
+import { dispatchOpenClamTurn } from "./inbound.js";
+import { createFrame, encodeFrame, encodeFrameWithTextBudget, MAX_TEXT_LENGTH, parseBridgeInbound, safeTurnErrorPayload, truncateUnicode, } from "./protocol.js";
+const defaultDependencies = {
+    readCredential: readAdapterCredential,
+    readState: readAdapterState,
+    writeState: writeAdapterState,
+    createSocket: (url, options) => new WebSocket(url, options),
+    dispatchTurn: dispatchOpenClamTurn,
+    reconnectDelay: (attempt) => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)),
+};
+const DELTA_INTERVAL_MS = 200;
+const MAX_DELTA_FRAMES_PER_TURN = 12;
+const MAX_OUTBOUND_QUEUE = 64;
+const MAX_ACTIVE_TURNS = 8;
+const RECOVERY_MARKER_TTL_MS = 15 * 60 * 1_000;
+function buildEventsUrl(bridgeUrl, connectionId) {
+    const base = new URL(bridgeUrl);
+    if (base.username || base.password || base.search || base.hash || base.pathname !== "/") {
+        throw new Error("invalid_bridge_url");
+    }
+    const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(base.hostname);
+    if (base.protocol === "https:")
+        base.protocol = "wss:";
+    else if (base.protocol === "http:" && local)
+        base.protocol = "ws:";
+    else
+        throw new Error("invalid_bridge_url");
+    base.pathname = `/v1/adapters/${connectionId}/events`;
+    base.search = "";
+    base.hash = "";
+    return base.toString();
+}
+function waitForAbort(signal) {
+    if (signal.aborted)
+        return Promise.resolve();
+    return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+}
+function abortableDelay(milliseconds, signal) {
+    if (signal.aborted)
+        return Promise.resolve();
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, milliseconds);
+        signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            resolve();
+        }, { once: true });
+    });
+}
+function socketText(data, isBinary) {
+    if (isBinary)
+        throw new Error("binary_frame_rejected");
+    if (typeof data === "string")
+        return data;
+    if (Array.isArray(data))
+        return Buffer.concat(data).toString("utf8");
+    if (Buffer.isBuffer(data))
+        return data.toString("utf8");
+    return Buffer.from(new Uint8Array(data)).toString("utf8");
+}
+export class OpenClamBridgeClient {
+    connectionId;
+    bridgeUrl;
+    tokenFile;
+    stateFile;
+    accounts = new Map();
+    activeTurns = new Map();
+    lifecycle = new AbortController();
+    outboundQueue = [];
+    relayOutbox = new Map();
+    turnTasks = new Set();
+    deltaTasks = new Set();
+    deps;
+    state;
+    token = "";
+    socket;
+    runTask;
+    stateTask = Promise.resolve();
+    inboundTask = Promise.resolve();
+    recoveryTask = Promise.resolve();
+    reconnectAttempts = 0;
+    constructor(connectionId, bridgeUrl, tokenFile, stateFile, dependencies = {}) {
+        this.connectionId = connectionId;
+        this.bridgeUrl = bridgeUrl;
+        this.tokenFile = tokenFile;
+        this.stateFile = stateFile;
+        this.deps = { ...defaultDependencies, ...dependencies };
+    }
+    get accountCount() {
+        return this.accounts.size;
+    }
+    async attach(ctx) {
+        const account = ctx.account;
+        if (account.connectionId !== this.connectionId ||
+            account.bridgeUrl !== this.bridgeUrl ||
+            account.adapterTokenFile !== this.tokenFile ||
+            account.stateFile !== this.stateFile) {
+            throw new Error("inconsistent_gateway_connection");
+        }
+        const existing = this.accounts.get(account.accountId);
+        if (existing && existing !== ctx)
+            throw new Error("duplicate_openclam_account");
+        this.accounts.set(account.accountId, ctx);
+        try {
+            await this.ensureStarted();
+            this.setAccountStatus(ctx, { running: true, configured: true });
+            if (this.socket?.readyState === WebSocket.OPEN) {
+                this.detach(this.recoverInterruptedTurns(), "recovery_failed");
+            }
+            await Promise.race([
+                waitForAbort(ctx.abortSignal),
+                waitForAbort(this.lifecycle.signal),
+            ]);
+        }
+        finally {
+            this.accounts.delete(account.accountId);
+            this.setAccountStatus(ctx, { running: false, connected: false });
+            if (this.accounts.size === 0)
+                await this.stop();
+        }
+    }
+    async stop() {
+        if (!this.lifecycle.signal.aborted)
+            this.lifecycle.abort();
+        this.socket?.close(1000, "shutdown");
+        await this.runTask?.catch(() => undefined);
+        await this.inboundTask.catch(() => undefined);
+        for (const active of this.activeTurns.values()) {
+            if (active.deltaTimer)
+                clearTimeout(active.deltaTimer);
+            active.controller.abort();
+        }
+        for (const pending of this.relayOutbox.values())
+            pending.resolve(false);
+        this.relayOutbox.clear();
+        await Promise.all([...this.turnTasks]);
+        await Promise.all([...this.deltaTasks]);
+        await this.recoveryTask.catch(() => undefined);
+        await this.stateTask.catch(() => undefined);
+    }
+    async ensureStarted() {
+        if (!this.state) {
+            this.token = await this.deps.readCredential(this.tokenFile);
+            this.state = await this.deps.readState(this.stateFile, this.connectionId);
+        }
+        if (!this.runTask)
+            this.runTask = this.runLoop();
+    }
+    async runLoop() {
+        while (!this.lifecycle.signal.aborted) {
+            try {
+                await this.connectOnce();
+            }
+            catch {
+                this.log("warn", "connection_attempt_failed");
+            }
+            if (this.lifecycle.signal.aborted)
+                break;
+            this.reconnectAttempts += 1;
+            this.updateAllStatuses({
+                connected: false,
+                reconnectAttempts: this.reconnectAttempts,
+            });
+            await abortableDelay(this.deps.reconnectDelay(this.reconnectAttempts), this.lifecycle.signal);
+        }
+    }
+    async connectOnce() {
+        const url = buildEventsUrl(this.bridgeUrl, this.connectionId);
+        const socket = this.deps.createSocket(url, {
+            headers: { Authorization: `Bearer ${this.token}` },
+            maxPayload: 65_536,
+            followRedirects: false,
+            handshakeTimeout: 15_000,
+        });
+        this.socket = socket;
+        await new Promise((resolve, reject) => {
+            let opened = false;
+            let heartbeat;
+            const cleanup = () => {
+                if (heartbeat)
+                    clearInterval(heartbeat);
+                this.lifecycle.signal.removeEventListener("abort", onAbort);
+            };
+            const onAbort = () => socket.close(1000, "shutdown");
+            this.lifecycle.signal.addEventListener("abort", onAbort, { once: true });
+            socket.once("open", () => {
+                opened = true;
+                this.reconnectAttempts = 0;
+                this.updateAllStatuses({
+                    connected: true,
+                    reconnectAttempts: 0,
+                    lastConnectedAt: Date.now(),
+                });
+                this.log("info", "connected");
+                this.flushPendingTransmissions();
+                this.detach(this.send("heartbeat", { lastReceivedSeq: this.requireState().lastReceivedSeq }, undefined, undefined, false), "heartbeat_failed");
+                this.detach(this.flushActiveDeltas(), "delta_flush_failed");
+                this.detach(this.recoverInterruptedTurns(), "recovery_failed");
+                heartbeat = setInterval(() => {
+                    if (socket.readyState === WebSocket.OPEN)
+                        socket.ping();
+                }, 30_000);
+            });
+            socket.on("message", (data, isBinary) => {
+                this.inboundTask = this.inboundTask
+                    .then(async () => this.handleMessage(socketText(data, isBinary)))
+                    .catch(() => {
+                    this.log("warn", "inbound_frame_rejected");
+                    socket.close(1008, "invalid_frame");
+                });
+            });
+            socket.once("unexpected-response", (_request, response) => {
+                cleanup();
+                this.log("warn", `handshake_rejected status=${response.statusCode}`);
+                if (response.statusCode === 401 || response.statusCode === 404) {
+                    this.retireConnection("connection_retired");
+                }
+                reject(new Error("handshake_rejected"));
+            });
+            socket.once("error", () => {
+                if (!opened) {
+                    cleanup();
+                    reject(new Error("socket_error"));
+                }
+            });
+            socket.once("close", (code) => {
+                cleanup();
+                if (this.socket === socket)
+                    this.socket = undefined;
+                for (const active of this.activeTurns.values()) {
+                    if (active.deltaTimer)
+                        clearTimeout(active.deltaTimer);
+                    active.deltaTimer = undefined;
+                }
+                this.updateAllStatuses({ connected: false, lastDisconnect: { at: Date.now(), status: code } });
+                this.log("info", `disconnected code=${code}`);
+                if (code === 1008 || code === 4003) {
+                    this.retireConnection("connection_retired");
+                }
+                resolve();
+            });
+        });
+    }
+    async handleMessage(raw) {
+        if (this.lifecycle.signal.aborted)
+            return;
+        const frame = parseBridgeInbound(raw, this.connectionId);
+        if (frame.kind === "relay.persisted") {
+            const pending = this.relayOutbox.get(frame.payload.messageId);
+            if (pending === undefined)
+                return;
+            if (pending.frame.seq !== frame.payload.senderSeq) {
+                throw new Error("invalid_relay_receipt");
+            }
+            this.relayOutbox.delete(frame.payload.messageId);
+            pending.resolve(true);
+            return;
+        }
+        const state = this.requireState();
+        if (frame.seq <= state.lastReceivedSeq) {
+            await this.sendAck(frame.seq);
+            return;
+        }
+        if (frame.kind === "heartbeat") {
+            await this.mutateState((next) => {
+                next.lastReceivedSeq = frame.seq;
+            });
+            await this.sendAck(frame.seq);
+            return;
+        }
+        if (frame.kind === "turn.cancel") {
+            await this.mutateState((next) => {
+                next.lastReceivedSeq = frame.seq;
+            });
+            await this.sendAck(frame.seq);
+            await this.cancelTurn(frame);
+            return;
+        }
+        await this.acceptTurn(frame);
+    }
+    async acceptTurn(frame) {
+        const turnId = frame.payload.turnId;
+        const state = this.requireState();
+        if (state.completedTurnIds.includes(turnId)) {
+            await this.mutateState((next) => {
+                next.lastReceivedSeq = frame.seq;
+            });
+            await this.sendAck(frame.seq);
+            return;
+        }
+        if (this.activeTurns.has(turnId) || state.activeTurns.some((turn) => turn.turnId === turnId)) {
+            await this.mutateState((next) => {
+                next.lastReceivedSeq = frame.seq;
+            });
+            await this.sendAck(frame.seq);
+            this.detach(this.recoverInterruptedTurns(), "recovery_failed");
+            return;
+        }
+        const ctx = this.accounts.get(frame.payload.accountId);
+        if (!ctx) {
+            await this.rejectTurn(frame, {
+                code: "invalid_account",
+                message: "This OpenClam avatar is not available.",
+                retryable: false,
+            });
+            return;
+        }
+        const activeForConversation = [...this.activeTurns.values()].find((active) => active.frame.conversationId === frame.conversationId);
+        if (activeForConversation) {
+            await this.rejectTurn(frame, {
+                code: "conversation_busy",
+                message: "Wait for the current reply to finish.",
+                retryable: true,
+            });
+            return;
+        }
+        if (this.activeTurns.size >= MAX_ACTIVE_TURNS) {
+            await this.rejectTurn(frame, {
+                code: "adapter_busy",
+                message: "OpenClaw is handling too many replies. Please try again.",
+                retryable: true,
+            });
+            return;
+        }
+        const active = {
+            frame,
+            controller: new AbortController(),
+            revision: 0,
+            terminal: false,
+            terminalPersisted: false,
+            lastDeltaText: "",
+            lastDeltaAt: 0,
+            deltaCount: 0,
+        };
+        this.activeTurns.set(turnId, active);
+        await this.mutateState((next) => {
+            next.lastReceivedSeq = frame.seq;
+            next.activeTurns = [
+                ...next.activeTurns.filter((item) => item.turnId !== turnId),
+                {
+                    turnId,
+                    conversationId: frame.conversationId,
+                    accountId: frame.payload.accountId,
+                },
+            ];
+        });
+        await this.sendAck(frame.seq);
+        active.acceptanceTask = this.sendAwaitingRelayPersistence("turn.accepted", { turnId }, frame.conversationId, frame.seq, active.controller.signal);
+        const task = this.runAcceptedTurn(ctx, active);
+        this.turnTasks.add(task);
+        void task.then(() => this.turnTasks.delete(task), () => this.turnTasks.delete(task));
+    }
+    async runAcceptedTurn(ctx, active) {
+        try {
+            const accepted = await active.acceptanceTask;
+            if (!accepted) {
+                if (active.terminalTask) {
+                    active.terminalPersisted = await active.terminalTask;
+                    this.activeTurns.delete(active.frame.payload.turnId);
+                    if (active.terminalPersisted)
+                        await this.finishTurn(active.frame.payload.turnId);
+                }
+                return;
+            }
+            if (active.terminal || active.controller.signal.aborted) {
+                if (active.terminalTask) {
+                    active.terminalPersisted = await active.terminalTask;
+                    this.activeTurns.delete(active.frame.payload.turnId);
+                    if (active.terminalPersisted)
+                        await this.finishTurn(active.frame.payload.turnId);
+                }
+                return;
+            }
+            await this.runTurn(ctx, active);
+        }
+        catch {
+            this.log("warn", "turn_acceptance_failed");
+        }
+    }
+    async rejectTurn(frame, recoveryError) {
+        await this.mutateState((state) => {
+            state.lastReceivedSeq = frame.seq;
+            state.activeTurns = [
+                ...state.activeTurns.filter((turn) => turn.turnId !== frame.payload.turnId),
+                {
+                    turnId: frame.payload.turnId,
+                    conversationId: frame.conversationId,
+                    accountId: frame.payload.accountId,
+                    recoveryExpiresAt: Date.now() + RECOVERY_MARKER_TTL_MS,
+                    recoveryError,
+                },
+            ];
+        });
+        await this.sendAck(frame.seq);
+        this.detach(this.recoverInterruptedTurns(), "recovery_failed");
+    }
+    async runTurn(ctx, active) {
+        const frame = active.frame;
+        try {
+            await this.deps.dispatchTurn({
+                ctx,
+                frame,
+                signal: active.controller.signal,
+                sink: {
+                    partial: async (text) => {
+                        if (active.terminal || active.controller.signal.aborted)
+                            return;
+                        await this.offerDelta(active, truncateUnicode(text, MAX_TEXT_LENGTH));
+                    },
+                    completed: async (text) => {
+                        if (active.terminal || active.controller.signal.aborted)
+                            return;
+                        active.terminalPersisted = await this.beginTerminal(active, "assistant.completed", { turnId: frame.payload.turnId, text: truncateUnicode(text, MAX_TEXT_LENGTH) }, {
+                            code: "connection_interrupted",
+                            message: "The connection closed before this reply could be delivered. Please try again.",
+                            retryable: true,
+                        });
+                    },
+                },
+            });
+            if (!active.terminal)
+                throw new Error("empty_reply");
+        }
+        catch (error) {
+            if (!active.terminal) {
+                const code = error instanceof Error ? error.message : "agent_failed";
+                if (code === "agent_mapping_changed") {
+                    active.terminalPersisted = await this.beginTerminal(active, "turn.error", safeTurnErrorPayload({
+                        turnId: frame.payload.turnId,
+                        code,
+                        message: "This agent mapping changed. Pair OpenClam again.",
+                        retryable: false,
+                    }), {
+                        code,
+                        message: "This agent mapping changed. Pair OpenClam again.",
+                        retryable: false,
+                    });
+                }
+                else if (active.controller.signal.aborted) {
+                    active.terminalPersisted = await this.beginTerminal(active, "turn.error", safeTurnErrorPayload({
+                        turnId: frame.payload.turnId,
+                        code: "cancelled",
+                        message: "The turn was cancelled.",
+                        retryable: false,
+                    }), {
+                        code: "cancelled",
+                        message: "The turn was cancelled.",
+                        retryable: false,
+                    });
+                }
+                else {
+                    const safeCode = code === "empty_reply" ? "empty_reply" : "agent_failed";
+                    active.terminalPersisted = await this.beginTerminal(active, "turn.error", safeTurnErrorPayload({
+                        turnId: frame.payload.turnId,
+                        code: safeCode,
+                        message: "OpenClaw could not complete this reply.",
+                        retryable: true,
+                    }), {
+                        code: safeCode,
+                        message: "OpenClaw could not complete this reply.",
+                        retryable: true,
+                    });
+                }
+            }
+        }
+        finally {
+            this.clearDeltaTimer(active);
+            if (active.terminalTask) {
+                active.terminalPersisted = await active.terminalTask;
+            }
+            this.activeTurns.delete(frame.payload.turnId);
+            if (active.terminalPersisted)
+                await this.finishTurn(frame.payload.turnId);
+            else if (this.socket?.readyState === WebSocket.OPEN) {
+                this.detach(this.recoverInterruptedTurns(), "recovery_failed");
+            }
+        }
+    }
+    async cancelTurn(frame) {
+        const turnId = String(frame.payload.turnId);
+        const active = this.activeTurns.get(turnId);
+        if (active) {
+            if (active.frame.conversationId !== frame.conversationId)
+                return;
+            if (!active.terminal) {
+                void this.beginTerminal(active, "turn.error", safeTurnErrorPayload({
+                    turnId,
+                    code: "cancelled",
+                    message: "The turn was cancelled.",
+                    retryable: false,
+                }), {
+                    code: "cancelled",
+                    message: "The turn was cancelled.",
+                    retryable: false,
+                });
+                active.controller.abort();
+            }
+            else
+                active.controller.abort();
+            return;
+        }
+        if (!this.requireState().completedTurnIds.includes(turnId)) {
+            await this.mutateState((state) => {
+                const existing = state.activeTurns.find((turn) => turn.turnId === turnId && turn.conversationId === frame.conversationId);
+                if (existing) {
+                    existing.recoveryExpiresAt = Date.now() + RECOVERY_MARKER_TTL_MS;
+                    existing.recoveryError = {
+                        code: "cancelled",
+                        message: "The turn was cancelled.",
+                        retryable: false,
+                    };
+                }
+            });
+            this.detach(this.recoverInterruptedTurns(), "recovery_failed");
+        }
+    }
+    async finishTurn(turnId) {
+        await this.mutateState((state) => {
+            state.activeTurns = state.activeTurns.filter((turn) => turn.turnId !== turnId);
+            state.completedTurnIds = [
+                ...state.completedTurnIds.filter((id) => id !== turnId),
+                turnId,
+            ].slice(-256);
+        });
+    }
+    async markRecoveryError(active, error) {
+        await this.mutateState((state) => {
+            const turn = state.activeTurns.find((candidate) => candidate.turnId === active.frame.payload.turnId);
+            if (turn) {
+                turn.recoveryExpiresAt = Date.now() + RECOVERY_MARKER_TTL_MS;
+                turn.recoveryError = error;
+            }
+        });
+    }
+    beginTerminal(active, kind, payload, recoveryError) {
+        if (active.terminalTask)
+            return active.terminalTask;
+        active.terminal = true;
+        this.clearDeltaTimer(active);
+        active.terminalTask = (async () => {
+            await this.markRecoveryError(active, recoveryError);
+            return this.sendAwaitingRelayPersistence(kind, payload, active.frame.conversationId);
+        })().catch(() => {
+            this.log("warn", "terminal_delivery_failed");
+            return false;
+        });
+        return active.terminalTask;
+    }
+    recoverInterruptedTurns() {
+        this.recoveryTask = this.recoveryTask.catch(() => undefined).then(async () => {
+            const interrupted = [...this.requireState().activeTurns];
+            for (const turn of interrupted) {
+                if (this.activeTurns.has(turn.turnId))
+                    continue;
+                if (this.lifecycle.signal.aborted)
+                    return;
+                if (turn.recoveryError !== undefined &&
+                    turn.recoveryExpiresAt !== undefined &&
+                    turn.recoveryExpiresAt <= Date.now()) {
+                    await this.finishTurn(turn.turnId);
+                    continue;
+                }
+                const recovery = turn.recoveryError ?? {
+                    code: "adapter_restarted",
+                    message: "OpenClaw restarted during this reply. Please try again.",
+                    retryable: true,
+                };
+                if (turn.recoveryError === undefined || turn.recoveryExpiresAt === undefined) {
+                    await this.mutateState((state) => {
+                        const pending = state.activeTurns.find((candidate) => candidate.turnId === turn.turnId);
+                        if (pending) {
+                            pending.recoveryError = recovery;
+                            pending.recoveryExpiresAt = Date.now() + RECOVERY_MARKER_TTL_MS;
+                        }
+                    });
+                }
+                const persisted = await this.sendAwaitingRelayPersistence("turn.error", safeTurnErrorPayload({
+                    turnId: turn.turnId,
+                    ...recovery,
+                }), turn.conversationId);
+                if (!persisted)
+                    return;
+                await this.finishTurn(turn.turnId);
+            }
+        });
+        return this.recoveryTask;
+    }
+    clearDeltaTimer(active) {
+        if (active.deltaTimer)
+            clearTimeout(active.deltaTimer);
+        active.deltaTimer = undefined;
+        active.pendingDelta = undefined;
+    }
+    async offerDelta(active, text) {
+        if (!text ||
+            text === active.pendingDelta ||
+            text === active.lastDeltaText ||
+            active.terminal ||
+            active.controller.signal.aborted) {
+            return;
+        }
+        active.pendingDelta = text;
+        await this.scheduleDelta(active);
+    }
+    async scheduleDelta(active) {
+        if (this.lifecycle.signal.aborted ||
+            active.deltaCount >= MAX_DELTA_FRAMES_PER_TURN ||
+            this.socket?.readyState !== WebSocket.OPEN ||
+            active.deltaTimer ||
+            active.deltaFlushTask) {
+            return;
+        }
+        const remaining = DELTA_INTERVAL_MS - (Date.now() - active.lastDeltaAt);
+        if (remaining <= 0) {
+            await this.flushDelta(active);
+            return;
+        }
+        active.deltaTimer = setTimeout(() => {
+            active.deltaTimer = undefined;
+            this.detach(this.flushDelta(active), "delta_flush_failed");
+        }, remaining);
+    }
+    flushDelta(active) {
+        if (active.deltaFlushTask)
+            return active.deltaFlushTask;
+        const task = this.performDeltaFlush(active);
+        active.deltaFlushTask = task;
+        this.deltaTasks.add(task);
+        const settled = () => {
+            if (active.deltaFlushTask === task)
+                active.deltaFlushTask = undefined;
+            this.deltaTasks.delete(task);
+            if (active.pendingDelta === active.lastDeltaText)
+                active.pendingDelta = undefined;
+            if (active.pendingDelta) {
+                this.detach(this.scheduleDelta(active), "delta_flush_failed");
+            }
+        };
+        void task.then(settled, settled);
+        return task;
+    }
+    async performDeltaFlush(active) {
+        if (this.lifecycle.signal.aborted ||
+            active.terminal ||
+            active.controller.signal.aborted ||
+            active.deltaCount >= MAX_DELTA_FRAMES_PER_TURN ||
+            this.socket?.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        const text = active.pendingDelta;
+        if (!text)
+            return;
+        active.pendingDelta = undefined;
+        const revision = active.revision + 1;
+        let delivered = false;
+        try {
+            delivered = await this.send("assistant.delta", { turnId: active.frame.payload.turnId, revision, text }, active.frame.conversationId, undefined, false);
+        }
+        catch (error) {
+            active.pendingDelta ??= text;
+            throw error;
+        }
+        if (delivered) {
+            active.revision = revision;
+            active.deltaCount += 1;
+            active.lastDeltaText = text;
+            active.lastDeltaAt = Date.now();
+        }
+        else {
+            active.pendingDelta ??= text;
+        }
+    }
+    async flushActiveDeltas() {
+        for (const active of this.activeTurns.values()) {
+            await this.flushDelta(active);
+        }
+    }
+    async sendAck(receivedSeq) {
+        await this.send("ack", { ackSeq: receivedSeq }, undefined, receivedSeq);
+    }
+    async sendAwaitingRelayPersistence(kind, payload, conversationId, replyTo, signal) {
+        if (this.lifecycle.signal.aborted || signal?.aborted)
+            return false;
+        let frame;
+        await this.mutateState((state) => {
+            frame = createFrame({
+                kind,
+                connectionId: this.connectionId,
+                seq: state.nextSeq,
+                conversationId,
+                replyTo,
+                payload,
+            });
+            state.nextSeq += 1;
+        });
+        if (this.lifecycle.signal.aborted || signal?.aborted)
+            return false;
+        const created = frame;
+        const prepared = kind === "assistant.completed"
+            ? encodeFrameWithTextBudget(created, "text")
+            : kind === "turn.error"
+                ? encodeFrameWithTextBudget(created, "message")
+                : { frame: created, encoded: encodeFrame(created) };
+        const reserved = prepared.frame;
+        const encoded = prepared.encoded;
+        return new Promise((resolve) => {
+            let settled = false;
+            let onAbort = () => undefined;
+            const finish = (persisted) => {
+                if (settled)
+                    return;
+                settled = true;
+                signal?.removeEventListener("abort", onAbort);
+                resolve(persisted);
+            };
+            const pending = { frame: reserved, encoded, resolve: finish };
+            onAbort = () => {
+                if (this.relayOutbox.get(reserved.messageId) === pending) {
+                    this.relayOutbox.delete(reserved.messageId);
+                }
+                finish(false);
+            };
+            this.relayOutbox.set(reserved.messageId, pending);
+            signal?.addEventListener("abort", onAbort, { once: true });
+            if (signal?.aborted) {
+                onAbort();
+                return;
+            }
+            const socket = this.socket;
+            if (socket?.readyState === WebSocket.OPEN) {
+                this.transmit(socket, encoded);
+            }
+        });
+    }
+    async send(kind, payload, conversationId, replyTo, queueWhenOffline = true) {
+        const socketBeforeReservation = this.socket;
+        if (!queueWhenOffline && socketBeforeReservation?.readyState !== WebSocket.OPEN)
+            return false;
+        let frame;
+        await this.mutateState((state) => {
+            frame = createFrame({
+                kind,
+                connectionId: this.connectionId,
+                seq: state.nextSeq,
+                conversationId,
+                replyTo,
+                payload,
+            });
+            state.nextSeq += 1;
+        });
+        const created = frame;
+        const prepared = kind === "assistant.delta"
+            ? encodeFrameWithTextBudget(created, "text")
+            : { frame: created, encoded: encodeFrame(created) };
+        const outbound = prepared.frame;
+        const encoded = prepared.encoded;
+        const socket = this.socket;
+        if (socket?.readyState === WebSocket.OPEN) {
+            try {
+                socket.send(encoded);
+                this.updateAllStatuses({ lastOutboundAt: Date.now() });
+                return true;
+            }
+            catch {
+                socket.close(1011, "send_failed");
+                if (!queueWhenOffline)
+                    return false;
+            }
+        }
+        if (!queueWhenOffline)
+            return false;
+        this.enqueueFrame({ encoded, kind, seq: outbound.seq });
+        return false;
+    }
+    transmit(socket, encoded) {
+        if (socket.readyState !== WebSocket.OPEN)
+            return false;
+        try {
+            socket.send(encoded);
+            this.updateAllStatuses({ lastOutboundAt: Date.now() });
+            return true;
+        }
+        catch {
+            socket.close(1011, "send_failed");
+            return false;
+        }
+    }
+    enqueueFrame(frame) {
+        const droppable = (candidate) => candidate.kind === "heartbeat" || candidate.kind === "assistant.delta" || candidate.kind === "ack";
+        if (this.outboundQueue.length >= MAX_OUTBOUND_QUEUE) {
+            const index = this.outboundQueue.findIndex(droppable);
+            if (index >= 0)
+                this.outboundQueue.splice(index, 1);
+            else {
+                this.log("warn", "outbound_queue_full");
+                return;
+            }
+        }
+        this.outboundQueue.push(frame);
+    }
+    flushPendingTransmissions() {
+        const socket = this.socket;
+        if (!socket || socket.readyState !== WebSocket.OPEN)
+            return;
+        const pending = [
+            ...this.outboundQueue.map((frame) => ({ type: "queued", frame })),
+            ...[...this.relayOutbox.values()].map((frame) => ({ type: "relay", frame })),
+        ].sort((left, right) => {
+            const leftSeq = left.type === "queued" ? left.frame.seq : left.frame.frame.seq;
+            const rightSeq = right.type === "queued" ? right.frame.seq : right.frame.frame.seq;
+            return leftSeq - rightSeq;
+        });
+        for (const item of pending) {
+            if (socket.readyState !== WebSocket.OPEN)
+                break;
+            if (!this.transmit(socket, item.frame.encoded))
+                break;
+            if (item.type === "queued") {
+                const index = this.outboundQueue.indexOf(item.frame);
+                if (index >= 0)
+                    this.outboundQueue.splice(index, 1);
+            }
+        }
+    }
+    mutateState(mutator) {
+        const task = this.stateTask.then(async () => {
+            const state = this.requireState();
+            mutator(state);
+            await this.deps.writeState(this.stateFile, state);
+        });
+        this.stateTask = task.catch(() => undefined);
+        return task;
+    }
+    requireState() {
+        if (!this.state)
+            throw new Error("adapter_state_unavailable");
+        return this.state;
+    }
+    updateAllStatuses(patch) {
+        for (const ctx of this.accounts.values())
+            this.setAccountStatus(ctx, patch);
+    }
+    setAccountStatus(ctx, patch) {
+        ctx.setStatus({ ...ctx.getStatus(), accountId: ctx.account.accountId, ...patch });
+    }
+    detach(task, event) {
+        void task.catch(() => this.log("warn", event));
+    }
+    retireConnection(event) {
+        this.log("warn", event);
+        this.updateAllStatuses({ connected: false, running: false, configured: false });
+        for (const active of this.activeTurns.values())
+            active.controller.abort();
+        if (!this.lifecycle.signal.aborted)
+            this.lifecycle.abort();
+    }
+    log(level, event) {
+        const sink = this.accounts.values().next().value?.log;
+        sink?.[level](`[openclam] ${event} connection=${this.connectionId}`);
+    }
+}
