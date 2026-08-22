@@ -744,7 +744,7 @@ final class CloudVoiceServiceTests: XCTestCase {
         let request = try XCTUnwrap(factory.request())
         XCTAssertEqual(
             request.url?.absoluteString,
-            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true"
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&vad_threshold=0"
         )
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer xai-fake-key")
@@ -763,7 +763,7 @@ final class CloudVoiceServiceTests: XCTestCase {
         )
         XCTAssertEqual(
             endpoint.absoluteString,
-            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&language=en-US"
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&vad_threshold=0&language=en-US"
         )
         XCTAssertTrue(XAIRealtimeSpeechToTextService.isTrustedEndpoint(endpoint))
 
@@ -775,6 +775,7 @@ final class CloudVoiceServiceTests: XCTestCase {
             "wss://api.x.ai/v1/other?sample_rate=16000&encoding=pcm&interim_results=true",
             "wss://api.x.ai/v1/stt?sample_rate=8000&encoding=pcm&interim_results=true",
             "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=false",
+            "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&vad_threshold=0.08",
             "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&extra=1",
             "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true&language=en&language=fr",
             "wss://api.x.ai/v1/stt?sample_rate=16000&encoding=pcm&interim_results=true#fragment",
@@ -784,6 +785,46 @@ final class CloudVoiceServiceTests: XCTestCase {
                 untrusted
             )
         }
+    }
+
+    func testXAIRealtimeSTTPreservesEarlierEndpointWhenDoneContainsOnlyFinalUtterance() async throws {
+        let socket = RecordingCloudVoiceWebSocketTask(received: [
+            .string(#"{"type":"transcript.created"}"#),
+            .string(#"{"type":"transcript.partial","text":"First question","is_final":true,"speech_final":true,"start":0,"duration":0.8}"#),
+            .string(#"{"type":"transcript.partial","text":"Second","is_final":true,"speech_final":false,"start":1,"duration":0.4}"#),
+            .string(#"{"type":"transcript.done","text":"Second question","duration":1.6}"#),
+        ])
+        let service = XAIRealtimeSpeechToTextService(
+            credentialStore: CloudVoiceMemoryCredentialStore(key: "xai-fake-key"),
+            socketFactory: RecordingCloudVoiceWebSocketTaskFactory(task: socket)
+        )
+        let session = try await service.startSession(
+            model: XAIRealtimeSpeechToTextService.model,
+            languageCode: nil
+        )
+
+        try await session.sendPCM(Data([1, 0]))
+        let first = try await session.receiveUpdate()
+        XCTAssertEqual(
+            first?.text,
+            "First question"
+        )
+        let second = try await session.receiveUpdate()
+        XCTAssertEqual(
+            second?.text,
+            "First question Second"
+        )
+        try await session.finishAudio()
+        let done = try await session.receiveUpdate()
+        XCTAssertEqual(
+            done,
+            .init(
+                text: "First question Second question",
+                isFinal: true,
+                endpointDetected: false,
+                isFinished: true
+            )
+        )
     }
 
     func testXAIRealtimeSTTRequiresCreatedAndMapsCredentialErrorWithoutLeakingMessage() async {
@@ -1051,16 +1092,24 @@ final class CloudVoiceServiceTests: XCTestCase {
     }
 
     func testSpeechInputCaptureRouteKeepsStartedProviderSnapshotAfterSettingsChange() {
-        let startedRealtime = AIServiceSelection(provider: .soniox, model: "stt-rt-v5")
+        let startedRealtime = AIServiceSelection(
+            provider: .xAI,
+            model: AIProviderRegistry.xAILiveSpeechToTextModel
+        )
         let laterApple = AIServiceSelection(provider: .apple, model: "apple-dictation")
         var state = SpeechInputCaptureRouteState()
 
+        XCTAssertTrue(AIProviderRegistry.usesRealtimeSpeechRecognition(startedRealtime))
         state.begin(.realtime(startedRealtime))
         XCTAssertEqual(state.active, .realtime(startedRealtime))
         XCTAssertNotEqual(state.active, .apple)
         XCTAssertEqual(laterApple.provider, .apple)
 
-        let startedFile = AIServiceSelection(provider: .xAI, model: "grok-transcribe")
+        let startedFile = AIServiceSelection(
+            provider: .xAI,
+            model: AIProviderRegistry.xAIBatchSpeechToTextModel
+        )
+        XCTAssertFalse(AIProviderRegistry.usesRealtimeSpeechRecognition(startedFile))
         state.begin(.cloudRecording(startedFile))
         XCTAssertEqual(state.active, .cloudRecording(startedFile))
         XCTAssertNotEqual(state.active, .realtime(startedRealtime))
@@ -1092,6 +1141,44 @@ final class CloudVoiceServiceTests: XCTestCase {
         )
         XCTAssertEqual(recognized.transcript, "Send this message.")
         XCTAssertNil(recognized.errorMessage)
+    }
+
+    func testTranscriptDeliveryGateCannotConsumeOrClearANewerSession() {
+        var gate = SpeechInputTranscriptDeliveryGate()
+        let stoppedSession = gate.beginSession()
+        let newerSession = gate.beginSession()
+
+        XCTAssertFalse(gate.consume(ifCurrent: stoppedSession))
+        XCTAssertTrue(
+            gate.consume(ifCurrent: newerSession),
+            "Rejecting an old stop must leave the newer transcript session current."
+        )
+        XCTAssertFalse(gate.consume(ifCurrent: newerSession))
+    }
+
+    @MainActor
+    func testStopForSubmissionReturnsFinalTextAndClearsPublishedTranscript() async {
+        let suiteName = "SpeechSubmission-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "speech.submission.settings",
+            credentialStore: CloudVoiceMemoryCredentialStore(key: nil)
+        )
+        let controller = SpeechInputController(
+            audioSessionOwnership: SpeechInputAudioSessionOwnership {}
+        )
+        controller.publishFinishedTranscript("How are you today?")
+
+        let submitted = await controller.stopForSubmission(using: configuration)
+
+        XCTAssertEqual(submitted, "How are you today?")
+        XCTAssertEqual(
+            controller.transcript,
+            "",
+            "The final publication must not replay into the composer after it clears on send."
+        )
     }
 
     @MainActor

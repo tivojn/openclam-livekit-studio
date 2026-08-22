@@ -857,7 +857,9 @@ def create_session(pipeline: Pipeline) -> AgentSession:
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             interruption={"mode": "adaptive"},
-            preemptive_generation={"enabled": True},
+            preemptive_generation={
+                "enabled": pipeline.preemptive_generation_enabled
+            },
         ),
         expressive=pipeline.expressive,
     )

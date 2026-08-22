@@ -532,7 +532,7 @@ final class AIConfigurationModel: ObservableObject {
         case .openAI:
             return OpenAICloudVoiceService(credentialStore: credentialStore)
         case .xAI:
-            guard selection.model == AIProviderRegistry.xAIBatchSpeechToTextModel else {
+            guard selection.model == XAICloudVoiceService.textToSpeechServiceID else {
                 throw AIProviderSettingsError.agentRuntimeUnavailable(selection.provider)
             }
             return XAICloudVoiceService(credentialStore: credentialStore)

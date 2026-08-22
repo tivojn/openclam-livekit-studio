@@ -1511,6 +1511,37 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertEqual(recordedEvents, ["start", "end"])
     }
 
+    func testStartFailureStaysNonRestartableUntilCleanupPublishesTheError() async {
+        let controller = LiveTalkSessionController(
+            credentialVault: InMemoryProviderCredentialVault(),
+            configurationLoader: {
+                throw LiveTalkConfigurationError.selectionNotSupported(.stt)
+            }
+        )
+
+        controller.begin(
+            avatar: .init(id: "captain-ayer", displayName: "Captain Ayer"),
+            sharedSettings: .init(),
+            avatarController: CaptainAyerLipSyncController()
+        )
+
+        XCTAssertEqual(controller.phase, .ending)
+        XCTAssertFalse(controller.canStart)
+        XCTAssertNil(controller.errorMessage)
+
+        for _ in 0..<20 where controller.phase == .ending {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(
+            controller.phase,
+            .failed(
+                LiveTalkConfigurationError.selectionNotSupported(.stt).localizedDescription
+            )
+        )
+        XCTAssertTrue(controller.canStart)
+    }
+
     func testTranscriptPanelIsBoundedAndRemoteAudioCanDriveAvatar() {
         let messages = (0..<20).map { index in
             ReceivedMessage(
@@ -1539,6 +1570,19 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertFalse(
             LiveTalkRemoteAudioActivity.isActive(reportedSpeaking: false, audioLevel: 0)
         )
+    }
+
+    func testLiveTalkCaptureKeepsReviewedDefaultsAndAvoidsPreconnectRecording() {
+        let options = LiveTalkAudioCapturePolicy.options
+
+        XCTAssertTrue(options.echoCancellation)
+        XCTAssertTrue(options.autoGainControl)
+        XCTAssertTrue(options.noiseSuppression)
+        XCTAssertEqual(options.echoCancellationMode, .automatic)
+        XCTAssertEqual(options.autoGainControlMode, .automatic)
+        XCTAssertEqual(options.noiseSuppressionMode, .automatic)
+        XCTAssertEqual(options.highpassFilterMode, .automatic)
+        XCTAssertFalse(LiveTalkAudioCapturePolicy.preConnectAudio)
     }
 
     func testTranscriptWindowClearsWhenSessionBoundaryEnds() {

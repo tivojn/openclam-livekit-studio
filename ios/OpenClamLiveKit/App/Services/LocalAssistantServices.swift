@@ -731,6 +731,41 @@ struct SpeechInputCompletion: Equatable, Sendable {
     }
 }
 
+/// Identifies the dictation session whose final transcript a caller is awaiting. Finishing speech
+/// is asynchronous, so a cancellation or a newly started recording may supersede that caller
+/// before it resumes. Only the still-current session may consume and clear the published draft.
+struct SpeechInputTranscriptDeliveryGate: Sendable {
+    struct Token: Equatable, Sendable {
+        fileprivate let generation: Int
+    }
+
+    private var generation = 0
+
+    var currentToken: Token {
+        Token(generation: generation)
+    }
+
+    @discardableResult
+    mutating func beginSession() -> Token {
+        advance()
+        return currentToken
+    }
+
+    mutating func invalidate() {
+        advance()
+    }
+
+    mutating func consume(ifCurrent token: Token) -> Bool {
+        guard token == currentToken else { return false }
+        advance()
+        return true
+    }
+
+    private mutating func advance() {
+        generation &+= 1
+    }
+}
+
 private final class SpeechInputOperationError: @unchecked Sendable {
     let underlying: Error
 
@@ -840,6 +875,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
     private var captureRouteState = SpeechInputCaptureRouteState()
     private let audioSessionOwnership: SpeechInputAudioSessionOwnership
     private var sessionGeneration = 0
+    private var transcriptDeliveryGate = SpeechInputTranscriptDeliveryGate()
 
     private static let appleFinalTranscriptTimeoutNanoseconds: UInt64 = 1_500_000_000
     private static let realtimeStopOperationTimeoutNanoseconds: UInt64 = 3_000_000_000
@@ -911,6 +947,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
     private func startApple(languageCode: String?) async {
         sessionGeneration += 1
         let generation = sessionGeneration
+        transcriptDeliveryGate.beginSession()
         errorMessage = nil
         transcript = ""
         isTranscribing = false
@@ -1059,8 +1096,36 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
         }
     }
 
+    /// Stops the active PTT route and atomically consumes its authoritative final transcript.
+    /// Clearing the observable transcript before returning prevents SwiftUI from replaying a
+    /// delayed final publication into a composer that has already sent and cleared its draft.
+    func stopForSubmission(using aiConfiguration: AIConfigurationModel) async -> String {
+        let deliveryToken = transcriptDeliveryGate.currentToken
+        let stoppedValue = await stop(using: aiConfiguration)
+        guard transcriptDeliveryGate.consume(ifCurrent: deliveryToken) else {
+            // A cancellation or a newer recording superseded this stop while it was awaiting its
+            // provider. Never clear or submit the newer session's transcript.
+            return ""
+        }
+
+        let completion = SpeechInputCompletion.resolve(
+            stoppedValue,
+            existingError: errorMessage
+        )
+        // Invalidate provider callbacks before clearing the published value. A callback already
+        // queued on the main actor either ran before this point and is cleared below, or observes
+        // the new generation and cannot repopulate the composer afterward.
+        sessionGeneration += 1
+        recognitionSegmentID += 1
+        appleTranscriptState = AppleDictationTranscriptState()
+        transcript = ""
+        errorMessage = completion.errorMessage
+        return completion.transcript
+    }
+
     func cancel() {
         sessionGeneration += 1
+        transcriptDeliveryGate.invalidate()
         cloudTranscriptionTask?.cancel()
         cloudTranscriptionTask = nil
         cloudTranscriptionGeneration = nil
@@ -1305,6 +1370,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
     ) async {
         sessionGeneration += 1
         let generation = sessionGeneration
+        transcriptDeliveryGate.beginSession()
         errorMessage = nil
         transcript = ""
         isTranscribing = false
@@ -1512,6 +1578,7 @@ final class SpeechInputController: NSObject, ObservableObject, @preconcurrency A
     ) async {
         sessionGeneration += 1
         let generation = sessionGeneration
+        transcriptDeliveryGate.beginSession()
         errorMessage = nil
         transcript = ""
         isTranscribing = false

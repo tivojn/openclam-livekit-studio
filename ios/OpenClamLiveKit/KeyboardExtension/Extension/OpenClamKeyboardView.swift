@@ -12,8 +12,8 @@ final class OpenClamKeyboardViewModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .ready
-    @Published private(set) var title = "Quick Dictation"
-    @Published private(set) var detail = "Open OpenClam first for instant voice input."
+    @Published private(set) var title = "OpenClam Voice"
+    @Published private(set) var detail = "Turn on Quick Dictation in OpenClam once, then dictate here with your selected speech provider."
     @Published private(set) var primaryActionTitle = "Start"
     @Published private(set) var hasFullAccess = false
     @Published private(set) var warmEarIsReady = false
@@ -26,6 +26,7 @@ final class OpenClamKeyboardViewModel: ObservableObject {
     private var store: OpenClamKeyboardHandoffStore?
     private var pollingTimer: Timer?
     private var isVisible = false
+    private var activeRequestID: UUID?
     private var locallyConsumedResultIDs: Set<UUID> = []
 
     init(
@@ -46,7 +47,50 @@ final class OpenClamKeyboardViewModel: ObservableObject {
         }
     }
 
-    var microphoneIsEnabled: Bool { hasFullAccess }
+    var microphoneIsEnabled: Bool {
+        hasFullAccess
+            && (OpenClamKeyboardWarmEarState.isEnabled || phase == .waiting)
+    }
+
+    var showsOpenClamVoiceAction: Bool {
+        true
+    }
+
+    var headerStatusText: String {
+        switch phase {
+        case .needsFullAccess:
+            "Setup"
+        case .waiting:
+            title == "Listening" ? "Listening" : "Connecting"
+        case .inserted:
+            "Inserted"
+        case .failed:
+            "Attention"
+        case .ready:
+            if warmEarIsReady {
+                "Ready"
+            } else if OpenClamKeyboardWarmEarState.isEnabled {
+                "Preparing"
+            } else {
+                "Needs OpenClam"
+            }
+        }
+    }
+
+    var headerStatusColor: Color {
+        switch phase {
+        case .inserted:
+            .green
+        case .waiting where title == "Listening":
+            .green
+        case .ready where warmEarIsReady:
+            .green
+        case .failed:
+            .orange
+        default:
+            .secondary
+        }
+    }
 
     var accentColor: Color {
         switch phase {
@@ -71,10 +115,12 @@ final class OpenClamKeyboardViewModel: ObservableObject {
             }
             refresh()
         } else {
+            store = nil
             phase = .needsFullAccess
+            warmEarIsReady = false
             title = "Allow Full Access"
-            detail = "Required only for the local transcript handoff. The keyboard never receives your provider key."
-            primaryActionTitle = "Full Access Required"
+            detail = "Full Access lets OpenClam return the finished provider transcript through its private shared container."
+            primaryActionTitle = "OpenClam Voice"
             updatePolling()
         }
     }
@@ -120,11 +166,16 @@ final class OpenClamKeyboardViewModel: ObservableObject {
             updateFullAccess(false)
             return
         }
+        guard OpenClamKeyboardWarmEarState.isEnabled else {
+            showReady(detail: "Turn on Quick Dictation in OpenClam once, then return here.")
+            return
+        }
 
         do {
             let availableStore = try store ?? OpenClamKeyboardHandoffStore.live()
             store = availableStore
-            _ = try availableStore.beginRequest()
+            let request = try availableStore.beginRequest()
+            activeRequestID = request.id
             warmEarIsReady = OpenClamKeyboardWarmEarState.isReady()
             OpenClamKeyboardWarmEarSignal.postBeginRequest()
             phase = .waiting
@@ -141,6 +192,7 @@ final class OpenClamKeyboardViewModel: ObservableObject {
             let availableStore = try store ?? OpenClamKeyboardHandoffStore.live()
             store = availableStore
             _ = try availableStore.cancelActiveRequest()
+            activeRequestID = nil
             OpenClamKeyboardWarmEarSignal.postCancelRequest()
             refresh()
             if phase == .waiting {
@@ -168,11 +220,13 @@ final class OpenClamKeyboardViewModel: ObservableObject {
                 locallyConsumedResultIDs.remove(result.requestID)
                 return
             }
-            if try availableStore.activeRequest(at: date) != nil {
+            if let request = try availableStore.activeRequest(at: date) {
+                activeRequestID = request.id
                 phase = .waiting
                 warmEarIsReady = OpenClamKeyboardWarmEarState.isReady(at: date)
                 updateWaitingCopy()
-            } else if phase == .waiting {
+            } else {
+                activeRequestID = nil
                 showReady()
             }
             updatePolling()
@@ -184,6 +238,7 @@ final class OpenClamKeyboardViewModel: ObservableObject {
     }
 
     private func consume(_ result: OpenClamKeyboardResult) {
+        activeRequestID = nil
         switch result.state {
         case .completed:
             guard let transcript = result.transcript,
@@ -211,32 +266,47 @@ final class OpenClamKeyboardViewModel: ObservableObject {
     private func showReady(detail: String? = nil) {
         phase = .ready
         warmEarIsReady = OpenClamKeyboardWarmEarState.isReady()
-        title = warmEarIsReady ? "Ready for Quick Dictation" : "Quick Dictation"
-        self.detail = detail ?? (warmEarIsReady
-            ? "Tap Start and speak. OpenClam stops after you pause."
-            : "Open OpenClam first for instant voice input.")
-        primaryActionTitle = "Start"
-        updatePolling()
+        if !hasFullAccess {
+            updateFullAccess(false)
+        } else if warmEarIsReady {
+            title = "OpenClam Voice Ready"
+            self.detail = detail ?? "Tap Start and speak. OpenClam stops after your pause."
+            primaryActionTitle = "Start"
+            updatePolling()
+        } else if OpenClamKeyboardWarmEarState.isEnabled {
+            title = "OpenClam Voice"
+            self.detail = detail
+                ?? "Tap Start. If Quick Dictation is still preparing, listening begins as soon as it is ready."
+            primaryActionTitle = "Start"
+            updatePolling()
+        } else {
+            title = "OpenClam Voice"
+            self.detail = detail
+                ?? "Turn on Quick Dictation in OpenClam once, then return here."
+            primaryActionTitle = "Start"
+            updatePolling()
+        }
     }
 
     private func showFailure(_ message: String) {
         phase = .failed
-        title = "Voice Input Unavailable"
+        warmEarIsReady = OpenClamKeyboardWarmEarState.isReady()
+        title = "OpenClam Voice failed"
         detail = message
         primaryActionTitle = "Try Again"
-        warmEarIsReady = false
-        announce("Voice input unavailable. \(message)")
+        announce("OpenClam Voice failed. \(message)")
         updatePolling()
     }
 
     private func updateWaitingCopy() {
         let previousTitle = title
-        if warmEarIsReady {
+        if let activeRequestID,
+           OpenClamKeyboardWarmEarState.isListening(requestID: activeRequestID) {
             title = "Listening"
             detail = "Speak now. OpenClam stops after your pause."
         } else {
-            title = "Waiting for OpenClam"
-            detail = "Open OpenClam, finish the visible voice screen, then return."
+            title = "Connecting to OpenClam"
+            detail = "Wait for Listening, then speak. Your provider starts automatically."
         }
         primaryActionTitle = "Cancel"
         if title != previousTitle {
@@ -281,12 +351,17 @@ struct OpenClamKeyboardView: View {
         VStack(spacing: model.compactLayout ? 6 : 9) {
             if !model.compactLayout, !dynamicTypeSize.isAccessibilitySize {
                 HStack(spacing: 12) {
-                    Label("OpenClam Voice", systemImage: "waveform.circle.fill")
+                    Label(
+                        model.showsOpenClamVoiceAction ? "OpenClam Voice" : "Voice Input",
+                        systemImage: model.showsOpenClamVoiceAction
+                            ? "waveform.circle.fill"
+                            : "mic.circle.fill"
+                    )
                         .font(.headline)
                     Spacer()
-                    Text(model.warmEarIsReady ? "Ready" : "Open app first")
+                    Text(model.headerStatusText)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(model.warmEarIsReady ? .green : .secondary)
+                        .foregroundStyle(model.headerStatusColor)
                 }
             }
 

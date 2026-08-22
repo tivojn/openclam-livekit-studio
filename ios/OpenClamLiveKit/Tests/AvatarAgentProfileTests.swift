@@ -358,6 +358,29 @@ final class AvatarAgentProfileTests: XCTestCase {
         XCTAssertNoThrow(try configuration.makeRealtimeSpeechToTextService())
     }
 
+    func testXAITextToSpeechFactoryRejectsTheSpeechToTextModel() throws {
+        let configuration = makeConfiguration()
+        configuration.settings.textToSpeech = .init(
+            provider: .xAI,
+            model: XAICloudVoiceService.textToSpeechServiceID,
+            voice: "eve"
+        )
+
+        XCTAssertNoThrow(try configuration.makeCloudTextToSpeechService())
+
+        configuration.settings.textToSpeech = .init(
+            provider: .xAI,
+            model: AIProviderRegistry.xAIBatchSpeechToTextModel,
+            voice: "eve"
+        )
+        XCTAssertThrowsError(try configuration.makeCloudTextToSpeechService()) { error in
+            XCTAssertEqual(
+                error as? AIProviderSettingsError,
+                .agentRuntimeUnavailable(.xAI)
+            )
+        }
+    }
+
     func testAvatarListUsesCompactLiveTalkSummaryWithoutLosingResolvedDetail() throws {
         let profile = AvatarAgentProfile(id: "captain-ayer", displayName: "Captain Ayer")
         let resolved = try LiveTalkConfigurationResolver.resolve(

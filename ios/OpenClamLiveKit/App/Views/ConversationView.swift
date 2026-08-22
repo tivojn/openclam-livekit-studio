@@ -46,12 +46,38 @@ enum ConversationComposerLayout {
     static let minimumExpandedTextHeight: CGFloat = 62
 }
 
+enum ConversationSpeechStatusCopy {
+    static func listening(
+        selection: AIServiceSelection,
+        providerName: String
+    ) -> String {
+        let model = selection.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if selection.provider == .xAI,
+           model == AIProviderRegistry.xAILiveSpeechToTextModel {
+            return "Live text with xAI · words appear as you speak · tap Stop"
+        }
+        if selection.provider == .xAI,
+           model == AIProviderRegistry.xAIBatchSpeechToTextModel {
+            return "Recording with xAI Batch · transcript appears after Stop"
+        }
+        return "Listening with \(providerName) · tap Stop"
+    }
+}
+
 enum ConversationThreadLayout {
     static let horizontalContentInset: CGFloat = 16
+    static let avatarRailWidth: CGFloat = 64
+    static let avatarRailTextClearance: CGFloat = 12
+    static let trailingMessageInset = avatarRailWidth + avatarRailTextClearance
+    static let standardAnchoredTurnTopClearance: CGFloat = 64
+    static let accessibilityAnchoredTurnTopClearance: CGFloat = 80
     static let userBubbleMaximumWidth: CGFloat = 560
     static let userBubbleMaximumWidthFraction: CGFloat = 0.85
     static let userBubbleMinimumWidth: CGFloat = 44
     static let userBubbleHorizontalPadding: CGFloat = 28
+    // UITextView's typographic fit can be slightly wider than NSString's single-line estimate.
+    // Keep a small reserve so a content-sized bubble never clips its final word at the edge.
+    static let userBubbleTextMeasurementSafety: CGFloat = 16
     static let standardUserTurnHeightAllowance: CGFloat = 40
     static let accessibilityUserTurnHeightAllowance: CGFloat = 72
     static let minimumStandardResponseReserve: CGFloat = 240
@@ -76,12 +102,20 @@ enum ConversationThreadLayout {
         return max(minimum, boundedHeight - userTurnAllowance)
     }
 
+    static func anchoredTurnTopClearance(
+        usesAccessibilityType: Bool
+    ) -> CGFloat {
+        usesAccessibilityType
+            ? accessibilityAnchoredTurnTopClearance
+            : standardAnchoredTurnTopClearance
+    }
+
     static func userBubbleWidth(
         viewportWidth: CGFloat,
         naturalTextWidth: CGFloat,
         hasAttachments: Bool
     ) -> CGFloat {
-        let availableWidth = max(0, viewportWidth - (horizontalContentInset * 2))
+        let availableWidth = messageLaneWidth(viewportWidth: viewportWidth)
         let maximumWidth = min(
             availableWidth,
             userBubbleMaximumWidth,
@@ -89,9 +123,33 @@ enum ConversationThreadLayout {
         )
         let desiredWidth = hasAttachments
             ? maximumWidth
-            : max(0, naturalTextWidth) + userBubbleHorizontalPadding
+            : max(0, naturalTextWidth)
+                + userBubbleHorizontalPadding
+                + userBubbleTextMeasurementSafety
         return min(maximumWidth, max(userBubbleMinimumWidth, desiredWidth))
     }
+
+    /// The avatar tool rail owns the physical trailing edge of the screen.
+    /// Keep every transcript row to its left so text remains readable while
+    /// the transparent space between rail buttons can still scroll normally.
+    static func messageLaneWidth(viewportWidth: CGFloat) -> CGFloat {
+        max(
+            0,
+            viewportWidth - horizontalContentInset - trailingMessageInset
+        )
+    }
+
+    /// The stack already supplies `horizontalContentInset` on both sides, so
+    /// rows need only the difference to establish the full trailing safe lane.
+    static var additionalMessageRowTrailingPadding: CGFloat {
+        max(0, trailingMessageInset - horizontalContentInset)
+    }
+}
+
+enum ConversationThreadScrollDirective: Equatable {
+    case placeUserTurn(UUID)
+    case followLatest
+    case preservePosition
 }
 
 struct ConversationThreadPositioningState: Equatable {
@@ -109,6 +167,27 @@ struct ConversationThreadPositioningState: Equatable {
 
     mutating func noteManualScroll() {
         hasManualScrollSincePlacement = true
+    }
+
+    /// A newly submitted user turn always owns placement, including when a
+    /// very fast local answer is coalesced into the same SwiftUI update. Once
+    /// placed, its anchor stays active while the answer is appended so the
+    /// response grows below it instead of collapsing the whole turn back to
+    /// the composer's bottom edge.
+    mutating func receiveAppendedMessages(
+        userMessageID: UUID?,
+        assistantMessageID: UUID?
+    ) -> ConversationThreadScrollDirective {
+        if let userMessageID {
+            beginUserTurn(messageID: userMessageID)
+            return .placeUserTurn(userMessageID)
+        }
+
+        if assistantMessageID != nil, anchoredUserMessageID != nil {
+            return .preservePosition
+        }
+
+        return shouldFollowLatest ? .followLatest : .preservePosition
     }
 
     mutating func resetForThreadChange() {
@@ -134,6 +213,7 @@ struct ConversationView: View {
     @EnvironmentObject private var keyboardDictationHost: OpenClamKeyboardDictationHostController
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var speech = SpeechInputController()
     @State private var input = ""
@@ -177,11 +257,10 @@ struct ConversationView: View {
                     ScrollView {
                     LazyVStack(spacing: 14) {
                         ForEach(conversation.messages) { message in
-                            messageBubble(
+                            threadMessageRow(
                                 message,
                                 viewportWidth: threadViewport.size.width
                             )
-                                .id(message.id)
                         }
 
                         if conversation.messages.count == 1,
@@ -306,15 +385,23 @@ struct ConversationView: View {
             }
             .onChange(of: assistantReplyDeliverySnapshot) { _, snapshot in
                 let newUserMessageID = userTurnPlacementBoundary.observe(snapshot)
-                if let newUserMessageID {
+                let newAssistantMessageID = deliverNewAssistantReply(from: snapshot)
+                switch threadPositioning.receiveAppendedMessages(
+                    userMessageID: newUserMessageID,
+                    assistantMessageID: newAssistantMessageID
+                ) {
+                case .placeUserTurn(let messageID):
                     placeNewUserTurn(
-                        newUserMessageID,
+                        messageID,
                         using: proxy
                     )
-                } else if !isFreshConversation, threadPositioning.shouldFollowLatest {
-                    scrollToLatest(using: proxy)
+                case .followLatest:
+                    if !isFreshConversation {
+                        scrollToLatest(using: proxy)
+                    }
+                case .preservePosition:
+                    break
                 }
-                deliverNewAssistantReply(from: snapshot)
             }
             .onChange(of: conversation.isWorking) { _, _ in
                 if threadPositioning.shouldFollowLatest {
@@ -468,6 +555,7 @@ struct ConversationView: View {
             .ignoresSafeArea()
         }
         .onChange(of: speech.transcript) { _, transcript in
+            guard speech.isListening || speech.isTranscribing else { return }
             input = transcript
         }
         .onChange(of: input) { _, _ in
@@ -564,6 +652,26 @@ struct ConversationView: View {
         conversation.messages.count == 1
     }
 
+    private func threadMessageRow(
+        _ message: ConversationMessage,
+        viewportWidth: CGFloat
+    ) -> some View {
+        messageBubble(message, viewportWidth: viewportWidth)
+            .padding(
+                physicalRightThreadEdge,
+                ConversationThreadLayout.additionalMessageRowTrailingPadding
+            )
+            .padding(
+                .top,
+                message.id == threadPositioning.anchoredUserMessageID
+                    ? ConversationThreadLayout.anchoredTurnTopClearance(
+                        usesAccessibilityType: dynamicTypeSize.isAccessibilitySize
+                    )
+                    : 0
+            )
+            .id(message.id)
+    }
+
     @ViewBuilder
     private func messageBubble(
         _ message: ConversationMessage,
@@ -621,6 +729,12 @@ struct ConversationView: View {
             .components(separatedBy: .newlines)
             .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
             .max() ?? 0
+    }
+
+    /// The avatar rail is physically right-aligned even in right-to-left
+    /// locales, while SwiftUI's leading/trailing edges are semantic.
+    private var physicalRightThreadEdge: Edge.Set {
+        layoutDirection == .rightToLeft ? .leading : .trailing
     }
 
     private func messageAccessibilityIdentifier(
@@ -2076,7 +2190,10 @@ struct ConversationView: View {
 
     private var speechStatusText: String? {
         if speech.isListening {
-            return "Listening with \(speechProviderName) · tap Stop"
+            return ConversationSpeechStatusCopy.listening(
+                selection: aiConfiguration.effectiveSettings.speechToText,
+                providerName: speechProviderName
+            )
         }
         if speech.isTranscribing {
             return "Transcribing with \(speechProviderName)…"
@@ -2369,7 +2486,7 @@ struct ConversationView: View {
         }
     }
 
-    private func sendInput() {
+    private func sendInput(_ submittedValue: String? = nil) {
         guard !conversation.isWorking, !isChatTransitioning else { return }
         conversation.stopSpeechOutput()
         confirmedActionNotice = nil
@@ -2377,7 +2494,8 @@ struct ConversationView: View {
             finishSpeechAndSend()
             return
         }
-        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (submittedValue ?? input)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         if conversation.pendingScreenContextSubmission != nil {
             guard stagedAttachments.isEmpty else {
@@ -2422,11 +2540,10 @@ struct ConversationView: View {
 
     private func finishSpeechAndSend() {
         Task { @MainActor in
-            let stoppedValue = await speech.stop(using: aiConfiguration)
-            let value = speech.publishFinishedTranscript(stoppedValue)
+            let value = await speech.stopForSubmission(using: aiConfiguration)
             input = value
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            sendInput()
+            sendInput(value)
         }
     }
 
@@ -2700,7 +2817,6 @@ struct ConversationView: View {
         _ messageID: UUID,
         using proxy: ScrollViewProxy
     ) {
-        threadPositioning.beginUserTurn(messageID: messageID)
         Task { @MainActor in
             // The message and its response reserve enter the lazy stack in the
             // same update. Yield once so ScrollView measures both before asking
@@ -2739,18 +2855,20 @@ struct ConversationView: View {
         }
     }
 
+    @discardableResult
     private func deliverNewAssistantReply(
         from snapshot: AssistantReplyDeliverySnapshot
-    ) {
+    ) -> UUID? {
         guard let messageID = assistantReplyDeliveryBoundary.observe(snapshot),
               let message = conversation.messages.first(where: { $0.id == messageID }) else {
-            return
+            return nil
         }
         AccessibilityNotification.Announcement("Assistant: \(message.text)").post()
         if !liveTalk.phase.isSessionActive, reserveAppAudioLane() {
             conversation.speakAssistantReply(message.text, using: aiConfiguration)
             synchronizeQuickDictationAudioOwnership()
         }
+        return messageID
     }
 
     private func toggleLiveTalk() {

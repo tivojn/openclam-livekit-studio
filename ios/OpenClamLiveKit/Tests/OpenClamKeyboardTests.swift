@@ -13,12 +13,11 @@ final class OpenClamKeyboardTests: XCTestCase {
         )
     }
 
-    func testWarmEarReadinessRequiresEnabledLiveHeartbeatAndFutureDeadline() {
+    func testWarmEarReadinessRequiresEnabledLiveHeartbeatWithoutTimeExpiry() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         XCTAssertTrue(
             OpenClamKeyboardWarmEarState.isReady(
                 enabled: true,
-                readyUntil: now.addingTimeInterval(30).timeIntervalSince1970,
                 heartbeat: now.addingTimeInterval(-1).timeIntervalSince1970,
                 at: now
             )
@@ -26,7 +25,6 @@ final class OpenClamKeyboardTests: XCTestCase {
         XCTAssertFalse(
             OpenClamKeyboardWarmEarState.isReady(
                 enabled: false,
-                readyUntil: now.addingTimeInterval(30).timeIntervalSince1970,
                 heartbeat: now.timeIntervalSince1970,
                 at: now
             )
@@ -34,24 +32,18 @@ final class OpenClamKeyboardTests: XCTestCase {
         XCTAssertFalse(
             OpenClamKeyboardWarmEarState.isReady(
                 enabled: true,
-                readyUntil: now.addingTimeInterval(30).timeIntervalSince1970,
                 heartbeat: now.addingTimeInterval(-4).timeIntervalSince1970,
-                at: now
-            )
-        )
-        XCTAssertFalse(
-            OpenClamKeyboardWarmEarState.isReady(
-                enabled: true,
-                readyUntil: now.addingTimeInterval(-1).timeIntervalSince1970,
-                heartbeat: now.timeIntervalSince1970,
                 at: now
             )
         )
     }
 
     @MainActor
-    func testWarmEarLeaseIsStrictlyBoundedToNinetySeconds() {
-        XCTAssertEqual(OpenClamWarmEarControl.foregroundLeaseDuration, 90)
+    func testWarmEarReadyStatePersistsUntilExplicitlyStopped() {
+        XCTAssertEqual(
+            OpenClamWarmEarPresentationState.ready.detail,
+            "Ready for keyboard voice requests until you turn Quick Dictation off."
+        )
     }
 
     func testHandoffURLRoundTripsOnlyOneExactRequestID() {
@@ -132,14 +124,82 @@ final class OpenClamKeyboardTests: XCTestCase {
 
     func testKeyboardUserCopyMatchesTheActualHandoffAndBoundedLease() {
         XCTAssertFalse(OpenClamKeyboardCapability.canLaunchContainingAppFromExtension)
-        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("open OpenClam yourself"))
-        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("90 seconds"))
+        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("Allow Full Access"))
+        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("speech provider"))
+        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("Quick Dictation"))
+        XCTAssertTrue(OpenClamKeyboardUserCopy.setupWorkflow.contains("wait for Listening"))
         XCTAssertTrue(
             OpenClamKeyboardUserCopy.boundedMicrophoneDisclosure.contains("foreground-started")
         )
         XCTAssertTrue(
-            OpenClamKeyboardUserCopy.boundedMicrophoneDisclosure.contains("at most 90 seconds")
+            OpenClamKeyboardUserCopy.boundedMicrophoneDisclosure.contains("until you turn it off")
         )
+        XCTAssertTrue(
+            OpenClamKeyboardUserCopy.boundedMicrophoneDisclosure.contains("standby audio is discarded")
+        )
+    }
+
+    func testKeyboardKeepsOpenClamProviderVoiceAsItsPrimaryAction() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent(
+                    "KeyboardExtension/Extension/KeyboardViewController.swift"
+                ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("get { true }"))
+        XCTAssertFalse(source.contains("get { false }"))
+    }
+
+    func testKeyboardQueuesProviderRequestWhileWarmEarFinishesPreparing() throws {
+        let project = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let keyboardSource = try String(
+            contentsOf: project.appendingPathComponent(
+                "KeyboardExtension/Extension/OpenClamKeyboardView.swift"
+            ),
+            encoding: .utf8
+        )
+        let hostSource = try String(
+            contentsOf: project.appendingPathComponent(
+                "KeyboardExtension/Host/OpenClamKeyboardDictationHost.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(
+            keyboardSource.contains(
+                "guard hasFullAccess,\n              OpenClamKeyboardWarmEarState.isReady()"
+            )
+        )
+        XCTAssertTrue(keyboardSource.contains("let request = try availableStore.beginRequest()"))
+        XCTAssertTrue(keyboardSource.contains("OpenClamKeyboardWarmEarSignal.postBeginRequest()"))
+        XCTAssertTrue(hostSource.contains("warmEarLease.refreshReadinessIfArmed(at: date)"))
+        XCTAssertTrue(hostSource.contains("markListening(requestID: request.id)"))
+        XCTAssertFalse(hostSource.contains("foregroundLeaseDuration"))
+        XCTAssertFalse(hostSource.contains("readyUntil()"))
+        XCTAssertTrue(hostSource.contains("func finishTurnAndRearm() async -> Bool"))
+    }
+
+    func testWarmEarDoesNotReRequestAnAlreadyGrantedMicrophonePermission() throws {
+        let project = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let hostSource = try String(
+            contentsOf: project.appendingPathComponent(
+                "KeyboardExtension/Host/OpenClamKeyboardDictationHost.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(hostSource.contains("switch AVAudioApplication.shared.recordPermission"))
+        XCTAssertTrue(hostSource.contains("case .granted:"))
+        XCTAssertTrue(hostSource.contains("return true"))
+        XCTAssertTrue(hostSource.contains("recordPermissionRequestTimeout: Duration = .seconds(15)"))
     }
 
     func testSharedResultIsConsumedExactlyOnceAndDeleted() throws {

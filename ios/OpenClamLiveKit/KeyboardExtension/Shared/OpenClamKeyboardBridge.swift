@@ -3,8 +3,9 @@ import Foundation
 
 enum OpenClamKeyboardWarmEarState {
     static let enabledKey = "keyboard.warmEar.enabled"
-    static let readyUntilKey = "keyboard.warmEar.readyUntil"
+    private static let legacyReadyUntilKey = "keyboard.warmEar.readyUntil"
     static let heartbeatKey = "keyboard.warmEar.heartbeat"
+    static let listeningRequestIDKey = "keyboard.warmEar.listeningRequestID"
     static let heartbeatTolerance: TimeInterval = 3
 
     private static var defaults: UserDefaults? {
@@ -26,7 +27,6 @@ enum OpenClamKeyboardWarmEarState {
         guard let defaults else { return false }
         return isReady(
             enabled: defaults.bool(forKey: enabledKey),
-            readyUntil: defaults.double(forKey: readyUntilKey),
             heartbeat: defaults.double(forKey: heartbeatKey),
             at: date
         )
@@ -34,17 +34,15 @@ enum OpenClamKeyboardWarmEarState {
 
     static func isReady(
         enabled: Bool,
-        readyUntil: TimeInterval,
         heartbeat: TimeInterval,
         at date: Date
     ) -> Bool {
-        guard enabled, readyUntil > date.timeIntervalSince1970 else { return false }
+        guard enabled else { return false }
         let heartbeatAge = date.timeIntervalSince1970 - heartbeat
         return heartbeatAge >= -1 && heartbeatAge <= heartbeatTolerance
     }
 
-    static func markReady(until deadline: Date, heartbeat date: Date = Date()) {
-        defaults?.set(deadline.timeIntervalSince1970, forKey: readyUntilKey)
+    static func markReady(heartbeat date: Date = Date()) {
         defaults?.set(date.timeIntervalSince1970, forKey: heartbeatKey)
     }
 
@@ -56,14 +54,28 @@ enum OpenClamKeyboardWarmEarState {
         defaults?.set(date.timeIntervalSince1970, forKey: heartbeatKey)
     }
 
-    static func readyUntil() -> Date? {
-        guard let value = defaults?.double(forKey: readyUntilKey), value > 0 else { return nil }
-        return Date(timeIntervalSince1970: value)
+    static func clearReadiness() {
+        defaults?.removeObject(forKey: legacyReadyUntilKey)
+        defaults?.removeObject(forKey: heartbeatKey)
+        defaults?.removeObject(forKey: listeningRequestIDKey)
     }
 
-    static func clearReadiness() {
-        defaults?.removeObject(forKey: readyUntilKey)
-        defaults?.removeObject(forKey: heartbeatKey)
+    static func markListening(requestID: UUID) {
+        defaults?.set(requestID.uuidString.lowercased(), forKey: listeningRequestIDKey)
+    }
+
+    static func isListening(requestID: UUID) -> Bool {
+        defaults?.string(forKey: listeningRequestIDKey)
+            == requestID.uuidString.lowercased()
+    }
+
+    static func clearListening(requestID: UUID? = nil) {
+        if let requestID,
+           defaults?.string(forKey: listeningRequestIDKey)
+            != requestID.uuidString.lowercased() {
+            return
+        }
+        defaults?.removeObject(forKey: listeningRequestIDKey)
     }
 }
 
@@ -103,16 +115,16 @@ enum OpenClamKeyboardCapability {
     /// The keyboard leaves a bounded request in the App Group, then the user opens OpenClam.
     static let canLaunchContainingAppFromExtension = false
 
-    /// The app must be visible when a real microphone lease starts. During that bounded lease,
-    /// the app may finish one keyboard turn after it moves to the background.
+    /// The app must be visible when a real microphone lease starts. Once armed, the app may serve
+    /// keyboard turns in the background until the user turns it off or another audio owner pauses it.
     static let requiresVisibleContainingAppForVoiceInput = false
     static let supportsBoundedForegroundStartedBackgroundCapture = true
 }
 
 enum OpenClamKeyboardUserCopy {
-    static let setupWorkflow = "For instant dictation, open OpenClam and arm Quick Dictation, then return to the keyboard within 90 seconds. Otherwise, tapping Start creates a local request: open OpenClam yourself, finish its visible voice screen, and return. The extension records nothing and receives only the final transcript."
+    static let setupWorkflow = "Turn on Allow Full Access for OpenClam Keyboard, choose your speech provider in OpenClam, then turn on Quick Dictation once. Return to any app, tap Start in OpenClam Keyboard, wait for Listening, and speak."
 
-    static let boundedMicrophoneDisclosure = "Quick Dictation uses one visible, foreground-started microphone lease for at most 90 seconds; the keyboard itself never records"
+    static let boundedMicrophoneDisclosure = "Quick Dictation keeps one visible, foreground-started microphone readiness session active until you turn it off; standby audio is discarded and the keyboard itself never records"
 }
 
 struct OpenClamKeyboardRequest: Codable, Equatable, Identifiable, Sendable {

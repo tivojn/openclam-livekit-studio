@@ -40,6 +40,13 @@ XAI_CLI_CLIENT_MODE = "headless"
 XAI_API_HOST = "api.x.ai"
 XAI_STT_PATH = "/v1/stt"
 XAI_TTS_PATH = "/v1/tts"
+# xAI can emit a locked chunk without marking the utterance complete. Give its
+# Smart Turn model enough room for a natural pause, but never let one user turn
+# remain open and absorb the next question indefinitely.
+XAI_STT_ENDPOINTING_MS = 250
+XAI_STT_VAD_THRESHOLD = 0.2
+XAI_STT_SMART_TURN_THRESHOLD = 0.5
+XAI_STT_SMART_TURN_TIMEOUT_MS = 1_500
 MANAGED_TTS_VOICES = frozenset(
     {
         "bf322df2096a46f18c579d0baa36f41d",
@@ -226,6 +233,7 @@ class Pipeline:
     tts: tts.TTS = field(repr=False)
     expressive: bool | dict[str, Any]
     private_expressive_markup_enabled: bool
+    preemptive_generation_enabled: bool
 
 
 def create_pipeline(claim: ClaimedSession) -> Pipeline:
@@ -247,12 +255,20 @@ def create_pipeline(claim: ClaimedSession) -> Pipeline:
         and isinstance(speech, inference.TTS)
         and bool(expressive)
     )
+    # xAI's streaming speech transports open one WebSocket per generation and
+    # do not have a protocol-level cancel message. Wait for the bounded STT
+    # endpoint before starting LLM/TTS so a growing chunk-final transcript
+    # cannot churn speculative speech or leak stale audio into the next turn.
+    preemptive_generation_enabled = not (
+        claim.profile.stt.provider == "xai" or claim.profile.tts.provider == "xai"
+    )
     return Pipeline(
         llm=language_model,
         stt=recognizer,
         tts=speech,
         expressive=expressive,
         private_expressive_markup_enabled=private_expressive_markup_enabled,
+        preemptive_generation_enabled=preemptive_generation_enabled,
     )
 
 
@@ -328,6 +344,10 @@ def _build_stt(selection: StageSelection, claim: ClaimedSession) -> stt.STT:
             api_key=key,
             language=language,
             enable_interim_results=True,
+            endpointing=XAI_STT_ENDPOINTING_MS,
+            vad_threshold=XAI_STT_VAD_THRESHOLD,
+            smart_turn=XAI_STT_SMART_TURN_THRESHOLD,
+            smart_turn_timeout=XAI_STT_SMART_TURN_TIMEOUT_MS,
         )
     if selection.provider == "deepgram":
         return deepgram.STT(

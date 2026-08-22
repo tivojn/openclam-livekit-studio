@@ -60,12 +60,16 @@ struct SetupView: View {
                     systemImage: "keyboard"
                 )
                 Label(
-                    "Enable Allow Full Access for the one-time local App Group handoff",
+                    "Enable Allow Full Access for OpenClam's private transcript handoff",
                     systemImage: "lock.open"
                 )
                 Text(OpenClamKeyboardUserCopy.setupWorkflow)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Label(
+                    "Use Start in OpenClam Keyboard; Listening confirms your selected provider is ready",
+                    systemImage: "waveform.circle.fill"
+                )
             }
 
             Section("Security posture") {

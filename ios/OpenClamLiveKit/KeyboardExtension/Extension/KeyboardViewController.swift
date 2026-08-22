@@ -4,6 +4,8 @@ import UIKit
 @MainActor
 final class KeyboardViewController: UIInputViewController {
     override var hasDictationKey: Bool {
+        // OpenClam owns the visible voice action. iOS still prevents the extension itself from
+        // recording; the foreground-started app lease performs provider recognition instead.
         get { true }
         set {}
     }

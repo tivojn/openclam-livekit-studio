@@ -7,7 +7,7 @@ import httpx
 import pytest
 from aiohttp import web
 from livekit import rtc
-from livekit.agents import inference
+from livekit.agents import inference, stt
 from livekit.agents.voice.agent_session import (
     DEFAULT_EXPRESSIVE_OPTIONS,
     resolve_expressive_options,
@@ -31,7 +31,7 @@ from openclam_livekit_agent.contract import (
     StageSelection,
     XaiAuthMode,
 )
-from openclam_livekit_agent.main import OpenClamVoiceAgent
+from openclam_livekit_agent.main import OpenClamVoiceAgent, create_session
 from openclam_livekit_agent.pipeline import (
     MANAGED_LLM,
     MANAGED_STT,
@@ -46,6 +46,10 @@ from openclam_livekit_agent.pipeline import (
     XAI_CLI_PROXY_BASE_URL,
     XAI_CLI_PROXY_MODEL,
     XAI_CLI_TOKEN_AUTH,
+    XAI_STT_ENDPOINTING_MS,
+    XAI_STT_SMART_TURN_THRESHOLD,
+    XAI_STT_SMART_TURN_TIMEOUT_MS,
+    XAI_STT_VAD_THRESHOLD,
     PipelineConfigurationError,
     create_pipeline,
 )
@@ -99,6 +103,7 @@ def test_managed_default_is_all_livekit_inference_and_expressive() -> None:
     assert isinstance(pipeline.tts, inference.TTS)
     assert isinstance(pipeline.expressive, dict)
     assert pipeline.private_expressive_markup_enabled is True
+    assert pipeline.preemptive_generation_enabled is True
     assert MANAGED_TTS_VOICE == "933563129e564b19a115bedd57b7406a"
     assert pipeline.tts._opts.voice == MANAGED_TTS_VOICE
     instructions = OpenClamVoiceAgent(
@@ -388,6 +393,11 @@ def test_xai_direct_stt_and_tts_receive_selected_mode_bearer(
     assert isinstance(pipeline.tts, xai.TTS)
     assert pipeline.stt._api_key == bearer
     assert pipeline.tts._api_key == bearer
+    assert pipeline.stt._opts.endpointing == XAI_STT_ENDPOINTING_MS
+    assert pipeline.stt._opts.vad_threshold == XAI_STT_VAD_THRESHOLD
+    assert pipeline.stt._opts.smart_turn == XAI_STT_SMART_TURN_THRESHOLD
+    assert pipeline.stt._opts.smart_turn_timeout == XAI_STT_SMART_TURN_TIMEOUT_MS
+    assert pipeline.preemptive_generation_enabled is False
     if auth_mode == "oauth2":
         asyncio.run(pipeline.llm.aclose())
 
@@ -439,6 +449,13 @@ async def test_xai_speech_transport_is_origin_pinned_proxy_free_and_owned(
 
     assert stt_calls[0][0] == "wss://api.x.ai/v1/stt"
     assert stt_calls[0][1]["headers"] == {"Authorization": f"Bearer {bearer}"}
+    stt_parameters = dict(stt_calls[0][1]["params"])
+    assert stt_parameters["endpointing"] == str(XAI_STT_ENDPOINTING_MS)
+    assert stt_parameters["vad_threshold"] == str(XAI_STT_VAD_THRESHOLD)
+    assert stt_parameters["smart_turn"] == str(XAI_STT_SMART_TURN_THRESHOLD)
+    assert stt_parameters["smart_turn_timeout"] == str(
+        XAI_STT_SMART_TURN_TIMEOUT_MS
+    )
     assert tts_calls[0][0].startswith("wss://api.x.ai/v1/tts?")
     assert tts_calls[0][1]["headers"] == {"Authorization": f"Bearer {bearer}"}
 
@@ -476,6 +493,68 @@ async def test_xai_speech_transport_is_origin_pinned_proxy_free_and_owned(
     await pipeline.tts.aclose()
     await pipeline.llm.aclose()
     assert all(client.closed for client in clients)
+
+
+@pytest.mark.asyncio
+async def test_xai_timeout_endpoints_two_questions_as_two_complete_turns() -> None:
+    pipeline = create_pipeline(claim_for(all_xai_claim_payload()))
+    events: list[stt.SpeechEvent] = []
+
+    class EventChannel:
+        def send_nowait(self, event: stt.SpeechEvent) -> None:
+            events.append(event)
+
+    stream = object.__new__(xai_stt_plugin.SpeechStream)
+    stream._opts = pipeline.stt._opts
+    stream._event_ch = EventChannel()
+    stream._request_id = "two-turn-proof"
+    stream._speaking = False
+    stream._emitted_chunk_final = False
+
+    def emit_timeout_bounded_turn(text: str) -> None:
+        stream._process_stream_event(
+            {
+                "type": "transcript.partial",
+                "text": text,
+                "words": [],
+                "language": "en",
+                "is_final": True,
+                "speech_final": False,
+            }
+        )
+        # This is the utterance-final event xAI guarantees no later than the
+        # configured Smart Turn timeout. The pinned plugin suppresses the
+        # duplicate text while still emitting the required end-of-speech.
+        stream._process_stream_event(
+            {
+                "type": "transcript.partial",
+                "text": text,
+                "words": [],
+                "language": "en",
+                "is_final": True,
+                "speech_final": True,
+            }
+        )
+
+    emit_timeout_bounded_turn("What is your name?")
+    emit_timeout_bounded_turn("How are you today?")
+
+    assert [event.type for event in events] == [
+        stt.SpeechEventType.START_OF_SPEECH,
+        stt.SpeechEventType.FINAL_TRANSCRIPT,
+        stt.SpeechEventType.END_OF_SPEECH,
+        stt.SpeechEventType.START_OF_SPEECH,
+        stt.SpeechEventType.FINAL_TRANSCRIPT,
+        stt.SpeechEventType.END_OF_SPEECH,
+    ]
+    assert [
+        event.alternatives[0].text
+        for event in events
+        if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT
+    ] == ["What is your name?", "How are you today?"]
+
+    session = create_session(pipeline)
+    assert session.options.preemptive_generation["enabled"] is False
 
 
 @pytest.mark.asyncio

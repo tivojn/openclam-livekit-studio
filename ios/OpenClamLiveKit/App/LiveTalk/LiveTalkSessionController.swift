@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import Foundation
 import LiveKit
@@ -432,6 +433,313 @@ enum LiveTalkRemoteAudioActivity {
 }
 
 @MainActor
+enum LiveTalkAudioCapturePolicy {
+    private static var preparedSimulatorAudioDevice = false
+
+    // Keep LiveKit's reviewed processing defaults. The Simulator compatibility
+    // fix is the audio-device choice below, not a different recognition/audio
+    // policy from the one used on physical devices.
+    static var options: AudioCaptureOptions {
+        AudioCaptureOptions()
+    }
+
+    // Connect securely before opening the microphone. This also prevents a
+    // failed pre-connect recorder from hiding the actual room/session error.
+    static let preConnectAudio = false
+
+    static func prepareAudioDevice() throws {
+#if targetEnvironment(simulator)
+        guard !preparedSimulatorAudioDevice else { return }
+        // LiveKit's device-backed AVAudioEngine returns -4010 when it opens
+        // Simulator input, while the platform AudioUnit returns -1. Manual
+        // rendering is LiveKit's supported no-device mode: OpenClam supplies
+        // captured PCM and renders the remote track with ordinary AVAudioEngine
+        // instances, the same audio stack already proven by tap-to-talk.
+        try AudioManager.shared.setManualRenderingMode(true)
+        preparedSimulatorAudioDevice = true
+#endif
+    }
+}
+
+@MainActor
+private final class LiveTalkSimulatorAudioBridge {
+#if targetEnvironment(simulator)
+    private let playbackEngine = AVAudioEngine()
+    private let microphoneCapture = LiveTalkSimulatorWAVCapture()
+    private let remotePlayerNode = AVAudioPlayerNode()
+    private let playbackFormat = AVAudioFormat(
+        standardFormatWithSampleRate: 48_000,
+        channels: 1
+    )!
+    private lazy var remoteRenderer = LiveTalkSimulatorRemoteAudioRenderer(
+        playerNode: remotePlayerNode,
+        playbackFormat: playbackFormat
+    )
+    private var isStarted = false
+    private var isMicrophoneCaptureRunning = false
+    private weak var renderedTrack: RemoteAudioTrack?
+#endif
+
+    func start() async throws {
+#if targetEnvironment(simulator)
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
+        )
+        try audioSession.setPreferredSampleRate(48_000)
+        try audioSession.setPreferredIOBufferDuration(0.02)
+        try audioSession.setActive(true)
+
+        playbackEngine.attach(remotePlayerNode)
+        playbackEngine.connect(
+            remotePlayerNode,
+            to: playbackEngine.mainMixerNode,
+            format: playbackFormat
+        )
+        playbackEngine.prepare()
+        do {
+            try playbackEngine.start()
+            try microphoneCapture.start()
+            isMicrophoneCaptureRunning = true
+            isStarted = true
+        } catch {
+            microphoneCapture.stop()
+            isMicrophoneCaptureRunning = false
+            playbackEngine.stop()
+            playbackEngine.reset()
+            throw error
+        }
+#endif
+    }
+
+    func attachRemoteAudioIfNeeded(from session: Session) {
+#if targetEnvironment(simulator)
+        guard let track = session.room.agentParticipant?.audioTracks
+            .compactMap({ $0.track as? RemoteAudioTrack })
+            .first,
+            renderedTrack !== track else { return }
+        if let renderedTrack {
+            renderedTrack.remove(audioRenderer: remoteRenderer)
+        }
+        track.add(audioRenderer: remoteRenderer)
+        renderedTrack = track
+#endif
+    }
+
+    func setRemoteAudioActive(_ isActive: Bool) throws {
+#if targetEnvironment(simulator)
+        guard isStarted else { return }
+        if isActive {
+            guard isMicrophoneCaptureRunning else { return }
+            microphoneCapture.stop()
+            isMicrophoneCaptureRunning = false
+            return
+        }
+        guard !isMicrophoneCaptureRunning else { return }
+        try microphoneCapture.start()
+        isMicrophoneCaptureRunning = true
+#endif
+    }
+
+    func stop() {
+#if targetEnvironment(simulator)
+        if let renderedTrack {
+            renderedTrack.remove(audioRenderer: remoteRenderer)
+        }
+        renderedTrack = nil
+        microphoneCapture.stop()
+        isStarted = false
+        isMicrophoneCaptureRunning = false
+        remotePlayerNode.stop()
+        if playbackEngine.isRunning {
+            playbackEngine.stop()
+        }
+        playbackEngine.reset()
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+#endif
+    }
+}
+
+#if targetEnvironment(simulator)
+private final class LiveTalkSimulatorWAVCapture: @unchecked Sendable {
+    private static let headerProbeBytes = 4_096
+    private static let readChunkBytes = 32_768
+    private static let dataChunkMarker = Data("data".utf8)
+
+    private let lock = NSLock()
+    private var recorder: AVAudioRecorder?
+    private var fileURL: URL?
+    private var streamTask: Task<Void, Never>?
+    private var running = false
+
+    func start() throws {
+        stop()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OpenClamLiveTalkSimulator-\(UUID().uuidString).wav"
+        )
+        let recorder = try AVAudioRecorder(
+            url: url,
+            settings: CloudDictationTemporaryFileScrubber.recorderSettings()
+        )
+        guard recorder.prepareToRecord(), recorder.record() else {
+            try? FileManager.default.removeItem(at: url)
+            throw LiveKitError(.audioEngine, message: "Simulator microphone is unavailable")
+        }
+        try? CloudDictationTemporaryFileScrubber.protectRecording(at: url)
+        lock.lock()
+        self.recorder = recorder
+        fileURL = url
+        running = true
+        lock.unlock()
+        streamTask = Task.detached(priority: .userInitiated) { [self] in
+            await streamPCM(from: url)
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        running = false
+        let recorder = recorder
+        self.recorder = nil
+        let url = fileURL
+        fileURL = nil
+        let task = streamTask
+        streamTask = nil
+        lock.unlock()
+        task?.cancel()
+        recorder?.stop()
+        if let url {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func streamPCM(from url: URL) async {
+        guard let dataOffset = await waitForDataChunk(in: url),
+              let format = AVAudioFormat(
+                  commonFormat: .pcmFormatInt16,
+                  sampleRate: 16_000,
+                  channels: 1,
+                  interleaved: true
+              ) else { return }
+        var nextOffset = dataOffset
+        while !Task.isCancelled, isCaptureRunning {
+            guard let snapshot = try? Data(
+                contentsOf: url,
+                options: [.mappedIfSafe]
+            ) else {
+                try? await Task.sleep(for: .milliseconds(40))
+                continue
+            }
+            let availableBytes = snapshot.count - nextOffset
+            let alignedCount = min(Self.readChunkBytes, availableBytes) & ~1
+            guard alignedCount > 0 else {
+                try? await Task.sleep(for: .milliseconds(40))
+                continue
+            }
+            let endOffset = nextOffset + alignedCount
+            let samples = snapshot[nextOffset..<endOffset]
+            nextOffset = endOffset
+            let frameCount = AVAudioFrameCount(alignedCount / 2)
+            guard let pcm = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: frameCount
+            ) else { return }
+            pcm.frameLength = frameCount
+            let buffers = UnsafeMutableAudioBufferListPointer(pcm.mutableAudioBufferList)
+            guard let destination = buffers[0].mData else { return }
+            samples.withUnsafeBytes { source in
+                if let sourceAddress = source.baseAddress {
+                    memcpy(destination, sourceAddress, alignedCount)
+                }
+            }
+            buffers[0].mDataByteSize = UInt32(alignedCount)
+            guard !Task.isCancelled, isCaptureRunning else { return }
+            AudioManager.shared.mixer.capture(appAudio: pcm)
+        }
+    }
+
+    private func waitForDataChunk(in url: URL) async -> Int? {
+        for _ in 0..<100 where !Task.isCancelled && isCaptureRunning {
+            if let header = try? Data(
+                contentsOf: url,
+                options: [.mappedIfSafe]
+            ).prefix(Self.headerProbeBytes),
+            let markerRange = header.range(of: Self.dataChunkMarker),
+            markerRange.upperBound + 4 <= header.endIndex {
+                return markerRange.upperBound + 4
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return nil
+    }
+
+    private var isCaptureRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    deinit {
+        stop()
+    }
+}
+
+private final class LiveTalkSimulatorRemoteAudioRenderer: AudioRenderer, @unchecked Sendable {
+    private let playerNode: AVAudioPlayerNode
+    private let playbackFormat: AVAudioFormat
+    private let lock = NSLock()
+    private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
+
+    init(playerNode: AVAudioPlayerNode, playbackFormat: AVAudioFormat) {
+        self.playerNode = playerNode
+        self.playbackFormat = playbackFormat
+    }
+
+    func render(pcmBuffer: AVAudioPCMBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if converter == nil || converterInputFormat != pcmBuffer.format {
+            converter = AVAudioConverter(from: pcmBuffer.format, to: playbackFormat)
+            converterInputFormat = pcmBuffer.format
+        }
+        guard let converter else { return }
+        let ratio = playbackFormat.sampleRate / pcmBuffer.format.sampleRate
+        let capacity = AVAudioFrameCount(
+            max(1, ceil(Double(pcmBuffer.frameLength) * ratio) + 8)
+        )
+        guard let converted = AVAudioPCMBuffer(
+            pcmFormat: playbackFormat,
+            frameCapacity: capacity
+        ) else { return }
+
+        var suppliedInput = false
+        var conversionError: NSError?
+        let status = converter.convert(to: converted, error: &conversionError) { _, outputStatus in
+            if suppliedInput {
+                outputStatus.pointee = .noDataNow
+                return nil
+            }
+            suppliedInput = true
+            outputStatus.pointee = .haveData
+            return pcmBuffer
+        }
+        guard status != .error, conversionError == nil, converted.frameLength > 0 else { return }
+        playerNode.scheduleBuffer(converted)
+        if !playerNode.isPlaying {
+            playerNode.play()
+        }
+    }
+}
+#endif
+
+@MainActor
 final class LiveTalkSessionController: ObservableObject {
     @Published private(set) var phase: LiveTalkConnectionPhase = .idle
     @Published private(set) var activityTitle = "Ready to talk"
@@ -447,6 +755,7 @@ final class LiveTalkSessionController: ObservableObject {
     private var session: Session?
     private var startTask: Task<Void, Never>?
     private var observations = Set<AnyCancellable>()
+    private var simulatorAudioBridge: LiveTalkSimulatorAudioBridge?
     private var activeAttempt: UUID?
     private weak var avatarController: CaptainAyerLipSyncController?
     private var avatarGeneration = 40_000
@@ -510,17 +819,28 @@ final class LiveTalkSessionController: ObservableObject {
             )
             let builder = LiveTalkSessionRequestBuilder(credentialVault: credentialVault)
             try builder.validateCredentialAvailability(for: resolvedLiveTalk)
+            try LiveTalkAudioCapturePolicy.prepareAudioDevice()
             let source = LiveTalkBrokerTokenSource(
                 configuration: configuration,
                 avatar: try avatar.validated(),
                 liveTalkConfiguration: resolvedLiveTalk,
                 credentialVault: credentialVault
             )
-            let room = Room()
+            let room = Room(
+                roomOptions: RoomOptions(
+                    defaultAudioCaptureOptions: LiveTalkAudioCapturePolicy.options
+                )
+            )
             let nextSession = Session(
                 tokenSource: source,
-                options: .init(room: room, preConnectAudio: true, agentConnectTimeout: 30)
+                options: .init(
+                    room: room,
+                    preConnectAudio: LiveTalkAudioCapturePolicy.preConnectAudio,
+                    agentConnectTimeout: 30
+                )
             )
+            let audioBridge = LiveTalkSimulatorAudioBridge()
+            simulatorAudioBridge = audioBridge
             session = nextSession
             observe(nextSession)
             activityTitle = "Connecting to LiveKit"
@@ -564,6 +884,23 @@ final class LiveTalkSessionController: ObservableObject {
                     await endOperation(nextSession)
                     return
                 }
+                guard nextSession.error == nil else {
+                    await self.finishStart(nextSession, attempt: attempt)
+                    return
+                }
+                do {
+                    // In manual-rendering mode LiveKit must first create and
+                    // publish its local microphone graph. Starting the app's
+                    // device capture earlier lets that setup invalidate the
+                    // Simulator input tap and produces a live-but-silent room.
+                    try await audioBridge.start()
+                } catch {
+                    self.fail(
+                        "Live Talk could not start the microphone. "
+                            + "Check microphone access and try again."
+                    )
+                    return
+                }
                 await self.finishStart(nextSession, attempt: attempt)
             }
         } catch let error as LiveTalkBrokerError {
@@ -584,7 +921,7 @@ final class LiveTalkSessionController: ObservableObject {
         refreshFromSession()
         guard activeAttempt == attempt else { return }
         if startedSession.room.connectionState == .disconnected {
-            fail("Live Talk could not connect. Check the build configuration and try again.")
+            fail(connectionFailureMessage(for: startedSession))
         }
     }
 
@@ -611,10 +948,13 @@ final class LiveTalkSessionController: ObservableObject {
         activityTitle = "Ending Live Talk"
         clearSessionTranscripts()
         let endingSession = session
+        let endingAudioBridge = simulatorAudioBridge
+        simulatorAudioBridge = nil
         let pendingStart = startTask
         startTask = nil
         pendingStart?.cancel()
         observations.removeAll()
+        endingAudioBridge?.stop()
         if let endingSession {
             await endingSession.room.unregisterRpcMethod(
                 LiveTalkEmailDraftToolBridge.rpcMethod
@@ -721,6 +1061,17 @@ final class LiveTalkSessionController: ObservableObject {
 
     private func refreshFromSession() {
         guard let session else { return }
+        // Session.start() records microphone/publish failures on Session even
+        // when the underlying Room remains connected. Handle that first so the
+        // UI never reports a silent room as Live.
+        if session.error != nil {
+            fail(connectionFailureMessage(for: session))
+            return
+        }
+        if session.agent.error != nil {
+            fail("The voice agent left this session. Start a new session to continue.")
+            return
+        }
         switch session.room.connectionState {
         case .connecting:
             activityTitle = "Connecting to LiveKit"
@@ -750,12 +1101,21 @@ final class LiveTalkSessionController: ObservableObject {
             lastAgentTranscript = latest
         }
         updateAvatar(from: session)
+        simulatorAudioBridge?.attachRemoteAudioIfNeeded(from: session)
 
-        if session.error != nil, session.room.connectionState == .disconnected {
-            fail("Live Talk could not connect. Check the selected services and try again.")
-        } else if session.agent.error != nil {
-            fail("The voice agent left this session. Start a new session to continue.")
+    }
+
+    private func connectionFailureMessage(for session: Session) -> String {
+        guard case let Session.Error.connection(underlying)? = session.error else {
+            return "Live Talk could not connect. Check the selected services and try again."
         }
+        if let brokerError = underlying as? LiveTalkBrokerError {
+            return brokerError.localizedDescription
+        }
+#if DEBUG
+        print("OpenClam Live Talk connection failure: \(underlying)")
+#endif
+        return "Live Talk could not connect. Check the selected services and try again."
     }
 
     nonisolated static func boundedTranscripts(
@@ -784,10 +1144,21 @@ final class LiveTalkSessionController: ObservableObject {
         let participant = session.room.agentParticipant
         let level = participant?.audioLevel ?? 0
         remoteAudioLevel = level
-        let speaks = LiveTalkRemoteAudioActivity.isActive(
-            reportedSpeaking: participant?.isSpeaking == true,
-            audioLevel: level
-        )
+        let agentIsSpeaking = session.agent.agentState == .speaking
+        let speaks = agentIsSpeaking
+            || LiveTalkRemoteAudioActivity.isActive(
+                reportedSpeaking: participant?.isSpeaking == true,
+                audioLevel: level
+            )
+        do {
+            try simulatorAudioBridge?.setRemoteAudioActive(agentIsSpeaking)
+        } catch {
+            fail(
+                "Live Talk could not resume the microphone. "
+                    + "End the session and try again."
+            )
+            return
+        }
         guard let avatarController else { return }
         if speaks {
             if !avatarIsSpeaking || avatarController.preparedText != lastAgentTranscript {
@@ -816,22 +1187,26 @@ final class LiveTalkSessionController: ObservableObject {
     }
 
     private func fail(_ message: String) {
+        guard phase.isSessionActive, phase != .ending else { return }
         activeAttempt = nil
         observations.removeAll()
         let endingSession = session
+        let endingAudioBridge = simulatorAudioBridge
+        simulatorAudioBridge = nil
         let pendingStart = startTask
         startTask = nil
         pendingStart?.cancel()
         session = nil
+        endingAudioBridge?.stop()
         isMuted = false
         remoteAudioLevel = 0
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
         avatarController?.cancelAll()
         avatarIsSpeaking = false
-        transition(.fail(message))
-        activityTitle = "Live Talk stopped"
-        Task { [sessionEnder] in
+        transition(.end)
+        activityTitle = "Ending Live Talk"
+        Task { [weak self, sessionEnder] in
             if let endingSession {
                 await endingSession.room.unregisterRpcMethod(
                     LiveTalkEmailDraftToolBridge.rpcMethod
@@ -839,6 +1214,9 @@ final class LiveTalkSessionController: ObservableObject {
                 await sessionEnder(endingSession)
             }
             await pendingStart?.value
+            guard let self, self.phase == .ending, self.activeAttempt == nil else { return }
+            self.transition(.fail(message))
+            self.activityTitle = "Live Talk stopped"
         }
     }
 
@@ -848,6 +1226,8 @@ final class LiveTalkSessionController: ObservableObject {
         startTask?.cancel()
         startTask = nil
         session = nil
+        simulatorAudioBridge?.stop()
+        simulatorAudioBridge = nil
         isMuted = false
         remoteAudioLevel = 0
         clearSessionTranscripts()

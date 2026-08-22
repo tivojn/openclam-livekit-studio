@@ -16,7 +16,7 @@ enum OpenClamWarmEarPresentationState: Equatable, Sendable {
     case off
     case arming
     case paused
-    case ready(expiresAt: Date)
+    case ready
     case busy
     case failed(String)
 
@@ -42,12 +42,11 @@ enum OpenClamWarmEarPresentationState: Equatable, Sendable {
         case .off:
             return "Turn it on while OpenClam is visible to prepare keyboard voice input."
         case .arming:
-            return "Keep OpenClam visible briefly while the private 90-second microphone lease starts."
+            return "Keep OpenClam visible briefly while persistent microphone readiness starts."
         case .paused:
             return "Another microphone or speaker feature is active. Quick Dictation will become ready again when it finishes."
-        case let .ready(expiresAt):
-            let seconds = max(0, Int(expiresAt.timeIntervalSinceNow.rounded(.up)))
-            return "Ready for a keyboard voice request for about \(seconds) seconds."
+        case .ready:
+            return "Ready for keyboard voice requests until you turn Quick Dictation off."
         case .busy:
             return "Recording the current keyboard voice request. You can stop it from the keyboard."
         case let .failed(message):
@@ -83,8 +82,6 @@ enum OpenClamAppAudioActivityOwner: Hashable, Sendable {
 /// records and never receives provider credentials; it only signals the already-running app.
 @MainActor
 enum OpenClamWarmEarControl {
-    static let foregroundLeaseDuration: TimeInterval = 90
-
     static var isEnabled: Bool {
         OpenClamKeyboardWarmEarState.isEnabled
     }
@@ -98,9 +95,9 @@ enum OpenClamWarmEarControl {
             return "Quick Dictation is off. Keyboard voice requests wait for you to open OpenClam."
         }
         if isForegroundReady {
-            return "Quick Dictation is ready for up to 90 seconds. The microphone is on, but transcription starts only after you tap Start in OpenClam Keyboard."
+            return "Quick Dictation is ready until you turn it off. Standby audio is discarded; transcription starts only after you tap Start in OpenClam Keyboard."
         }
-        return "Quick Dictation is preparing. Keep OpenClam visible briefly to start a new 90-second lease."
+        return "Quick Dictation is preparing. Keep OpenClam visible briefly while microphone readiness starts."
     }
 
     static func setEnabled(_ enabled: Bool) {
@@ -115,8 +112,8 @@ enum OpenClamWarmEarControl {
     }
 
     static func clearForegroundLease() {
-        // A foreground-started recording is intentionally allowed to finish its original bounded
-        // lease after the app backgrounds. The host's timer clears readiness at the deadline.
+        // A successfully foreground-started readiness session intentionally continues after the
+        // app backgrounds. Turning Quick Dictation off explicitly clears it.
         if !isEnabled {
             OpenClamKeyboardWarmEarState.clearReadiness()
         }
@@ -125,71 +122,140 @@ enum OpenClamWarmEarControl {
 
 private enum OpenClamWarmEarError: LocalizedError {
     case microphonePermissionDenied
+    case microphonePermissionTimedOut
     case speechPermissionDenied
     case microphoneUnavailable
     case foregroundStartRequired
-    case leaseExpired
+    case leaseUnavailable
 
     var errorDescription: String? {
         switch self {
         case .microphonePermissionDenied:
             "Microphone permission is required before Quick Dictation can be prepared."
+        case .microphonePermissionTimedOut:
+            "Microphone permission did not respond. Check Settings, then try Quick Dictation again."
         case .speechPermissionDenied:
             "Speech Recognition permission is required for the selected Apple speech provider."
         case .microphoneUnavailable:
             "The microphone could not be prepared for Quick Dictation."
         case .foregroundStartRequired:
             "OpenClam must be visible when a Quick Dictation lease starts."
-        case .leaseExpired:
-            "The 90-second Quick Dictation lease expired. Open OpenClam and turn it on again."
+        case .leaseUnavailable:
+            "Quick Dictation lost microphone readiness. Open OpenClam to prepare it again."
         }
     }
 }
 
 @MainActor
 private final class OpenClamWarmEarLease {
+    private enum RecordPermissionResult: Sendable {
+        case response(Bool)
+        case timedOut
+        case cancelled
+    }
+
+    private static let recordPermissionRequestTimeout: Duration = .seconds(15)
+
     private let audioEngine = AVAudioEngine()
     private var hasInstalledTap = false
     private var heartbeatTask: Task<Void, Never>?
-    private(set) var deadline: Date?
     private(set) var isTurnActive = false
 
-    var onExpired: (() -> Void)?
+    var onReadinessLost: (() -> Void)?
 
     func armNewLease() async throws {
         guard UIApplication.shared.applicationState == .active else {
             throw OpenClamWarmEarError.foregroundStartRequired
         }
-        let granted = await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { continuation.resume(returning: $0) }
-        }
+        let granted = try await microphonePermissionIsGranted()
         guard granted else { throw OpenClamWarmEarError.microphonePermissionDenied }
         try Task.checkCancellation()
         guard OpenClamKeyboardWarmEarState.isEnabled else { throw CancellationError() }
 
-        let deadline = Date().addingTimeInterval(OpenClamWarmEarControl.foregroundLeaseDuration)
-        try startEngine(until: deadline, requiresForeground: true)
+        try startEngine(requiresForeground: true)
     }
 
-    func suspendForTurn() throws -> Date {
-        guard let deadline, deadline > Date(), OpenClamKeyboardWarmEarState.isReady() else {
-            throw OpenClamWarmEarError.leaseExpired
+    private func microphonePermissionIsGranted() async throws -> Bool {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            // Do not re-enter the system permission callback for an already-authorized app. On
+            // Simulator that callback can be delayed indefinitely even though access is granted.
+            return true
+        case .denied:
+            return false
+        case .undetermined:
+            return try await requestMicrophonePermission()
+        @unknown default:
+            return false
         }
+    }
+
+    private func requestMicrophonePermission() async throws -> Bool {
+        let responses = AsyncStream<Bool> { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.yield(granted)
+                continuation.finish()
+            }
+        }
+
+        let result = await withTaskGroup(of: RecordPermissionResult.self) { group in
+            group.addTask {
+                for await granted in responses {
+                    return .response(granted)
+                }
+                return Task.isCancelled ? .cancelled : .timedOut
+            }
+            group.addTask {
+                try? await Task.sleep(for: Self.recordPermissionRequestTimeout)
+                return Task.isCancelled ? .cancelled : .timedOut
+            }
+
+            let first = await group.next() ?? .timedOut
+            group.cancelAll()
+            return first
+        }
+
+        try Task.checkCancellation()
+        switch result {
+        case let .response(granted):
+            return granted
+        case .timedOut:
+            throw OpenClamWarmEarError.microphonePermissionTimedOut
+        case .cancelled:
+            throw CancellationError()
+        }
+    }
+
+    func suspendForTurn() throws {
+        guard audioEngine.isRunning else {
+            throw OpenClamWarmEarError.leaseUnavailable
+        }
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         stopEngine(deactivateAudioSession: false)
         isTurnActive = true
-        OpenClamKeyboardWarmEarState.markReady(until: deadline)
-        return deadline
+        OpenClamKeyboardWarmEarState.clearReadiness()
+    }
+
+    /// The App Group heartbeat is a cross-process hint, not the lease authority. Background task
+    /// scheduling can briefly delay it even while the foreground-started audio engine is healthy.
+    /// Refresh it from the owning process before accepting a keyboard request.
+    @discardableResult
+    func refreshReadinessIfArmed(at date: Date = Date()) -> Bool {
+        guard audioEngine.isRunning else { return false }
+        OpenClamKeyboardWarmEarState.markReady(heartbeat: date)
+        return true
     }
 
     @discardableResult
-    func finishTurnAndRearm(until deadline: Date) async -> Bool {
+    func finishTurnAndRearm() async -> Bool {
         isTurnActive = false
-        guard OpenClamKeyboardWarmEarState.isEnabled, deadline > Date() else {
+        guard OpenClamKeyboardWarmEarState.isEnabled else {
             disarm()
             return false
         }
         do {
-            try startEngine(until: deadline, requiresForeground: false)
+            try startEngine(requiresForeground: false)
             return true
         } catch {
             disarm()
@@ -202,7 +268,6 @@ private final class OpenClamWarmEarLease {
         heartbeatTask = nil
         stopEngine(deactivateAudioSession: false)
         isTurnActive = false
-        deadline = nil
         OpenClamKeyboardWarmEarState.clearReadiness()
         if deactivateAudioSession {
             try? AVAudioSession.sharedInstance().setActive(
@@ -212,15 +277,14 @@ private final class OpenClamWarmEarLease {
         }
     }
 
-    private func startEngine(until deadline: Date, requiresForeground: Bool) throws {
-        guard deadline > Date() else { throw OpenClamWarmEarError.leaseExpired }
+    private func startEngine(requiresForeground: Bool) throws {
         if requiresForeground, UIApplication.shared.applicationState != .active {
             throw OpenClamWarmEarError.foregroundStartRequired
         }
 
         stopEngine(deactivateAudioSession: false)
         let session = AVAudioSession.sharedInstance()
-        // Keep playback available while the short foreground-started readiness lease is armed.
+        // Keep playback available while the foreground-started readiness session is armed.
         // ConversationView still yields this lease before any competing microphone flow begins.
         try session.setCategory(
             .playAndRecord,
@@ -235,7 +299,7 @@ private final class OpenClamWarmEarLease {
             throw OpenClamWarmEarError.microphoneUnavailable
         }
         input.installTap(onBus: 0, bufferSize: 1_024, format: format) { _, _ in
-            // A real microphone tap keeps the bounded audio lease alive. Audio is deliberately
+            // A real microphone tap keeps readiness alive. Audio is deliberately
             // discarded until a keyboard request arrives; no provider sees warm-up audio.
         }
         hasInstalledTap = true
@@ -248,24 +312,25 @@ private final class OpenClamWarmEarLease {
             throw error
         }
 
-        self.deadline = deadline
         isTurnActive = false
-        OpenClamKeyboardWarmEarState.markReady(until: deadline)
-        startHeartbeat(until: deadline)
+        OpenClamKeyboardWarmEarState.markReady()
+        startHeartbeat()
     }
 
-    private func startHeartbeat(until deadline: Date) {
+    private func startHeartbeat() {
         heartbeatTask?.cancel()
         heartbeatTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled, Date() < deadline {
+            while !Task.isCancelled,
+                  let self,
+                  self.audioEngine.isRunning,
+                  OpenClamKeyboardWarmEarState.isEnabled {
                 OpenClamKeyboardWarmEarState.updateHeartbeat()
                 try? await Task.sleep(for: .seconds(1))
             }
-            guard !Task.isCancelled, let self, self.deadline == deadline else { return }
-            self.stopEngine(deactivateAudioSession: !self.isTurnActive)
-            self.deadline = nil
+            guard !Task.isCancelled, let self, !self.isTurnActive else { return }
+            self.stopEngine(deactivateAudioSession: true)
             OpenClamKeyboardWarmEarState.clearReadiness()
-            self.onExpired?()
+            self.onReadinessLost?()
         }
     }
 
@@ -352,17 +417,13 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
 
     init(store: OpenClamKeyboardHandoffStore? = try? .live()) {
         self.store = store
-        if OpenClamKeyboardWarmEarState.isEnabled,
-           OpenClamKeyboardWarmEarState.isReady(),
-           let deadline = OpenClamKeyboardWarmEarState.readyUntil() {
-            warmEarPresentationState = .ready(expiresAt: deadline)
-        } else if OpenClamKeyboardWarmEarState.isEnabled {
+        if OpenClamKeyboardWarmEarState.isEnabled {
             warmEarPresentationState = .arming
         } else {
             warmEarPresentationState = .off
         }
-        warmEarLease.onExpired = { [weak self] in
-            self?.handleLeaseExpired()
+        warmEarLease.onReadinessLost = { [weak self] in
+            self?.handleReadinessLost()
         }
         notificationObservers.append(
             NotificationCenter.default.addObserver(
@@ -491,7 +552,7 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
             guard let request = try availableStore.activeRequest(at: date),
                   try availableStore.result(for: request.id) == nil else { return }
             lastError = nil
-            if OpenClamKeyboardWarmEarState.isReady(at: date), aiConfiguration != nil {
+            if warmEarLease.refreshReadinessIfArmed(at: date), aiConfiguration != nil {
                 beginAutomaticTurn(for: request)
             } else {
                 suspendWarmLeaseForVisibleRequest()
@@ -580,9 +641,8 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
             warmEarPresentationState = .busy
             return
         }
-        if OpenClamKeyboardWarmEarState.isReady(),
-           let deadline = OpenClamKeyboardWarmEarState.readyUntil() {
-            warmEarPresentationState = .ready(expiresAt: deadline)
+        if warmEarLease.refreshReadinessIfArmed() {
+            warmEarPresentationState = .ready
             drainReadyPendingRequest()
             return
         }
@@ -649,8 +709,8 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
     private func drainReadyPendingRequest(at date: Date = Date()) {
         guard automaticTask == nil,
               automaticRequest == nil,
-              OpenClamKeyboardWarmEarState.isReady(at: date),
               aiConfiguration != nil else { return }
+        guard warmEarLease.refreshReadinessIfArmed(at: date) else { return }
         do {
             let availableStore = try requireStore()
             guard let request = try availableStore.activeRequest(at: date),
@@ -720,16 +780,17 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         _ request: OpenClamKeyboardRequest,
         using aiConfiguration: AIConfigurationModel
     ) async {
+        OpenClamKeyboardWarmEarState.clearListening(requestID: request.id)
+        defer { OpenClamKeyboardWarmEarState.clearListening(requestID: request.id) }
         guard !Task.isCancelled,
               !externallyCancelledRequestIDs.contains(request.id) else { return }
-        let leaseDeadline: Date
         do {
-            leaseDeadline = try warmEarLease.suspendForTurn()
+            try warmEarLease.suspendForTurn()
             warmEarPresentationState = .busy
         } catch {
             failIfPending(request, message: error.localizedDescription)
             warmEarPresentationState = .failed(
-                "Quick Dictation's private microphone lease expired. Open OpenClam to make it ready again."
+                "Quick Dictation lost microphone readiness. Open OpenClam to prepare it again."
             )
             return
         }
@@ -741,7 +802,7 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
             if !externallyCancelledRequestIDs.contains(request.id) {
                 failIfPending(request, message: "Keyboard voice input was cancelled.")
             }
-            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
+            await finishAutomaticTurnAndRefresh()
             return
         }
         guard automaticSpeech.isListening else {
@@ -749,20 +810,18 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
                 ?? "OpenClam could not start the selected speech provider in the background. Open OpenClam and try again."
             automaticSpeech.cancel()
             failIfPending(request, message: message)
-            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
+            await finishAutomaticTurnAndRefresh()
             return
         }
+        OpenClamKeyboardWarmEarState.markListening(requestID: request.id)
 
-        await waitForAutomaticTurn(
-            selection: speechSelection,
-            leaseDeadline: leaseDeadline
-        )
+        await waitForAutomaticTurn(selection: speechSelection)
         guard !Task.isCancelled else {
             automaticSpeech.cancel()
             if !externallyCancelledRequestIDs.contains(request.id) {
                 failIfPending(request, message: "Keyboard voice input was cancelled.")
             }
-            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
+            await finishAutomaticTurnAndRefresh()
             return
         }
 
@@ -771,14 +830,14 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         guard !Task.isCancelled,
               !externallyCancelledRequestIDs.contains(request.id) else {
             automaticSpeech.cancel()
-            await finishAutomaticTurnAndRefresh(until: leaseDeadline)
+            await finishAutomaticTurnAndRefresh()
             return
         }
         if transcript.isEmpty {
             failIfPending(
                 request,
                 message: automaticSpeech.errorMessage
-                    ?? "No speech was recognized during the bounded Quick Dictation turn."
+                    ?? "No speech was recognized during this Quick Dictation turn."
             )
         } else {
             do {
@@ -792,17 +851,13 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
                 failIfPending(request, message: error.localizedDescription)
             }
         }
-        await finishAutomaticTurnAndRefresh(until: leaseDeadline)
+        await finishAutomaticTurnAndRefresh()
     }
 
     private func waitForAutomaticTurn(
-        selection: AIServiceSelection,
-        leaseDeadline: Date
+        selection: AIServiceSelection
     ) async {
-        let now = Date()
-        let remainingLease = max(0, leaseDeadline.timeIntervalSince(now) - 0.75)
-        let maximumTurn = min(12, remainingLease)
-        guard maximumTurn > 0 else { return }
+        let maximumTurn: TimeInterval = 12
 
         let supportsPartialTranscript = OpenClamKeyboardAutomaticTurnPolicy
             .supportsSettledPartialTranscript(selection)
@@ -829,32 +884,18 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         }
     }
 
-    private func handleLeaseExpired() {
-        guard let automaticRequest else {
-            warmEarPresentationState = OpenClamKeyboardWarmEarState.isEnabled
-                ? .failed(
-                    "Quick Dictation's 90-second lease expired. Keep OpenClam visible briefly to make it ready again."
-                )
-                : .off
+    private func handleReadinessLost() {
+        guard OpenClamKeyboardWarmEarState.isEnabled else {
+            warmEarPresentationState = .off
             return
         }
-        automaticSpeech.cancel()
-        automaticTask?.cancel()
-        if !externallyCancelledRequestIDs.contains(automaticRequest.id) {
-            failIfPending(
-                automaticRequest,
-                message: OpenClamWarmEarError.leaseExpired.localizedDescription
-            )
-        }
-        self.automaticRequest = nil
-        warmEarLease.disarm()
         warmEarPresentationState = .failed(
-            "Quick Dictation's 90-second lease expired. Keep OpenClam visible briefly to make it ready again."
+            "Quick Dictation lost microphone readiness. Open OpenClam to prepare it again."
         )
     }
 
-    private func finishAutomaticTurnAndRefresh(until deadline: Date) async {
-        _ = await warmEarLease.finishTurnAndRearm(until: deadline)
+    private func finishAutomaticTurnAndRefresh() async {
+        _ = await warmEarLease.finishTurnAndRearm()
         refreshWarmEarPresentation()
     }
 
@@ -869,9 +910,8 @@ final class OpenClamKeyboardDictationHostController: ObservableObject {
         }
         if automaticTask != nil || warmEarLease.isTurnActive {
             warmEarPresentationState = .busy
-        } else if OpenClamKeyboardWarmEarState.isReady(),
-                  let deadline = OpenClamKeyboardWarmEarState.readyUntil() {
-            warmEarPresentationState = .ready(expiresAt: deadline)
+        } else if warmEarLease.refreshReadinessIfArmed() {
+            warmEarPresentationState = .ready
         } else if armTask != nil {
             warmEarPresentationState = .arming
         }

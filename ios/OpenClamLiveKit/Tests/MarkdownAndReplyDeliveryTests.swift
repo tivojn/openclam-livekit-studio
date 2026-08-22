@@ -4,6 +4,29 @@ import XCTest
 @testable import OpenClamLiveKit
 
 final class MarkdownAndReplyDeliveryTests: XCTestCase {
+    func testXAIListeningStatusMakesLiveAndBatchBehaviorExplicit() {
+        XCTAssertEqual(
+            ConversationSpeechStatusCopy.listening(
+                selection: .init(
+                    provider: .xAI,
+                    model: AIProviderRegistry.xAILiveSpeechToTextModel
+                ),
+                providerName: "xAI"
+            ),
+            "Live text with xAI · words appear as you speak · tap Stop"
+        )
+        XCTAssertEqual(
+            ConversationSpeechStatusCopy.listening(
+                selection: .init(
+                    provider: .xAI,
+                    model: AIProviderRegistry.xAIBatchSpeechToTextModel
+                ),
+                providerName: "xAI"
+            ),
+            "Recording with xAI Batch · transcript appears after Stop"
+        )
+    }
+
     func testHistoryTransitionsNeverEmitAssistantReplyDelivery() {
         let firstThreadID = UUID()
         let secondThreadID = UUID()
@@ -142,6 +165,56 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
         XCTAssertTrue(state.shouldFollowLatest)
     }
 
+    func testAssistantReplyPreservesUserTurnAnchorWhenReadingPositionIsUntouched() {
+        var state = ConversationThreadPositioningState()
+        let userMessageID = UUID()
+        let assistantMessageID = UUID()
+        state.beginUserTurn(messageID: userMessageID)
+
+        XCTAssertEqual(
+            state.receiveAppendedMessages(
+                userMessageID: nil,
+                assistantMessageID: assistantMessageID
+            ),
+            .preservePosition
+        )
+        XCTAssertEqual(state.anchoredUserMessageID, userMessageID)
+        XCTAssertFalse(state.shouldFollowLatest)
+    }
+
+    func testAssistantReplyDoesNotMoveAnIntentionallyScrolledThread() {
+        var state = ConversationThreadPositioningState()
+        let userMessageID = UUID()
+        state.beginUserTurn(messageID: userMessageID)
+        state.noteManualScroll()
+
+        XCTAssertEqual(
+            state.receiveAppendedMessages(
+                userMessageID: nil,
+                assistantMessageID: UUID()
+            ),
+            .preservePosition
+        )
+        XCTAssertEqual(state.anchoredUserMessageID, userMessageID)
+        XCTAssertFalse(state.shouldFollowLatest)
+    }
+
+    func testCoalescedUserAndAssistantAppendAlwaysPlacesTheUserTurn() {
+        var state = ConversationThreadPositioningState()
+        state.noteManualScroll()
+        let userMessageID = UUID()
+
+        XCTAssertEqual(
+            state.receiveAppendedMessages(
+                userMessageID: userMessageID,
+                assistantMessageID: UUID()
+            ),
+            .placeUserTurn(userMessageID)
+        )
+        XCTAssertEqual(state.anchoredUserMessageID, userMessageID)
+        XCTAssertFalse(state.hasManualScrollSincePlacement)
+    }
+
     func testUserTurnResponseReserveAdaptsToViewportAndAccessibilityType() {
         let phone = ConversationThreadLayout.responseReserveHeight(
             viewportHeight: 700,
@@ -167,6 +240,21 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
         XCTAssertGreaterThan(tallPhone, phone)
     }
 
+    func testAnchoredUserTurnClearsTheCompactHeader() {
+        XCTAssertEqual(
+            ConversationThreadLayout.anchoredTurnTopClearance(
+                usesAccessibilityType: false
+            ),
+            ConversationThreadLayout.standardAnchoredTurnTopClearance
+        )
+        XCTAssertGreaterThan(
+            ConversationThreadLayout.anchoredTurnTopClearance(
+                usesAccessibilityType: true
+            ),
+            ConversationThreadLayout.standardAnchoredTurnTopClearance
+        )
+    }
+
     func testUserBubbleWidthIsCompactAndCappedOnNarrowAndWideScreens() {
         XCTAssertEqual(
             ConversationThreadLayout.userBubbleWidth(
@@ -174,7 +262,7 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
                 naturalTextWidth: 20,
                 hasAttachments: false
             ),
-            48,
+            64,
             accuracy: 0.001
         )
         XCTAssertEqual(
@@ -183,7 +271,7 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
                 naturalTextWidth: 1_000,
                 hasAttachments: false
             ),
-            244.8,
+            193.8,
             accuracy: 0.001
         )
         XCTAssertEqual(
@@ -194,6 +282,33 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
             ),
             ConversationThreadLayout.userBubbleMaximumWidth,
             accuracy: 0.001
+        )
+    }
+
+    func testMessageLaneClearsTheExpandedAvatarRail() {
+        let viewportWidth: CGFloat = 390
+        let messageTrailingEdge = viewportWidth
+            - ConversationThreadLayout.trailingMessageInset
+        let railLeadingEdge = viewportWidth
+            - ConversationThreadLayout.avatarRailWidth
+
+        XCTAssertEqual(
+            ConversationThreadLayout.messageLaneWidth(
+                viewportWidth: viewportWidth
+            ),
+            298,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            ConversationThreadLayout.additionalMessageRowTrailingPadding,
+            60,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            railLeadingEdge - messageTrailingEdge,
+            ConversationThreadLayout.avatarRailTextClearance,
+            accuracy: 0.001,
+            "The saved message text must end before the expanded avatar rail begins."
         )
     }
 

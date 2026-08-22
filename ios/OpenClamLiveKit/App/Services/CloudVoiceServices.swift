@@ -742,6 +742,10 @@ struct XAIRealtimeSpeechToTextService: RealtimeSpeechToTextServicing, Sendable {
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "encoding", value: "pcm"),
             URLQueryItem(name: "interim_results", value: "true"),
+            // Push-to-talk already has an explicit user-controlled endpoint. Disabling the
+            // provider VAD prevents valid, quiet iPhone microphone audio from being discarded
+            // before it can produce either streaming partials or the final transcript.
+            URLQueryItem(name: "vad_threshold", value: "0"),
         ]
         if let language {
             components.queryItems?.append(URLQueryItem(name: "language", value: language))
@@ -775,7 +779,8 @@ struct XAIRealtimeSpeechToTextService: RealtimeSpeechToTextServicing, Sendable {
         }
         guard query["sample_rate"] == "16000",
               query["encoding"] == "pcm",
-              query["interim_results"] == "true" else {
+              query["interim_results"] == "true",
+              query["vad_threshold"] == "0" else {
             return false
         }
         if let language = query["language"] {
@@ -787,7 +792,7 @@ struct XAIRealtimeSpeechToTextService: RealtimeSpeechToTextServicing, Sendable {
                 return false
             }
         }
-        return query.count == (query["language"] == nil ? 3 : 4)
+        return query.count == (query["language"] == nil ? 4 : 5)
     }
 }
 
@@ -926,13 +931,27 @@ private actor XAIRealtimeSpeechToTextSession: RealtimeSpeechToTextSession {
         }
         try Self.validateTiming(start: nil, duration: event.duration, requiresStart: false)
         let authoritativeText = try Self.transcriptText(event.text)
-        try Self.validateTranscriptSize(authoritativeText)
-        completedText = authoritativeText
+        let finalText: String
+        if !completedText.isEmpty, authoritativeText.hasPrefix(completedText) {
+            // Some xAI sessions return one cumulative final transcript.
+            finalText = authoritativeText
+        } else {
+            // Other sessions endpoint more than once and `transcript.done` contains only the
+            // final utterance. Preserve earlier speech-final text while allowing the final event
+            // to revise the current utterance's locked chunks.
+            let currentUtterance = Self.stitch(
+                lockedCurrentUtteranceText,
+                authoritativeText
+            )
+            finalText = Self.stitch(completedText, currentUtterance)
+        }
+        try Self.validateTranscriptSize(finalText)
+        completedText = finalText
         lockedCurrentUtteranceText = ""
         provisionalText = ""
         didReceiveFinished = true
         return .init(
-            text: authoritativeText.trimmingCharacters(in: .whitespacesAndNewlines),
+            text: finalText.trimmingCharacters(in: .whitespacesAndNewlines),
             isFinal: true,
             endpointDetected: false,
             isFinished: true
