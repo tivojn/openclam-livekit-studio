@@ -66,11 +66,14 @@ assert.doesNotMatch(main, /Recover Companion|Hide Companion/);
 // settings, and AVTR export.
 for (const required of [
   'function createMainWindow()',
+  'function setChatMode(value)',
+  'function chatWindowBounds()',
+  'function showChat()',
   'function createBuddyWindow(slug)',
   'function startPetRoamMotion()',
   'function startBuddyRoamMotion()',
   'PET_LEDGE_HOLD_MS',
-  "post(mainWindow, 'openclam:pet-chat')",
+  "post(chatWindow, 'openclam:pet-chat')",
   "post(mainWindow, 'openclam:live-toggle')",
   "ipcMain.on('openclam:live-active'",
   "ipcMain.handle('openclam:export-avatar'",
@@ -79,6 +82,8 @@ for (const required of [
   "ipcMain.handle('openclam:avatar-store-download'",
   "ipcMain.handle('openclam:avatar-store-cancel'",
   "ipcMain.handle('openclam:set-pet-opacity'",
+  "ipcMain.handle('openclam:set-chat-mode'",
+  "ipcMain.handle('openclam:show-chat'",
   "ipcMain.handle('openclam:avatar-changed'",
   "ipcMain.handle('openclam:companion-changed'",
   'function openSettings()',
@@ -87,6 +92,8 @@ for (const required of [
   assert.ok(main.includes(required), `missing shell capability: ${required}`);
 }
 for (const required of [
+  "showChat: () => ipcRenderer.invoke('openclam:show-chat')",
+  "setChatMode: (value) => ipcRenderer.invoke('openclam:set-chat-mode', Boolean(value))",
   "avatarStoreCatalog: (options) => ipcRenderer.invoke('openclam:avatar-store-catalog'",
   "avatarStoreThumbnail: (id) => ipcRenderer.invoke('openclam:avatar-store-thumbnail'",
   "downloadAvatarStoreItem: (id) => ipcRenderer.invoke('openclam:avatar-store-download'",
@@ -94,6 +101,16 @@ for (const required of [
   "onAvatarStoreProgress: (callback) => subscribe('openclam:avatar-store-progress'",
   "copySettingsText: (value) => ipcRenderer.invoke(",
 ]) assert.ok(preload.includes(required), `missing Avatar Store bridge: ${required}`);
+assert.match(main, /const CHAT_MODE_MINIMUM = Object\.freeze\(\{ width: 760, height: 600 \}\);/,
+  'Chat\/Talk mode must remain a readable full-window surface');
+assert.match(main, /const START_IN_CHAT_MODE = process\.argv\.includes\('--chat'\);/,
+  'source runs need an explicit Chat\/Talk launch option');
+assert.match(main, /createMainWindow\(\);\n  if \(START_IN_CHAT_MODE\) setChatMode\(true\);/,
+  'the --chat source launch option must open the normal Chat\/Talk window');
+assert.match(main, /function createChatWindow\(\)[\s\S]{0,1000}frame: true,[\s\S]{0,250}transparent: false,[\s\S]{0,350}resizable: true/,
+  'Chat\/Talk must be a standard, opaque, resizable macOS application window');
+assert.match(main, /function setChatMode\(value\)[\s\S]{0,900}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,850}mainWindow\.showInactive\(\)/,
+  'mode switching must move between the normal chat window and standby companion');
 assert.match(main, /ipcMain\.handle\('openclam:copy-settings-text', writeSettingsClipboard\)/);
 assert.match(main, /if \(!avatarStoreSender\(event\)[\s\S]*clipboard\.writeText\(text\);/,
   'clipboard writes must be settings-only, bounded, and write-only');

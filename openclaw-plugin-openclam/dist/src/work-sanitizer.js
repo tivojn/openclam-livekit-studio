@@ -48,9 +48,9 @@ export function sanitizeWorkStep(step) {
         return undefined;
     const detail = sanitizeWorkText(step.detail, 1_000);
     const tool = sanitizeWorkText(step.tool, 80);
-    const command = sanitizeWorkText(step.command, 1_000);
-    const path = sanitizeWorkPath(step.path);
-    const output = sanitizeWorkText(step.output, 2_000);
+    // Work is a user-facing progress projection, never a diagnostic/log stream.
+    // Keep the protocol's legacy fields decodable, but do not forward raw command
+    // text, host paths, or tool output even when their contents look harmless.
     return {
         stepId: workStepId(step.stepId),
         category: step.category,
@@ -58,9 +58,6 @@ export function sanitizeWorkStep(step) {
         title,
         ...(detail ? { detail } : {}),
         ...(tool ? { tool } : {}),
-        ...(command ? { command } : {}),
-        ...(path ? { path } : {}),
-        ...(output ? { output } : {}),
     };
 }
 export function workState(value, phase) {

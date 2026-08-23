@@ -949,6 +949,42 @@ class EyewearLockTests(unittest.TestCase):
         self.assertGreaterEqual(receipt["face_bounds"][2], 84)
         self.assertGreaterEqual(receipt["face_bounds"][3], 100)
 
+    def test_runtime_head_mask_keeps_the_generated_hair_silhouette(self):
+        """The live layer owns the face, not the portrait's square hairstyle."""
+        landmarks = np.zeros((478, 2), dtype=np.float32)
+        for point_index, landmark_index in enumerate(body.face.FACE_OVAL):
+            angle = 2.0 * np.pi * point_index / len(body.face.FACE_OVAL)
+            landmarks[landmark_index] = (
+                512.0 + 250.0 * np.cos(angle),
+                512.0 + 310.0 * np.sin(angle),
+            )
+        portrait = np.full((1024, 1024, 4), 255, dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            body._head_mask(portrait, landmarks, mask_path)
+            mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+        alpha_points = cv2.findNonZero((mask[:, :, 3] > 8).astype(np.uint8))
+        self.assertIsNotNone(alpha_points)
+        _x, _y, width, height = cv2.boundingRect(alpha_points)
+        self.assertLess(width, 700)
+        self.assertLess(height, 800)
+
+    def test_final_runtime_composite_rejects_an_oversized_live_head(self):
+        body_plate = np.zeros((1152, 864, 4), dtype=np.uint8)
+        body_plate[20:1128, 296:580, :3] = 180
+        body_plate[20:1128, 296:580, 3] = 255
+        transform = np.array(
+            [[0.30, 0.0, 286.0], [0.0, 0.30, -6.0]],
+            dtype=np.float64,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            mask = np.full((1024, 1024, 4), 255, dtype=np.uint8)
+            cv2.imwrite(mask_path, mask)
+            failure = body._composite_head_proportion_failure(
+                body_plate, mask_path, transform, [390, 61, 90, 127])
+        self.assertIn("live head silhouette is too large", failure)
+
     def test_masculine_plate_rejects_a_positive_heel_assignment(self):
         with self.assertRaisesRegex(ValueError, "non-feminine presentation"):
             body._prompt({

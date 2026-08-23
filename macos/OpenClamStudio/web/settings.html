@@ -907,7 +907,7 @@ document.documentElement.dataset.design='quiet';</script>
   <div class="grow"></div>
   <!-- The same moon the rail wears - one glyph for one switch (#30). -->
   <button class="theme-toggle" id="theme-toggle" type="button" title="Switch light / dark theme" aria-label="Switch color theme"><svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="currentColor"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg></button>
-  <a class="back" href="/">&larr; Back to chat</a>
+  <a class="back" href="/">&larr; Open Chat/Talk</a>
 </header>
 
 <main>
@@ -1842,7 +1842,7 @@ const STORE_PROGRESS = new Map(), STORE_THUMBNAILS = new Map();
 const STORE_THUMBNAIL_LOADING = new Set();
 
 if (SHELL && SHELL.isElectron) {
-  $('.back').onclick = e => { e.preventDefault(); SHELL.showAvatar(); };
+  $('.back').onclick = e => { e.preventDefault(); SHELL.showChat(); };
 }
 
 /* ---------------------------------------------------------------- tabs */
@@ -4026,7 +4026,10 @@ function renderBodyPreview() {
   $('#body-view-caption').classList.toggle('hidden', !hasBody || available.length < 2);
   if (!hasBody) return;
   const record = records[BODY_VIEW];
-  $('#body-preview').src = `/files/${encodeURIComponent(BODY_SLUG)}/body/${encodeURIComponent(record.image)}?t=${Date.now()}`;
+  const previewImage = BODY_VIEW === 'front'
+    ? (record.preview_image || record.image)
+    : record.image;
+  $('#body-preview').src = `/files/${encodeURIComponent(BODY_SLUG)}/body/${encodeURIComponent(previewImage)}?t=${Date.now()}`;
   $('#body-preview').alt = `Generated ${BODY_VIEW} full-body companion view`;
   $('#body-view-caption').textContent = {
     front: 'Front · standing runtime body with the calibrated live face',

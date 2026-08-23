@@ -49,6 +49,7 @@ const DEV_APP_NAME = `${APP_NAME} Dev`;
 const AUTH_HEADER = 'X-OpenClam-Token';
 const LIVEKIT_BROKER_URL = 'https://openclam-livekit-pilot-broker.openclam-live.workers.dev/v1/live-talk/sessions';
 const LIVEKIT_SERVER_HOST = 'openclam-live-voice-kse86f6p.livekit.cloud';
+const START_IN_CHAT_MODE = process.argv.includes('--chat');
 
 if (app.isPackaged) {
   app.setName(APP_NAME);
@@ -84,6 +85,7 @@ let backend = null;
 let ownsBackend = false;
 let quitting = false;
 let mainWindow = null;
+let chatWindow = null;
 let settingsWindow = null;
 let bubbleWindow = null;
 let appearanceWindow = null;
@@ -112,6 +114,7 @@ let petZoomGesture = null;
 let appearancePushAt = 0;
 let petMotionReady = false;
 let liveTalkActive = false;
+let chatMode = false;
 let avatarStoreInstance = null;
 const avatarStoreJobs = new Map();
 let petMotionProfile = {
@@ -143,6 +146,7 @@ let buddyOpacity = null; // null follows state.petOpacity
 const PET_VIEWS = new Set(['full', 'three-quarter', 'half', 'bust', 'head', 'face']);
 const PET_BASE_SIZE = Object.freeze({ width: 560, height: 760 });
 const PET_NORMAL_MINIMUM = Object.freeze({ width: 140, height: 190 });
+const CHAT_MODE_MINIMUM = Object.freeze({ width: 760, height: 600 });
 const PET_ZOOM_RANGE = Object.freeze({ min: 0.25, max: 4 });
 const PET_DOCK_MARGIN = 28;
 const PET_ROAM_SIZE = Object.freeze({ width: 250, height: 340 });
@@ -761,7 +765,7 @@ function saveStateSoon() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (!state.petRoam) state.bounds = mainWindow.getBounds();
+    if (!state.petRoam && !chatMode) state.bounds = mainWindow.getBounds();
     fs.mkdirSync(path.dirname(statePath()), { recursive: true });
     fs.writeFileSync(statePath(), JSON.stringify(state, null, 2), { mode: 0o600 });
   }, 180);
@@ -787,6 +791,7 @@ function shellState() {
     backendOwned: ownsBackend,
     backendUrl: baseUrl(),
     packaged: app.isPackaged,
+    chatMode,
     pet: {
       enabled: Boolean(state && state.petMode),
       opacity: Number(state && state.petOpacity),
@@ -804,13 +809,62 @@ function shellState() {
 
 function broadcastState() {
   const value = shellState();
-  for (const window of [mainWindow, settingsWindow, appearanceWindow]) {
+  for (const window of [mainWindow, chatWindow, settingsWindow, appearanceWindow]) {
     post(window, 'openclam:state', value);
   }
   // The second on-desk avatar sees the same state with its own roam,
   // opacity, and motion profile spliced in.
   pushBuddyState();
   buildTrayMenu();
+}
+
+function chatWindowBounds() {
+  const display = mainWindow && !mainWindow.isDestroyed()
+    ? screen.getDisplayMatching(mainWindow.getBounds())
+    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const area = display.workArea;
+  const margin = Math.min(44, Math.max(18, Math.round(Math.min(area.width, area.height) * 0.035)));
+  const width = Math.min(1180, Math.max(CHAT_MODE_MINIMUM.width, area.width - margin * 2));
+  const height = Math.min(860, Math.max(CHAT_MODE_MINIMUM.height, area.height - margin * 2));
+  return {
+    x: Math.round(area.x + (area.width - width) / 2),
+    y: Math.round(area.y + (area.height - height) / 2),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
+}
+
+function setChatMode(value) {
+  if (!mainWindow || mainWindow.isDestroyed()) return shellState();
+  const next = Boolean(value);
+  if (next) {
+    if (state.petRoam) {
+      state.petRoam = false;
+      stopPetRoamMotion(false);
+      state.petHomeBounds = null;
+    }
+    chatMode = true;
+    preDockBounds = null;
+    mainWindow.hide();
+    createChatWindow();
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      chatWindow.show();
+      chatWindow.focus();
+    }
+    app.focus({ steal: true });
+  } else {
+    chatMode = false;
+    if (chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
+    applyPetZoom(state.petZoom);
+    mainWindow.setOpacity(state.petOpacity > 0 ? state.petOpacity : 0.5);
+    petPointerInteractive = null;
+    setPetHit(false);
+    if (state.petOpacity <= 0.001) mainWindow.hide();
+    else mainWindow.showInactive();
+  }
+  saveStateSoon();
+  broadcastState();
+  return shellState();
 }
 
 // The appearance panel has to track a live pinch without paying for a tray
@@ -955,7 +1009,9 @@ function applyPetOpacity(value, reveal = true) {
   const opacity = Math.max(0, Math.min(1, Number(value) || 0));
   state.petOpacity = opacity;
   if (mainWindow && !mainWindow.isDestroyed()) {
-    if (opacity <= 0.001) mainWindow.hide();
+    if (chatMode) {
+      mainWindow.setOpacity(1);
+    } else if (opacity <= 0.001) mainWindow.hide();
     else {
       mainWindow.setOpacity(opacity);
       if (reveal) mainWindow.showInactive();
@@ -995,7 +1051,7 @@ function petBoundsForZoom(value) {
 function applyPetZoom(value) {
   petZoomGesture = null;
   state.petZoom = clampPetZoom(value, PET_ZOOM_RANGE);
-  if (!state.petRoam) {
+  if (!state.petRoam && !chatMode) {
     const bounds = petBoundsForZoom(state.petZoom);
     if (bounds) {
       mainWindow.setBounds(bounds, false);
@@ -1056,7 +1112,9 @@ function applyPetZoomLive(payload) {
   if (!mainWindow || mainWindow.isDestroyed()) return shellState();
   const data = payload && typeof payload === 'object' ? payload : { value: payload };
   const phase = data.phase === 'start' || data.phase === 'end' ? data.phase : 'move';
-  if (state.petRoam) {
+  if (chatMode) {
+    state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE);
+  } else if (state.petRoam) {
     state.petRoamZoom = clampPetZoom(data.value, PET_ROAM_ZOOM_RANGE);
     resizePetRoamWindow(state.petRoamZoom);
   } else {
@@ -2166,6 +2224,53 @@ function startupPetBounds() {
   return dockedPetBounds(size, area, PET_DOCK_MARGIN);
 }
 
+function createChatWindow() {
+  if (chatWindow && !chatWindow.isDestroyed()) return chatWindow;
+  chatWindow = new BrowserWindow({
+    ...chatWindowBounds(),
+    minWidth: CHAT_MODE_MINIMUM.width,
+    minHeight: CHAT_MODE_MINIMUM.height,
+    show: false,
+    frame: true,
+    transparent: false,
+    backgroundColor: '#f7f7f5',
+    hasShadow: true,
+    resizable: true,
+    minimizable: true,
+    maximizable: true,
+    fullscreenable: true,
+    skipTaskbar: false,
+    acceptFirstMouse: true,
+    title: `${APP_NAME} · Chat/Talk`,
+    webPreferences: {
+      backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      webviewTag: false,
+      allowRunningInsecureContent: false,
+      spellcheck: true,
+    },
+  });
+  guardNavigation(chatWindow, 'main');
+  chatWindow.loadURL(`${baseUrl()}/?electron=1&chat=1&app=${encodeURIComponent(app.getVersion())}`);
+  chatWindow.once('ready-to-show', () => {
+    if (!chatMode || !chatWindow || chatWindow.isDestroyed()) return;
+    chatWindow.show();
+    chatWindow.focus();
+    post(chatWindow, 'openclam:pet-chat');
+  });
+  chatWindow.on('close', (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    setChatMode(false);
+  });
+  chatWindow.on('closed', () => { chatWindow = null; });
+  return chatWindow;
+}
+
 function createMainWindow() {
   const bounds = startupPetBounds();
   state.bounds = { ...bounds };
@@ -2218,8 +2323,8 @@ function createMainWindow() {
   });
   mainWindow.on('show', protectSettingsFromPetOverlay);
   mainWindow.on('focus', protectSettingsFromPetOverlay);
-  mainWindow.on('move', () => { if (!state.petRoam) saveStateSoon(); });
-  mainWindow.on('resize', () => { if (!state.petRoam) saveStateSoon(); });
+  mainWindow.on('move', () => { if (!state.petRoam && !chatMode) saveStateSoon(); });
+  mainWindow.on('resize', () => { if (!state.petRoam && !chatMode) saveStateSoon(); });
   mainWindow.on('close', (event) => {
     if (!quitting) {
       event.preventDefault();
@@ -2236,6 +2341,7 @@ function createMainWindow() {
 function showMain() {
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.hide();
+  if (chatMode) setChatMode(false);
   if (state.petOpacity <= 0.001) {
     state.petOpacity = 0.5;
     saveStateSoon();
@@ -2244,6 +2350,18 @@ function showMain() {
   mainWindow.show();
   mainWindow.focus();
   broadcastState();
+}
+
+function showChat() {
+  if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+  if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.hide();
+  const value = setChatMode(true);
+  if (chatWindow && !chatWindow.isDestroyed()) {
+    chatWindow.show();
+    chatWindow.focus();
+    post(chatWindow, 'openclam:pet-chat');
+  }
+  return value;
 }
 
 function recoverCompanion() {
@@ -2342,6 +2460,7 @@ function deskCompanionMode() {
 }
 
 function openSettings() {
+  if (chatMode && chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.show();
     syncPetWindowLevels();
@@ -2409,9 +2528,17 @@ function trayImage() {
 function buildTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: mainWindow && mainWindow.isVisible() ? 'Hide Avatar' : 'Show Avatar', click: () => {
-      if (mainWindow && mainWindow.isVisible()) mainWindow.hide(); else showMain();
-    } },
+    { label: 'Open Chat/Talk', type: 'radio', checked: chatMode,
+      click: showChat },
+    { label: 'Avatar Mode', type: 'radio', checked: !chatMode,
+      click: () => { setChatMode(false); showMain(); } },
+    { label: (chatMode ? chatWindow : mainWindow)?.isVisible() ? 'Hide OpenClam' : 'Show OpenClam',
+      click: () => {
+        const activeWindow = chatMode ? chatWindow : mainWindow;
+        if (activeWindow && activeWindow.isVisible()) activeWindow.hide();
+        else if (chatMode) showChat();
+        else showMain();
+      } },
     { label: 'Settings…', accelerator: 'CommandOrControl+,', click: openSettings },
     { label: 'Size & Opacity…', click: showAppearanceWindow },
     { type: 'separator' },
@@ -2456,12 +2583,8 @@ function showPetMenu() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   // Name on the left, the gesture that does the same thing on the right.
   showMenuWindow([
-    { name: 'Talk', hint: 'hold head or type',
-      click: () => {
-        mainWindow.show();
-        mainWindow.focus();
-        post(mainWindow, 'openclam:pet-chat');
-      } },
+    { name: 'Open Chat/Talk', hint: 'full conversation workspace',
+      click: showChat },
     { name: liveTalkActive ? 'End live talk' : 'Live talk',
       hint: liveTalkActive ? 'hang up now' : 'realtime voice',
       click: () => {
@@ -2518,7 +2641,10 @@ function createTray() {
   tray = new Tray(trayImage());
   tray.setToolTip(APP_NAME);
   tray.on('click', () => {
-    if (mainWindow && mainWindow.isVisible()) mainWindow.hide(); else showMain();
+    const activeWindow = chatMode ? chatWindow : mainWindow;
+    if (activeWindow && activeWindow.isVisible()) activeWindow.hide();
+    else if (chatMode) showChat();
+    else showMain();
   });
   buildTrayMenu();
 }
@@ -2538,6 +2664,9 @@ async function restartBackend() {
     await startBackend();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.loadURL(`${baseUrl()}/?electron=1&app=${encodeURIComponent(app.getVersion())}`);
+    }
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      chatWindow.loadURL(`${baseUrl()}/?electron=1&chat=1&app=${encodeURIComponent(app.getVersion())}`);
     }
     if (settingsWindow && !settingsWindow.isDestroyed()) {
       settingsWindow.loadURL(`${baseUrl()}/settings?electron=1&app=${encodeURIComponent(app.getVersion())}`);
@@ -2562,8 +2691,17 @@ function installIpc() {
   ipcMain.handle('openclam:open-settings', () => { openSettings(); return shellState(); });
   ipcMain.handle('openclam:open-appearance', () => { showAppearanceWindow(); return shellState(); });
   ipcMain.handle('openclam:show-main', () => { showMain(); return shellState(); });
-  ipcMain.handle('openclam:hide-main', () => { if (mainWindow) mainWindow.hide(); });
-  ipcMain.handle('openclam:minimize', () => { if (mainWindow) mainWindow.minimize(); });
+  ipcMain.handle('openclam:show-chat', () => {
+    return showChat();
+  });
+  ipcMain.handle('openclam:hide-main', (event) => {
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (sender && !sender.isDestroyed()) sender.hide();
+  });
+  ipcMain.handle('openclam:minimize', (event) => {
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (sender && !sender.isDestroyed()) sender.minimize();
+  });
   ipcMain.handle('openclam:toggle-top', () => applyAlwaysOnTop(!state.alwaysOnTop));
   ipcMain.handle('openclam:pet-menu', (event) => {
     if (isBuddySender(event)) { showBuddyMenu(); return buddyShellState(); }
@@ -2580,7 +2718,8 @@ function installIpc() {
   ipcMain.handle('openclam:set-pet-roam-zoom', (event, value) => (
     isBuddySender(event) ? buddyShellState() : applyPetRoamZoom(value)));
   ipcMain.on('openclam:pet-zoom-live', (event, payload) => {
-    if (mainWindow && event.sender === mainWindow.webContents) applyPetZoomLive(payload);
+    if ((mainWindow && event.sender === mainWindow.webContents)
+        || (chatWindow && event.sender === chatWindow.webContents)) applyPetZoomLive(payload);
   });
   ipcMain.handle('openclam:set-pet-click-through', (_event, value) => applyPetClickThrough(value));
   ipcMain.handle('openclam:set-pet-lock', (_event, value) => applyPetLock(value));
@@ -2592,15 +2731,18 @@ function installIpc() {
   });
   ipcMain.on('openclam:show-speech-bubble', (event, value) => {
     if (isBuddySender(event)
-        || (mainWindow && event.sender === mainWindow.webContents)) showSpeechBubble(value);
+        || (mainWindow && event.sender === mainWindow.webContents)
+        || (chatWindow && event.sender === chatWindow.webContents)) showSpeechBubble(value);
   });
   ipcMain.on('openclam:pet-motion-ready', (event, value) => {
     if (isBuddySender(event)) setBuddyMotionReady(value);
-    else if (mainWindow && event.sender === mainWindow.webContents) setPetMotionReady(value);
+    else if ((mainWindow && event.sender === mainWindow.webContents)
+        || (chatWindow && event.sender === chatWindow.webContents)) setPetMotionReady(value);
   });
   ipcMain.on('openclam:pet-engaged', (event, value) => {
     if (isBuddySender(event)) setBuddyEngaged(value);
-    else if (mainWindow && event.sender === mainWindow.webContents) setPetEngaged(value);
+    else if ((mainWindow && event.sender === mainWindow.webContents)
+        || (chatWindow && event.sender === chatWindow.webContents)) setPetEngaged(value);
   });
   ipcMain.on('openclam:pet-hit', (event, value) => {
     if (isBuddySender(event)) setBuddyHit(Boolean(value));
@@ -2639,7 +2781,8 @@ function installIpc() {
   });
   ipcMain.on('openclam:pet-focus', (event) => {
     const window = isBuddySender(event) ? buddyWindow
-      : (mainWindow && event.sender === mainWindow.webContents) ? mainWindow : null;
+      : (mainWindow && event.sender === mainWindow.webContents) ? mainWindow
+        : (chatWindow && event.sender === chatWindow.webContents) ? chatWindow : null;
     if (!window || window.isDestroyed()) return;
     // Clicking the chat field must make this window KEY: acceptFirstMouse
     // delivers the click into an inactive window WITHOUT activating it, so
@@ -2649,6 +2792,13 @@ function installIpc() {
     // means.
     app.focus({ steal: true });
     window.focus();
+  });
+  ipcMain.handle('openclam:set-chat-mode', (event, value) => {
+    const trusted = (mainWindow && event.sender === mainWindow.webContents)
+      || (chatWindow && event.sender === chatWindow.webContents)
+      || (settingsWindow && event.sender === settingsWindow.webContents);
+    if (!trusted) return shellState();
+    return setChatMode(value);
   });
   ipcMain.on('openclam:pet-control-rects', (event, value) => {
     const rects = (Array.isArray(value) ? value : []).slice(0, 8)
@@ -2772,6 +2922,7 @@ function installIpc() {
     if (state.petRoam) applyPetRoam(false);
     petMotionReady = false;
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reloadIgnoringCache();
+    if (chatWindow && !chatWindow.isDestroyed()) chatWindow.webContents.reloadIgnoringCache();
     // Activating the avatar that held the left desk vacates it server-side;
     // re-sync so the second window closes (or stays) accordingly.
     syncBuddyFromServer().catch(() => {});
@@ -3132,6 +3283,7 @@ async function boot() {
   installRequestAuthentication();
   installPermissions();
   createMainWindow();
+  if (START_IN_CHAT_MODE) setChatMode(true);
   createTray();
   installRecoveryShortcut();
   scheduleUpdateChecks();
@@ -3148,11 +3300,11 @@ const lock = app.requestSingleInstanceLock();
 if (!lock) {
   app.quit();
 } else {
-  app.on('second-instance', showMain);
+  app.on('second-instance', () => { if (chatMode) showChat(); else showMain(); });
   app.whenReady().then(boot);
 }
 
-app.on('activate', showMain);
+app.on('activate', () => { if (chatMode) showChat(); else showMain(); });
 app.on('before-quit', () => {
   quitting = true;
   cancelAllAvatarStoreJobs();

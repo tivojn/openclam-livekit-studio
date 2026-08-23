@@ -24,7 +24,7 @@ const exactCodexTokens = [
 ];
 
 assert.ok(
-  desktop.indexOf('/* Codex macOS visual contract.') > desktop.indexOf('@media (prefers-reduced-motion: reduce)'),
+  desktop.indexOf('/* Codex Work visual contract:') > desktop.indexOf('@media (prefers-reduced-motion: reduce)'),
   'desktop Codex contract must be the final visual cascade',
 );
 for (const [name, value] of exactCodexTokens) {
@@ -35,7 +35,13 @@ assert.match(desktop, /--codex-text-secondary:\s*rgba\(255, 255, 255, \.70\)/);
 assert.match(desktop, /--codex-text-tertiary:\s*rgba\(255, 255, 255, \.50\)/);
 assert.match(desktop, /--codex-border:\s*rgba\(255, 255, 255, \.08\)/);
 assert.match(desktop, /--codex-border-heavy:\s*rgba\(255, 255, 255, \.16\)/);
-assert.match(desktop, /#composerRow\s*\{[\s\S]{0,180}border-radius:\s*22px/);
+assert.match(desktop, /#composerShell\s*\{[\s\S]{0,220}border-radius:\s*24px/);
+assert.match(desktop, /#chatDock\s*\{\s*left:\s*var\(--pet-edge\);[\s\S]{0,900}background:\s*transparent/);
+assert.match(desktop, /#chatDock:has\(#conversation:not\(:empty\)\)/);
+assert.match(desktop, /\.work-thread\s*\{/);
+assert.doesNotMatch(desktop, /\.work-card\s*\{/);
+assert.doesNotMatch(desktop, /append\('Command'/);
+assert.doesNotMatch(desktop, /append\('Output'/);
 assert.match(desktop, /#sendButton\s*\{\s*background:\s*var\(--codex-text\);\s*color:\s*var\(--codex-under\)/);
 assert.match(desktop, /\.message\.assistant \.bubble\s*\{[\s\S]{0,200}background:\s*transparent/);
 assert.match(desktop, /\.message\.user \.bubble\s*\{[\s\S]{0,220}background:\s*var\(--codex-control\)/);
@@ -79,15 +85,26 @@ assert.match(electron, /backgroundColor: '#181818'/);
 // The visual rewrite may never turn icon-only desktop controls into unnamed
 // AX nodes, or turn the settings sidebar into an unlabeled row of buttons.
 for (const label of [
-  'Start Live Talk', 'Switch to next avatar', 'Show avatar move',
-  'Start walking', 'Open Character Studio', 'Hold to talk', 'Message',
-  'Send message', 'Close conversation',
+  'Start Live Talk', 'Switch to next avatar', 'Show portrait framing',
+  'Choose avatar motion', 'Read latest reply aloud',
+  'Bring avatar layer forward', 'Adjust avatar opacity', 'Mirror avatar',
+  'Open Character Studio', 'Fold controls', 'Hold to talk', 'Message',
+  'Send message', 'Close conversation', 'Open chat history',
+  'Close chat history', 'Start a new chat',
 ]) {
   assert.ok(desktop.includes(`aria-label="${label}"`), `missing desktop AX label: ${label}`);
 }
 assert.match(desktop, /<nav id="rail" aria-label="Avatar controls">/);
 assert.match(desktop, /<section id="chatDock" aria-label="Conversation">/);
+assert.match(desktop, /<aside id="chatHistoryPanel" aria-label="Chat history" aria-hidden="true" inert>/);
 assert.match(desktop, /role="log" aria-live="polite"/);
+assert.match(desktop, /openclam\.chat\.threads\.v1/);
+assert.match(desktop, /const restoreChatThread = async thread =>/);
+assert.match(desktop, /const createNewChat = async \(\) =>/);
+assert.match(desktop, /const deleteChatThread = async id =>/);
+assert.match(desktop, /openClawSessionID = thread\.openClawSessionID \|\| ''/);
+assert.match(desktop, /CHAT_HISTORY_MAX_THREADS = 30/);
+assert.match(desktop, /CHAT_HISTORY_MAX_BYTES = 3_500_000/);
 assert.match(desktop, /prefers-reduced-motion:\s*reduce/);
 assert.match(settings, /<nav aria-label="Settings sections">/);
 assert.match(settings, /data-tab="avatar" class="on" aria-current="page"/);

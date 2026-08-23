@@ -481,7 +481,21 @@ struct AgentConnectorWorkStep: Codable, Equatable, Identifiable, Sendable {
               path.map(Self.isSafeRelativePath) ?? true else {
             throw AgentConnectorError.invalidFrame
         }
-        return self
+        // Keep legacy fields decodable for wire compatibility, then project
+        // only user-safe workflow milestones into app state and chat history.
+        // Raw commands, paths, and tool output are never persisted or rendered.
+        return Self(
+            revision: revision,
+            stepID: stepID,
+            category: category,
+            state: state,
+            title: title,
+            detail: detail,
+            tool: tool,
+            command: nil,
+            path: nil,
+            output: nil
+        )
     }
 
     private static func isSafe(_ value: String, maximum: Int) -> Bool {

@@ -461,6 +461,25 @@ def _head_mask(cutout_image, landmarks, destination):
     center = (left + right) * 0.5
     face_width = max(1.0, right - left)
     face_height = max(1.0, chin - top)
+    # The animation bank needs the original eyes, brows, cheeks, and mouth—not
+    # the entire square portrait.  Keeping every pixel above the chin made a
+    # voluminous close-up hairstyle replace the generated plate's much narrower
+    # head silhouette, even though the facial landmarks themselves aligned.
+    # Build a softly expanded facial oval so the generated plate continues to
+    # own skull/hair size while the calibrated identity remains fully animated.
+    face_gate = np.zeros(alpha.shape, dtype=np.uint8)
+    hull = cv2.convexHull(np.round(oval).astype(np.int32))
+    cv2.fillConvexPoly(face_gate, hull, 255)
+    expansion = max(9, int(round(face_width * 0.11)))
+    if expansion % 2 == 0:
+        expansion += 1
+    face_gate = cv2.dilate(
+        face_gate,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expansion, expansion)),
+    )
+    face_gate = cv2.GaussianBlur(
+        face_gate, (0, 0), max(2.0, face_width * 0.035)
+    ).astype(np.float32) / 255.0
     # Long dissolve: the live head and the generated body render hair with
     # different tone and sharpness, and a short fade turns that difference
     # into a visible horizontal band (carol, 2026-08-01). Half a face-height
@@ -490,10 +509,107 @@ def _head_mask(cutout_image, landmarks, destination):
     engage = np.clip((ys - neck_start) / max(1.0, face_height * 0.28), 0.0, 1.0)
     engage = engage * engage * (3.0 - 2.0 * engage)
     neck_gate = 1.0 - engage[:, None] * (1.0 - neck_gate)
-    mask = np.clip(alpha * fade[:, None] * neck_gate, 0.0, 1.0)
+    mask = np.clip(
+        alpha * face_gate * fade[:, None] * neck_gate, 0.0, 1.0)
     rgba = np.full((*mask.shape, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = np.round(mask * 255).astype(np.uint8)
     cv2.imwrite(destination, rgba)
+
+
+def _constrain_head_mask(mask_path, body_image, transform, face_bounds):
+    """Keep the live identity overlay inside the generated head silhouette.
+
+    The landmark transform correctly sizes the *face*, but a close portrait can
+    carry hair almost edge-to-edge across its square canvas.  Warping that full
+    alpha matte onto a narrow full-body plate makes the hair (and therefore the
+    perceived head) much wider than the generated figure.  Project the body
+    silhouette back into portrait space and intersect it with the authored mask;
+    a small feather preserves antialiased hair edges without allowing a new,
+    larger silhouette to replace the approved plate.
+    """
+    if not face_bounds:
+        return
+    mask_rgba = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+    if (mask_rgba is None or mask_rgba.ndim != 3
+            or mask_rgba.shape[2] != 4 or body_image.ndim != 3
+            or body_image.shape[2] != 4):
+        raise RuntimeError("the identity overlay mask is invalid")
+    body_alpha = body_image[:, :, 3]
+    allowed_body = body_alpha
+    inverse = cv2.invertAffineTransform(np.asarray(transform, dtype=np.float64))
+    allowed_portrait = cv2.warpAffine(
+        allowed_body,
+        inverse,
+        (mask_rgba.shape[1], mask_rgba.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    mask_rgba[:, :, 3] = np.minimum(mask_rgba[:, :, 3], allowed_portrait)
+    if not cv2.imwrite(mask_path, mask_rgba):
+        raise RuntimeError("the identity overlay mask could not be written")
+
+
+def _composite_head_proportion_failure(body_image, mask_path, transform,
+                                       face_bounds):
+    """Return a user-facing failure when the final live overlay is oversized."""
+    if not face_bounds:
+        return "generated face alignment is missing"
+    person_bounds = _alpha_bounds(body_image)
+    person_width = max(1.0, float(person_bounds[2]))
+    person_height = max(1.0, float(person_bounds[3]))
+    _face_x, _face_y, face_width, face_height = [float(v) for v in face_bounds]
+    face_width_ratio = face_width / person_width
+    face_height_ratio = face_height / person_height
+    if face_width_ratio > 0.43 or face_height_ratio > 0.15:
+        return (
+            "generated head is too large for the body "
+            f"(face ratios {face_width_ratio:.3f} wide, "
+            f"{face_height_ratio:.3f} tall)")
+
+    mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+    if mask is None or mask.ndim != 3 or mask.shape[2] != 4:
+        return "the identity overlay mask is invalid"
+    warped = cv2.warpAffine(
+        mask[:, :, 3], np.asarray(transform, dtype=np.float64),
+        (body_image.shape[1], body_image.shape[0]), flags=cv2.INTER_LINEAR)
+    points = cv2.findNonZero((warped > 8).astype(np.uint8))
+    if points is None:
+        return "the identity overlay mask is empty"
+    _x, _y, overlay_width, overlay_height = cv2.boundingRect(points)
+    width_ratio = overlay_width / person_width
+    height_ratio = overlay_height / person_height
+    if width_ratio > 0.76 or height_ratio > 0.22:
+        return (
+            "live head silhouette is too large for the body "
+            f"({width_ratio:.3f} wide, {height_ratio:.3f} tall)")
+    return None
+
+
+def _runtime_composite_preview(body_path, keyframe, mask_path, transform,
+                               destination):
+    """Bake the same standing head/body stack shown by the desktop runtime."""
+    body_rgba = cv2.imread(body_path, cv2.IMREAD_UNCHANGED)
+    mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+    if (body_rgba is None or body_rgba.ndim != 3 or body_rgba.shape[2] != 4
+            or mask is None or mask.ndim != 3 or mask.shape[2] != 4):
+        raise RuntimeError("the standing composite assets are invalid")
+    portrait = cv2.cvtColor(keyframe, cv2.COLOR_BGR2BGRA)
+    portrait[:, :, 3] = mask[:, :, 3]
+    warped = cv2.warpAffine(
+        portrait, np.asarray(transform, dtype=np.float64),
+        (body_rgba.shape[1], body_rgba.shape[0]),
+        flags=cv2.INTER_AREA, borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0))
+    alpha = warped[:, :, 3:4].astype(np.float32) / 255.0
+    composite = body_rgba.copy()
+    composite[:, :, :3] = np.round(
+        warped[:, :, :3].astype(np.float32) * alpha
+        + body_rgba[:, :, :3].astype(np.float32) * (1.0 - alpha)
+    ).astype(np.uint8)
+    composite[:, :, 3] = np.maximum(body_rgba[:, :, 3], warped[:, :, 3])
+    if not cv2.imwrite(destination, composite):
+        raise RuntimeError("the standing composite preview could not be written")
 
 
 def _seam_tone_match(body_path, keyframe, portrait_cutout, mask_path,
@@ -743,11 +859,26 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         if not cutout.render(keyframe_path, portrait_cutout_path, log=lambda _message: None):
             raise RuntimeError("could not build the identity overlay mask")
         portrait_cutout = cv2.imread(portrait_cutout_path, cv2.IMREAD_UNCHANGED)
-        _head_mask(portrait_cutout, key_landmarks, os.path.join(stage, "head-mask.png"))
+        head_mask_path = os.path.join(stage, "head-mask.png")
+        _head_mask(portrait_cutout, key_landmarks, head_mask_path)
+        face_bounds = alignment.get("face_bounds")
+        if face_bounds:
+            _constrain_head_mask(
+                head_mask_path, view_images["front"], transform, face_bounds)
+            proportion_failure = _composite_head_proportion_failure(
+                view_images["front"], head_mask_path, transform, face_bounds)
+            if proportion_failure:
+                raise GeneratedBodyIdentityError(proportion_failure)
         _seam_tone_match(
             os.path.join(stage, "body.png"), keyframe, portrait_cutout,
-            os.path.join(stage, "head-mask.png"), transform,
-            alignment.get("face_bounds"))
+            head_mask_path, transform,
+            face_bounds)
+        preview_name = None
+        if face_bounds:
+            preview_name = "body-composite.png"
+            _runtime_composite_preview(
+                os.path.join(stage, "body.png"), keyframe, head_mask_path,
+                transform, os.path.join(stage, preview_name))
         os.remove(portrait_cutout_path)
 
         height, width = view_images["front"].shape[:2]
@@ -757,6 +888,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         ]
         view_metadata["front"]["face_transform"] = face_transform
         view_metadata["front"]["alignment"] = alignment
+        if preview_name:
+            view_metadata["front"]["preview_image"] = preview_name
         metadata = {
             "v": 3,
             "image": "body.png",

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light dark">
   <title>OpenClam Studio</title>
   <script src="/livekit-client.js"></script>
   <style>
@@ -439,23 +439,25 @@
       *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
     }
 
-    /* Codex macOS visual contract. These values mirror the installed Codex
-       app's graphite surfaces, text opacities, separators, focus blue, and
-       radius scale while leaving OpenClam's avatar runtime fully independent. */
+    /* Codex Work visual contract: a calm editorial thread, flat chronological
+       activity, and one deliberate composer surface. The avatar runtime stays
+       independent and the palette follows the Mac's light/dark appearance. */
     :root {
-      color-scheme: dark;
-      --codex-surface: #181818;
-      --codex-editor: #212121;
-      --codex-elevated: #282828;
-      --codex-control: #303030;
-      --codex-under: #0d0d0d;
-      --codex-text: #ffffff;
-      --codex-text-secondary: rgba(255, 255, 255, .70);
-      --codex-text-tertiary: rgba(255, 255, 255, .50);
-      --codex-border: rgba(255, 255, 255, .08);
-      --codex-border-heavy: rgba(255, 255, 255, .16);
-      --codex-border-light: rgba(255, 255, 255, .04);
+      color-scheme: light dark;
+      --codex-surface: #fbfbfa;
+      --codex-editor: #ffffff;
+      --codex-elevated: #f5f5f3;
+      --codex-control: #f1f1ef;
+      --codex-under: #ffffff;
+      --codex-text: #202020;
+      --codex-text-secondary: rgba(32, 32, 32, .66);
+      --codex-text-tertiary: rgba(32, 32, 32, .46);
+      --codex-border: rgba(32, 32, 32, .10);
+      --codex-border-heavy: rgba(32, 32, 32, .17);
+      --codex-border-light: rgba(32, 32, 32, .055);
       --codex-focus: #339cff;
+      --codex-hover: rgba(32, 32, 32, .055);
+      --codex-pressed: rgba(32, 32, 32, .10);
       --ink: var(--codex-text);
       --muted: var(--codex-text-secondary);
       --glass: rgba(33, 33, 33, .96);
@@ -466,13 +468,32 @@
       --accent-soft: rgba(255, 255, 255, .07);
       --good: #40c977;
       --warning: #ff8549;
-      --shadow: 0 16px 48px rgba(0, 0, 0, .32);
+      --shadow: 0 18px 60px rgba(0, 0, 0, .14);
       --pet-edge: 12px;
       --pet-rail-size: 40px;
       --pet-rail-gap: 10px;
       --pet-rail-reserve: calc(var(--pet-edge) + var(--pet-rail-size) + var(--pet-rail-gap));
       --pet-surface-radius: 24px;
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --codex-surface: #181818;
+        --codex-editor: #212121;
+        --codex-elevated: #282828;
+        --codex-control: #303030;
+        --codex-under: #0d0d0d;
+        --codex-text: #ffffff;
+        --codex-text-secondary: rgba(255, 255, 255, .70);
+        --codex-text-tertiary: rgba(255, 255, 255, .50);
+        --codex-border: rgba(255, 255, 255, .08);
+        --codex-border-heavy: rgba(255, 255, 255, .16);
+        --codex-border-light: rgba(255, 255, 255, .04);
+        --codex-hover: rgba(255, 255, 255, .08);
+        --codex-pressed: rgba(255, 255, 255, .12);
+        --shadow: 0 18px 60px rgba(0, 0, 0, .42);
+      }
     }
 
     body { background: var(--codex-surface); }
@@ -485,7 +506,7 @@
       padding: 6px 10px;
       border-color: var(--codex-border);
       border-radius: 10px;
-      background: rgba(33, 33, 33, .96);
+      background: color-mix(in srgb, var(--codex-editor) 96%, transparent);
       backdrop-filter: blur(16px);
       box-shadow: 0 4px 16px rgba(0, 0, 0, .20);
       color: var(--codex-text-secondary);
@@ -509,7 +530,7 @@
       height: 40px;
       border-color: var(--codex-border);
       border-radius: 10px;
-      background: rgba(33, 33, 33, .96);
+      background: color-mix(in srgb, var(--codex-editor) 96%, transparent);
       backdrop-filter: blur(16px);
       color: var(--codex-text-secondary);
       box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
@@ -518,9 +539,9 @@
       transform: none;
       color: var(--codex-text);
       border-color: var(--codex-border-heavy);
-      background: rgba(255, 255, 255, .08);
+      background: var(--codex-hover);
     }
-    .round-button:active { transform: scale(.96); background: rgba(255, 255, 255, .12); }
+    .round-button:active { transform: scale(.96); background: var(--codex-pressed); }
     .round-button svg { width: 18px; height: 18px; }
     #liveTalkButton[data-state="connecting"] { color: var(--warning); border-color: rgba(255, 133, 73, .4); }
     #liveTalkButton[data-state="connected"] { color: var(--codex-under); background: #ff6764; border-color: #ff6764; }
@@ -530,58 +551,65 @@
       right: var(--pet-rail-reserve);
       bottom: var(--pet-edge);
       width: auto;
-      max-width: 720px;
+      max-width: 820px;
       margin-inline: auto;
-      padding: 7px;
-      border: 1px solid var(--codex-border);
+      padding: 0;
+      border: 0;
       border-radius: var(--pet-surface-radius);
       /* Chromium's backdrop-filter backing surface is rectangular in a
          transparent Electron window. It painted the large grey square seen
          around this otherwise rounded dock. The near-opaque dock already has
          sufficient contrast, so keep the rounded surface and remove only the
          compositor halo. */
-      background: rgba(24, 24, 24, .985);
+      background: transparent;
       -webkit-backdrop-filter: none;
       backdrop-filter: none;
       box-shadow: none;
       transform: translateY(12px);
     }
     html.chat-open #chatDock { transform: translateY(0); }
+    html.chat-open #chatDock:has(#conversation:not(:empty)) {
+      border: 1px solid var(--codex-border);
+      background: color-mix(in srgb, var(--codex-editor) 98.5%, transparent);
+      box-shadow: var(--shadow);
+    }
     #conversation {
-      max-height: min(31dvh, 280px, calc(100dvh - 152px));
-      margin: 0 2px 4px;
-      padding: 8px 8px 7px;
+      height: min(64dvh, 680px);
+      min-height: min(330px, calc(100dvh - 150px));
+      max-height: calc(100dvh - 150px);
+      margin: 0;
+      padding: 34px clamp(22px, 5vw, 54px) 22px;
       border: 0;
       border-radius: 15px;
       background: transparent;
       backdrop-filter: none;
       box-shadow: none;
-      scrollbar-color: rgba(255, 255, 255, .16) transparent;
+      scrollbar-color: var(--codex-border-heavy) transparent;
     }
-    .message { gap: 6px; margin: 5px 0; }
+    .message { gap: 7px; margin: 14px 0; }
     .bubble {
       color: var(--codex-text);
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 430;
       line-height: 1.5;
     }
     .message.assistant .bubble {
       max-width: 100%;
-      padding: 8px 4px;
+      padding: 7px 0;
       border: 0;
       border-radius: 0;
       background: transparent;
     }
     .message.user .bubble {
-      padding: 9px 12px;
+      max-width: min(78%, 610px);
+      padding: 11px 14px;
       border: 1px solid var(--codex-border-light);
-      border-radius: 14px;
-      border-bottom-right-radius: 6px;
+      border-radius: 18px;
       background: var(--codex-control);
       color: var(--codex-text);
     }
     .response-action { color: var(--codex-text-tertiary); border-radius: 8px; }
-    .response-action:hover { color: var(--codex-text); background: rgba(255, 255, 255, .08); }
+    .response-action:hover { color: var(--codex-text); background: var(--codex-hover); }
     #selectionActions {
       border-color: var(--codex-border-heavy);
       background: rgba(40, 40, 40, .99);
@@ -594,62 +622,61 @@
       display: flex;
       align-items: center;
       gap: 7px;
-      margin: 0 7px 5px;
+      margin: 0;
       color: var(--codex-text-tertiary);
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 600;
     }
     #agentModeSelect {
-      min-width: 118px;
-      max-width: 220px;
-      height: 28px;
-      padding: 0 28px 0 9px;
-      border: 1px solid var(--codex-border);
-      border-radius: 9px;
-      background: var(--codex-control);
+      min-width: 132px;
+      max-width: 280px;
+      height: 34px;
+      padding: 0 28px 0 8px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
       color: var(--codex-text);
       font: inherit;
     }
-    .work-card {
-      margin: 7px 0 9px;
-      border: 1px solid rgba(124, 126, 255, .22);
-      border-radius: 12px;
-      background: rgba(124, 126, 255, .07);
-      overflow: hidden;
+    .work-thread {
+      margin: 28px 0 18px;
+      color: var(--codex-text-secondary);
     }
-    .work-card > summary {
+    .work-heading {
       display: flex;
       align-items: center;
       gap: 8px;
-      min-height: 40px;
-      padding: 8px 10px;
-      color: var(--codex-text);
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      list-style: none;
+      min-height: 32px;
+      color: var(--codex-text-tertiary);
+      font-size: 13px;
+      font-weight: 500;
     }
-    .work-card > summary::-webkit-details-marker { display: none; }
-    .work-card > summary::before { content: '▸'; color: var(--codex-text-tertiary); }
-    .work-card[open] > summary::before { content: '▾'; }
-    .work-count { margin-left: auto; color: var(--codex-text-tertiary); font-size: 10px; font-weight: 500; }
-    .work-list { padding: 0 10px 8px; }
-    .work-step { border-top: 1px solid var(--codex-border-light); }
+    .work-count { margin-left: auto; font-size: 11px; font-weight: 500; }
+    .work-divider { height: 1px; margin: 2px 0 10px; background: var(--codex-border); }
+    .work-list { display: grid; gap: 1px; }
+    .work-step { border: 0; border-radius: 9px; }
     .work-step > summary {
       display: grid;
-      grid-template-columns: 17px minmax(0, 1fr) auto;
-      gap: 7px;
-      align-items: start;
-      padding: 8px 0;
-      color: var(--codex-text);
-      font-size: 11px;
+      grid-template-columns: 22px minmax(0, 1fr) auto 14px;
+      gap: 8px;
+      align-items: center;
+      min-height: 38px;
+      padding: 6px 8px 6px 2px;
+      color: var(--codex-text-secondary);
+      font-size: 13px;
       cursor: pointer;
       list-style: none;
     }
+    .work-step > summary:hover { color: var(--codex-text); }
     .work-step > summary::-webkit-details-marker { display: none; }
-    .work-state { color: var(--codex-text-tertiary); font-size: 10px; text-transform: capitalize; }
-    .work-detail { padding: 0 0 9px 24px; color: var(--codex-text-secondary); font-size: 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-    .work-detail code { font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .work-step[data-state="running"] .work-icon { animation: work-pulse 1.25s ease-in-out infinite; }
+    .work-icon { color: var(--codex-text-tertiary); text-align: center; }
+    .work-state { color: var(--codex-text-tertiary); font-size: 11px; text-transform: capitalize; }
+    .work-chevron { color: var(--codex-text-tertiary); font-size: 10px; opacity: 0; }
+    .work-step.has-detail .work-chevron { opacity: 1; }
+    .work-step[open] .work-chevron { transform: rotate(90deg); }
+    .work-detail { margin: 0 4px 8px 30px; padding: 10px 12px; border-radius: 9px; background: var(--codex-elevated); color: var(--codex-text-secondary); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    @keyframes work-pulse { 50% { opacity: .32; transform: scale(.78); } }
     .openclaw-file-card {
       display: grid;
       grid-template-columns: 42px minmax(0, 1fr) auto;
@@ -659,26 +686,36 @@
       padding: 9px;
       border: 1px solid var(--codex-border);
       border-radius: 12px;
-      background: var(--codex-under);
+      background: var(--codex-elevated);
     }
     .openclaw-file-card img, .openclaw-file-card video { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; }
     .openclaw-file-name { overflow: hidden; color: var(--codex-text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
     .openclaw-file-meta { color: var(--codex-text-tertiary); font-size: 10px; }
     .openclaw-file-card a { color: var(--codex-text); font-size: 11px; }
 
-    #composerRow {
-      gap: 5px;
-      padding: 6px;
-      border-color: var(--codex-border);
-      border-radius: 22px;
-      background: rgba(40, 40, 40, .98);
+    #composerShell {
+      margin: 0 8px 8px;
+      padding: 8px 10px 7px;
+      border: 1px solid var(--codex-border);
+      border-radius: 24px;
+      background: var(--codex-elevated);
       backdrop-filter: blur(16px);
+      box-shadow: 0 5px 20px rgba(0, 0, 0, .08);
+    }
+    #composerRow {
+      display: flex;
+      align-items: end;
+      gap: 5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
       box-shadow: none;
     }
     #composer {
-      height: 40px;
-      min-height: 40px;
-      padding: 9px 8px;
+      height: 46px;
+      min-height: 46px;
+      max-height: 150px;
+      padding: 9px 6px;
       color: var(--codex-text);
       font-size: 14px;
       font-weight: 430;
@@ -691,11 +728,13 @@
       background: transparent;
       color: var(--codex-text-secondary);
     }
-    .composer-button:hover { background: rgba(255, 255, 255, .08); color: var(--codex-text); }
-    .composer-button:active { transform: scale(.96); background: rgba(255, 255, 255, .12); }
+    .composer-button:hover { background: var(--codex-hover); color: var(--codex-text); }
+    .composer-button:active { transform: scale(.96); background: var(--codex-pressed); }
     .composer-button svg { width: 18px; height: 18px; }
     #sendButton { background: var(--codex-text); color: var(--codex-under); }
-    #sendButton:hover { background: rgba(255, 255, 255, .88); color: var(--codex-under); }
+    #sendButton:hover { filter: brightness(.92); color: var(--codex-under); }
+    #composerFooter { display: flex; align-items: center; min-height: 38px; gap: 6px; }
+    #composerFooter #agentModeBar { margin-right: auto; }
     #pttButton.recording { color: var(--codex-under); background: #ff6764; }
 
     #recordingChip {
@@ -833,6 +872,283 @@
       pointer-events: none;
     }
 
+    /* The Mac has two deliberate presentations. Avatar mode keeps the
+       original transparent companion. Chat/Talk mode is a complete Codex
+       Work surface whose avatar and thread remain independent layers. */
+    .chat-only-control { display: none; }
+    .rail-picker {
+      position: fixed;
+      z-index: 54;
+      top: 112px;
+      right: 62px;
+      width: 154px;
+      padding: 6px;
+      border: 1px solid var(--codex-border);
+      border-radius: 13px;
+      background: color-mix(in srgb, var(--codex-editor) 97%, transparent);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, .18);
+      backdrop-filter: blur(20px) saturate(1.05);
+    }
+    .rail-picker[hidden] { display: none; }
+    .rail-picker button {
+      width: 100%;
+      min-height: 36px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--codex-text-secondary);
+      text-align: left;
+      cursor: pointer;
+    }
+    .rail-picker button:hover { background: var(--codex-hover); color: var(--codex-text); }
+    .rail-picker button[aria-checked="true"] { background: var(--codex-pressed); color: var(--codex-text); }
+    .opacity-picker { top: 258px; width: 224px; padding: 12px; }
+    .opacity-picker label { display: flex; justify-content: space-between; margin-bottom: 10px; color: var(--codex-text-secondary); font-size: 12px; }
+    .opacity-picker output { color: var(--codex-text); font-variant-numeric: tabular-nums; }
+    .opacity-picker input { width: 100%; accent-color: var(--codex-text); }
+
+    html.chat-mode,
+    html.chat-mode body {
+      border-radius: 18px;
+      background: var(--codex-surface);
+    }
+    html.chat-mode body {
+      border: 1px solid var(--codex-border);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .04);
+    }
+    html.chat-mode #stage {
+      z-index: 1;
+      transform-origin: center center;
+      transition: opacity 140ms ease, filter 160ms ease;
+    }
+    html.chat-mode.avatar-mirrored #stage { transform: scaleX(-1); }
+    html.chat-mode.thread-layer-top #stage { filter: saturate(.92) contrast(.96); }
+    html.chat-mode.avatar-layer-top #stage { filter: none; }
+    html.chat-mode #topline {
+      z-index: 48;
+      top: 64px;
+      left: 20px;
+      max-width: calc(100vw - 104px);
+      opacity: 1;
+      transform: none;
+    }
+    html.chat-mode #rail {
+      z-index: 56;
+      top: 18px;
+      right: 18px;
+      opacity: 1;
+      transform: none;
+      pointer-events: auto;
+    }
+    html.chat-mode #rail .chat-only-control { display: grid; }
+    html.chat-mode #rail.rail-folded > :not(.rail-fold) { display: none; }
+    html.chat-mode #rail.rail-folded .rail-fold svg { transform: rotate(180deg); }
+    html.chat-mode #rail.rail-folded .rail-fold { display: grid; }
+    html.chat-mode #chatDock,
+    html.chat-mode.chat-open #chatDock,
+    html.chat-mode.chat-open #chatDock:has(#conversation:not(:empty)) {
+      z-index: 12;
+      inset: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      width: auto;
+      max-width: none;
+      margin: 0;
+      padding: 0 76px 18px 20px;
+      border: 0;
+      border-radius: 18px;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--codex-surface) 93%, transparent) 0%,
+        color-mix(in srgb, var(--codex-surface) 78%, transparent) 54%,
+        color-mix(in srgb, var(--codex-surface) 34%, transparent) 100%);
+      box-shadow: none;
+      transform: none;
+      opacity: 1;
+      visibility: visible;
+    }
+    html.chat-mode.thread-layer-top #chatDock { pointer-events: auto; }
+    html.chat-mode.avatar-layer-top #chatDock { pointer-events: none; }
+    html.chat-mode.avatar-layer-top #composerShell,
+    html.chat-mode.avatar-layer-top #conversation .message,
+    html.chat-mode.avatar-layer-top #recordingChip { opacity: .38; }
+    html.chat-mode.avatar-layer-top #conversation { overflow: hidden; }
+    html.chat-mode #conversation,
+    html.chat-mode #conversation:empty {
+      display: block;
+      width: min(760px, calc(100vw - 180px));
+      height: auto;
+      min-height: 0;
+      max-height: none;
+      margin: 0 auto;
+      padding: 74px 12px 34px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      mask-image: linear-gradient(to bottom, transparent 0, black 44px, black calc(100% - 18px), transparent 100%);
+    }
+    html.chat-mode #conversation:empty::before {
+      content: "Start a chat, push to talk, or call your avatar.";
+      display: block;
+      max-width: 420px;
+      margin: min(31vh, 260px) auto 0;
+      color: var(--codex-text-tertiary);
+      font-size: clamp(18px, 2.2vw, 25px);
+      line-height: 1.4;
+      text-align: center;
+    }
+    html.chat-mode #composerShell {
+      position: relative;
+      z-index: 18;
+      align-self: end;
+      width: min(760px, calc(100vw - 180px));
+      margin: 0 auto;
+      padding: 10px 12px 8px;
+      border: 1px solid var(--codex-border-heavy);
+      border-radius: 24px;
+      background: color-mix(in srgb, var(--codex-editor) 96%, transparent);
+      box-shadow: 0 12px 34px rgba(0, 0, 0, .12);
+      pointer-events: auto;
+      transition: opacity 150ms ease;
+    }
+    html.chat-mode #composer { min-height: 48px; max-height: 180px; font-size: 15px; }
+    html.chat-mode #composerFooter { min-height: 40px; }
+    html.chat-mode #recordingChip { bottom: 104px; }
+    html.chat-mode #selectionActions { z-index: 70; }
+    html.chat-mode.avatar-layer-top #rail,
+    html.chat-mode.avatar-layer-top .rail-picker { pointer-events: auto; }
+    html.chat-mode #emptyState { display: none; }
+    html.chat-mode.avatar-only-motion #topline,
+    html.chat-mode.avatar-only-motion #rail,
+    html.chat-mode.avatar-only-motion #chatDock { opacity: 1; transform: none; pointer-events: auto; }
+    html.chat-mode.avatar-layer-top #stage { cursor: grab; }
+    html.chat-mode.avatar-layer-top.dragging #stage { cursor: ns-resize; }
+    html.chat-mode.thread-layer-top #stage { pointer-events: none; }
+    html.chat-mode .round-button[aria-pressed="true"],
+    html.chat-mode .round-button[aria-expanded="true"] { color: var(--codex-text); background: var(--codex-pressed); }
+
+    #chatHeader,
+    #chatHistoryPanel,
+    #chatHistoryScrim { display: none; }
+    html.chat-mode #chatHeader {
+      position: absolute;
+      z-index: 54;
+      top: 18px;
+      left: 20px;
+      right: 76px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      pointer-events: auto;
+    }
+    #chatHeader button,
+    #chatHistoryPanel button { font: inherit; color: inherit; border: 0; cursor: pointer; }
+    .chat-header-button {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      background: var(--codex-surface-raised);
+      box-shadow: var(--codex-shadow-sm);
+    }
+    .chat-header-button:hover { background: var(--codex-hover); }
+    .chat-header-button svg { width: 18px; height: 18px; fill: currentColor; }
+    #chatThreadHeading {
+      min-width: 0;
+      max-width: min(540px, calc(100vw - 250px));
+      padding: 9px 12px;
+      border-radius: 13px;
+      color: var(--codex-text);
+      background: color-mix(in srgb, var(--codex-surface) 82%, transparent);
+      box-shadow: var(--codex-shadow-sm);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 15px;
+      font-weight: 650;
+      letter-spacing: -.01em;
+    }
+    #chatHistoryScrim {
+      position: fixed;
+      inset: 0;
+      z-index: 88;
+      background: rgba(15, 15, 15, .18);
+      backdrop-filter: blur(2px);
+    }
+    html.chat-mode.history-open #chatHistoryScrim { display: block; pointer-events: auto; }
+    html.chat-mode #chatHistoryPanel {
+      position: fixed;
+      z-index: 89;
+      inset: 0 auto 0 0;
+      width: min(320px, calc(100vw - 44px));
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 18px 14px 16px;
+      color: var(--codex-text);
+      background: color-mix(in srgb, var(--codex-surface) 96%, transparent);
+      border-right: 1px solid var(--codex-line);
+      box-shadow: 18px 0 50px rgba(0, 0, 0, .16);
+      transform: translateX(-105%);
+      transition: transform 180ms ease;
+      pointer-events: none;
+    }
+    html.chat-mode.history-open #chatHistoryPanel { transform: translateX(0); pointer-events: auto; }
+    .history-panel-header { display: flex; align-items: center; gap: 8px; }
+    .history-panel-header strong { flex: 1; padding-left: 4px; font-size: 16px; }
+    #newChatButton {
+      padding: 9px 12px;
+      border-radius: 11px;
+      background: var(--codex-text);
+      color: var(--codex-surface);
+      font-weight: 650;
+    }
+    #closeHistoryButton {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: transparent;
+      font-size: 20px;
+    }
+    #chatHistoryList { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 5px; }
+    .history-thread { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+    .history-thread-main {
+      min-width: 0;
+      padding: 10px 11px;
+      text-align: left;
+      border-radius: 11px;
+      background: transparent;
+    }
+    .history-thread.active .history-thread-main { background: var(--codex-hover); }
+    .history-thread-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .history-thread-time { display: block; margin-top: 3px; color: var(--codex-muted); font-size: 11px; }
+    .history-thread-more {
+      align-self: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--codex-muted);
+    }
+    .history-thread-main:hover,
+    .history-thread-more:hover,
+    #closeHistoryButton:hover { background: var(--codex-hover); }
+    html.chat-mode.avatar-layer-top #chatHeader { opacity: .38; pointer-events: none; }
+
+    @media (max-width: 820px) {
+      html.chat-mode #chatDock,
+      html.chat-mode.chat-open #chatDock,
+      html.chat-mode.chat-open #chatDock:has(#conversation:not(:empty)) { padding-left: 12px; padding-right: 62px; }
+      html.chat-mode #conversation,
+      html.chat-mode #conversation:empty,
+      html.chat-mode #composerShell { width: 100%; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       html.avatar-only-motion #topline,
       html.avatar-only-motion #rail,
@@ -858,20 +1174,60 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.7 10.8a15.7 15.7 0 0 0 6.5 6.5l2.2-2.2c.3-.3.7-.4 1.1-.2 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.7 21 3 13.3 3 3.8c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.2 1.1l-2.2 2.1z"/></svg>
     </button>
     <button id="avatarCarouselButton" class="round-button" type="button" aria-label="Switch to next avatar" title="Switch to next avatar">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.1 11.1a3.45 3.45 0 1 0 0-6.9 3.45 3.45 0 0 0 0 6.9Zm0-5a1.55 1.55 0 1 1 0 3.1 1.55 1.55 0 0 1 0-3.1ZM2.4 18.8c.35-3.15 2.2-5.2 5.7-5.2 1.27 0 2.35.27 3.2.8l-1.02 1.62c-.55-.34-1.27-.52-2.18-.52-2.23 0-3.38 1.03-3.7 3.3h-2Zm13.5-7.7a3.45 3.45 0 1 0 0-6.9 3.45 3.45 0 0 0 0 6.9Zm0-5a1.55 1.55 0 1 1 0 3.1 1.55 1.55 0 0 1 0-3.1Zm-1.04 7.56c.34-.04.69-.06 1.04-.06 3.5 0 5.35 2.05 5.7 5.2h-2c-.32-2.27-1.47-3.3-3.7-3.3-.35 0-.67.03-.96.08l-.08-1.92ZM10 19.2l2.2-2.2h-1.7v-1.8h4.8V20h-1.8v-1.7l-2.2 2.2L10 19.2Z"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12a2 2 0 0 1 2 2v12h-2V5H5V3Zm-2 4h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Zm0 2v10h12V9H3Zm2 2h8v6H5v-6Z"/></svg>
     </button>
-    <button id="movesButton" class="round-button secondary" type="button" aria-label="Show avatar move" title="Show avatar move">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 1.45 4.55L18 8l-4.55 1.45L12 14l-1.45-4.55L6 8l4.55-1.45L12 2zm6 10 .9 2.8L22 16l-3.1 1.2L18 20l-.9-2.8L14 16l3.1-1.2L18 12zM6 14l1.15 3.35L10.5 18.5l-3.35 1.15L6 23l-1.15-3.35L1.5 18.5l3.35-1.15L6 14z"/></svg>
+    <button id="framingButton" class="round-button chat-only-control" type="button" aria-label="Show portrait framing" title="Show portrait framing">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h5v2H5v4H3V4a1 1 0 0 1 1-1Zm11 0h5a1 1 0 0 1 1 1v5h-2V5h-4V3ZM3 15h2v4h4v2H4a1 1 0 0 1-1-1v-5Zm16 0h2v5a1 1 0 0 1-1 1h-5v-2h4v-4ZM12 7a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm-5 10c.35-2.25 2.03-3.5 5-3.5s4.65 1.25 5 3.5H7Z"/></svg>
     </button>
-    <button id="walkButton" class="round-button secondary" type="button" aria-pressed="false" aria-label="Start walking" title="Start walking">
+    <button id="motionMenuButton" class="round-button" type="button" aria-expanded="false" aria-controls="motionPicker" aria-label="Choose avatar motion" title="Choose avatar motion">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 4.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4zm-1.2 4.4 2.2 2.1v4.1h2v-5l-2-2 1.1-2.3c1.2 1.4 2.9 2.3 4.9 2.3v-2c-1.7 0-3.1-.9-3.9-2.2l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.2L8 3.4v5.2h2V4.7l1.8-.7-3.2 6.5-5.1-1-.4 1.9 6.5 1.3 1-2.1-1.6 4.9-4.7 4.2L5.6 21l5.2-4.7 1.5-4.5 1.2 1.2v5h2v-5.8l-3.2-3.6z"/></svg>
+    </button>
+    <button id="speakerButton" class="round-button chat-only-control" type="button" aria-label="Read latest reply aloud" title="Read latest reply aloud">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm11.5-.8a5 5 0 0 1 0 7.6l-1.2-1.6a3 3 0 0 0 0-4.4l1.2-1.6Zm2.4-3.1a9 9 0 0 1 0 13.8l-1.2-1.6a7 7 0 0 0 0-10.6l1.2-1.6Z"/></svg>
+    </button>
+    <button id="layerButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Bring avatar layer forward" title="Bring avatar layer forward">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5-9 5-9-5 9-5Zm-7.1 9L12 15l7.1-4 1.9 1-9 5-9-5 1.9-1Zm0 5L12 20l7.1-4 1.9 1-9 5-9-5 1.9-1Z"/></svg>
+    </button>
+    <button id="opacityButton" class="round-button chat-only-control" type="button" aria-expanded="false" aria-controls="opacityPanel" aria-label="Adjust avatar opacity" title="Adjust avatar opacity">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2S5.2 9.2 5.2 14.3a6.8 6.8 0 1 0 13.6 0C18.8 9.2 12 2.2 12 2.2Zm0 17.1a4.9 4.9 0 0 1-4.9-5c0-2.8 2.9-6.7 4.9-9.1v14.1Z"/></svg>
+    </button>
+    <button id="mirrorButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Mirror avatar" title="Mirror avatar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2v16H3V4Zm4 1h6.5a6.5 6.5 0 0 1 0 13H7v-2h6.5a4.5 4.5 0 0 0 0-9H7V5Zm3.8 4.2L7 12l3.8 2.8V13h4v-2h-4V9.2Z"/></svg>
     </button>
     <button id="settingsButton" class="round-button" type="button" aria-label="Open Character Studio" title="Open Character Studio">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.5 7.5 0 0 0 .05-1 7.5 7.5 0 0 0-.05-1l2.1-1.64-2-3.46-2.53 1a7.7 7.7 0 0 0-1.72-1L14.86 3h-4l-.4 2.9a7.7 7.7 0 0 0-1.72 1l-2.53-1-2 3.46L6.3 11a7.5 7.5 0 0 0-.05 1 7.5 7.5 0 0 0 .05 1l-2.1 1.64 2 3.46 2.53-1a7.7 7.7 0 0 0 1.72 1l.4 2.9h4l.4-2.9a7.7 7.7 0 0 0 1.72-1l2.53 1 2-3.46L19.4 13zM12.85 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>
     </button>
+    <button id="railFoldButton" class="round-button chat-only-control rail-fold" type="button" aria-expanded="true" aria-label="Fold controls" title="Fold controls">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5.6 8.6 6.4 6.4 6.4-6.4 1.4 1.4-7.8 7.8L4.2 10l1.4-1.4Z"/></svg>
+    </button>
   </nav>
 
+  <div id="motionPicker" class="rail-picker" role="menu" aria-label="Avatar motion" hidden>
+    <button id="walkButton" type="button" role="menuitemcheckbox" aria-checked="false">Walk</button>
+    <button id="edgeIdleButton" type="button" role="menuitemcheckbox" aria-checked="false">Edge idle</button>
+    <button id="movesButton" type="button" role="menuitemcheckbox" aria-checked="false">Moves</button>
+  </div>
+  <div id="opacityPanel" class="rail-picker opacity-picker" hidden>
+    <label for="avatarOpacityRange">Avatar opacity <output id="avatarOpacityValue">100%</output></label>
+    <input id="avatarOpacityRange" type="range" min="0" max="100" step="1" value="100">
+  </div>
+
   <section id="chatDock" aria-label="Conversation">
+    <header id="chatHeader">
+      <button id="chatHistoryButton" class="chat-header-button" type="button" aria-expanded="false" aria-controls="chatHistoryPanel" aria-label="Open chat history" title="Chat history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v14h5V5H4Zm7 0v14h9V5h-9ZM5.5 7h2v2h-2V7Zm0 4h2v2h-2v-2Z"/></svg>
+      </button>
+      <div id="chatThreadHeading">New chat</div>
+    </header>
+    <div id="chatHistoryScrim" aria-hidden="true"></div>
+    <aside id="chatHistoryPanel" aria-label="Chat history" aria-hidden="true" inert>
+      <div class="history-panel-header">
+        <strong>Chats</strong>
+        <button id="newChatButton" type="button" aria-label="Start a new chat">New chat</button>
+        <button id="closeHistoryButton" type="button" aria-label="Close chat history" title="Close">×</button>
+      </div>
+      <div id="chatHistoryList" role="list"></div>
+    </aside>
     <div id="recordingChip" role="status" aria-live="polite">
       <span>Listening</span>
       <span id="recordingLevel" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
@@ -882,23 +1238,26 @@
       <button id="selectionCopy" class="selection-action" type="button">Copy</button>
       <button id="selectionAskAI" class="selection-action" type="button" aria-keyshortcuts="Meta+Shift+A Control+Shift+A">Ask AI</button>
     </div>
-    <label id="agentModeBar" for="agentModeSelect">
-      <span>Agent</span>
-      <select id="agentModeSelect" aria-label="Conversation agent">
-        <option value="local">On this Mac</option>
-      </select>
-    </label>
-    <div id="composerRow">
-      <button id="pttButton" class="composer-button" type="button" aria-label="Hold to talk" title="Hold to talk · Space">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-      </button>
-      <textarea id="composer" rows="1" maxlength="12000" autocomplete="off" dir="auto" aria-label="Message" placeholder="Ask anything…"></textarea>
-      <button id="sendButton" class="composer-button" type="button" aria-label="Send message" title="Send" disabled>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-7 8-1-8-1-3-7z"/></svg>
-      </button>
-      <button id="closeChatButton" class="composer-button" type="button" aria-label="Close conversation" title="Close conversation">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5z"/></svg>
-      </button>
+    <div id="composerShell">
+      <div id="composerRow">
+        <textarea id="composer" rows="1" maxlength="12000" autocomplete="off" dir="auto" aria-label="Message" placeholder="Ask anything…"></textarea>
+      </div>
+      <div id="composerFooter">
+        <button id="pttButton" class="composer-button" type="button" aria-label="Hold to talk" title="Hold to talk · Space">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+        </button>
+        <label id="agentModeBar" for="agentModeSelect">
+          <select id="agentModeSelect" aria-label="Conversation agent">
+            <option value="local">On this Mac</option>
+          </select>
+        </label>
+        <button id="closeChatButton" class="composer-button" type="button" aria-label="Close conversation" title="Close conversation">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5z"/></svg>
+        </button>
+        <button id="sendButton" class="composer-button" type="button" aria-label="Send message" title="Send" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-7 8-1-8-1-3-7z"/></svg>
+        </button>
+      </div>
     </div>
   </section>
 
@@ -933,10 +1292,29 @@
     const rail = document.getElementById('rail');
     const liveButton = document.getElementById('liveTalkButton');
     const avatarCarouselButton = document.getElementById('avatarCarouselButton');
+    const framingButton = document.getElementById('framingButton');
+    const motionMenuButton = document.getElementById('motionMenuButton');
+    const speakerButton = document.getElementById('speakerButton');
+    const layerButton = document.getElementById('layerButton');
+    const opacityButton = document.getElementById('opacityButton');
+    const mirrorButton = document.getElementById('mirrorButton');
+    const railFoldButton = document.getElementById('railFoldButton');
+    const motionPicker = document.getElementById('motionPicker');
+    const opacityPanel = document.getElementById('opacityPanel');
+    const avatarOpacityRange = document.getElementById('avatarOpacityRange');
+    const avatarOpacityValue = document.getElementById('avatarOpacityValue');
     const movesButton = document.getElementById('movesButton');
     const walkButton = document.getElementById('walkButton');
+    const edgeIdleButton = document.getElementById('edgeIdleButton');
     const settingsButton = document.getElementById('settingsButton');
     const chatDock = document.getElementById('chatDock');
+    const chatHistoryButton = document.getElementById('chatHistoryButton');
+    const chatThreadHeading = document.getElementById('chatThreadHeading');
+    const chatHistoryScrim = document.getElementById('chatHistoryScrim');
+    const chatHistoryPanel = document.getElementById('chatHistoryPanel');
+    const chatHistoryList = document.getElementById('chatHistoryList');
+    const newChatButton = document.getElementById('newChatButton');
+    const closeHistoryButton = document.getElementById('closeHistoryButton');
     const conversation = document.getElementById('conversation');
     const selectionActions = document.getElementById('selectionActions');
     const selectionCopy = document.getElementById('selectionCopy');
@@ -986,13 +1364,20 @@
     let avatarZoomGesture = null;
     let avatarZoomSettleTimer = 0;
     let avatarCarouselBusy = false;
+    let interactionLayer = localStorage.getItem('openclam.chat.interaction-layer') === 'avatar'
+      ? 'avatar' : 'thread';
+    let railFolded = localStorage.getItem('openclam.chat.rail-folded') === '1';
+    let avatarMirrored = localStorage.getItem('openclam.chat.avatar-mirrored') === '1';
+    let manualMotionKind = null;
+    let latestAssistantText = '';
+    let opacityGestureValue = null;
     let toastTimer = 0;
     let emailReviewState = null;
     let selectedFeedback = null;
     let selectingFeedback = false;
     let turnController = null;
     let thinkingNode = null;
-    let openClawSessionID = localStorage.getItem('openclam.openclaw.session') || '';
+    let openClawSessionID = '';
     let ptt = null;
     let live = null;
     let audioContext = null;
@@ -1007,7 +1392,84 @@
     let speechStart = 0;
     let speechTrackIndex = 0;
     let agentSpeaking = false;
-    const history = [];
+    const CHAT_HISTORY_KEY = 'openclam.chat.threads.v1';
+    const ACTIVE_CHAT_KEY = 'openclam.chat.active-thread.v1';
+    const CHAT_HISTORY_MAX_BYTES = 3_500_000;
+    const CHAT_HISTORY_MAX_THREADS = 30;
+    const CHAT_HISTORY_MAX_RECORDS = 100;
+    const boundedText = (value, limit = 12000) => String(value || '').slice(0, limit);
+    const threadID = () => crypto.randomUUID ? crypto.randomUUID()
+      : [...crypto.getRandomValues(new Uint8Array(16))]
+        .map(value => value.toString(16).padStart(2, '0')).join('');
+    const freshThread = () => ({
+      id: threadID(), title: 'New chat', createdAt: Date.now(), updatedAt: Date.now(),
+      openClawSessionID: '', agentMode: 'local', records: [],
+    });
+    const normalizeThreadRecord = value => {
+      if (!value || typeof value !== 'object') return null;
+      if (value.kind === 'message' && ['user', 'assistant'].includes(value.role)) {
+        const text = boundedText(value.text, 32000).trim();
+        return text ? { kind: 'message', role: value.role, text,
+          readable: value.readable !== false } : null;
+      }
+      if (value.kind === 'work' && ['completed', 'failed'].includes(value.state)) {
+        const steps = (Array.isArray(value.steps) ? value.steps : []).slice(0, 64).map(step => ({
+          step_id: boundedText(step && step.step_id, 96),
+          title: boundedText(step && step.title, 160),
+          state: ['running', 'completed', 'failed', 'waiting'].includes(step && step.state)
+            ? step.state : 'completed',
+          detail: boundedText(step && step.detail, 400),
+          tool: boundedText(step && step.tool, 120),
+        })).filter(step => step.step_id && step.title);
+        return { kind: 'work', state: value.state,
+          elapsedSeconds: Math.max(0, Math.min(86400, Number(value.elapsedSeconds) || 0)), steps };
+      }
+      if (value.kind === 'attachment' && value.attachment
+          && String(value.attachment.url || '').startsWith('api/openclaw/artifacts/')) {
+        return { kind: 'attachment', attachment: {
+          url: boundedText(value.attachment.url, 500),
+          name: boundedText(value.attachment.name || 'OpenClaw file', 160),
+          mime_type: boundedText(value.attachment.mime_type, 120),
+          byte_count: Math.max(0, Math.min(67108864, Number(value.attachment.byte_count) || 0)),
+        } };
+      }
+      if (value.kind === 'media' && value.card
+          && String(value.card.url || '').startsWith('api/generated/')) {
+        return { kind: 'media', card: { url: boundedText(value.card.url, 500),
+          name: boundedText(value.card.name || 'Generated media', 160) } };
+      }
+      return null;
+    };
+    const normalizeThread = value => {
+      if (!value || typeof value !== 'object' || typeof value.id !== 'string') return null;
+      const id = value.id.slice(0, 96);
+      if (!/^[a-zA-Z0-9-]{8,96}$/.test(id)) return null;
+      return {
+        id,
+        title: boundedText(value.title || 'New chat', 80),
+        createdAt: Number(value.createdAt) || Date.now(),
+        updatedAt: Number(value.updatedAt) || Date.now(),
+        openClawSessionID: /^[0-9a-f]{32}$/.test(String(value.openClawSessionID || ''))
+          ? value.openClawSessionID : '',
+        agentMode: value.agentMode === 'local'
+          || /^openclaw:[a-z0-9][a-z0-9_-]{0,63}$/.test(String(value.agentMode || ''))
+          ? String(value.agentMode) : 'local',
+        records: (Array.isArray(value.records) ? value.records : [])
+          .map(normalizeThreadRecord).filter(Boolean).slice(-CHAT_HISTORY_MAX_RECORDS),
+      };
+    };
+    const loadChatThreads = () => {
+      try {
+        const value = JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) || '[]');
+        const threads = (Array.isArray(value) ? value : []).map(normalizeThread).filter(Boolean);
+        return threads.length ? threads.slice(0, CHAT_HISTORY_MAX_THREADS) : [freshThread()];
+      } catch (_) { return [freshThread()]; }
+    };
+    let chatThreads = loadChatThreads();
+    let activeThreadID = localStorage.getItem(ACTIVE_CHAT_KEY) || chatThreads[0].id;
+    if (!chatThreads.some(thread => thread.id === activeThreadID)) activeThreadID = chatThreads[0].id;
+    let history = [];
+    let restoringThread = false;
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
     const faceCanvas = document.createElement('canvas');
@@ -1087,8 +1549,54 @@
       reportControlRects(true);
     };
 
-    const openChat = (focus = false) => {
-      root.classList.add('chat-open');
+    const closeRailPickers = () => {
+      motionPicker.hidden = true;
+      opacityPanel.hidden = true;
+      motionMenuButton.setAttribute('aria-expanded', 'false');
+      opacityButton.setAttribute('aria-expanded', 'false');
+    };
+
+    const applyInteractionLayer = value => {
+      interactionLayer = value === 'avatar' ? 'avatar' : 'thread';
+      if (interactionLayer === 'avatar') setHistoryOpen(false);
+      localStorage.setItem('openclam.chat.interaction-layer', interactionLayer);
+      root.classList.toggle('avatar-layer-top', interactionLayer === 'avatar');
+      root.classList.toggle('thread-layer-top', interactionLayer === 'thread');
+      layerButton.setAttribute('aria-pressed', String(interactionLayer === 'avatar'));
+      layerButton.setAttribute('aria-label', interactionLayer === 'avatar'
+        ? 'Bring chat thread layer forward' : 'Bring avatar layer forward');
+      layerButton.title = layerButton.getAttribute('aria-label');
+      updateHit(true);
+    };
+
+    const applyRailFold = value => {
+      railFolded = Boolean(value);
+      localStorage.setItem('openclam.chat.rail-folded', railFolded ? '1' : '0');
+      rail.classList.toggle('rail-folded', railFolded);
+      railFoldButton.setAttribute('aria-expanded', String(!railFolded));
+      railFoldButton.setAttribute('aria-label', railFolded ? 'Show controls' : 'Fold controls');
+      railFoldButton.title = railFoldButton.getAttribute('aria-label');
+      if (railFolded) closeRailPickers();
+      reportControlRects(true);
+    };
+
+    const applyAvatarMirror = value => {
+      avatarMirrored = Boolean(value);
+      localStorage.setItem('openclam.chat.avatar-mirrored', avatarMirrored ? '1' : '0');
+      root.classList.toggle('avatar-mirrored', avatarMirrored);
+      mirrorButton.setAttribute('aria-pressed', String(avatarMirrored));
+      mirrorButton.setAttribute('aria-label', avatarMirrored ? 'Use original avatar direction' : 'Mirror avatar');
+      mirrorButton.title = mirrorButton.getAttribute('aria-label');
+    };
+
+    const openChat = async (focus = false) => {
+      root.classList.add('chat-open', 'chat-mode');
+      applyInteractionLayer(interactionLayer);
+      applyRailFold(railFolded);
+      applyAvatarMirror(avatarMirrored);
+      if (shell && typeof shell.setChatMode === 'function') {
+        try { applyShellState(await shell.setChatMode(true)); } catch (_) { /* renderer still opens safely */ }
+      }
       markActivity();
       if (focus && !avatarOnlyMotion) {
         if (shell && typeof shell.focusPetWindow === 'function') shell.focusPetWindow();
@@ -1097,11 +1605,20 @@
       reportControlRects(true);
     };
 
-    const closeChat = () => {
+    const closeChat = async () => {
       if (ptt) return;
+      setHistoryOpen(false);
       hideSelectionActions(true);
-      root.classList.remove('chat-open');
+      closeRailPickers();
+      manualMotionKind = null;
+      walkButton.setAttribute('aria-checked', 'false');
+      edgeIdleButton.setAttribute('aria-checked', 'false');
+      movesButton.setAttribute('aria-checked', 'false');
+      root.classList.remove('chat-open', 'chat-mode', 'avatar-layer-top', 'thread-layer-top');
       composer.blur();
+      if (shell && typeof shell.setChatMode === 'function') {
+        try { applyShellState(await shell.setChatMode(false)); } catch (_) { /* compact mode already restored visually */ }
+      }
       reportControlRects(true);
     };
 
@@ -1461,11 +1978,18 @@
 
     const cameraFor = (meta, width, height, forcedView = null) => {
       const crop = viewCrop(meta, width, height, forcedView);
-      const chatReserve = root.classList.contains('chat-open') && !(shellState.pet && shellState.pet.roam)
+      const fullChat = root.classList.contains('chat-mode');
+      const chatReserve = root.classList.contains('chat-open') && !fullChat
+        && !(shellState.pet && shellState.pet.roam)
         ? Math.min(innerHeight * .38, chatDock.getBoundingClientRect().height + 24) : 0;
       const availableHeight = Math.max(160, innerHeight - chatReserve);
       const margin = shellState.pet && shellState.pet.roam ? .995 : .94;
-      const scale = Math.min(innerWidth / crop.w, availableHeight / crop.h) * margin;
+      const baseScale = Math.min(innerWidth / crop.w, availableHeight / crop.h) * margin;
+      const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
+      const chatZoom = fullChat
+        ? Math.max(.42, Math.min(2.4, (Number.isFinite(requestedZoom) ? requestedZoom : .6) / .6))
+        : 1;
+      const scale = baseScale * chatZoom;
       return {
         scale,
         x: innerWidth * .5 - (crop.x + crop.w * .5) * scale,
@@ -2207,7 +2731,9 @@
       lastBodyGeometry = { fit, width, height, metadata, pivotX, pivotY, sway, breathe, hasBody };
     };
 
-    const edgeIdleActive = now => Boolean(motion.idle && !roamState.enabled && !root.classList.contains('chat-open') && !speechSource && !agentSpeaking && now - lastActivity > 12000);
+    const edgeIdleActive = now => Boolean(motion.idle && !roamState.enabled
+      && !root.classList.contains('chat-open') && !speechSource && !agentSpeaking
+      && now - lastActivity > 12000);
 
     const roamMotionKind = (mode, presentationMode = null) => {
       const presented = mode === 'stand' ? String(presentationMode || 'walk') : String(mode || '');
@@ -2231,6 +2757,17 @@
     const paintFrame = now => {
       resizeCanvas();
       if (!ready) { clearStage(); setAvatarOnlyMotion(false); return; }
+
+      if (manualMotionKind) {
+        const rendered = root.classList.contains('chat-mode')
+          ? drawMotion(manualMotionKind, now, side)
+          : drawPresentedMotion(manualMotionKind, now, side);
+        if (rendered) {
+          if (root.classList.contains('chat-mode')) setAvatarOnlyMotion(false);
+          return;
+        }
+        manualMotionKind = null;
+      }
 
       if (roamState.enabled) {
         // Intentional hover pauses the roam engine in `stand`. Keep the held
@@ -2359,10 +2896,16 @@
       if (avatarOnlyMotion) return [];
       const draft = document.querySelector('.email-review');
       if (draft) return [draft];
-      const values = [liveButton, avatarCarouselButton, movesButton, walkButton, settingsButton];
-      if (root.classList.contains('chat-open')) values.push(chatDock);
+      const values = root.classList.contains('chat-mode')
+        ? [rail, motionPicker.hidden ? null : motionPicker,
+          opacityPanel.hidden ? null : opacityPanel]
+        : [liveButton, avatarCarouselButton, motionMenuButton, settingsButton];
+      if (root.classList.contains('chat-open')
+          && !(root.classList.contains('chat-mode') && interactionLayer === 'avatar')) {
+        values.push(chatDock);
+      }
       if (emptyState.classList.contains('show')) values.push(emptyState);
-      return values;
+      return values.filter(Boolean);
     };
 
     const overControls = point => controlElements().some(element => {
@@ -2371,12 +2914,17 @@
       return box.width > 0 && box.height > 0 && pointInsideRect(point, box);
     });
 
+    const avatarCanvasPoint = point => root.classList.contains('chat-mode') && avatarMirrored
+      ? { ...point, x: innerWidth - Number(point.x || 0) }
+      : point;
+
     const paintedAvatarAt = point => {
       if (!ready || !point || point.inside === false
           || point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) return false;
       try {
+        const sample = avatarCanvasPoint(point);
         const alpha = context.getImageData(
-          Math.floor(point.x * pixelRatio), Math.floor(point.y * pixelRatio), 1, 1).data[3];
+          Math.floor(sample.x * pixelRatio), Math.floor(sample.y * pixelRatio), 1, 1).data[3];
         return alpha > 18;
       } catch (_) {
         return false;
@@ -2386,7 +2934,10 @@
     function updateHit(force) {
       if (!shell || typeof shell.setPetHit !== 'function') return;
       const chromeHit = overControls(pointer);
-      const figureHit = !chromeHit && paintedAvatarAt(pointer);
+      const petOpacity = Number(canvas.style.opacity || 1);
+      const avatarLayerInteractive = !root.classList.contains('chat-mode')
+        || (interactionLayer === 'avatar' && petOpacity > .001);
+      const figureHit = avatarLayerInteractive && !chromeHit && paintedAvatarAt(pointer);
       // A live pinch owns interactivity until its end packet. Pinching inward
       // can move the resized figure away from a stationary cursor; dropping
       // the hit claim mid-stream would make Electron click through and lose
@@ -2639,8 +3190,9 @@
     const avatarLocalPoint = point => {
       const geometry = lastBodyGeometry;
       if (!geometry || !paintedAvatarAt({ ...point, inside: true })) return null;
-      let x = (point.x - geometry.fit.x) / geometry.fit.scale;
-      let y = (point.y - geometry.fit.y) / geometry.fit.scale;
+      const sample = avatarCanvasPoint(point);
+      let x = (sample.x - geometry.fit.x) / geometry.fit.scale;
+      let y = (sample.y - geometry.fit.y) / geometry.fit.scale;
       const dx = x - geometry.pivotX;
       const dy = y - geometry.pivotY;
       const cosine = Math.cos(-geometry.sway);
@@ -2694,18 +3246,11 @@
     const steppedAvatarOpacity = (current, direction) => {
       const value = Number.isFinite(Number(current)) ? Number(current) : 1;
       const delta = direction > 0 ? .12 : -.12;
-      return Math.round(Math.max(.15, Math.min(1, value + delta)) * 100) / 100;
+      return Math.round(Math.max(0, Math.min(1, value + delta)) * 100) / 100;
     };
 
-    const addMessage = (role, text, options = {}) => {
-      const row = document.createElement('div');
-      row.className = `message ${role}`;
-      const bubble = document.createElement('div');
-      bubble.className = 'bubble';
-      bubble.dir = 'auto';
-      bubble.textContent = String(text || '');
-      row.appendChild(bubble);
-      if (role === 'assistant' && text && options.readable !== false) {
+    const appendAssistantActions = (row, text) => {
+      if (!row || !text || row.querySelector('.response-actions')) return;
         const actions = document.createElement('div');
         actions.className = 'response-actions';
         actions.setAttribute('role', 'group');
@@ -2726,14 +3271,130 @@
         read.classList.add('read-button');
         actions.append(copy, read);
         row.appendChild(actions);
+    };
+
+    const activeChatThread = () => chatThreads.find(thread => thread.id === activeThreadID)
+      || chatThreads[0];
+    let switchChatThread = () => {};
+    const renderChatHistory = () => {
+      chatHistoryList.replaceChildren();
+      const ordered = [...chatThreads].sort((a, b) => b.updatedAt - a.updatedAt);
+      for (const thread of ordered) {
+        const row = document.createElement('div');
+        row.className = `history-thread${thread.id === activeThreadID ? ' active' : ''}`;
+        row.setAttribute('role', 'listitem');
+        const main = document.createElement('button');
+        main.type = 'button';
+        main.className = 'history-thread-main';
+        const title = document.createElement('span');
+        title.className = 'history-thread-title';
+        title.textContent = thread.title || 'New chat';
+        const time = document.createElement('span');
+        time.className = 'history-thread-time';
+        time.textContent = new Intl.DateTimeFormat(undefined, {
+          month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+        }).format(new Date(thread.updatedAt));
+        main.append(title, time);
+        main.addEventListener('click', () => switchChatThread(thread.id));
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'history-thread-more';
+        more.setAttribute('aria-label', `Rename or delete ${thread.title || 'chat'}`);
+        more.textContent = '•••';
+        more.addEventListener('click', event => {
+          event.stopPropagation();
+          const action = window.prompt('Type “rename” or “delete”.', 'rename');
+          if (action === null) return;
+          if (action.trim().toLowerCase() === 'rename') {
+            const next = window.prompt('Chat name', thread.title || 'New chat');
+            if (next && next.trim()) {
+              thread.title = boundedText(next.trim(), 80);
+              thread.updatedAt = Date.now();
+              saveChatThreads();
+            }
+          } else if (action.trim().toLowerCase() === 'delete') {
+            if (!window.confirm(`Delete “${thread.title || 'New chat'}”?`)) return;
+            deleteChatThread(thread.id);
+          }
+        });
+        row.append(main, more);
+        chatHistoryList.appendChild(row);
+      }
+    };
+    const saveChatThreads = () => {
+      chatThreads = chatThreads.map(normalizeThread).filter(Boolean)
+        .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, CHAT_HISTORY_MAX_THREADS);
+      if (!chatThreads.some(thread => thread.id === activeThreadID)) {
+        activeThreadID = chatThreads[0] ? chatThreads[0].id : freshThread().id;
+      }
+      let encoded = JSON.stringify(chatThreads);
+      while (encoded.length > CHAT_HISTORY_MAX_BYTES && chatThreads.length > 1) {
+        const removable = [...chatThreads].reverse().find(thread => thread.id !== activeThreadID);
+        if (!removable) break;
+        chatThreads = chatThreads.filter(thread => thread.id !== removable.id);
+        encoded = JSON.stringify(chatThreads);
+      }
+      while (encoded.length > CHAT_HISTORY_MAX_BYTES) {
+        const candidate = [...chatThreads].reverse().find(thread => thread.records.length > 2);
+        if (!candidate) break;
+        candidate.records.shift();
+        encoded = JSON.stringify(chatThreads);
+      }
+      try {
+        localStorage.setItem(CHAT_HISTORY_KEY, encoded);
+        localStorage.setItem(ACTIVE_CHAT_KEY, activeThreadID);
+      } catch (_) { notify('Chat history storage is full. Older items were not saved.'); }
+      const current = activeChatThread();
+      chatThreadHeading.textContent = current ? current.title : 'New chat';
+      renderChatHistory();
+    };
+    const recordThreadItem = record => {
+      if (restoringThread) return;
+      const normalized = normalizeThreadRecord(record);
+      const thread = activeChatThread();
+      if (!normalized || !thread) return;
+      thread.records.push(normalized);
+      thread.records = thread.records.slice(-CHAT_HISTORY_MAX_RECORDS);
+      thread.updatedAt = Date.now();
+      if (thread.title === 'New chat' && normalized.kind === 'message'
+          && normalized.role === 'user') {
+        thread.title = boundedText(normalized.text.replace(/\s+/g, ' ').trim(), 64) || 'New chat';
+      }
+      saveChatThreads();
+    };
+    const setHistoryOpen = value => {
+      const open = Boolean(value);
+      root.classList.toggle('history-open', open);
+      chatHistoryButton.setAttribute('aria-expanded', String(open));
+      chatHistoryPanel.toggleAttribute('inert', !open);
+      chatHistoryPanel.setAttribute('aria-hidden', String(!open));
+      if (open) renderChatHistory();
+    };
+
+    const addMessage = (role, text, options = {}) => {
+      const row = document.createElement('div');
+      row.className = `message ${role}`;
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.dir = 'auto';
+      bubble.textContent = String(text || '');
+      if (role === 'assistant' && String(text || '').trim() && options.readable !== false) {
+        latestAssistantText = String(text);
+      }
+      row.appendChild(bubble);
+      if (role === 'assistant' && text && options.readable !== false) {
+        appendAssistantActions(row, String(text));
       }
       conversation.appendChild(row);
       conversation.scrollTop = conversation.scrollHeight;
+      if (options.persist !== false && String(text || '').trim()) {
+        recordThreadItem({ kind: 'message', role, text: String(text), readable: options.readable !== false });
+      }
       return { row, bubble };
     };
 
     const addWorking = () => {
-      const item = addMessage('assistant', '•••', { readable: false });
+      const item = addMessage('assistant', '•••', { readable: false, persist: false });
       item.row.classList.add('working');
       thinkingNode = item.row;
     };
@@ -2743,7 +3404,7 @@
       thinkingNode = null;
     };
 
-    const appendMedia = async cards => {
+    const appendMedia = async (cards, options = {}) => {
       for (const card of Array.isArray(cards) ? cards : []) {
         if (!card || typeof card.url !== 'string' || !card.url.startsWith('api/generated/')) continue;
         const wrapper = document.createElement('div');
@@ -2767,6 +3428,7 @@
           wrapper.append(label);
         }
         conversation.appendChild(wrapper);
+        if (options.persist !== false) recordThreadItem({ kind: 'media', card });
       }
       conversation.scrollTop = conversation.scrollHeight;
     };
@@ -2855,7 +3517,11 @@
     const ensureOpenClawSessionID = () => {
       if (!/^[0-9a-f]{32}$/.test(openClawSessionID)) {
         openClawSessionID = freshOpenClawSessionID();
-        localStorage.setItem('openclam.openclaw.session', openClawSessionID);
+        const thread = activeChatThread();
+        if (thread) {
+          thread.openClawSessionID = openClawSessionID;
+          saveChatThreads();
+        }
       }
       return openClawSessionID;
     };
@@ -2866,7 +3532,8 @@
     };
 
     async function loadOpenClawAgents() {
-      const saved = localStorage.getItem('openclam.agent.mode') || 'local';
+      const saved = activeChatThread()?.agentMode
+        || localStorage.getItem('openclam.agent.mode') || 'local';
       try {
         const result = await fetch('/api/openclaw/agents', { cache: 'no-store' }).then(safeJSON);
         for (const agent of Array.isArray(result.agents) ? result.agents : []) {
@@ -2885,27 +3552,72 @@
 
     agentModeSelect.addEventListener('change', () => {
       localStorage.setItem('openclam.agent.mode', agentModeSelect.value);
+      const thread = activeChatThread();
+      if (thread) {
+        thread.agentMode = agentModeSelect.value;
+        saveChatThreads();
+      }
       const agent = selectedOpenClawAgent();
       composer.placeholder = agent ? 'Message this OpenClaw agent…' : 'Ask anything…';
       setStatus(agent ? 'OpenClaw mode' : 'Ready', agent ? 'busy' : 'good');
     });
 
+    const formatWorkDuration = elapsedSeconds => {
+      const seconds = Math.max(0, Math.floor(elapsedSeconds));
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      return `${minutes}m ${seconds % 60}s`;
+    };
+
     const createWorkTimeline = () => {
-      const root = document.createElement('details');
-      root.className = 'work-card';
-      const summary = document.createElement('summary');
+      const root = document.createElement('section');
+      root.className = 'work-thread';
+      root.setAttribute('aria-label', 'OpenClaw work');
+      const summary = document.createElement('div');
+      summary.className = 'work-heading';
       const title = document.createElement('span');
-      title.textContent = 'Work';
+      const startedAt = performance.now();
+      title.textContent = 'Working for 0s';
       const count = document.createElement('span');
       count.className = 'work-count';
       count.textContent = 'Starting…';
       summary.append(title, count);
+      const divider = document.createElement('div');
+      divider.className = 'work-divider';
       const list = document.createElement('div');
       list.className = 'work-list';
-      root.append(summary, list);
+      root.append(summary, divider, list);
       conversation.appendChild(root);
       conversation.scrollTop = conversation.scrollHeight;
-      return { root, count, list, steps: new Map() };
+      const timer = setInterval(() => {
+        title.textContent = `Working for ${formatWorkDuration((performance.now() - startedAt) / 1000)}`;
+      }, 1000);
+      return { root, title, count, list, steps: new Map(), safeSteps: new Map(),
+        startedAt, timer, persisted: false,
+        recordPosition: activeChatThread() ? activeChatThread().records.length : 0 };
+    };
+
+    const finishWorkTimeline = (timeline, state = 'completed') => {
+      if (!timeline) return;
+      clearInterval(timeline.timer);
+      const duration = formatWorkDuration((performance.now() - timeline.startedAt) / 1000);
+      timeline.title.textContent = state === 'completed'
+        ? `Worked for ${duration}`
+        : `Stopped after ${duration}`;
+      timeline.count.textContent = `${timeline.steps.size} step${timeline.steps.size === 1 ? '' : 's'}`;
+      if (!timeline.persisted) {
+        timeline.persisted = true;
+        const record = normalizeThreadRecord({ kind: 'work', state,
+          elapsedSeconds: Math.max(0, Math.round((performance.now() - timeline.startedAt) / 1000)),
+          steps: [...timeline.safeSteps.values()] });
+        const thread = activeChatThread();
+        if (!restoringThread && record && thread) {
+          thread.records.splice(Math.min(timeline.recordPosition, thread.records.length), 0, record);
+          thread.records = thread.records.slice(-CHAT_HISTORY_MAX_RECORDS);
+          thread.updatedAt = Date.now();
+          saveChatThreads();
+        }
+      }
     };
 
     const workStepIcon = step => {
@@ -2923,20 +3635,33 @@
         root.className = 'work-step';
         const summary = document.createElement('summary');
         const icon = document.createElement('span');
+        icon.className = 'work-icon';
         const title = document.createElement('span');
         const state = document.createElement('span');
         state.className = 'work-state';
-        summary.append(icon, title, state);
+        const chevron = document.createElement('span');
+        chevron.className = 'work-chevron';
+        chevron.textContent = '›';
+        summary.append(icon, title, state, chevron);
         const detail = document.createElement('div');
         detail.className = 'work-detail';
         root.append(summary, detail);
         timeline.list.appendChild(root);
-        item = { root, icon, title, state, detail };
+        item = { root, icon, title, state, detail, chevron };
         timeline.steps.set(step.step_id, item);
       }
       item.icon.textContent = workStepIcon(step);
       item.title.textContent = step.title;
       item.state.textContent = String(step.state || 'running').replace('_', ' ');
+      item.root.dataset.state = String(step.state || 'running');
+      timeline.safeSteps.set(step.step_id, {
+        step_id: boundedText(step.step_id, 96),
+        title: boundedText(step.title, 160),
+        state: ['running', 'completed', 'failed', 'waiting'].includes(step.state)
+          ? step.state : 'running',
+        detail: boundedText(step.detail, 400),
+        tool: boundedText(step.tool, 120),
+      });
       item.detail.replaceChildren();
       const append = (label, value, code = false) => {
         if (typeof value !== 'string' || !value) return;
@@ -2950,15 +3675,14 @@
       };
       append('Details', step.detail);
       append('Tool', step.tool);
-      append('Command', step.command, true);
-      append('File', step.path, true);
-      append('Output', step.output, true);
-      item.root.open = item.root.open && item.detail.childNodes.length > 0;
-      timeline.count.textContent = `${timeline.steps.size} step${timeline.steps.size === 1 ? '' : 's'} · updating`;
+      const hasDetail = item.detail.childNodes.length > 0;
+      item.root.classList.toggle('has-detail', hasDetail);
+      if (!hasDetail) item.root.open = false;
+      timeline.count.textContent = `${timeline.steps.size} step${timeline.steps.size === 1 ? '' : 's'} · live`;
       conversation.scrollTop = conversation.scrollHeight;
     };
 
-    const appendOpenClawAttachment = async attachment => {
+    const appendOpenClawAttachment = async (attachment, options = {}) => {
       if (!attachment || typeof attachment.url !== 'string'
           || !attachment.url.startsWith('api/openclaw/artifacts/')) return;
       const response = await fetch(attachment.url, { cache: 'no-store' });
@@ -2996,13 +3720,93 @@
       card.append(preview, copy, open);
       conversation.appendChild(card);
       conversation.scrollTop = conversation.scrollHeight;
+      if (options.persist !== false) recordThreadItem({ kind: 'attachment', attachment });
+    };
+
+    const restoreChatThread = async thread => {
+      if (!thread) return;
+      restoringThread = true;
+      removeWorking();
+      conversation.replaceChildren();
+      history = [];
+      latestAssistantText = '';
+      openClawSessionID = thread.openClawSessionID || '';
+      const savedMode = [...agentModeSelect.options].some(option => option.value === thread.agentMode)
+        ? thread.agentMode : 'local';
+      if (agentModeSelect.value !== savedMode) {
+        agentModeSelect.value = savedMode;
+        agentModeSelect.dispatchEvent(new Event('change'));
+      }
+      try {
+        for (const record of thread.records) {
+          if (record.kind === 'message') {
+            addMessage(record.role, record.text,
+              { readable: record.readable !== false, persist: false });
+            history.push({ role: record.role, content: record.text });
+          } else if (record.kind === 'work') {
+            const timeline = createWorkTimeline();
+            timeline.startedAt = performance.now() - record.elapsedSeconds * 1000;
+            for (const step of record.steps) updateWorkTimeline(timeline, step);
+            finishWorkTimeline(timeline, record.state);
+          } else if (record.kind === 'attachment') {
+            await appendOpenClawAttachment(record.attachment, { persist: false });
+          } else if (record.kind === 'media') {
+            await appendMedia([record.card], { persist: false });
+          }
+        }
+      } finally {
+        restoringThread = false;
+      }
+      if (history.length > 24) history = history.slice(-24);
+      chatThreadHeading.textContent = thread.title || 'New chat';
+      conversation.scrollTop = conversation.scrollHeight;
+    };
+
+    switchChatThread = async id => {
+      if (turnController || live) {
+        notify('Finish or stop the active conversation before switching chats.');
+        return;
+      }
+      const thread = chatThreads.find(candidate => candidate.id === id);
+      if (!thread) return;
+      activeThreadID = thread.id;
+      localStorage.setItem(ACTIVE_CHAT_KEY, activeThreadID);
+      renderChatHistory();
+      setHistoryOpen(false);
+      await restoreChatThread(thread);
+    };
+
+    const createNewChat = async () => {
+      if (turnController || live) {
+        notify('Finish or stop the active conversation before starting a new chat.');
+        return;
+      }
+      const thread = freshThread();
+      chatThreads.unshift(thread);
+      activeThreadID = thread.id;
+      saveChatThreads();
+      setHistoryOpen(false);
+      await restoreChatThread(thread);
+      composer.focus();
+    };
+
+    const deleteChatThread = async id => {
+      if (turnController || live) {
+        notify('Finish or stop the active conversation before deleting a chat.');
+        return;
+      }
+      const deletingActive = id === activeThreadID;
+      chatThreads = chatThreads.filter(thread => thread.id !== id);
+      if (!chatThreads.length) chatThreads = [freshThread()];
+      if (deletingActive) activeThreadID = chatThreads[0].id;
+      saveChatThreads();
+      if (deletingActive) await restoreChatThread(activeChatThread());
     };
 
     async function submitOpenClawTurn(value, agentID) {
       stopSpeech();
       openChat(false);
       addMessage('user', value, { readable: false });
-      addWorking();
       const work = createWorkTimeline();
       turnController = new AbortController();
       sendButton.disabled = true;
@@ -3010,6 +3814,7 @@
       agentModeSelect.disabled = true;
       setStatus('Connecting to OpenClaw…', 'busy');
       let finalText = '';
+      let liveReply = null;
       try {
         const response = await fetch('/api/openclaw/turn', {
           method: 'POST',
@@ -3036,6 +3841,13 @@
               setStatus(String(event.step && event.step.title || 'OpenClaw is working').slice(0, 120), 'busy');
             } else if (event.type === 'text') {
               finalText = String(event.text || '').slice(0, 64000);
+              if (!liveReply) {
+                liveReply = addMessage('assistant', '', { readable: false, persist: false });
+                liveReply.row.classList.add('streaming');
+              }
+              liveReply.bubble.textContent = finalText;
+              latestAssistantText = finalText;
+              conversation.scrollTop = conversation.scrollHeight;
             } else if (event.type === 'attachment') {
               await appendOpenClawAttachment(event.attachment);
             } else if (event.type === 'complete') {
@@ -3046,12 +3858,20 @@
           }
           if (chunk.done) break;
         }
-        removeWorking();
-        addMessage('assistant', finalText || 'OpenClaw completed without a text reply.');
-        work.count.textContent = `${work.steps.size} step${work.steps.size === 1 ? '' : 's'} · finished`;
+        const completedText = finalText || 'OpenClaw completed without a text reply.';
+        if (liveReply) {
+          liveReply.bubble.textContent = completedText;
+          latestAssistantText = completedText;
+          liveReply.row.classList.remove('streaming');
+          appendAssistantActions(liveReply.row, completedText);
+          recordThreadItem({ kind: 'message', role: 'assistant', text: completedText, readable: true });
+        } else {
+          addMessage('assistant', completedText);
+        }
+        finishWorkTimeline(work, 'completed');
         setStatus('Ready', 'good');
       } catch (error) {
-        removeWorking();
+        finishWorkTimeline(work, 'failed');
         if (error.name !== 'AbortError') {
           addMessage('assistant', `OpenClaw is unavailable: ${String(error.message || error).slice(0, 150)}`, { readable: false });
           setStatus('Check OpenClaw', '');
@@ -3751,6 +4571,15 @@
 
     const toggleMove = () => {
       if (!motion.move) { notify('Build a Moves clip in Character Studio first.'); return; }
+      if (root.classList.contains('chat-mode')) {
+        manualMotionKind = manualMotionKind === 'move' ? null : 'move';
+        movesButton.setAttribute('aria-checked', String(manualMotionKind === 'move'));
+        walkButton.setAttribute('aria-checked', 'false');
+        edgeIdleButton.setAttribute('aria-checked', 'false');
+        if (manualMotionKind && motion.move.video) motion.move.video.currentTime = 0;
+        markActivity();
+        return;
+      }
       if (moveUntil > performance.now()) {
         moveUntil = 0;
         movesButton.classList.remove('showing');
@@ -3765,9 +4594,26 @@
     };
 
     const toggleWalk = async () => {
-      if (!shell || typeof shell.setPetRoam !== 'function') return;
       if (!motion.walk) { notify('Build a Walk clip in Character Studio first.'); return; }
+      if (root.classList.contains('chat-mode')) {
+        manualMotionKind = manualMotionKind === 'walk' ? null : 'walk';
+        walkButton.setAttribute('aria-checked', String(manualMotionKind === 'walk'));
+        edgeIdleButton.setAttribute('aria-checked', 'false');
+        movesButton.setAttribute('aria-checked', 'false');
+        markActivity();
+        return;
+      }
+      if (!shell || typeof shell.setPetRoam !== 'function') return;
       await shell.setPetRoam(!(shellState.pet && shellState.pet.roam));
+    };
+
+    const toggleEdgeIdle = () => {
+      if (!motion.idle) { notify('Build an Edge Idle clip in Character Studio first.'); return; }
+      manualMotionKind = manualMotionKind === 'idle' ? null : 'idle';
+      edgeIdleButton.setAttribute('aria-checked', String(manualMotionKind === 'idle'));
+      walkButton.setAttribute('aria-checked', 'false');
+      movesButton.setAttribute('aria-checked', 'false');
+      markActivity();
     };
 
     const adjustAvatarOpacity = async direction => {
@@ -3791,11 +4637,21 @@
       if (!value || typeof value !== 'object') return;
       shellState = value;
       const pet = value.pet || {};
+      root.classList.toggle('chat-mode', Boolean(value.chatMode));
+      root.classList.toggle('chat-open', Boolean(value.chatMode) || root.classList.contains('chat-open'));
       root.classList.toggle('pet-mode', Boolean(pet.enabled));
       root.classList.toggle('roaming', Boolean(pet.roam));
-      walkButton.setAttribute('aria-pressed', String(Boolean(pet.roam)));
-      walkButton.setAttribute('aria-label', pet.roam ? 'Stop walking' : 'Start walking');
-      walkButton.title = pet.roam ? 'Stop walking' : 'Start walking';
+      walkButton.setAttribute('aria-checked', String(Boolean(pet.roam) || manualMotionKind === 'walk'));
+      walkButton.setAttribute('aria-pressed', String(Boolean(pet.roam) || manualMotionKind === 'walk'));
+      const opacity = Math.max(0, Math.min(1, Number(pet.opacity) || 0));
+      canvas.style.opacity = value.chatMode ? String(opacity) : '1';
+      avatarOpacityRange.value = String(Math.round(opacity * 100));
+      avatarOpacityValue.textContent = `${Math.round(opacity * 100)}%`;
+      framingButton.setAttribute('aria-pressed', String(pet.view !== 'full'));
+      if (value.chatMode) {
+        applyInteractionLayer(interactionLayer);
+        applyRailFold(railFolded);
+      }
       if (motion.walk) publishMotionReadiness();
     };
 
@@ -3886,6 +4742,8 @@
       // Ordinary wheel/scroll input is deliberately ignored.
       if (!event.ctrlKey || !shell || typeof shell.setPetZoomLive !== 'function'
           || pet.enabled === false || dragging) return;
+      if (root.classList.contains('chat-mode')
+          && (interactionLayer !== 'avatar' || Number(pet.opacity) <= .001)) return;
       event.preventDefault();
       // A pinch may continue after the first resize moves the pixels under the
       // cursor. Require an alpha hit only when the gesture starts.
@@ -3918,6 +4776,17 @@
       canvasGesture = null;
       clearTimeout(gesture && gesture.holdTimer);
       if (!gesture) return;
+      if (gesture.opacityAdjusting) {
+        dragging = false;
+        root.classList.remove('dragging');
+        const finalOpacity = Math.max(0, Math.min(1, Number(opacityGestureValue) || 0));
+        opacityGestureValue = null;
+        if (shell && typeof shell.setPetOpacity === 'function') {
+          shell.setPetOpacity(finalOpacity).then(applyShellState).catch(() => {});
+        }
+        updateHit(true);
+        return;
+      }
       if (dragging) {
         dragging = false;
         root.classList.remove('dragging');
@@ -3930,6 +4799,7 @@
         return;
       }
       if (event && event.button === 0 && performance.now() - gesture.at < 420) {
+        if (root.classList.contains('chat-mode')) return;
         clearTimeout(avatarTapTimer);
         avatarTapTimer = setTimeout(() => {
           avatarTapTimer = 0;
@@ -3952,6 +4822,9 @@
         screenY: event.screenY,
         at: performance.now(),
         talking: false,
+        opacityAdjusting: false,
+        startOpacity: Math.max(0, Math.min(1,
+          Number(shellState.pet && shellState.pet.opacity) || 0)),
         holdTimer: 0,
       };
       canvasGesture = gesture;
@@ -3966,6 +4839,23 @@
 
     canvas.addEventListener('pointermove', event => {
       if (!shell || !canvasGesture || canvasGesture.id !== event.pointerId || canvasGesture.talking) return;
+      if (root.classList.contains('chat-mode') && interactionLayer === 'avatar') {
+        if (!canvasGesture.opacityAdjusting
+            && Math.hypot(event.clientX - canvasGesture.x, event.clientY - canvasGesture.y) > 5) {
+          clearTimeout(canvasGesture.holdTimer);
+          canvasGesture.opacityAdjusting = true;
+          dragging = true;
+          root.classList.add('dragging');
+        }
+        if (canvasGesture.opacityAdjusting) {
+          const travel = (canvasGesture.y - event.clientY) / Math.max(240, innerHeight * .68);
+          opacityGestureValue = Math.max(0, Math.min(1, canvasGesture.startOpacity + travel));
+          canvas.style.opacity = String(opacityGestureValue);
+          avatarOpacityRange.value = String(Math.round(opacityGestureValue * 100));
+          avatarOpacityValue.textContent = `${Math.round(opacityGestureValue * 100)}%`;
+          return;
+        }
+      }
       if (!dragging && Math.hypot(event.clientX - canvasGesture.x, event.clientY - canvasGesture.y) > 5) {
         clearTimeout(canvasGesture.holdTimer);
         dragging = true;
@@ -3996,8 +4886,59 @@
 
     liveButton.addEventListener('click', () => { markActivity(); if (live) stopLiveTalk('ended'); else startLiveTalk(); });
     avatarCarouselButton.addEventListener('click', cycleAvatar);
+    framingButton.addEventListener('click', async () => {
+      if (!shell || typeof shell.setPetView !== 'function') return;
+      const next = shellState.pet && shellState.pet.view === 'full' ? 'head' : 'full';
+      try { applyShellState(await shell.setPetView(next)); } catch (_) { notify('Could not change framing.'); }
+    });
+    motionMenuButton.addEventListener('click', event => {
+      event.stopPropagation();
+      const next = motionPicker.hidden;
+      closeRailPickers();
+      motionPicker.hidden = !next;
+      motionMenuButton.setAttribute('aria-expanded', String(next));
+      reportControlRects(true);
+    });
     movesButton.addEventListener('click', toggleMove);
+    movesButton.addEventListener('click', closeRailPickers);
     walkButton.addEventListener('click', toggleWalk);
+    walkButton.addEventListener('click', closeRailPickers);
+    edgeIdleButton.addEventListener('click', () => { toggleEdgeIdle(); closeRailPickers(); });
+    speakerButton.addEventListener('click', () => {
+      if (latestAssistantText) void readAloud(latestAssistantText);
+      else notify('There is no assistant reply to read yet.');
+    });
+    layerButton.addEventListener('click', () => {
+      closeRailPickers();
+      applyInteractionLayer(interactionLayer === 'avatar' ? 'thread' : 'avatar');
+      reportControlRects(true);
+    });
+    opacityButton.addEventListener('click', event => {
+      event.stopPropagation();
+      const next = opacityPanel.hidden;
+      closeRailPickers();
+      opacityPanel.hidden = !next;
+      opacityButton.setAttribute('aria-expanded', String(next));
+      reportControlRects(true);
+    });
+    avatarOpacityRange.addEventListener('input', () => {
+      const next = Math.max(0, Math.min(1, Number(avatarOpacityRange.value) / 100));
+      canvas.style.opacity = String(next);
+      avatarOpacityValue.textContent = `${Math.round(next * 100)}%`;
+    });
+    avatarOpacityRange.addEventListener('change', async () => {
+      if (!shell || typeof shell.setPetOpacity !== 'function') return;
+      try { applyShellState(await shell.setPetOpacity(Number(avatarOpacityRange.value) / 100)); }
+      catch (_) { notify('Could not change avatar opacity.'); }
+    });
+    mirrorButton.addEventListener('click', () => applyAvatarMirror(!avatarMirrored));
+    railFoldButton.addEventListener('click', () => applyRailFold(!railFolded));
+    chatHistoryButton.addEventListener('click', () => {
+      setHistoryOpen(!root.classList.contains('history-open'));
+    });
+    chatHistoryScrim.addEventListener('click', () => setHistoryOpen(false));
+    closeHistoryButton.addEventListener('click', () => setHistoryOpen(false));
+    newChatButton.addEventListener('click', createNewChat);
     settingsButton.addEventListener('click', () => shell && shell.openSettings());
     document.getElementById('emptyChat').addEventListener('click', () => openChat(true));
     document.getElementById('emptySettings').addEventListener('click', () => shell && shell.openSettings());
@@ -4028,6 +4969,10 @@
     selectionAskAI.addEventListener('click', askAIAboutSelectedFeedback);
     document.addEventListener('selectionchange', () => requestAnimationFrame(refreshSelectionActions));
     document.addEventListener('pointerdown', event => {
+      if (!motionPicker.contains(event.target) && event.target !== motionMenuButton
+          && !opacityPanel.contains(event.target) && event.target !== opacityButton) {
+        closeRailPickers();
+      }
       if (!selectionActions.contains(event.target) && !conversation.contains(event.target)) {
         hideSelectionActions(true);
       }
@@ -4069,7 +5014,8 @@
         return;
       }
       if (event.key === 'Escape') {
-        if (selectionActions.classList.contains('show')) hideSelectionActions(true);
+        if (root.classList.contains('history-open')) setHistoryOpen(false);
+        else if (selectionActions.classList.contains('show')) hideSelectionActions(true);
         else if (document.querySelector('.email-review')) closeEmailReview();
         else if (live) stopLiveTalk('ended');
         else if (turnController) { turnController.abort(); turnController = null; removeWorking(); setStatus('Ready', 'good'); }
@@ -4132,6 +5078,8 @@
     resizeCanvas();
     resizeComposer();
     reportControlRects(true);
+    saveChatThreads();
+    void restoreChatThread(activeChatThread());
     loadAvatar();
     loadOpenClawAgents().then(() => {
       agentModeSelect.dispatchEvent(new Event('change'));

@@ -246,8 +246,8 @@ struct ConversationView: View {
     @State private var presentedConnectorArtifact: ConnectorArtifactPresentation?
     @State private var sharedConnectorArtifact: ConnectorArtifactPresentation?
     @State private var connectorArtifactError: String?
-    @State private var expandedWorkCards: Set<UUID> = []
     @State private var expandedWorkSteps: Set<String> = []
+    @State private var remoteWorkStartedAt: [UUID: Date] = [:]
     @State private var warmEarEnabled = OpenClamWarmEarControl.isEnabled
     @StateObject private var avatarInteractions = CaptainAyerOverlayInteractionRelay()
     @StateObject private var liveTalk = LiveTalkSessionController()
@@ -566,6 +566,9 @@ struct ConversationView: View {
                 if threadPositioning.shouldFollowLatest { scrollToLatest(using: proxy) }
             }
             .onChange(of: conversation.remoteAgentActivity) { _, activity in
+                if let activity, remoteWorkStartedAt[activity.id] == nil {
+                    remoteWorkStartedAt[activity.id] = Date()
+                }
                 if activity != nil, threadPositioning.shouldFollowLatest {
                     scrollToLatest(using: proxy)
                 }
@@ -721,6 +724,15 @@ struct ConversationView: View {
 
     private func messageBubbleContent(_ message: ConversationMessage) -> some View {
         VStack(alignment: .leading, spacing: 2) {
+            if !message.workSteps.isEmpty {
+                openClawWorkCard(
+                    steps: message.workSteps,
+                    cardID: message.id,
+                    isLive: false
+                )
+                .padding(.bottom, 8)
+            }
+
             messageContent(message)
                 .foregroundStyle(.primary)
                 .padding(.horizontal, message.role == .user ? 14 : 2)
@@ -731,16 +743,6 @@ struct ConversationView: View {
                         : AnyShapeStyle(Color.clear),
                     in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                 )
-
-            if !message.workSteps.isEmpty {
-                openClawWorkCard(
-                    steps: message.workSteps,
-                    cardID: message.id,
-                    isLive: false
-                )
-                .padding(.top, 4)
-            }
-
             if ConversationMessageInteractionPolicy.supportsAssistantActions(message) {
                 assistantMessageActions(message)
             }
@@ -895,44 +897,60 @@ struct ConversationView: View {
     private func remoteAgentActivityCard(
         _ activity: RemoteAgentActivityPresentation
     ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Group {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 if activity.showsProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: remoteAgentActivityIcon(activity.phase))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(
-                            activity.phase == .needsAttention ? .orange : .secondary
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let elapsed = workDurationLabel(
+                            from: remoteWorkStartedAt[activity.id] ?? context.date,
+                            to: context.date
                         )
+                        Text("Working for \(elapsed)")
+                    }
+                } else {
+                    Text(activity.phase == .needsAttention ? "OpenClaw needs attention" : "OpenClaw work")
+                }
+                Spacer(minLength: 8)
+                if activity.showsProgress {
+                    ProgressView().controlSize(.small)
                 }
             }
-            .frame(width: 22, height: 22)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(activity.title)
+            Divider()
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: remoteAgentActivityIcon(activity.phase))
                     .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                if let detail = activity.detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if !conversation.remoteAgentWorkSteps.isEmpty {
-                    openClawWorkCard(
-                        steps: conversation.remoteAgentWorkSteps,
-                        cardID: activity.id,
-                        isLive: true
+                    .foregroundStyle(
+                        activity.phase == .needsAttention ? .orange : .secondary
                     )
-                    .padding(.top, 2)
-                }
+                    .frame(width: 22, height: 22)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(activity.title)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                if activity.allowsRetry || activity.allowsCancel || activity.allowsRepair {
-                    HStack(spacing: 10) {
+                    if let detail = activity.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            if !conversation.remoteAgentWorkSteps.isEmpty {
+                openClawWorkCard(
+                    steps: conversation.remoteAgentWorkSteps,
+                    cardID: activity.id,
+                    isLive: true
+                )
+            }
+
+            if activity.allowsRetry || activity.allowsCancel || activity.allowsRepair {
+                HStack(spacing: 10) {
                         if activity.allowsRepair {
                             Button("Pair again") {
                                 dismissKeyboard()
@@ -960,19 +978,16 @@ struct ConversationView: View {
                             .controlSize(.small)
                             .accessibilityIdentifier("openclam-openclaw-activity-cancel")
                         }
-                    }
-                    .padding(.top, 2)
                 }
+                .padding(.top, 2)
             }
         }
-        .padding(12)
-        .background(
-            Color(uiColor: .secondarySystemBackground),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.secondary.opacity(0.12))
+        .padding(.horizontal, 4)
+        .padding(.vertical, 8)
+        .onAppear {
+            if remoteWorkStartedAt[activity.id] == nil {
+                remoteWorkStartedAt[activity.id] = Date()
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("openclam-openclaw-activity-card")
@@ -989,45 +1004,27 @@ struct ConversationView: View {
             return lhs.revision < rhs.revision
         }
         let completedCount = ordered.filter { $0.state == .completed }.count
-        return DisclosureGroup(
-            isExpanded: workCardExpansionBinding(cardID)
-        ) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(ordered) { step in
-                    openClawWorkStep(step, cardID: cardID)
-                    if step.id != ordered.last?.id {
-                        Divider().padding(.leading, 30)
-                    }
-                }
-            }
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet.rectangle.portrait.fill")
-                    .foregroundStyle(.indigo)
-                VStack(alignment: .leading, spacing: 1) {
+        return VStack(alignment: .leading, spacing: 0) {
+            if !isLive {
+                HStack(spacing: 8) {
                     Text("Work")
-                        .font(.caption.weight(.semibold))
-                    Text(
-                        isLive
-                            ? "Updating · \(ordered.count) steps"
-                            : "\(completedCount) of \(ordered.count) completed"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text("\(completedCount) of \(ordered.count) completed")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
-                Spacer(minLength: 8)
+                .frame(minHeight: 32)
+                Divider().padding(.bottom, 4)
             }
-        }
-        .tint(.secondary)
-        .padding(10)
-        .background(
-            Color.indigo.opacity(0.06),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.indigo.opacity(0.12))
+
+            ForEach(ordered) { step in
+                openClawWorkStep(step, cardID: cardID)
+                if step.id != ordered.last?.id {
+                    Divider().padding(.leading, 30)
+                }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("openclam-openclaw-work-\(cardID.uuidString)")
@@ -1041,9 +1038,6 @@ struct ConversationView: View {
         let hasDetails = [
             step.detail,
             step.tool.map { "Tool · \($0)" },
-            step.command.map { "Command · \($0)" },
-            step.path.map { "File · \($0)" },
-            step.output.map { "Output · \($0)" },
         ].contains { $0?.isEmpty == false }
 
         return VStack(alignment: .leading, spacing: 5) {
@@ -1093,24 +1087,20 @@ struct ConversationView: View {
                     if let tool = step.tool {
                         workDetailRow("Tool", value: tool, monospaced: false)
                     }
-                    if let command = step.command {
-                        workDetailRow("Command", value: command, monospaced: true)
-                    }
-                    if let path = step.path {
-                        workDetailRow("File", value: path, monospaced: true)
-                    }
-                    if let output = step.output {
-                        workDetailRow("Output", value: output, monospaced: true)
-                    }
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+                .padding(10)
+                .background(
+                    Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
                 .padding(.leading, 28)
-                .padding(.bottom, 6)
+                .padding(.bottom, 8)
             }
         }
-        .padding(.vertical, 7)
+        .frame(minHeight: 44)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("openclam-openclaw-work-step-\(step.stepID)")
     }
@@ -1118,7 +1108,7 @@ struct ConversationView: View {
     private func workDetailRow(
         _ label: String,
         value: String,
-        monospaced: Bool
+        monospaced: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label.uppercased())
@@ -1129,17 +1119,10 @@ struct ConversationView: View {
         }
     }
 
-    private func workCardExpansionBinding(_ id: UUID) -> Binding<Bool> {
-        Binding(
-            get: { expandedWorkCards.contains(id) },
-            set: { expanded in
-                if expanded {
-                    expandedWorkCards.insert(id)
-                } else {
-                    expandedWorkCards.remove(id)
-                }
-            }
-        )
+    private func workDurationLabel(from start: Date, to end: Date) -> String {
+        let elapsed = max(0, Int(end.timeIntervalSince(start)))
+        if elapsed < 60 { return "\(elapsed)s" }
+        return "\(elapsed / 60)m \(elapsed % 60)s"
     }
 
     private func workStateLabel(_ state: AgentConnectorWorkState) -> String {

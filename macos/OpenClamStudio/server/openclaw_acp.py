@@ -208,8 +208,10 @@ def _work(step_id: str, category: str, state: str, title: str, **details: str) -
         "state": state,
         "title": _safe_title(title, "OpenClaw work"),
     }
-    for key in ("detail", "tool", "command", "path", "output"):
-        safe = _safe_text(details.get(key), 1000 if key != "output" else 2000)
+    # Work is presentation-safe progress, not a diagnostic surface. Raw
+    # commands, host paths, and tool output never cross this boundary.
+    for key in ("detail", "tool"):
+        safe = _safe_text(details.get(key), 1000)
         if safe:
             step[key] = safe
     return step
@@ -235,18 +237,10 @@ def project_update(
         title = _safe_title(update.get("title"), "Using a tool")
         if call_id:
             tool_titles[call_id] = title
-        locations = update.get("locations")
-        path = ""
-        if isinstance(locations, list):
-            for location in locations[:8]:
-                if isinstance(location, dict):
-                    path = _safe_relative_location(location.get("path"), workspace)
-                    if path:
-                        break
         return ("work", _work(
             f"tool:{call_id or hashlib.sha256(title.encode()).hexdigest()[:16]}",
             "tool", _state(update.get("status")), title,
-            tool=_safe_text(update.get("kind"), 80), path=path,
+            tool=_safe_text(update.get("kind"), 80),
         ))
     if kind == "tool_call_update":
         call_id = _safe_text(update.get("toolCallId"), 64)
@@ -376,7 +370,7 @@ async def stream_turn(agent_id: str, session_id: str, prompt: str) -> AsyncItera
                     "fs": {"readTextFile": False, "writeTextFile": False},
                     "terminal": False,
                 },
-                "clientInfo": {"name": "OpenClam Studio", "version": "1.0.2"},
+                "clientInfo": {"name": "OpenClam Studio", "version": "1.0.3"},
             },
         })
         prompt_sent = False

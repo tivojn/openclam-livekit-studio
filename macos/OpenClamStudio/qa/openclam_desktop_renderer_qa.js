@@ -60,17 +60,28 @@ assert.match(source, /#emptyCard \{[\s\S]{0,120}width: min\(430px, 100%\);/,
 assert.match(source, /#emptyState \{[\s\S]{0,220}inset: 8px;[\s\S]{0,220}border-radius: var\(--pet-surface-radius\);/,
   'The final empty-avatar surface must be rounded inside the transparent pet window');
 assert.match(source, /#chatDock \{[\s\S]{0,320}right: var\(--pet-rail-reserve\);[\s\S]{0,320}border-radius: var\(--pet-surface-radius\);/,
-  'Conversation shell must reserve the rail and expose one rounded outer surface');
-const opaqueChatDockRule = [...source.matchAll(/#chatDock\s*\{([^}]+)\}/g)]
+  'Conversation shell must reserve the rail while keeping one shared geometry');
+const compactChatDockRule = [...source.matchAll(/#chatDock\s*\{([^}]+)\}/g)]
   .map(match => match[1])
-  .find(rule => rule.includes('rgba(24, 24, 24, .985)'));
-assert.ok(opaqueChatDockRule, 'final chat dock surface rule must remain identifiable');
-assert.match(opaqueChatDockRule, /-webkit-backdrop-filter:\s*none;/);
-assert.match(opaqueChatDockRule, /backdrop-filter:\s*none;/);
-assert.match(opaqueChatDockRule, /box-shadow:\s*none;/,
-  'transparent Electron windows must not draw a square filter or shadow halo around the rounded dock');
-assert.match(source, /#conversation \{[\s\S]{0,140}max-height: min\(31dvh, 280px, calc\(100dvh - 152px\)\);/,
-  'Conversation history must use a compact content-driven cap with internal scrolling');
+  .find(rule => rule.includes('right: var(--pet-rail-reserve)'));
+assert.ok(compactChatDockRule, 'final compact chat dock rule must remain identifiable');
+assert.match(compactChatDockRule, /background:\s*transparent;/);
+assert.match(compactChatDockRule, /-webkit-backdrop-filter:\s*none;/);
+assert.match(compactChatDockRule, /backdrop-filter:\s*none;/);
+assert.match(compactChatDockRule, /box-shadow:\s*none;/,
+  'compact composer must not draw a redundant outer rectangle or filter halo');
+const composerRowRule = [...source.matchAll(/#composerRow\s*\{([^}]+)\}/g)]
+  .map(match => match[1])
+  .find(rule => rule.includes('align-items: end'));
+assert.ok(composerRowRule, 'final composer row rule must remain identifiable');
+assert.match(composerRowRule, /border:\s*0;/);
+assert.match(composerRowRule, /background:\s*transparent;/);
+assert.match(composerRowRule, /box-shadow:\s*none;/,
+  'the textarea row must not draw a second shell inside the composer');
+assert.match(source, /#conversation \{[\s\S]{0,180}height: min\(64dvh, 680px\);/,
+  'Open conversation history must expose a full Work-style scrolling thread');
+assert.match(source, /#chatDock:has\(#conversation:not\(:empty\)\)/,
+  'Only a dock with real conversation content may draw the thread surface');
 assert.match(source, /@media \(max-width: 520px\) \{[\s\S]{0,440}#emptyState \{[\s\S]{0,160}padding: 14px calc\(var\(--pet-rail-reserve\) - 6px\) 12px 12px;/,
   'Compact onboarding must preserve the shared right-rail clearance');
 assert.match(source, /document\.getElementById\('emptyChat'\)\.addEventListener\('click', \(\) => openChat\(true\)\)/);
@@ -352,7 +363,8 @@ assert.match(source, /id="composer"[^>]*maxlength="12000"[^>]*dir="auto"/);
 assert.match(source, /id="selectionActions" role="toolbar" aria-label="Selected response actions"/);
 assert.match(source, /id="selectionCopy"[^>]*>Copy<\/button>/);
 assert.match(source, /id="selectionAskAI"[^>]*aria-keyshortcuts="Meta\+Shift\+A Control\+Shift\+A">Ask AI<\/button>/);
-assert.match(source, /role === 'assistant' && text && options\.readable !== false[\s\S]{0,1500}'Copy this response'[\s\S]{0,1500}'Read this response aloud'/);
+assert.match(source, /const appendAssistantActions = \(row, text\) => \{[\s\S]{0,1500}'Copy this response'[\s\S]{0,1500}'Read this response aloud'/);
+assert.match(source, /role === 'assistant' && text && options\.readable !== false[\s\S]{0,180}appendAssistantActions\(row, String\(text\)\)/);
 assert.match(source, /conversation\.addEventListener\('contextmenu',[\s\S]{0,220}feedbackSelectionCandidate\(getSelection\(\)\)[\s\S]{0,220}showSelectionActions\(candidate\)/);
 assert.match(source, /navigator\.clipboard[\s\S]{0,180}navigator\.clipboard\.writeText\(text\)/);
 assert.match(source, /document\.execCommand\('copy'\)/,
@@ -878,7 +890,7 @@ const hitCalls = [];
 const hoverClasses = [];
 const hitClassifier = new Function(
   'shell', 'overControls', 'pointer', 'ready', 'innerWidth', 'innerHeight',
-  'context', 'pixelRatio', 'root', 'markActivity', 'performance',
+  'context', 'pixelRatio', 'root', 'canvas', 'interactionLayer', 'markActivity', 'performance',
   `'use strict'; let dragging = false; let ptt = null; let avatarHit = false; `
     + `let petHit = false; let lastHitSent = 0; let avatarZoomGesture = null; ${updateHitSource[1]}; `
     + 'return { updateHit, avatar: () => avatarHit };',
@@ -886,7 +898,11 @@ const hitClassifier = new Function(
   { setPetHit: value => hitCalls.push(value) }, () => true,
   { x: 50, y: 50, inside: true }, true, 100, 100,
   { getImageData: () => ({ data: [0, 0, 0, 255] }) }, 1,
-  { classList: { toggle: (name, active) => hoverClasses.push([name, active]) } },
+  { classList: {
+    contains: () => false,
+    toggle: (name, active) => hoverClasses.push([name, active]),
+  } },
+  { style: { opacity: '1' } }, 'thread',
   () => {}, { now: () => 1000 },
 );
 hitClassifier.updateHit(true);
@@ -901,7 +917,8 @@ assert.deepEqual(hoverClasses, [['avatar-hover', false]]);
 // another cursor movement or heartbeat.
 const zoomHitCalls = [];
 const zoomHitLifecycle = new Function(
-  'shell', 'overControls', 'pointer', 'paintedAvatarAt', 'root', 'markActivity', 'performance',
+  'shell', 'overControls', 'pointer', 'paintedAvatarAt', 'root', 'canvas',
+  'interactionLayer', 'markActivity', 'performance',
   `'use strict'; let dragging = false; let ptt = null; let avatarHit = false; `
     + `let petHit = false; let lastHitSent = 0; let avatarZoomGesture = { frame: 0 }; `
     + `${updateHitSource[1]}; `
@@ -909,7 +926,8 @@ const zoomHitLifecycle = new Function(
 )(
   { setPetHit: value => zoomHitCalls.push(value) }, () => false,
   { x: 50, y: 50, inside: true }, () => false,
-  { classList: { toggle() {} } }, () => {}, { now: () => 1000 },
+  { classList: { contains: () => false, toggle() {} } },
+  { style: { opacity: '1' } }, 'thread', () => {}, { now: () => 1000 },
 );
 zoomHitLifecycle.update();
 zoomHitLifecycle.release();
@@ -1117,11 +1135,11 @@ const paintedAvatarSource = inline[1].match(
 assert.ok(paintedAvatarSource, 'fresh alpha acceptance must remain independently testable');
 const sampledPixels = [];
 const paintedAvatarAt = new Function(
-  'ready', 'innerWidth', 'innerHeight', 'context', 'pixelRatio',
+  'ready', 'innerWidth', 'innerHeight', 'context', 'pixelRatio', 'avatarCanvasPoint',
   `'use strict'; ${paintedAvatarSource[1]}; return paintedAvatarAt;`,
 )(true, 100, 100, {
   getImageData: (...args) => { sampledPixels.push(args); return { data: [0, 0, 0, 19] }; },
-}, 2);
+}, 2, point => point);
 assert.equal(paintedAvatarAt({ x: 10.5, y: 20.5, inside: true }), true);
 assert.deepEqual(sampledPixels, [[21, 41, 1, 1]],
   'pinch acceptance must sample the current device-pixel under the cursor');
@@ -1168,7 +1186,9 @@ const steppedAvatarOpacity = new Function(
 assert.equal(steppedAvatarOpacity(.5, 1), .62);
 assert.equal(steppedAvatarOpacity(.5, -1), .38);
 assert.equal(steppedAvatarOpacity(.98, 1), 1);
-assert.equal(steppedAvatarOpacity(.15, -1), .15);
+assert.equal(steppedAvatarOpacity(.15, -1), .03);
+assert.equal(steppedAvatarOpacity(.03, -1), 0);
+assert.equal(steppedAvatarOpacity(0, -1), 0);
 assert.match(source, /if \(!geometry \|\| !paintedAvatarAt\(\{ \.\.\.point, inside: true \}\)\) return null;/,
   'transparent gaps must never acquire a body-region gesture');
 assert.match(source, /else if \(action === 'opacity-up'\) void adjustAvatarOpacity\(1\);/);

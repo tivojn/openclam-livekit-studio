@@ -1820,7 +1820,10 @@ final class AgentConnectorTests: XCTestCase {
             path: "outputs/portrait.png",
             output: "Image verified"
         )
-        XCTAssertNoThrow(try safe.validated())
+        let projected = try safe.validated()
+        XCTAssertNil(projected.command)
+        XCTAssertNil(projected.path)
+        XCTAssertNil(projected.output)
 
         let privatePath = AgentConnectorWorkStep(
             revision: 2,
