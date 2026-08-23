@@ -205,9 +205,16 @@ for (const id of [
   'rig-modal', 'rig-controls', 'body-modal', 'body-walk-styles',
   'body-motion-poses', 'body-move-styles', 'body-walk-generate',
   'body-idle-generate', 'body-move-generate', 'body-prompt-variation',
+  'body-prompt-progress', 'body-prompt-stage', 'body-prompt-elapsed',
+  'body-prompt-rail', 'body-prompt-bar',
 ]) includes(`id="${id}"`);
 includes('✦ New luxury look');
 includes("tailorBodyPrompt(BODY_SLUG, { refresh: true, force: true })");
+includes("fetch('/api/avatar/body/prompt/stream'");
+includes("BODY_PROMPT_STAGE === 'analysis'");
+includes('Edits you make while it works will not be overwritten.');
+includes("const promptWasEdited = field.value !== promptAtStart");
+includes('@media (prefers-reduced-motion:reduce)');
 
 // Under-eye motion must survive a calibration round trip as an independent
 // target. It used to borrow the Cheeks value, which hid the target entirely

@@ -492,6 +492,29 @@ body{padding-bottom:84px}
 .body-edit-unavailable{margin-top:12px;padding:11px 13px;border:1px solid var(--line);border-radius:8px;
   background:var(--panel-sub);color:var(--dim);font-size:11.5px;line-height:1.5}
 .body-edit-unavailable b{display:block;margin-bottom:3px;color:var(--ink);font-size:12px}
+.body-prompt-progress{margin-top:11px;padding:11px 0 2px;border-top:1px solid var(--line)}
+.body-prompt-progress-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:9px;
+  align-items:start}.body-prompt-progress-dot{width:7px;height:7px;margin-top:5px;border-radius:50%;
+  background:var(--accent);animation:promptPulse 1.5s ease-out infinite}
+.body-prompt-progress-copy{min-width:0}.body-prompt-progress-copy strong{display:block;color:var(--ink);
+  font-size:11.5px;font-weight:650}.body-prompt-progress-copy small{display:block;margin-top:2px;color:var(--dim);
+  font-size:10.5px;line-height:1.45}.body-prompt-progress time{color:var(--dim);font-variant-numeric:tabular-nums;
+  font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace}
+.body-prompt-rail{position:relative;height:3px;margin:9px 0 8px;overflow:hidden;border-radius:3px;
+  background:var(--press)}.body-prompt-rail i{position:relative;display:block;width:8%;height:100%;border-radius:3px;
+  background:var(--accent);transition:width .4s cubic-bezier(.25,1,.5,1)}
+.body-prompt-rail i:after{content:"";position:absolute;inset:0;width:36%;background:linear-gradient(90deg,
+  transparent,rgba(255,255,255,.48),transparent);animation:promptSheen 1.8s ease-in-out infinite}
+.body-prompt-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;color:var(--faint);
+  font-size:9.5px}.body-prompt-steps span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.body-prompt-steps span.on{color:var(--ink);font-weight:600}.body-prompt-steps span.done{color:var(--dim)}
+.body-prompt-progress.ready .body-prompt-progress-dot{background:var(--ok);animation:none}
+.body-prompt-progress.ready .body-prompt-rail i{background:var(--ok)}
+.body-prompt-progress.failed .body-prompt-progress-dot{background:var(--bad);animation:none}
+.body-prompt-progress.failed .body-prompt-rail i{background:var(--bad)}
+@keyframes promptPulse{0%{box-shadow:0 0 0 0 var(--accent-line)}
+  70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@keyframes promptSheen{0%{transform:translateX(-120%)}60%,100%{transform:translateX(310%)}}
 .body-progress{position:relative;margin-top:16px;padding:14px;border:1px solid var(--line);
   border-radius:8px;background:var(--panel-sub);scroll-margin:12px}
 .body-progress .jobhead{gap:8px}
@@ -551,6 +574,8 @@ body{padding-bottom:84px}
 @keyframes bodySlide{0%{transform:translateX(-105%)}100%{transform:translateX(320%)}}
 @keyframes bodyFlash{0%{transform:scale(.985)}45%{transform:scale(1.014)}100%{transform:scale(1)}}
 @media (prefers-reduced-motion:reduce){
+  .body-prompt-progress-dot,.body-prompt-rail i:after{animation:none!important}
+  .body-prompt-rail i{transition:none!important}
   .body-progress.live,.body-progress.live.flash,.body-progress.live .bar i,
   .body-progress.live .body-progress-dot,.body-progress.live .body-progress-sheen:before{animation:none!important}
   .body-progress.live{box-shadow:0 0 0 1px var(--accent-line)}
@@ -1295,6 +1320,15 @@ document.documentElement.dataset.design='quiet';</script>
             <button class="btn sm" id="body-prompt-variation" type="button" title="Create a different curated colour and silhouette while preserving this portrait">✦ New luxury look</button>
             <button class="btn sm" id="body-prompt-ai" type="button" title="Say what to change; the brief above is rewritten around it">✦ Rewrite the prompt from my key points</button>
           </div>
+          <div class="body-prompt-progress hidden" id="body-prompt-progress" role="status" aria-live="polite">
+            <div class="body-prompt-progress-head">
+              <span class="body-prompt-progress-dot" aria-hidden="true"></span>
+              <div class="body-prompt-progress-copy"><strong id="body-prompt-stage">Preparing portrait direction</strong><small id="body-prompt-detail">Your current prompt stays editable while OpenClam prepares a new direction.</small></div>
+              <time id="body-prompt-elapsed" aria-hidden="true">0:00</time>
+            </div>
+            <div class="body-prompt-rail" id="body-prompt-rail" role="progressbar" aria-label="Portrait art direction progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="8"><i id="body-prompt-bar"></i></div>
+            <div class="body-prompt-steps" aria-hidden="true"><span data-prompt-step="portrait">Portrait</span><span data-prompt-step="direction">Direction</span><span data-prompt-step="rules">Guardrails</span><span data-prompt-step="ready">Ready</span></div>
+          </div>
         </div>
         <div id="body-progress-anchor" aria-hidden="true"></div>
         <div class="body-progress hidden" id="body-progress" role="region"
@@ -1797,6 +1831,8 @@ const MOVE_STYLE_LABELS = {
 };
 let BODY_SLUG = null, BODY_STATE = null, BODY_WATCH = null, BODY_VIEW = 'front';
 let BODY_PROMPT_FILLED = '', BODY_PROMPT_BUSY = false;
+let BODY_PROMPT_STARTED_AT = 0, BODY_PROMPT_TIMER = 0;
+let BODY_PROMPT_STAGE = '', BODY_PROMPT_LONG_NOTICE = false;
 let BODY_EDIT_JOB_ID = null, BODY_EDIT_SLUG = null;
 let BODY_MODE = 'body', BODY_CYCLE = null;
 let BODY_WALK_STYLE = 'office', BODY_IDLE_POSE = 'back-heel', BODY_MOVE_STYLE = 'viral', BODY_BUSY = false;
@@ -3474,6 +3510,8 @@ function closeBody() {
   stopBodyElapsed();
   unwatchBodyPin();
   stopBodyMotionCycle();
+  if (BODY_PROMPT_TIMER) clearInterval(BODY_PROMPT_TIMER);
+  BODY_PROMPT_TIMER = 0;
   BODY_SLUG = null;
   BODY_BUSY = false;
 }
@@ -3732,9 +3770,10 @@ function setBodyBusy(busy) {
   $('#body-motion-prompt-ai').disabled = busy || BODY_IDLE_POSE !== 'custom';
   $('#body-walk-prompt-ai').disabled = busy || BODY_WALK_STYLE !== 'custom';
   $('#body-move-prompt-ai').disabled = busy || BODY_MOVE_STYLE !== 'custom';
-  ['body-style', 'body-pose', 'body-prompt', 'body-prompt-ai'].forEach(id => {
+  ['body-style', 'body-pose', 'body-prompt'].forEach(id => {
     $('#' + id).disabled = busy;
   });
+  $('#body-prompt-ai').disabled = busy || BODY_PROMPT_BUSY;
   $('#body-prompt-variation').disabled = busy || BODY_PROMPT_BUSY;
   document.querySelectorAll('[data-body-view]').forEach(button => {
     button.disabled = busy;
@@ -4227,11 +4266,133 @@ function deleteBodySet(setId, set) {
     'Could not delete the body set');
 }
 
+const BODY_PROMPT_STAGES = Object.freeze({
+  portrait: { progress: 8, step: 'portrait', label: 'Reading the identity portrait',
+    detail: 'Loading the calibrated portrait used to preserve this subject.' },
+  cache: { progress: 14, step: 'portrait', label: 'Checking saved art direction',
+    detail: 'Looking for a completed direction written for this exact portrait.' },
+  planning: { progress: 25, step: 'direction', label: 'Choosing a luxury direction',
+    detail: 'Selecting one silhouette, one hero colour, and presentation-aware styling.' },
+  analysis: { progress: 43, step: 'direction', label: 'Studying the portrait',
+    detail: 'xAI is reading visible presentation, medium, and style cues. This is usually the longest step.' },
+  validation: { progress: 68, step: 'rules', label: 'Checking the first draft',
+    detail: 'Rejecting unsafe garments, carried props, colour conflicts, and unsuitable footwear.' },
+  composition: { progress: 80, step: 'rules', label: 'Applying the house rules',
+    detail: 'Balancing luxury materials, realistic proportions, identity, and cutout constraints.' },
+  saving: { progress: 92, step: 'ready', label: 'Saving the editable direction',
+    detail: 'Keeping the finished prompt with this portrait for instant reuse.' },
+  fallback: { progress: 96, step: 'ready', label: 'Using the safe house direction',
+    detail: 'Portrait tailoring was unavailable, so OpenClam is preserving a validated editable prompt.' },
+  complete: { progress: 100, step: 'ready', label: 'Art direction ready',
+    detail: 'Review or edit the prompt before generating the three body views.' },
+});
+const BODY_PROMPT_STEP_ORDER = ['portrait', 'direction', 'rules', 'ready'];
+
+function bodyPromptElapsed() {
+  const elapsed = Math.max(0, Date.now() - BODY_PROMPT_STARTED_AT);
+  const seconds = Math.floor(elapsed / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function updateBodyPromptProgress(stage) {
+  const state = BODY_PROMPT_STAGES[stage];
+  if (!state) return;
+  BODY_PROMPT_STAGE = stage;
+  const box = $('#body-prompt-progress');
+  box.classList.remove('hidden', 'ready', 'failed');
+  $('#body-prompt-stage').textContent = state.label;
+  $('#body-prompt-detail').textContent = state.detail;
+  $('#body-prompt-bar').style.width = state.progress + '%';
+  $('#body-prompt-rail').setAttribute('aria-valuenow', String(state.progress));
+  const current = BODY_PROMPT_STEP_ORDER.indexOf(state.step);
+  box.querySelectorAll('[data-prompt-step]').forEach(element => {
+    const index = BODY_PROMPT_STEP_ORDER.indexOf(element.dataset.promptStep);
+    element.classList.toggle('done', index < current);
+    element.classList.toggle('on', index === current);
+  });
+}
+
+function startBodyPromptProgress(refresh) {
+  if (BODY_PROMPT_TIMER) clearInterval(BODY_PROMPT_TIMER);
+  BODY_PROMPT_STARTED_AT = Date.now();
+  BODY_PROMPT_LONG_NOTICE = false;
+  updateBodyPromptProgress('portrait');
+  $('#body-prompt-stage').textContent = refresh
+    ? 'Starting a new luxury direction' : 'Preparing portrait direction';
+  $('#body-prompt-elapsed').textContent = '0:00';
+  BODY_PROMPT_TIMER = setInterval(() => {
+    $('#body-prompt-elapsed').textContent = bodyPromptElapsed();
+    if (BODY_PROMPT_STAGE === 'analysis' && !BODY_PROMPT_LONG_NOTICE
+        && Date.now() - BODY_PROMPT_STARTED_AT >= 12_000) {
+      BODY_PROMPT_LONG_NOTICE = true;
+      $('#body-prompt-detail').textContent =
+        'Still studying the portrait—your existing prompt is safe and untouched while xAI finishes.';
+    }
+  }, 1000);
+}
+
+function finishBodyPromptProgress(outcome) {
+  if (BODY_PROMPT_TIMER) clearInterval(BODY_PROMPT_TIMER);
+  BODY_PROMPT_TIMER = 0;
+  $('#body-prompt-elapsed').textContent = bodyPromptElapsed();
+  const box = $('#body-prompt-progress');
+  if (outcome === 'error') {
+    box.classList.add('failed');
+    $('#body-prompt-stage').textContent = 'Couldn’t update the art direction';
+    $('#body-prompt-detail').textContent =
+      'The current prompt is unchanged. Try New luxury look again.';
+    return;
+  }
+  updateBodyPromptProgress('complete');
+  box.classList.add('ready');
+  setTimeout(() => {
+    if (!BODY_PROMPT_BUSY && box.classList.contains('ready')) {
+      box.classList.add('hidden');
+    }
+  }, 1600);
+}
+
+async function streamBodyPrompt(slug, refresh, onProgress) {
+  const response = await fetch('/api/avatar/body/prompt/stream', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug, refresh })
+  });
+  if (!response.ok || !response.body) {
+    throw new Error('portrait prompt stream unavailable');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', result = null;
+  const consume = line => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === 'progress') onProgress(event.stage);
+    else if (event.type === 'result') result = event;
+    else if (event.type === 'error') throw new Error(event.message || 'prompt failed');
+  };
+  while (true) {
+    const chunk = await reader.read();
+    buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+    if (buffer.length > 64_000) throw new Error('portrait prompt response is too large');
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    lines.forEach(consume);
+    if (chunk.done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+  if (!result || !result.prompt) throw new Error('portrait prompt was incomplete');
+  return result;
+}
+
 function setBodyPromptNote(source, traits) {
   const note = $('#body-prompt-note');
   if (!note) return;
   if (source === 'working') {
-    note.textContent = 'Reading the portrait and writing art direction for this subject…';
+    note.textContent = 'Progress appears below. Edits you make while it works will not be overwritten.';
+    return;
+  }
+  if (source === 'error') {
+    note.textContent = 'The current prompt is unchanged. Try New luxury look again.';
     return;
   }
   if (source === 'saved') {
@@ -4259,17 +4420,18 @@ async function tailorBodyPrompt(slug, { refresh = false, force = false } = {}) {
   if (BODY_PROMPT_BUSY) return;
   const field = $('#body-prompt');
   if (!force && field.value.trim() !== BODY_PROMPT_FILLED.trim()) return;
+  const promptAtStart = field.value;
   BODY_PROMPT_BUSY = true;
   $('#body-prompt-variation').disabled = true;
+  $('#body-prompt-ai').disabled = true;
+  field.setAttribute('aria-busy', 'true');
   setBodyPromptNote('working', null);
+  startBodyPromptProgress(refresh);
   try {
-    const result = await api('/api/avatar/body/prompt', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, refresh })
-    });
+    const result = await streamBodyPrompt(slug, refresh, updateBodyPromptProgress);
     if (BODY_SLUG !== slug) return;
-    if (!result || !result.prompt) { setBodyPromptNote('preset', null); return; }
-    if (force || field.value.trim() === BODY_PROMPT_FILLED.trim()) {
+    const promptWasEdited = field.value !== promptAtStart;
+    if (!promptWasEdited) {
       field.value = result.prompt;
       BODY_PROMPT_FILLED = result.prompt;
     }
@@ -4278,12 +4440,27 @@ async function tailorBodyPrompt(slug, { refresh = false, force = false } = {}) {
       BODY_STATE.prompt_source = result.source;
       BODY_STATE.prompt_traits = result.traits || {};
     }
-    setBodyPromptNote(result.source, result.traits);
+    if (promptWasEdited) {
+      $('#body-prompt-note').textContent =
+        'A new direction finished, but the edits you made while it worked were kept.';
+    } else {
+      setBodyPromptNote(result.source, result.traits);
+    }
+    finishBodyPromptProgress('ready');
   } catch (error) {
-    if (BODY_SLUG === slug) setBodyPromptNote('preset', null);
+    if (BODY_SLUG === slug) {
+      setBodyPromptNote('error', null);
+      finishBodyPromptProgress('error');
+    }
   } finally {
+    if (BODY_SLUG !== slug && BODY_PROMPT_TIMER) {
+      clearInterval(BODY_PROMPT_TIMER);
+      BODY_PROMPT_TIMER = 0;
+    }
     BODY_PROMPT_BUSY = false;
     $('#body-prompt-variation').disabled = BODY_BUSY;
+    $('#body-prompt-ai').disabled = BODY_BUSY;
+    field.setAttribute('aria-busy', 'false');
   }
 }
 

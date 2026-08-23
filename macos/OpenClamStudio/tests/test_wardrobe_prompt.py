@@ -490,6 +490,25 @@ class WardrobeCacheTests(unittest.TestCase):
         self.assertEqual(1, first["prompt"].count("The single hero colour"))
         self.assertEqual(1, second["prompt"].count("The single hero colour"))
 
+    def test_tailored_prompt_reports_real_bounded_work_stages(self):
+        stages = []
+        with tempfile.TemporaryDirectory() as directory:
+            _portrait(directory)
+            with mock.patch.object(wardrobe, "_llm_route",
+                                   return_value=("llm/features/x/chat", "m")), \
+                 mock.patch.object(wardrobe, "_chat",
+                                   return_value=json.dumps(FASHION)):
+                wardrobe.tailored_prompt(
+                    directory, refresh=True, progress=stages.append)
+                cached_stages = []
+                wardrobe.tailored_prompt(
+                    directory, progress=cached_stages.append)
+        self.assertEqual(stages, [
+            "portrait", "planning", "analysis", "validation",
+            "composition", "saving", "complete",
+        ])
+        self.assertEqual(cached_stages, ["portrait", "cache", "complete"])
+
     def test_curated_looks_are_gender_aware_and_camel_is_not_the_default(self):
         self.assertGreaterEqual(len(wardrobe.LUXURY_VARIATIONS), 10)
         counts = {
@@ -588,6 +607,8 @@ class WardrobeIntegrationTests(unittest.TestCase):
         )
         self.assertIn('"body": body_metadata or None', server)
         self.assertIn('"/api/avatar/body/prompt"', server)
+        self.assertIn('"/api/avatar/body/prompt/stream"', server)
+        self.assertIn('media_type="application/x-ndjson"', server)
         self.assertIn("class BodyPromptRequest", server)
         self.assertIn("wardrobe.tailored_prompt", server)
 
@@ -616,6 +637,9 @@ class WardrobeIntegrationTests(unittest.TestCase):
         self.assertLess(generate_at, identity_at)
         self.assertLess(generate_at, motion_at)
         self.assertIn("tailorBodyPrompt", settings)
+        self.assertIn('id="body-prompt-progress"', settings)
+        self.assertIn('id="body-prompt-elapsed"', settings)
+        self.assertIn("streamBodyPrompt", settings)
         self.assertIn("setBodyPromptNote", settings)
         self.assertIn("presentation,\n    medium,", settings)
 

@@ -825,38 +825,54 @@ def cached_prompt(avatar_dir):
         return None
 
 
-def tailored_prompt(avatar_dir, refresh=False, log=None):
+def tailored_prompt(avatar_dir, refresh=False, log=None, progress=None):
     """Portrait-specific art direction, falling back to the static preset."""
     def note(message):
         if log:
             log(message)
 
+    def stage(name):
+        # Only a closed stage name crosses the streaming UI boundary. Provider
+        # prose, paths, model output, and credentials never become progress.
+        if progress:
+            progress(name)
+
+    stage("portrait")
     try:
         reference = _identity_reference(avatar_dir)
         digest = _digest(reference)
     except Exception as error:
+        stage("fallback")
         return {"prompt": preset_prompt(), "source": "preset",
                 "traits": {}, "error": str(error)[:300]}
 
     if not refresh:
+        stage("cache")
         cached = _read_cache(avatar_dir, digest)
         if cached:
+            stage("complete")
             return cached
 
+    stage("planning")
     variation = _select_variation(avatar_dir, digest, refresh=refresh)
     try:
         route, model = _llm_route()
-        direction, traits = _parse(_chat(
-            route, model, _encoded_reference(reference), variation))
+        stage("analysis")
+        response = _chat(
+            route, model, _encoded_reference(reference), variation)
+        stage("validation")
+        direction, traits = _parse(response)
         if _clean(traits.get("medium"), 40).lower() not in {
                 "game art", "anime", "illustration", "3d render"}:
             traits["look"] = variation["label"]
             traits["hero_color"] = variation["hero"]
+        stage("composition")
         prompt = _finalise(
             direction, traits.get("presentation"), traits.get("medium"),
             variation=variation)
     except Exception as error:
         note(f"portrait-tailored prompt unavailable, using the preset: {error}")
+        stage("fallback")
         return {"prompt": preset_prompt(), "source": "preset",
                 "traits": {}, "error": str(error)[:300]}
 
@@ -869,10 +885,12 @@ def tailored_prompt(avatar_dir, refresh=False, log=None):
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     try:
+        stage("saving")
         _write_cache(avatar_dir, payload)
     except Exception:
         pass
     note("composed a portrait-tailored full-body prompt")
+    stage("complete")
     return {
         "prompt": prompt,
         "source": "tailored",

@@ -1674,6 +1674,72 @@ async def api_body_prompt(request: BodyPromptRequest):
     }
 
 
+BODY_PROMPT_PROGRESS_STAGES = frozenset({
+    "portrait", "cache", "planning", "analysis", "validation",
+    "composition", "saving", "fallback", "complete",
+})
+
+
+@app.post("/api/avatar/body/prompt/stream")
+async def api_body_prompt_stream(request: BodyPromptRequest):
+    """Stream closed, non-sensitive stages while portrait art is composed."""
+    if not reg().read_manifest(request.slug):
+        raise HTTPException(404, "avatar not found")
+    from studio import wardrobe
+    directory = reg().adir(request.slug)
+
+    async def events():
+        queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def progress(stage):
+            if stage in BODY_PROMPT_PROGRESS_STAGES:
+                loop.call_soon_threadsafe(queue.put_nowait, ("progress", stage))
+
+        async def compose():
+            try:
+                result = await asyncio.to_thread(
+                    wardrobe.tailored_prompt, directory,
+                    refresh=request.refresh, progress=progress)
+                await queue.put(("result", result))
+            except Exception:
+                await queue.put(("error", None))
+
+        task = asyncio.create_task(compose())
+        try:
+            while True:
+                kind, value = await queue.get()
+                if kind == "progress":
+                    payload = {"type": "progress", "stage": value}
+                elif kind == "result":
+                    result = value or {}
+                    payload = {
+                        "type": "result",
+                        "prompt": result.get("prompt") or wardrobe.preset_prompt(),
+                        "source": result.get("source") or "preset",
+                        "traits": result.get("traits") or {},
+                        "error": result.get("error") or "",
+                    }
+                else:
+                    payload = {
+                        "type": "error",
+                        "message": "Could not finish the portrait art direction.",
+                    }
+                yield json.dumps(
+                    payload, separators=(",", ":"), ensure_ascii=False
+                ) + "\n"
+                if kind in {"result", "error"}:
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        events(), media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 class PromptExpandRequest(BaseModel):
     slug: str = Field(pattern=SLUG_PATTERN)
     kind: str = Field(pattern=r"^(body|walk|idle|move)$")
