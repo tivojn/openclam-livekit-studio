@@ -873,7 +873,7 @@ struct AvatarAgentEditorView: View {
                         set: { draft.agentConnectorBinding = $0 }
                     )) {
                         ForEach(agentConnections.availableBindings, id: \.self) { binding in
-                            Text(binding.displayName).tag(binding)
+                            Text(agentConnections.displayLabel(for: binding)).tag(binding)
                         }
                     }
                     .accessibilityIdentifier("openclam-avatar-openclaw-agent-picker")

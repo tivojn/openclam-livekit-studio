@@ -306,17 +306,19 @@ for (const required of [
 }
 assert.ok(fs.existsSync(path.join(root, 'electron/native/person_cutout.swift')));
 
-// Settings expose one explicit independent LiveKit cascade and no device
-// pairing/coupling surface. Broker and project host are signed-build pins,
-// while only stage selections and the Keychain pilot token are editable.
+// Settings expose one explicit independent LiveKit cascade and one local,
+// authenticated OpenClaw-to-iPhone pairing surface. Broker and project host
+// remain signed-build pins, while provider secrets stay write-only.
 for (const id of ['livekit-llm', 'livekit-stt', 'livekit-tts', 'livekit-save']) {
   assert.match(settings, new RegExp(`id=["']${id}["']`));
 }
 assert.match(settings, /fetch\('\/api\/livekit\/config'|api\('\/api\/livekit\/config'/);
 assert.match(settings, /readonly[\s\S]{0,120}livekit-server-host|livekit-server-host[\s\S]{0,120}readonly/);
-for (const forbidden of [/Your iPhone/i, /Vivieen Keys/i, /Pair iPhone/i]) {
+for (const forbidden of [/Your iPhone/i, /Vivieen Keys/i]) {
   assert.doesNotMatch(settings, forbidden);
 }
+assert.match(settings, /id="openclaw-pairing-card"/);
+assert.match(settings, /\/api\/openclaw\/pairing/);
 
 // PTT and Live Talk need microphone input; no Apple Events automation or
 // Accessibility entitlement survives the standalone cut.

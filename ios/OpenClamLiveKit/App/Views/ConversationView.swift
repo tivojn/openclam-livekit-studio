@@ -256,6 +256,7 @@ struct ConversationView: View {
     let onSelectAvatar: (_ id: String, _ displayName: String) -> Void
     let onShowSettings: () -> Void
     let onShowAISettings: () -> Void
+    let onShowAgentConnections: () -> Void
 
     var body: some View { lifecycleObservedSurface }
 
@@ -910,8 +911,18 @@ struct ConversationView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                if activity.allowsRetry || activity.allowsCancel {
+                if activity.allowsRetry || activity.allowsCancel || activity.allowsRepair {
                     HStack(spacing: 10) {
+                        if activity.allowsRepair {
+                            Button("Pair again") {
+                                dismissKeyboard()
+                                onShowAgentConnections()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("openclam-openclaw-activity-repair")
+                        }
+
                         if activity.allowsRetry {
                             Button("Retry") {
                                 retryRemoteAgentActivity()

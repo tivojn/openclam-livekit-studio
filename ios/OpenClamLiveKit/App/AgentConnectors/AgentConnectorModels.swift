@@ -528,6 +528,7 @@ enum AgentConnectorError: LocalizedError, Equatable {
     case unsupportedProtocol
     case missingConnection
     case missingClientToken
+    case pairingRequired
     case connectionUnavailable
     case redirected
     case responseTooLarge
@@ -562,6 +563,8 @@ enum AgentConnectorError: LocalizedError, Equatable {
             "This chat’s OpenClaw connection is no longer available. Pair it again or start a new On iPhone chat."
         case .missingClientToken:
             "This OpenClaw connection is no longer authorized. Pair it again."
+        case .pairingRequired:
+            "This OpenClaw pairing was replaced or removed. Pair this iPhone again."
         case .connectionUnavailable:
             "OpenClaw is unavailable right now. This message was not sent to the On iPhone model."
         case .redirected:

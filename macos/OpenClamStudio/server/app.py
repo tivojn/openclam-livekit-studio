@@ -33,6 +33,7 @@ from starlette.background import BackgroundTask
 import providers as P
 import credentials
 import xai_oauth
+import openclaw_pairing
 import livekit_bridge as LK
 import avatar_package as AVTR
 import align
@@ -2513,6 +2514,22 @@ async def api_config():
     return {"config": P.redacted(P.load()), "catalog": P.catalog(),
             "routes": {kind: P.last_route(kind) for kind in ("llm", "tts", "stt")},
             "active": active_slug()}
+
+
+@app.get("/api/openclaw/pairing")
+async def api_openclaw_pairing_status():
+    try:
+        return await asyncio.to_thread(openclaw_pairing.status)
+    except openclaw_pairing.OpenClawPairingError as error:
+        raise HTTPException(503, str(error)) from error
+
+
+@app.post("/api/openclaw/pairing")
+async def api_openclaw_pairing_create():
+    try:
+        return await asyncio.to_thread(openclaw_pairing.create_pairing_code)
+    except openclaw_pairing.OpenClawPairingError as error:
+        raise HTTPException(409, str(error)) from error
 
 
 class XaiOAuthPollRequest(BaseModel):

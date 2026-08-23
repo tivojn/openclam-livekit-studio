@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { pairOpenClam, selectPairingAccounts } from "../src/pairing.js";
+import {
+  pairOpenClam,
+  replaceOpenClamDevicePairing,
+  selectPairingAccounts,
+} from "../src/pairing.js";
 
 const bootstrapToken = "B".repeat(48);
 const adapterToken = "A".repeat(48);
@@ -203,6 +207,100 @@ describe("OpenClam pairing", () => {
 
     expect(result.oldConnectionRevoked).toBe(true);
     expect(events).toEqual(["fetch:POST", "credential", "state", "fetch:DELETE", "config"]);
+  });
+
+  it("creates an iPhone code from the existing adapter credential and atomically rotates config", async () => {
+    const oldConnectionId = randomUUID();
+    const newConnectionId = randomUUID();
+    const oldToken = "O".repeat(48);
+    const events: string[] = [];
+    let committed: any;
+    const cfg = {
+      ...baseConfig(),
+      channels: {
+        openclam: {
+          enabled: true,
+          adapterId: randomUUID(),
+          gatewayLabel: "OpenClam Mac",
+          bridgeUrl: "https://bridge.example",
+          connectionId: oldConnectionId,
+          adapterTokenFile: "/private/old-token",
+          stateFile: "/private/old-state",
+          defaultAccount: "main",
+          accounts: {
+            main: { enabled: true, agentId: "main", displayName: "Main" },
+            research: { enabled: true, agentId: "research", displayName: "Research" },
+          },
+        },
+      },
+    } as any;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      events.push(`${init?.method}:${url}`);
+      if (init?.method === "POST") {
+        expect(url).toBe(
+          `https://bridge.example/v1/adapters/${oldConnectionId}/pairings`,
+        );
+        expect((init.headers as Record<string, string>).Authorization).toBe(
+          `Bearer ${oldToken}`,
+        );
+        expect(init.body).toBeUndefined();
+        return Response.json(
+          {
+            v: 1,
+            pairingId: randomUUID(),
+            connectionId: newConnectionId,
+            code: "OC-CDEF-GHJK-MNPQ",
+            expiresAt: Date.now() + 600_000,
+            adapterToken,
+          },
+          { status: 201 },
+        );
+      }
+      expect(url).toBe(`https://bridge.example/v1/connectors/${oldConnectionId}`);
+      expect((init?.headers as Record<string, string>).Authorization).toBe(
+        `Bearer ${oldToken}`,
+      );
+      return new Response(null, { status: 204 });
+    });
+    const result = await replaceOpenClamDevicePairing(
+      cfg,
+      { credentialDirectory: "/private/openclam-test" },
+      {
+        fetch: fetchMock as any,
+        readCredential: vi.fn(async () => oldToken),
+        writeCredential: vi.fn(async (_path, token) => {
+          expect(token).toBe(adapterToken);
+          events.push("credential");
+        }),
+        writeState: vi.fn(async (_path, state) => {
+          expect(state.connectionId).toBe(newConnectionId);
+          events.push("state");
+        }),
+        mutateConfig: vi.fn(async ({ mutate }: any) => {
+          committed = structuredClone(cfg);
+          await mutate(committed);
+          events.push("config");
+          return {} as any;
+        }) as any,
+      },
+    );
+
+    expect(result.code).toBe("OC-CDEF-GHJK-MNPQ");
+    expect(result.oldConnectionRevoked).toBe(true);
+    expect(result.accounts.map((account) => account.accountId)).toEqual([
+      "main",
+      "research",
+    ]);
+    expect(events).toEqual([
+      `POST:https://bridge.example/v1/adapters/${oldConnectionId}/pairings`,
+      "credential",
+      "state",
+      `DELETE:https://bridge.example/v1/connectors/${oldConnectionId}`,
+      "config",
+    ]);
+    expect(committed.channels.openclam.connectionId).toBe(newConnectionId);
+    expect(committed.channels.openclam.defaultAccount).toBe("main");
+    expect(committed.bindings).toEqual(cfg.bindings);
   });
 
   it("keeps the existing config and fails when old revocation has no positive response", async () => {

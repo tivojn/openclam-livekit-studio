@@ -28,9 +28,10 @@ Users who want complete removal must delete those records separately.
   package explicitly from Files.
 - When an avatar is explicitly switched to OpenClaw mode, OpenClam sends that
   chat's user text and receives streamed reply text through the independently
-  deployed OpenClam bridge. Version 1 sends no audio, files, screenshots,
+  deployed OpenClam bridge. OpenClam sends no audio, iPhone files, screenshots,
   clipboard data, provider credentials, or iPhone tool approvals through this
-  connector.
+  connector. A negotiated extension may receive bounded generated files from
+  OpenClaw after iOS verifies their type, length, and SHA-256.
 
 Provider terms and retention policies apply. Local system voices and bundled
 offline speech recognition keep their respective inference traffic on-device.
@@ -59,7 +60,10 @@ history service.
 Each chat records the route that created it. Changing an avatar between On this
 iPhone and OpenClaw, or choosing a different remote agent, starts a new chat so
 one backend does not inherit another backend's transcript. Disconnecting
-revokes the bridge connection before local credentials are removed.
+revokes the bridge connection before local credentials are removed. The user
+may explicitly remove an obsolete pairing on iPhone; this also discards only
+that connection's unfinished saved turn while retaining chat history and
+already delivered files.
 
 The OpenClaw connector has no Telegram dependency and receives no LiveKit,
 language-model, speech-recognition, or speech-synthesis credentials. Continuous

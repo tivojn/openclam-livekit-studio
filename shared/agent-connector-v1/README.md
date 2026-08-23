@@ -47,6 +47,19 @@ revocation. Each installation is throttled after five failed redemption
 attempts. OpenClam stores only the returned client token in a
 `WhenUnlockedThisDeviceOnly` Keychain item. Pairing codes are never persisted.
 
+Once an adapter is configured, it may create a replacement iPhone code with an
+empty authenticated `POST /v1/adapters/{connectionId}/pairings`. This uses only
+that connector's adapter token, not the deployment bootstrap secret, and is
+rejected while a turn is active. The replacement is a new connector identity;
+the adapter revokes the previous connector before switching its local config.
+Code expiry is therefore a simple retry in the host UI, never an app reset.
+
+After a failed client WebSocket upgrade, iOS may authenticate
+`GET /v1/connectors/{connectionId}/status`. A `204` means the pairing is still
+valid and the transport failure remains retryable; `401` or `404` means the
+saved pairing must be replaced. The probe carries the same client bearer only
+in its authorization header and returns no connector metadata.
+
 ## WebSockets
 
 - iOS: `GET /v1/connectors/{connectionId}/events`

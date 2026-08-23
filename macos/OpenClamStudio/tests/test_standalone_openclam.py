@@ -222,6 +222,7 @@ class StandaloneRouteTests(unittest.TestCase):
             "/reply", "/say", "/stt", "/stt/stream",
             "/api/livekit/catalog", "/api/livekit/config",
             "/api/livekit/session", "/api/avatars", "/api/avatar/upload",
+            "/api/openclaw/pairing",
             "/api/avatar/body/generate", "/api/avatar/body/edit",
             "/api/avatar/motion/generate",
             "/api/avatar/activate", "/api/avatar/companion",

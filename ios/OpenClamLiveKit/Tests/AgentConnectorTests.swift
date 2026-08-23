@@ -52,6 +52,75 @@ final class AgentConnectorTests: XCTestCase {
         )
     }
 
+    func testPermanentWebSocketStatusesRequirePairingInsteadOfRetryingForever() {
+        for statusCode in [401, 403, 404, 410] {
+            XCTAssertEqual(
+                AgentConnectorTransportErrorMapper.error(
+                    forHTTPStatusCode: statusCode
+                ),
+                .pairingRequired
+            )
+        }
+        XCTAssertNil(
+            AgentConnectorTransportErrorMapper.error(forHTTPStatusCode: 500)
+        )
+        XCTAssertEqual(
+            AgentConnectorTransportErrorMapper.statusURL(
+                forEventsURL: URL(
+                    string: "wss://bridge.example/v1/connectors/11111111-1111-4111-8111-111111111111/events"
+                )!
+            )?.absoluteString,
+            "https://bridge.example/v1/connectors/11111111-1111-4111-8111-111111111111/status"
+        )
+        XCTAssertNil(
+            AgentConnectorTransportErrorMapper.statusURL(
+                forEventsURL: URL(string: "wss://bridge.example/not-the-connector")!
+            )
+        )
+    }
+
+    func testPairingRequiredDuringSubmitIsNotDowngradedOrRetried() async throws {
+        let suite = "AgentConnectorTests.pairing-required-send.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let sockets = PairingRequiredOnSendSocketConnector()
+        let connector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: AgentConnectorCursorStore(
+                defaults: defaults,
+                storagePrefix: "cursor.\(UUID().uuidString)"
+            ),
+            outboxVault: InMemoryAgentConnectorOutboxVault(),
+            socketConnector: sockets,
+            reconnectPolicy: .init(
+                maximumReconnectAttempts: 2,
+                baseDelayMilliseconds: 0
+            )
+        )
+        var events: [AgentConnectorStreamEvent] = []
+
+        do {
+            for try await event in connector.streamTurn(
+                .init(
+                    connectionID: UUID(),
+                    conversationID: UUID(),
+                    turnID: UUID(),
+                    accountID: "ara",
+                    text: "Hello"
+                ),
+                clientToken: String(repeating: "t", count: 48)
+            ) {
+                events.append(event)
+            }
+            XCTFail("Expected the revoked pairing to require repair.")
+        } catch let error as AgentConnectorError {
+            XCTAssertEqual(error, .pairingRequired)
+        }
+
+        XCTAssertEqual(events, [.submissionSaved])
+        XCTAssertEqual(sockets.connectionCount, 1)
+    }
+
     func testLegacyProfileAndThreadMapDecodeAsOnDevice() throws {
         let profileData = try JSONSerialization.data(withJSONObject: [
             "id": "ara",
@@ -244,6 +313,131 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertNil(model.connections.first { $0.connectionID == connectionID })
         XCTAssertNil(try vault.loadClientToken(for: connectionID))
         XCTAssertEqual(revocation.lastToken, token)
+    }
+
+    func testExplicitPairingRemovalDiscardsOnlyItsSavedTurnAndArtifacts() async throws {
+        let suite = "AgentConnectorTests.remove-pairing.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connectionID = UUID()
+        let turnID = UUID()
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher"
+        )
+        let token = String(repeating: "t", count: 48)
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        let artifacts = RecordingArtifactService()
+        var pending = try makePendingTurn(
+            connectionID: connectionID,
+            conversationID: UUID(),
+            turnID: turnID,
+            createdAt: 1_000
+        )
+        let metadata = makeAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: turnID,
+            expiresAt: 2_000_000
+        )
+        pending.attachments = [try artifacts.storedAttachment(for: metadata)]
+        try outbox.save(pending)
+        let vault = InMemoryAgentConnectorTokenVault()
+        let model = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID().uuidString)",
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: token
+            )),
+            revocationService: StubRevocationService(shouldFail: false),
+            connector: StubAgentConnector(),
+            artifactService: artifacts,
+            tokenVault: vault,
+            outboxVault: outbox
+        )
+        _ = try await model.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+
+        do {
+            try await model.disconnect(connectionID)
+            XCTFail("Normal disconnect must protect a saved turn")
+        } catch {
+            XCTAssertEqual(error as? AgentConnectorError, .recoveryPending)
+        }
+
+        try await model.disconnect(connectionID, discardPendingTurns: true)
+        XCTAssertTrue(try outbox.loadAll().isEmpty)
+        XCTAssertEqual(artifacts.deletedReferences, [metadata.conversationReference])
+        XCTAssertNil(try vault.loadClientToken(for: connectionID))
+        XCTAssertTrue(model.connections.isEmpty)
+    }
+
+    func testRevokedPairingBecomesRepairableTerminalOutcomeWithoutRetryTrap() async throws {
+        let suite = "AgentConnectorTests.pairing-required.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let history = ConversationHistoryController(
+            store: .init(fileURL: directory.appendingPathComponent("history.json"))
+        )
+        let conversation = ConversationModel(
+            preferences: defaults,
+            historyController: history
+        )
+        let historyIsReady = await conversation.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        let threadID = try XCTUnwrap(history.selectedThreadID)
+        let connectionID = UUID()
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Ara"
+        )
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID().uuidString)",
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "Home Mac",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            connector: PairingRequiredStubAgentConnector(),
+            tokenVault: InMemoryAgentConnectorTokenVault(),
+            outboxVault: InMemoryAgentConnectorOutboxVault()
+        )
+        let paired = try await connections.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "settings.\(UUID().uuidString)",
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        configuration.registerThread(
+            threadID,
+            for: configuration.activeAvatarID,
+            route: .remote(paired.binding(for: account))
+        )
+
+        await conversation.submit(
+            "Hello",
+            aiConfiguration: configuration,
+            agentConnections: connections
+        )
+
+        XCTAssertTrue(conversation.messages.contains {
+            $0.role == .assistant && $0.text.contains("pairing was replaced")
+        })
+        XCTAssertEqual(conversation.remoteAgentActivity?.title, "Pair OpenClaw again")
+        XCTAssertEqual(conversation.remoteAgentActivity?.allowsRepair, true)
+        XCTAssertEqual(conversation.remoteAgentActivity?.allowsRetry, false)
     }
 
     func testOneConnectionCannotRunTwoConversationTurnsConcurrently() async throws {
@@ -2835,6 +3029,18 @@ private struct HangingStubAgentConnector: AgentConnector {
     }
 }
 
+private struct PairingRequiredStubAgentConnector: AgentConnector {
+    func streamTurn(
+        _ request: AgentConnectorTurnRequest,
+        clientToken: String
+    ) -> AsyncThrowingStream<AgentConnectorStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(.submissionSaved)
+            continuation.finish(throwing: AgentConnectorError.pairingRequired)
+        }
+    }
+}
+
 private final class StubRevocationService: AgentConnectorRevocationServicing, @unchecked Sendable {
     private let lock = NSLock()
     private var shouldFail: Bool
@@ -2865,6 +3071,36 @@ private enum ScriptedSocketStep {
     case persistenceReceiptForLastSubmit
     case persistenceReceiptForLastCancel
     case waitForCancellation
+}
+
+private final class PairingRequiredOnSendSocketConnector:
+    AgentConnectorSocketConnecting,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var count = 0
+
+    var connectionCount: Int { lock.withLock { count } }
+
+    func connect(
+        request: URLRequest,
+        maximumMessageBytes: Int
+    ) throws -> any AgentConnectorSocket {
+        lock.withLock { count += 1 }
+        return PairingRequiredOnSendSocket()
+    }
+}
+
+private final class PairingRequiredOnSendSocket: AgentConnectorSocket, @unchecked Sendable {
+    func send(text: String) async throws {
+        throw AgentConnectorError.pairingRequired
+    }
+
+    func receiveText() async throws -> String {
+        throw AgentConnectorError.invalidFrame
+    }
+
+    func close() {}
 }
 
 private final class ScriptedSocketConnector: AgentConnectorSocketConnecting, @unchecked Sendable {

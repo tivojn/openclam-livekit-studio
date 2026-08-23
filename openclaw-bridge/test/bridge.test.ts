@@ -324,6 +324,81 @@ describe("HTTP pairing contract", () => {
     expect(value?.expiresAt).toBeLessThanOrEqual(Date.now() + 600_000);
   });
 
+  it("lets the authenticated adapter create a fresh iPhone pairing without the bootstrap secret", async () => {
+    const first = await createPairing();
+    expect(first.response.status).toBe(201);
+    if (first.value === undefined) throw new Error("missing create response");
+
+    const unauthorized = await request(
+      `/v1/adapters/${first.value.connectionId}/pairings`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${"W".repeat(43)}` },
+      },
+    );
+    expect(unauthorized.status).toBe(401);
+
+    const response = await request(
+      `/v1/adapters/${first.value.connectionId}/pairings`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${first.value.adapterToken}` },
+      },
+    );
+    expect(response.status).toBe(201);
+    const replacement = await response.json<CreatedPairing>();
+    expect(replacement.connectionId).not.toBe(first.value.connectionId);
+    expect(replacement.adapterToken).not.toBe(first.value.adapterToken);
+    expect(Object.keys(replacement).sort()).toEqual([
+      "adapterToken",
+      "code",
+      "connectionId",
+      "expiresAt",
+      "pairingId",
+      "v",
+    ]);
+
+    const redeemed = await redeemPairing(replacement.code);
+    expect(redeemed.response.status).toBe(200);
+    expect(redeemed.value).toMatchObject({
+      connectionId: replacement.connectionId,
+      gatewayLabel: GATEWAY_LABEL,
+      accounts,
+    });
+    const adapter = await openSocket(
+      "adapter",
+      replacement.connectionId,
+      replacement.adapterToken,
+    );
+    adapter.close(1000, "done");
+  });
+
+  it("lets a client distinguish a valid connection from a revoked pairing", async () => {
+    const { created, redeemed } = await paired();
+    const path = `/v1/connectors/${created.connectionId}/status`;
+
+    const valid = await request(path, {
+      headers: { Authorization: `Bearer ${redeemed.clientToken}` },
+    });
+    expect(valid.status).toBe(204);
+
+    const unauthorized = await request(path, {
+      headers: { Authorization: `Bearer ${"W".repeat(43)}` },
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const revoked = await request(`/v1/connectors/${created.connectionId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${redeemed.clientToken}` },
+    });
+    expect(revoked.status).toBe(204);
+
+    const missing = await request(path, {
+      headers: { Authorization: `Bearer ${redeemed.clientToken}` },
+    });
+    expect(missing.status).toBe(404);
+  });
+
   it("rejects unknown fields, duplicate accounts, invalid ids, and excess accounts", async () => {
     const cases = [
       createBody({ unknown: true }),

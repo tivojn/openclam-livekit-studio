@@ -1,6 +1,10 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-core";
 import { getOpenClamConfig, listOpenClamAccountIds, resolveOpenClamAccount } from "./config.js";
-import { pairOpenClam, type PairOpenClamOptions } from "./pairing.js";
+import {
+  pairOpenClam,
+  replaceOpenClamDevicePairing,
+  type PairOpenClamOptions,
+} from "./pairing.js";
 
 type CliRegistrar = Parameters<OpenClawPluginApi["registerCli"]>[0];
 
@@ -45,6 +49,34 @@ export const registerOpenClamCli: CliRegistrar = ({ program, config }) => {
       process.stdout.write(`Expires: ${new Date(result.expiresAt).toISOString()}\n`);
       process.stdout.write(`Agents: ${result.accounts.map((account) => account.displayName).join(", ")}\n`);
       process.stdout.write("Enter this code in OpenClam on the iPhone.\n");
+    });
+
+  root
+    .command("pair-device")
+    .description("Create a fresh iPhone code from the existing OpenClam connection")
+    .option("--json", "Print machine-readable pairing details", false)
+    .option("--credential-directory <path>", "Parent directory for the new connection credential")
+    .option("--allow-insecure-localhost", "Allow HTTP only for a localhost development bridge", false)
+    .action(async (raw: Record<string, unknown>) => {
+      const result = await replaceOpenClamDevicePairing(config, {
+        credentialDirectory:
+          typeof raw.credentialDirectory === "string" ? raw.credentialDirectory : undefined,
+        allowInsecureLocalhost: raw.allowInsecureLocalhost === true,
+      });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify({
+          v: 1,
+          code: result.code,
+          connectionId: result.connectionId,
+          expiresAt: result.expiresAt,
+          gatewayLabel: result.gatewayLabel,
+          accounts: result.accounts,
+        })}\n`);
+        return;
+      }
+      process.stdout.write(`iPhone pairing code: ${result.code}\n`);
+      process.stdout.write(`Valid until: ${new Date(result.expiresAt).toLocaleString()}\n`);
+      process.stdout.write("Enter it in OpenClam on iPhone. This code replaces the previous iPhone pairing.\n");
     });
 
   root

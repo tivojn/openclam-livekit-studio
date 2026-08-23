@@ -193,10 +193,25 @@ button.xai-mode{width:100%;padding:0;border:0;background:none;color:inherit;font
 .xai-search input{flex:none;width:16px;height:16px;margin:2px 0 0;accent-color:var(--ink)}
 .xai-search label{margin:0;color:var(--ink);font-size:12px;font-weight:600;cursor:pointer}
 .xai-search small{display:block;margin-top:3px;color:var(--dim);font-size:11.5px;font-weight:400;line-height:1.45}
+.openclaw-pairing-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.openclaw-pairing-head h3{margin:0 0 4px;font-size:14px;font-weight:600}
+.openclaw-pairing-head p{margin:0;color:var(--dim);font-size:12px;line-height:1.55}
+.openclaw-agents{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.openclaw-code{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;
+  align-items:center;margin-top:14px;padding:14px;border:1px solid var(--ok-line);
+  border-radius:8px;background:var(--ok-bg)}
+.openclaw-code code{font:700 19px ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.08em;color:var(--ink);overflow-wrap:anywhere}
+.openclaw-code-meta{grid-column:1/-1;color:var(--dim);font-size:11.5px}
+.openclaw-pairing-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px}
+.openclaw-pairing-state{min-height:1.4em;margin:10px 0 0;color:var(--dim);font-size:12px}
+.openclaw-pairing-state.bad{color:var(--bad-text)}
 @media(max-width:640px){.media-summary{flex-direction:column}.media-capabilities{
   justify-content:flex-start}.xai-mode-grid{grid-template-columns:1fr}.xai-account-head{
   flex-direction:column}.xai-device-line{grid-template-columns:1fr}.xai-device-line .btn{
-  justify-self:start}.xai-global-note{flex-wrap:wrap}.xai-global-note .btn{margin-left:30px}}
+  justify-self:start}.xai-global-note{flex-wrap:wrap}.xai-global-note .btn{margin-left:30px}
+  .openclaw-pairing-head{flex-direction:column}.openclaw-code{grid-template-columns:1fr}
+  .openclaw-code-meta{grid-column:1}.openclaw-code .btn{justify-self:start}}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px}
 .av{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;
   box-shadow:var(--shadow-sm);transition:box-shadow .15s,border-color .15s}
@@ -935,6 +950,33 @@ document.documentElement.dataset.design='quiet';</script>
     <div class="path">Local choices · write-only keys</div>
   </div>
 
+  <h2>OpenClaw · iPhone pairing</h2>
+  <p class="section-note">Connect OpenClam avatars on iPhone directly to the agents
+    already configured in OpenClaw.</p>
+  <div class="card" id="openclaw-pairing-card" aria-busy="true">
+    <div class="openclaw-pairing-head">
+      <div>
+        <h3 id="openclaw-pairing-title">Reading OpenClaw…</h3>
+        <p id="openclaw-pairing-detail">Checking the local OpenClaw channel.</p>
+      </div>
+      <span class="pill" id="openclaw-pairing-badge">Checking</span>
+    </div>
+    <div class="openclaw-agents" id="openclaw-pairing-agents" aria-label="OpenClaw agents"></div>
+    <div class="openclaw-pairing-actions">
+      <button class="btn pri" id="openclaw-pairing-create" type="button" disabled>Create iPhone code</button>
+      <button class="btn sm" id="openclaw-pairing-refresh" type="button">Refresh status</button>
+    </div>
+    <div class="openclaw-code" id="openclaw-pairing-code-card" hidden>
+      <code id="openclaw-pairing-code" aria-label="OpenClam iPhone pairing code"></code>
+      <button class="btn" id="openclaw-pairing-copy" type="button">Copy code</button>
+      <div class="openclaw-code-meta" id="openclaw-pairing-countdown" role="status" aria-live="polite"></div>
+    </div>
+    <p class="openclaw-pairing-state" id="openclaw-pairing-state" role="status" aria-live="polite"></p>
+    <p class="note">Creating a code safely replaces the previous iPhone pairing and
+      restarts the OpenClaw gateway. The one-time code is never saved here; if it
+      expires, create another in this same panel.</p>
+  </div>
+
   <h2 id="xai-account-title">xAI Account</h2>
   <p class="section-note">Choose one xAI sign-in for the whole app. The active
     mode is shared by Grok chat and web search, speech recognition, speaking
@@ -1379,6 +1421,119 @@ document.documentElement.dataset.design='quiet';</script>
 <script>
 const $ = s => document.querySelector(s);
 const api = async (p, o) => (await fetch(p, o)).json();
+let OPENCLAW_PAIRING_EXPIRES_AT = 0;
+let OPENCLAW_PAIRING_TIMER = 0;
+
+function openClawPairingCountdown() {
+  const field = $('#openclaw-pairing-countdown');
+  const card = $('#openclaw-pairing-code-card');
+  if (!field || !card || !OPENCLAW_PAIRING_EXPIRES_AT) return;
+  const remaining = Math.max(0, OPENCLAW_PAIRING_EXPIRES_AT - Date.now());
+  if (!remaining) {
+    card.hidden = true;
+    field.textContent = '';
+    $('#openclaw-pairing-state').textContent = 'That one-time code expired. Create a new one here.';
+    clearInterval(OPENCLAW_PAIRING_TIMER);
+    OPENCLAW_PAIRING_TIMER = 0;
+    return;
+  }
+  const totalSeconds = Math.ceil(remaining / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  field.textContent = `Valid for ${minutes}:${seconds} · enter it in OpenClam → Settings → Agent Connections.`;
+}
+
+function renderOpenClawPairingStatus(status) {
+  const available = Boolean(status && status.available);
+  const configured = Boolean(status && status.configured);
+  $('#openclaw-pairing-card').setAttribute('aria-busy', 'false');
+  $('#openclaw-pairing-title').textContent = configured
+    ? (status.gateway_label || 'OpenClaw gateway') : 'OpenClaw connection needed';
+  $('#openclaw-pairing-detail').textContent = configured
+    ? 'Ready to create a fresh one-time code for OpenClam on iPhone.'
+    : (available
+      ? 'Configure the OpenClam channel in OpenClaw before pairing an iPhone.'
+      : 'Install OpenClaw on this Mac before pairing an iPhone.');
+  const badge = $('#openclaw-pairing-badge');
+  badge.textContent = configured ? 'Ready' : (available ? 'Not configured' : 'Not installed');
+  badge.className = `pill ${configured ? 'ok' : 'warn'}`;
+  const agents = $('#openclaw-pairing-agents');
+  agents.replaceChildren();
+  for (const account of (status.accounts || [])) {
+    const item = document.createElement('span');
+    item.className = 'pill';
+    item.textContent = `${account.display_name} · ${account.agent_id}`;
+    agents.appendChild(item);
+  }
+  $('#openclaw-pairing-create').disabled = !configured;
+}
+
+async function loadOpenClawPairingStatus() {
+  const state = $('#openclaw-pairing-state');
+  state.className = 'openclaw-pairing-state';
+  state.textContent = 'Checking OpenClaw…';
+  try {
+    const status = await api('/api/openclaw/pairing');
+    if (status && status.detail) {
+      state.classList.add('bad');
+      state.textContent = status.detail;
+      return;
+    }
+    renderOpenClawPairingStatus(status || {});
+    state.textContent = '';
+  } catch {
+    $('#openclaw-pairing-card').setAttribute('aria-busy', 'false');
+    $('#openclaw-pairing-create').disabled = true;
+    state.classList.add('bad');
+    state.textContent = 'OpenClaw status is unavailable. Check that OpenClam Studio is still running, then refresh.';
+  }
+}
+
+async function createOpenClawPairingCode() {
+  if (!confirm('Create a fresh iPhone pairing code? The previous iPhone pairing will stop working, but OpenClaw agents and all other channels stay unchanged.')) return;
+  const button = $('#openclaw-pairing-create');
+  const state = $('#openclaw-pairing-state');
+  button.disabled = true;
+  button.textContent = 'Creating…';
+  state.className = 'openclaw-pairing-state';
+  state.textContent = 'Rotating only the OpenClam iPhone connection…';
+  try {
+    const result = await api('/api/openclaw/pairing', {method: 'POST'});
+    if (!result || result.detail || !result.code) {
+      state.classList.add('bad');
+      state.textContent = (result && result.detail)
+        || 'OpenClaw could not create an iPhone code.';
+      return;
+    }
+    $('#openclaw-pairing-code').textContent = result.code;
+    $('#openclaw-pairing-code-card').hidden = false;
+    OPENCLAW_PAIRING_EXPIRES_AT = Number(result.expires_at) || 0;
+    clearInterval(OPENCLAW_PAIRING_TIMER);
+    OPENCLAW_PAIRING_TIMER = setInterval(openClawPairingCountdown, 1000);
+    openClawPairingCountdown();
+    await loadOpenClawPairingStatus();
+    state.textContent = result.warning || 'Code ready. OpenClaw agents and other channels were not changed.';
+  } catch {
+    state.classList.add('bad');
+    state.textContent = 'OpenClaw could not create an iPhone code. Check the local gateway and try again.';
+  } finally {
+    button.textContent = 'Create new iPhone code';
+    button.disabled = false;
+  }
+}
+
+$('#openclaw-pairing-create').onclick = () => void createOpenClawPairingCode();
+$('#openclaw-pairing-refresh').onclick = () => void loadOpenClawPairingStatus();
+$('#openclaw-pairing-copy').onclick = async () => {
+  const code = $('#openclaw-pairing-code').textContent.trim();
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    $('#openclaw-pairing-state').textContent = 'Pairing code copied.';
+  } catch {
+    $('#openclaw-pairing-state').textContent = 'Copy failed. Select the code and copy it manually.';
+  }
+};
 
 /* Modal focus contract. The preview may open above calibration, and the
    prompt dialogs may open above Full Body Studio, so this is deliberately a
@@ -6298,6 +6453,7 @@ async function boot() {
   renderKeys();
   ['image', 'video'].forEach(renderMediaDefault);
   void loadXaiAuthStatus(false);
+  void loadOpenClawPairingStatus();
   CFG.persona = CFG.persona || {};
   $('#pname').value = CFG.persona.name || '';
   $('#psys').value = CFG.persona.system || '';

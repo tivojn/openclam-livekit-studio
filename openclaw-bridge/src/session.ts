@@ -222,6 +222,15 @@ export class ConnectorSession extends DurableObject<Env> {
     if (request.method === "POST" && url.pathname === "/internal/expire") {
       return this.expire(await request.json<InternalExpireRequest>());
     }
+    if (
+      request.method === "POST" &&
+      url.pathname === "/internal/pairings/authorize"
+    ) {
+      return this.authorizeReplacementPairing(request);
+    }
+    if (request.method === "GET" && url.pathname === "/internal/status") {
+      return this.connectionStatus(request);
+    }
     if (request.method === "GET" && url.pathname === "/internal/connect") {
       const role = url.searchParams.get("role");
       if (role !== "client" && role !== "adapter") {
@@ -356,6 +365,36 @@ export class ConnectorSession extends DurableObject<Env> {
       return json({ error: "not_expired" }, 409);
     }
     await this.deleteSession("pairing_expired");
+    return new Response(null, { status: 204 });
+  }
+
+  private async authorizeReplacementPairing(request: Request): Promise<Response> {
+    const record = await this.ctx.storage.get<SessionRecord>(SESSION_KEY);
+    if (record === undefined) return json({ error: "not_found" }, 404);
+    if (!(await this.authenticates(request, record, "adapter"))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    if (record.activeTurns.length > 0) {
+      return json({ error: "conversation_busy" }, 409);
+    }
+    return json({
+      v: 1,
+      adapterId: record.adapterId,
+      gatewayLabel: record.gatewayLabel,
+      accounts: record.accounts,
+    });
+  }
+
+  private async connectionStatus(request: Request): Promise<Response> {
+    const record = await this.ctx.storage.get<SessionRecord>(SESSION_KEY);
+    if (record === undefined) return json({ error: "not_found" }, 404);
+    if (!(await this.authenticates(request, record, "client"))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    if (this.hasExpiredActiveTurn(record, Date.now())) {
+      await this.deleteSession("turn_expired");
+      return json({ error: "not_found" }, 404);
+    }
     return new Response(null, { status: 204 });
   }
 

@@ -106,6 +106,13 @@ final class AgentConnectionModel: ObservableObject {
         }
     }
 
+    func displayLabel(for binding: AvatarAgentConnectorBinding) -> String {
+        guard let connection = connection(for: binding) else {
+            return binding.displayName
+        }
+        return "\(binding.displayName) · \(connection.gatewayLabel)"
+    }
+
     @discardableResult
     func redeemPairingCode(_ rawCode: String) async throws -> AgentConnectorConnection {
         guard !isPairing else { throw AgentConnectorError.conversationBusy }
@@ -134,14 +141,18 @@ final class AgentConnectionModel: ObservableObject {
         return result.connection
     }
 
-    func disconnect(_ connectionID: UUID) async throws {
+    func disconnect(
+        _ connectionID: UUID,
+        discardPendingTurns: Bool = false
+    ) async throws {
         guard !revokingConnectionIDs.contains(connectionID),
               !activeConnectionIDs.contains(connectionID) else {
             throw AgentConnectorError.conversationBusy
         }
-        guard try !outboxVault.loadAll().contains(where: {
+        let pendingTurns = try outboxVault.loadAll().filter {
             $0.connectionID == connectionID
-        }) else {
+        }
+        guard discardPendingTurns || pendingTurns.isEmpty else {
             throw AgentConnectorError.recoveryPending
         }
         guard connections.contains(where: { $0.connectionID == connectionID }) else {
@@ -157,6 +168,19 @@ final class AgentConnectionModel: ObservableObject {
             connectionID: connectionID,
             clientToken: clientToken
         )
+        if discardPendingTurns {
+            await deleteArtifacts(
+                pendingTurns.flatMap { turn in
+                    (turn.attachments ?? []).map(\.metadata.conversationReference)
+                }
+            )
+            for turn in pendingTurns {
+                try outboxVault.delete(
+                    connectionID: turn.connectionID,
+                    turnID: turn.turnID
+                )
+            }
+        }
         try tokenVault.deleteClientToken(for: connectionID)
         connections.removeAll { $0.connectionID == connectionID }
         persistConnections()

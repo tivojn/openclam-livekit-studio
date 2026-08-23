@@ -63,13 +63,19 @@ WebSocket design.
 
 ## Pairing and credentials
 
-1. The configured OpenClaw adapter asks the bridge for a ten-minute pairing.
+1. The first configured OpenClaw adapter asks the bridge for a ten-minute
+   pairing using the deployment bootstrap secret. Later iPhone pairings are
+   created from the existing adapter credential through the OpenClam Studio
+   Settings panel; the bootstrap secret does not enter the desktop app.
 2. The bridge returns `OC-XXXX-XXXX-XXXX` plus an adapter token exactly once.
 3. The user enters the code in OpenClam.
 4. The bridge atomically consumes it and returns a distinct client token exactly
    once, together with the allowed OpenClaw agents.
 5. OpenClam stores the client token in ThisDeviceOnly Keychain storage. The
    adapter token stays on the OpenClaw host.
+6. A user can explicitly remove an obsolete pairing on iPhone. The bridge is
+   revoked before local credentials and any unfinished saved turn for that
+   connection are removed; chat history and delivered files remain local.
 
 The bridge stores only token verifiers. A code carries 60 bits of randomness,
 expires after ten minutes, and cannot be replayed. Each installation is
@@ -78,7 +84,8 @@ both sides.
 
 ## Message lifecycle
 
-Version 1 carries text only:
+The base contract carries text. Updated clients may also negotiate safe
+enum-only activity and verified generated-file delivery:
 
 1. `turn.submit`
 2. `turn.accepted`

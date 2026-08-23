@@ -237,7 +237,17 @@ excludes(/Vivieen/i);
 excludes(/EnConvo/i);
 excludes(/TestFlight/i);
 excludes(/\bSolo\b/i);
-excludes(/\bpair(?:ing|ed)?\b/i);
+for (const id of [
+  'openclaw-pairing-card', 'openclaw-pairing-create',
+  'openclaw-pairing-refresh', 'openclaw-pairing-code-card',
+  'openclaw-pairing-code', 'openclaw-pairing-copy',
+  'openclaw-pairing-countdown', 'openclaw-pairing-state',
+]) includes(`id="${id}"`);
+includes("api('/api/openclaw/pairing'");
+includes("api('/api/openclaw/pairing', {method: 'POST'}");
+includes('all other channels stay unchanged');
+includes('The one-time code is never saved here');
+excludes(/Telegram|BotFather|bot token/i);
 excludes(/relay/i);
 excludes(/selfie|capture="user"|takeSelfie/i);
 excludes(/\/api\/avatar\/store|\/api\/media\/defaults|\/api\/reveal/i);

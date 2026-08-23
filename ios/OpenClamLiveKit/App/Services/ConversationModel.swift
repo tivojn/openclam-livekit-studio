@@ -234,6 +234,27 @@ struct RemoteAgentActivityPresentation: Identifiable, Equatable, Sendable {
     let showsProgress: Bool
     let allowsRetry: Bool
     let allowsCancel: Bool
+    let allowsRepair: Bool
+
+    init(
+        id: UUID,
+        phase: Phase,
+        title: String,
+        detail: String?,
+        showsProgress: Bool,
+        allowsRetry: Bool,
+        allowsCancel: Bool,
+        allowsRepair: Bool = false
+    ) {
+        self.id = id
+        self.phase = phase
+        self.title = title
+        self.detail = detail
+        self.showsProgress = showsProgress
+        self.allowsRetry = allowsRetry
+        self.allowsCancel = allowsCancel
+        self.allowsRepair = allowsRepair
+    }
 }
 
 @MainActor
@@ -1621,11 +1642,14 @@ final class ConversationModel: ObservableObject {
         }
         let terminal = pendingTurn?.terminal
         let connectorError = resolvedError as? AgentConnectorError
+        let pairingMustBeRepaired = connectorError == .pairingRequired
         let isDurableOutcome = terminal != nil
             || cancellationWasPersisted
             || connectorError == .recoveryExpired
+            || pairingMustBeRepaired
 
         let shouldDiscardPendingAttachments = connectorError == .recoveryExpired
+            || pairingMustBeRepaired
             || terminal?.kind == .failed
         if shouldDiscardPendingAttachments {
             await agentConnections.deleteArtifacts(
@@ -1688,7 +1712,20 @@ final class ConversationModel: ObservableObject {
                 connectionID: connectionID,
                 turnID: turnID
             )
-            remoteAgentActivity = nil
+            if pairingMustBeRepaired {
+                remoteAgentActivity = .init(
+                    id: turnID,
+                    phase: .needsAttention,
+                    title: "Pair OpenClaw again",
+                    detail: "This saved pairing was replaced or removed. Pair again, choose the agent, and OpenClam will start a fresh chat.",
+                    showsProgress: false,
+                    allowsRetry: false,
+                    allowsCancel: false,
+                    allowsRepair: true
+                )
+            } else {
+                remoteAgentActivity = nil
+            }
         } else if isDurableOutcome {
             remoteAgentActivity = .init(
                 id: turnID,

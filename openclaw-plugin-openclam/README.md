@@ -88,6 +88,19 @@ operator creates a fresh pairing so the iPhone receives accurate metadata.
 
 ## Replace or rotate a pairing
 
+After the first installation, the simplest user flow is **OpenClam Studio →
+Settings → AI & Voice → OpenClaw · iPhone pairing**. The panel uses the existing
+adapter credential to create a fresh iPhone code, restarts the Gateway, and
+never asks for or stores the bridge bootstrap secret. The equivalent CLI is:
+
+```bash
+openclaw openclam pair-device
+```
+
+`pair-device` retains the configured gateway label, accounts, agent bindings,
+and bridge origin. It rotates only the OpenClam connector identity and its
+role-scoped credentials. Other OpenClaw channels are untouched.
+
 `--replace` creates a new adapter connection and writes its private local
 credential first. It must then receive a successful revocation response for
 the old bridge connection before it commits the new channel config or prints

@@ -43,12 +43,6 @@ struct OpenClawPairingView: View {
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled()
                             .font(.body.monospaced())
-                            .onChange(of: pairingCode) { _, value in
-                                let normalized = AgentConnectorPairingCode.normalized(value)
-                                if pairingCode != normalized {
-                                    pairingCode = normalized
-                                }
-                            }
                             .accessibilityLabel("OpenClam pairing code")
                             .accessibilityIdentifier("openclam-openclaw-pairing-code")
 
@@ -69,7 +63,7 @@ struct OpenClawPairingView: View {
                     } header: {
                         Text("Pair with OpenClaw")
                     } footer: {
-                        Text("Create a one-time OpenClam pairing code on your OpenClaw host, then enter it here. The code expires quickly and is never saved. OpenClam saves the gateway and agent labels needed for this connection, while its revocable client token stays in device-only Keychain.")
+                        Text("On your Mac, open OpenClam Studio → Settings → AI & Voice → OpenClaw · iPhone pairing, then create a code. If it expires, create another—nothing needs to be reset. The code is never saved; the revocable connection token stays in device-only Keychain.")
                     }
                 }
 
@@ -118,9 +112,14 @@ struct OpenClawPairingView: View {
 
 struct AgentConnectionsSettingsView: View {
     @EnvironmentObject private var connections: AgentConnectionModel
+    @ObservedObject var configuration: AIConfigurationModel
+
+    let onConnectorRouteChanged: (String) -> Void
+
     @State private var showsPairing = false
     @State private var disconnectCandidate: AgentConnectorConnection?
     @State private var errorMessage: String?
+    @State private var notice: String?
 
     var body: some View {
         List {
@@ -128,12 +127,12 @@ struct AgentConnectionsSettingsView: View {
                 Button {
                     showsPairing = true
                 } label: {
-                    Label("Pair OpenClaw", systemImage: "link.badge.plus")
+                    Label("Pair this iPhone", systemImage: "link.badge.plus")
                 }
                 .disabled(!connections.isConfigured)
             } footer: {
                 Text(connections.isConfigured
-                     ? "Pairing connects this iPhone to your OpenClaw host. Assign an agent to an avatar from Avatar Agents."
+                     ? "Create the one-time code in OpenClam Studio on your Mac. After pairing, choose an agent and it will be assigned to the active avatar automatically."
                      : "OpenClaw pairing is not configured in this build.")
             }
 
@@ -143,21 +142,39 @@ struct AgentConnectionsSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(connections.connections) { connection in
-                    HStack {
+                    HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(connection.gatewayLabel)
                                 .font(.body.weight(.semibold))
-                            Text("\(connection.accounts.count) agent\(connection.accounts.count == 1 ? "" : "s")")
+                            Text(connection.accounts.map(\.displayName).joined(separator: ", "))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            if !avatarNames(using: connection).isEmpty {
+                                Text("Used by \(avatarNames(using: connection).joined(separator: ", "))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         if connections.revokingConnectionIDs.contains(connection.connectionID) {
                             ProgressView()
+                        } else {
+                            Button(role: .destructive) {
+                                disconnectCandidate = connection
+                            } label: {
+                                Image(systemName: "trash")
+                                    .frame(width: 34, height: 34)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Remove \(connection.gatewayLabel) pairing")
+                            .accessibilityIdentifier(
+                                "openclam-openclaw-disconnect-\(connection.connectionID.uuidString.lowercased())"
+                            )
                         }
                     }
                     .swipeActions {
-                        Button("Disconnect", role: .destructive) {
+                        Button("Remove", role: .destructive) {
                             disconnectCandidate = connection
                         }
                         .disabled(connections.revokingConnectionIDs.contains(connection.connectionID))
@@ -170,26 +187,51 @@ struct AgentConnectionsSettingsView: View {
                     Text(errorMessage).foregroundStyle(.red)
                 }
             }
+
+            if let notice {
+                Section {
+                    Label(notice, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
         }
         .navigationTitle("Agent Connections")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showsPairing) {
-            OpenClawPairingView { _ in }
+            OpenClawPairingView { binding in
+                assignToActiveAvatar(binding)
+            }
                 .environmentObject(connections)
         }
         .confirmationDialog(
-            "Disconnect this OpenClaw gateway?",
+            "Remove this OpenClaw pairing?",
             isPresented: Binding(
                 get: { disconnectCandidate != nil },
                 set: { if !$0 { disconnectCandidate = nil } }
             ),
             presenting: disconnectCandidate
         ) { connection in
-            Button("Disconnect", role: .destructive) {
+            Button("Remove pairing", role: .destructive) {
                 Task { @MainActor in
                     do {
-                        try await connections.disconnect(connection.connectionID)
+                        let affectedAvatarIDs = configuration.avatarAgentProfiles.values
+                            .filter {
+                                $0.agentConnectorBinding?.connectionID
+                                    == connection.connectionID
+                            }
+                            .map(\.id)
+                        try await connections.disconnect(
+                            connection.connectionID,
+                            discardPendingTurns: true
+                        )
+                        for avatarID in affectedAvatarIDs {
+                            var profile = configuration.profile(for: avatarID)
+                            profile.agentConnectorBinding = nil
+                            try configuration.updateAvatarProfile(profile)
+                            onConnectorRouteChanged(avatarID)
+                        }
                         disconnectCandidate = nil
+                        notice = "Removed \(connection.gatewayLabel). Affected avatars will use On iPhone for new chats."
                     } catch {
                         disconnectCandidate = nil
                         errorMessage = error.localizedDescription
@@ -198,7 +240,34 @@ struct AgentConnectionsSettingsView: View {
             }
             Button("Cancel", role: .cancel) { disconnectCandidate = nil }
         } message: { _ in
-            Text("Existing chats stay pinned to OpenClaw and will fail closed until you pair again. They never switch to the On iPhone model automatically.")
+            Text("This revokes the connection, discards any saved unfinished turn for it, and returns affected avatars to On iPhone for new chats. Existing chat history and received files stay on this iPhone.")
+        }
+    }
+
+    private func avatarNames(
+        using connection: AgentConnectorConnection
+    ) -> [String] {
+        configuration.avatarAgentProfiles.values
+            .filter {
+                $0.agentConnectorBinding?.connectionID == connection.connectionID
+            }
+            .map(\.displayName)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private func assignToActiveAvatar(_ binding: AvatarAgentConnectorBinding) {
+        do {
+            var profile = configuration.activeAvatarProfile
+            let routeChanged = profile.agentConnectorBinding != binding
+            profile.agentConnectorBinding = binding
+            try configuration.updateAvatarProfile(profile)
+            if routeChanged {
+                onConnectorRouteChanged(profile.id)
+            }
+            errorMessage = nil
+            notice = "\(connections.displayLabel(for: binding)) is now assigned to \(profile.displayName)."
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

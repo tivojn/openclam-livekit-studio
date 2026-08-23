@@ -592,6 +592,7 @@ struct URLSessionAgentConnectorSocketFactory: AgentConnectorSocketConnecting, Se
 private final class URLSessionAgentConnectorSocket: AgentConnectorSocket, @unchecked Sendable {
     private let session: URLSession
     private let task: URLSessionWebSocketTask
+    private let statusRequest: URLRequest?
 
     init(request: URLRequest, maximumMessageBytes: Int) {
         let configuration = URLSessionConfiguration.ephemeral
@@ -606,17 +607,38 @@ private final class URLSessionAgentConnectorSocket: AgentConnectorSocket, @unche
             delegate: delegate,
             delegateQueue: nil
         )
+        if let requestURL = request.url,
+           let statusURL = AgentConnectorTransportErrorMapper.statusURL(
+                forEventsURL: requestURL
+           ) {
+            var statusRequest = request
+            statusRequest.url = statusURL
+            statusRequest.httpMethod = "GET"
+            statusRequest.httpBody = nil
+            self.statusRequest = statusRequest
+        } else {
+            statusRequest = nil
+        }
         task = session.webSocketTask(with: request)
         task.maximumMessageSize = maximumMessageBytes
         task.resume()
     }
 
     func send(text: String) async throws {
-        try await task.send(.string(text))
+        do {
+            try await task.send(.string(text))
+        } catch {
+            throw await translatedTransportError(error)
+        }
     }
 
     func receiveText() async throws -> String {
-        let message = try await task.receive()
+        let message: URLSessionWebSocketTask.Message
+        do {
+            message = try await task.receive()
+        } catch {
+            throw await translatedTransportError(error)
+        }
         guard case let .string(text) = message else {
             throw AgentConnectorError.frameTooLarge
         }
@@ -626,6 +648,67 @@ private final class URLSessionAgentConnectorSocket: AgentConnectorSocket, @unche
     func close() {
         task.cancel(with: .goingAway, reason: nil)
         session.invalidateAndCancel()
+    }
+
+    private func permanentPairingError() async -> AgentConnectorError? {
+        guard let statusRequest else { return nil }
+        do {
+            let (_, response) = try await session.data(for: statusRequest)
+            guard let http = response as? HTTPURLResponse else { return nil }
+            return AgentConnectorTransportErrorMapper.error(
+                forHTTPStatusCode: http.statusCode
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private func translatedTransportError(_ error: Error) async -> Error {
+        if let statusCode = (task.response as? HTTPURLResponse)?.statusCode,
+           let connectorError = AgentConnectorTransportErrorMapper.error(
+            forHTTPStatusCode: statusCode
+           ) {
+            return connectorError
+        }
+        if let connectorError = await permanentPairingError() {
+            return connectorError
+        }
+        return error
+    }
+}
+
+enum AgentConnectorTransportErrorMapper {
+    static func error(forHTTPStatusCode statusCode: Int) -> AgentConnectorError? {
+        switch statusCode {
+        case 401, 403, 404, 410:
+            .pairingRequired
+        default:
+            nil
+        }
+    }
+
+    static func statusURL(forEventsURL url: URL) -> URL? {
+        guard var components = URLComponents(
+            url: url,
+            resolvingAgainstBaseURL: false
+        ) else { return nil }
+        switch components.scheme?.lowercased() {
+        case "wss": components.scheme = "https"
+        case "ws": components.scheme = "http"
+        default: return nil
+        }
+        let path = components.path.split(separator: "/", omittingEmptySubsequences: true)
+        guard path.count == 4,
+              path[0] == "v1",
+              path[1] == "connectors",
+              UUID(uuidString: String(path[2])) != nil,
+              path[3] == "events" else {
+            return nil
+        }
+        components.path = "/v1/connectors/\(path[2])/status"
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
 }
 
@@ -1519,6 +1602,8 @@ private actor OpenClawTurnSession {
             try await socket.send(text: frame.text)
         } catch is CancellationError {
             throw CancellationError()
+        } catch let connectorError as AgentConnectorError {
+            throw connectorError
         } catch {
             throw AgentConnectorError.connectionUnavailable
         }

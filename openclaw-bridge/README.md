@@ -14,6 +14,9 @@ consistency metadata for OpenClam.
 - Model, speech, LiveKit, and OpenClaw Gateway credentials never enter this
   Worker or the iOS connector profile.
 - `POST /v1/pairings` requires the adapter bootstrap bearer.
+- `POST /v1/adapters/{connectionId}/pairings` lets an already authenticated
+  adapter rotate its own iPhone pairing without exposing or reusing the
+  bootstrap bearer. It is rejected while that connection has an active turn.
 - Pairing returns distinct adapter and client tokens. A raw token is returned
   once to the adapter. A SHA-256 verifier bound to each role and connection is
   persisted. The client token is additionally retained as AES-GCM ciphertext
@@ -92,6 +95,22 @@ another installation is rejected. The retry token exists at rest only as
 AES-GCM ciphertext and is cleared at pairing expiry or connector revocation.
 Expired, consumed, missing, and throttled pairings use only the bounded safe
 error schema in `shared/agent-connector-v1/pairing.schema.json`.
+
+### Create a replacement iPhone pairing
+
+`POST /v1/adapters/{connectionId}/pairings` requires the current adapter bearer
+and an empty body. It copies only the already validated gateway label and agent
+list into a new, independently keyed connector, returning the same create
+response shape as `POST /v1/pairings`. The adapter must revoke the old connector
+before committing its new local configuration. This is the endpoint used by
+the OpenClam Studio pairing panel; the bridge bootstrap secret never enters the
+Mac app.
+
+`GET /v1/connectors/{connectionId}/status` requires the client bearer and has
+no request body. It returns `204` for a valid connector, `401` for a mismatched
+credential, and `404` after revocation or expiry. The iOS client calls this
+only after a WebSocket upgrade fails, so a permanent stale pairing is shown as
+Pair again instead of entering transient recovery.
 
 ### Revoke a connector
 

@@ -20,7 +20,12 @@ import {
 } from "./errors";
 import { PairingCoordinator } from "./pairing";
 import { ConnectorSession } from "./session";
-import type { AttachmentRecord, PairingRecord, SocketRole } from "./types";
+import type {
+  AttachmentRecord,
+  CreatePairingRequest,
+  PairingRecord,
+  SocketRole,
+} from "./types";
 import {
   bearerToken,
   CREATE_BODY_LIMIT_BYTES,
@@ -37,6 +42,8 @@ const CREATE_PAIRING_PATH = "/v1/pairings";
 const REDEEM_PAIRING_PATH = "/v1/pairings/redeem";
 const CLIENT_EVENTS_PATH = /^\/v1\/connectors\/([^/]+)\/events$/;
 const ADAPTER_EVENTS_PATH = /^\/v1\/adapters\/([^/]+)\/events$/;
+const ADAPTER_PAIRING_PATH = /^\/v1\/adapters\/([^/]+)\/pairings$/;
+const CLIENT_STATUS_PATH = /^\/v1\/connectors\/([^/]+)\/status$/;
 const DELETE_CONNECTOR_PATH = /^\/v1\/connectors\/([^/]+)$/;
 const ADAPTER_ATTACHMENT_PATH =
   /^\/v1\/adapters\/([^/]+)\/attachments\/([^/]+)$/;
@@ -163,12 +170,10 @@ async function deleteAttachmentBlob(
   }
 }
 
-async function createPairing(request: Request, env: Env): Promise<Response> {
-  validateConfiguration(env);
-  await authenticateBootstrap(request, env);
-  requireJson(request);
-  const raw = await readBoundedRequestBody(request, CREATE_BODY_LIMIT_BYTES);
-  const input = parseCreatePairing(parseJsonBody(raw.text));
+async function issuePairing(
+  env: Env,
+  input: CreatePairingRequest,
+): Promise<Response> {
   const now = Date.now();
   const expiresAt = now + pairingTtlMilliseconds(env);
   const unpairedCleanupAt = expiresAt + pairingTtlMilliseconds(env);
@@ -238,6 +243,55 @@ async function createPairing(request: Request, env: Env): Promise<Response> {
     );
   }
   throw new HttpError(503, "unavailable");
+}
+
+async function createPairing(request: Request, env: Env): Promise<Response> {
+  validateConfiguration(env);
+  await authenticateBootstrap(request, env);
+  requireJson(request);
+  const raw = await readBoundedRequestBody(request, CREATE_BODY_LIMIT_BYTES);
+  return issuePairing(env, parseCreatePairing(parseJsonBody(raw.text)));
+}
+
+async function createAdapterPairing(
+  request: Request,
+  env: Env,
+  connectionId: string,
+): Promise<Response> {
+  validateConfiguration(env);
+  if (!uuidPath(connectionId)) return errorResponse("not_found", 404);
+  await requireEmptyRequestBody(request);
+  const headers = authorizationHeaders(request);
+  const authorized = await session(env, connectionId).fetch(
+    "https://session.internal/internal/pairings/authorize",
+    { method: "POST", headers },
+  );
+  if (!authorized.ok) {
+    if (authorized.status === 401) return errorResponse("unauthorized", 401);
+    if (authorized.status === 404) return errorResponse("not_found", 404);
+    if (authorized.status === 409) return errorResponse("conversation_busy", 409);
+    return errorResponse("unavailable", 503);
+  }
+  const input = parseCreatePairing(await authorized.json());
+  return issuePairing(env, input);
+}
+
+async function connectorStatus(
+  request: Request,
+  env: Env,
+  connectionId: string,
+): Promise<Response> {
+  validateConfiguration(env);
+  if (!uuidPath(connectionId)) return errorResponse("not_found", 404);
+  await requireEmptyRequestBody(request);
+  const response = await session(env, connectionId).fetch(
+    "https://session.internal/internal/status",
+    { method: "GET", headers: authorizationHeaders(request) },
+  );
+  if (response.status === 204) return new Response(null, { status: 204 });
+  if (response.status === 401) return errorResponse("unauthorized", 401);
+  if (response.status === 404) return errorResponse("not_found", 404);
+  return errorResponse("unavailable", 503);
 }
 
 async function redeemPairing(request: Request, env: Env): Promise<Response> {
@@ -510,6 +564,14 @@ async function route(request: Request, env: Env): Promise<Response> {
   const adapterMatch = ADAPTER_EVENTS_PATH.exec(url.pathname);
   if (request.method === "GET" && adapterMatch?.[1] !== undefined) {
     return connectSocket(request, env, adapterMatch[1], "adapter");
+  }
+  const adapterPairingMatch = ADAPTER_PAIRING_PATH.exec(url.pathname);
+  if (request.method === "POST" && adapterPairingMatch?.[1] !== undefined) {
+    return createAdapterPairing(request, env, adapterPairingMatch[1]);
+  }
+  const clientStatusMatch = CLIENT_STATUS_PATH.exec(url.pathname);
+  if (request.method === "GET" && clientStatusMatch?.[1] !== undefined) {
+    return connectorStatus(request, env, clientStatusMatch[1]);
   }
   const adapterAttachmentMatch = ADAPTER_ATTACHMENT_PATH.exec(url.pathname);
   if (

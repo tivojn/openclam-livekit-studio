@@ -22,7 +22,8 @@ struct RootView: View {
                     onShowSidebar: showSidebar,
                     onSelectAvatar: switchAvatarFromCarousel,
                     onShowSettings: { show(.settings) },
-                    onShowAISettings: { show(.aiServices) }
+                    onShowAISettings: { show(.aiServices) },
+                    onShowAgentConnections: { show(.agentConnections) }
                 )
                 .navigationDestination(for: OpenClamRoute.self) { route in
                     destination(for: route)
@@ -114,7 +115,10 @@ struct RootView: View {
                 onConnectorRouteChanged: connectorRouteChanged
             )
         case .agentConnections:
-            AgentConnectionsSettingsView()
+            AgentConnectionsSettingsView(
+                configuration: aiConfiguration,
+                onConnectorRouteChanged: connectorRouteChanged
+            )
         case .screenContext:
             ContextRootView(
                 feature: screenContextFeature,

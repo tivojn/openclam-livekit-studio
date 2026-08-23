@@ -144,6 +144,18 @@ async function createPairing(deps, bridgeUrl, bootstrapToken, request) {
         throw new Error(`OpenClam pairing failed (${await readSafeErrorCode(response)}).`);
     return parseCreatePairingResponse(await response.json());
 }
+async function createAdapterAuthorizedPairing(deps, bridgeUrl, connectionId, adapterToken) {
+    const response = await deps.fetch(`${bridgeUrl}/v1/adapters/${connectionId}/pairings`, {
+        method: "POST",
+        redirect: "error",
+        headers: { Authorization: `Bearer ${adapterToken}` },
+        signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+        throw new Error(`OpenClam iPhone pairing failed (${await readSafeErrorCode(response)}).`);
+    }
+    return parseCreatePairingResponse(await response.json());
+}
 async function revokeConnection(deps, bridgeUrl, connectionId, adapterToken) {
     const response = await deps.fetch(`${bridgeUrl}/v1/connectors/${connectionId}`, {
         method: "DELETE",
@@ -280,5 +292,109 @@ export async function pairOpenClam(cfg, options, dependencies = {}) {
         gatewayLabel,
         accounts,
         oldConnectionRevoked,
+    };
+}
+export async function replaceOpenClamDevicePairing(cfg, options = {}, dependencies = {}) {
+    const deps = { ...defaultDependencies, ...dependencies };
+    const existing = getOpenClamConfig(cfg);
+    if (!existing.connectionId ||
+        !UUID_PATTERN.test(existing.connectionId) ||
+        !existing.adapterId ||
+        !UUID_PATTERN.test(existing.adapterId) ||
+        !existing.bridgeUrl?.trim() ||
+        !existing.adapterTokenFile?.trim() ||
+        !existing.stateFile?.trim()) {
+        throw new Error("OpenClaw must already be connected before it can create an iPhone pairing code.");
+    }
+    const bridgeUrl = normalizeBridgeUrl(existing.bridgeUrl, options.allowInsecureLocalhost === true);
+    const oldConnectionId = existing.connectionId;
+    const oldAdapterToken = await deps.readCredential(existing.adapterTokenFile);
+    const accounts = Object.entries(existing.accounts ?? {}).map(([accountId, account]) => {
+        if (!ACCOUNT_ID_PATTERN.test(accountId) ||
+            !IDENTIFIER_PATTERN.test(account.agentId) ||
+            !account.displayName.trim() ||
+            [...account.displayName].length > 80) {
+            throw new Error("The existing OpenClaw agent list is invalid; repair the channel configuration first.");
+        }
+        return {
+            accountId,
+            agentId: account.agentId,
+            displayName: account.displayName,
+        };
+    });
+    if (accounts.length < 1 || accounts.length > 32) {
+        throw new Error("The existing OpenClaw connection has no valid agents to pair.");
+    }
+    const response = await createAdapterAuthorizedPairing(deps, bridgeUrl, oldConnectionId, oldAdapterToken);
+    if (response.connectionId === oldConnectionId) {
+        throw new Error("The bridge did not rotate the iPhone connection.");
+    }
+    const credentialDirectory = options.credentialDirectory
+        ? resolve(options.credentialDirectory, response.connectionId)
+        : join(resolveStateDir(), "credentials", "openclam", response.connectionId);
+    const defaults = defaultCredentialPaths(response.connectionId);
+    const adapterTokenFile = options.credentialDirectory
+        ? join(credentialDirectory, "adapter-token")
+        : defaults.adapterTokenFile;
+    const stateFile = options.credentialDirectory
+        ? join(credentialDirectory, "adapter-state.json")
+        : defaults.stateFile;
+    const revokeNewConnection = async () => {
+        try {
+            await revokeConnection(deps, bridgeUrl, response.connectionId, response.adapterToken);
+        }
+        catch {
+            // The unused one-time code and unpaired connector remain TTL-bounded.
+        }
+    };
+    try {
+        await deps.writeCredential(adapterTokenFile, response.adapterToken);
+        await deps.writeState(stateFile, initialAdapterState(response.connectionId));
+    }
+    catch (error) {
+        await revokeNewConnection();
+        throw error;
+    }
+    let oldRevoked = false;
+    try {
+        oldRevoked = await revokeConnection(deps, bridgeUrl, oldConnectionId, oldAdapterToken);
+    }
+    catch {
+        // A positive revocation response is required before config switches.
+    }
+    if (!oldRevoked) {
+        await revokeNewConnection();
+        throw new Error("OpenClam kept the previous pairing because it could not safely revoke it.");
+    }
+    try {
+        await deps.mutateConfig({
+            mutate: (draft) => {
+                const mutable = draft;
+                const current = getOpenClamConfig(mutable);
+                if (current.connectionId !== oldConnectionId) {
+                    throw new Error("The OpenClaw connection changed while the iPhone code was being created.");
+                }
+                mutable.channels ??= {};
+                mutable.channels.openclam = {
+                    ...current,
+                    enabled: true,
+                    connectionId: response.connectionId,
+                    adapterTokenFile,
+                    stateFile,
+                };
+            },
+        });
+    }
+    catch (error) {
+        await revokeNewConnection();
+        throw error;
+    }
+    return {
+        code: response.code,
+        connectionId: response.connectionId,
+        expiresAt: response.expiresAt,
+        gatewayLabel: existing.gatewayLabel?.trim() || deps.nowHostname(),
+        accounts,
+        oldConnectionRevoked: true,
     };
 }

@@ -6,9 +6,11 @@ desktop avatar authoring system in one Apple-silicon macOS app.
 
 It is not a companion controller for the iPhone app. The Mac and iPhone keep
 separate conversations, provider settings, credentials, avatars, and local
-state. There is no device pairing or background synchronization. Their only
-file boundary is explicit AVTR export from the Mac and explicit import on the
-iPhone.
+state, with no background synchronization. When the OpenClaw channel is
+installed, the Mac Settings screen can create a one-time code that pairs an
+iPhone directly with those OpenClaw agents. This does not synchronize either
+app's local data. Their only avatar-file boundary remains explicit AVTR export
+from the Mac and explicit import on the iPhone.
 
 ## What it includes
 
@@ -18,6 +20,8 @@ iPhone.
 - LiveKit Live Talk with independently selectable LLM, STT, TTS, model,
   language, and voice. Managed LiveKit defaults and reviewed BYOK tuples use
   the same Cloudflare broker and LiveKit agent deployment as OpenClam on iOS.
+- A Settings panel that creates and copies a one-time OpenClaw iPhone pairing
+  code without Terminal or another OpenClaw bootstrap secret.
 - A desktop avatar with calibrated face rig, lip sync, gaze, blinking, brows,
   full body, click reactions, walk, edge idle, and authored moves.
 - Avatar Studio for portrait preparation, visemes, full-body turnaround,
