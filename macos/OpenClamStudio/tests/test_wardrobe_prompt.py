@@ -128,8 +128,8 @@ class WardrobeBanTests(unittest.TestCase):
         instruction = wardrobe.SYSTEM.lower()
         for phrase in (
             "fuchsia", "scarlet", "coral", "ultramarine", "camel",
-            "never use cobalt", "saint laurent", "dior wrap blazers",
-            "chanel tweed", "bottega veneta", "max mara", "at least 90mm",
+            "never use cobalt", "saint laurent", "dior sculpted dresses",
+            "chanel modern tweed", "bottega veneta", "max mara", "at least 90mm",
             "dior men", "loro piana", "oxfords", "never assign pumps",
             "gold is forbidden", "omission is preferred",
             "at most one small, understated accessory choice",
@@ -146,6 +146,7 @@ class WardrobeBanTests(unittest.TestCase):
         self.assertIn("emerald belongs to the house palette", rule)
         self.assertIn("green damages alpha extraction", rule)
         self.assertIn("substitute ultramarine", rule)
+        self.assertIn("camel is never the default", rule)
 
     def test_preset_prompt_carries_the_silhouette_rule(self):
         preset = wardrobe.preset_prompt()
@@ -177,10 +178,12 @@ class WardrobeCompositionTests(unittest.TestCase):
             _portrait(directory)
             result = self._tailor(FASHION, directory)
         self.assertEqual(result["source"], "tailored")
-        self.assertIn("scarlet", result["prompt"])
-        self.assertIn("cigarette trousers", result["prompt"])
+        self.assertIn("CURATED LOOK", result["prompt"])
+        self.assertIn("The single hero colour", result["prompt"])
         self.assertEqual(result["traits"]["presentation"], "feminine")
         self.assertEqual(result["traits"]["medium"], "photograph")
+        self.assertIn("look", result["traits"])
+        self.assertIn(result["traits"]["hero_color"], wardrobe.HERO_COLORS)
         self.assertIn("scarlet", result["traits"]["palette"])
         self.assertNotIn(body.DEFAULT_BODY_PROMPT, result["prompt"])
         self.assertIn(wardrobe.FEMININE_RULE, result["prompt"])
@@ -235,7 +238,8 @@ class WardrobeCompositionTests(unittest.TestCase):
                 self.assertIn(wardrobe.STYLISED_RULE, result["prompt"])
                 self.assertNotIn(wardrobe.COLOR_RULE, result["prompt"])
             else:
-                self.assertIn(wardrobe.COLOR_RULE, result["prompt"])
+                self.assertIn("The single hero colour", result["prompt"])
+                self.assertNotIn(wardrobe.COLOR_RULE, result["prompt"])
 
     def test_gold_in_model_direction_falls_back_to_safe_preset(self):
         rogue = dict(FASHION)
@@ -359,7 +363,7 @@ class WardrobeCompositionTests(unittest.TestCase):
                  mock.patch.object(wardrobe, "_chat", return_value=fenced):
                 result = wardrobe.tailored_prompt(directory)
         self.assertEqual(result["source"], "tailored")
-        self.assertIn("scarlet", result["prompt"])
+        self.assertIn("CURATED LOOK", result["prompt"])
 
 
 class WardrobeFallbackTests(unittest.TestCase):
@@ -471,6 +475,35 @@ class WardrobeCacheTests(unittest.TestCase):
                 refreshed = wardrobe.tailored_prompt(directory, refresh=True)
                 self.assertEqual(chat.call_count, 1)
         self.assertIn("armour", refreshed["prompt"])
+
+    def test_refresh_advances_to_a_different_curated_luxury_look(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _portrait(directory)
+            with mock.patch.object(wardrobe, "_llm_route",
+                                   return_value=("llm/features/x/chat", "m")), \
+                 mock.patch.object(wardrobe, "_chat",
+                                   return_value=json.dumps(FASHION)):
+                first = wardrobe.tailored_prompt(directory)
+                second = wardrobe.tailored_prompt(directory, refresh=True)
+        self.assertNotEqual(first["variation_id"], second["variation_id"])
+        self.assertNotEqual(first["prompt"], second["prompt"])
+        self.assertEqual(1, first["prompt"].count("The single hero colour"))
+        self.assertEqual(1, second["prompt"].count("The single hero colour"))
+
+    def test_curated_looks_are_gender_aware_and_camel_is_not_the_default(self):
+        self.assertGreaterEqual(len(wardrobe.LUXURY_VARIATIONS), 10)
+        counts = {
+            color: sum(item["hero"] == color
+                       for item in wardrobe.LUXURY_VARIATIONS)
+            for color in wardrobe.HERO_COLORS
+        }
+        self.assertEqual({color: 2 for color in wardrobe.HERO_COLORS}, counts)
+        for item in wardrobe.LUXURY_VARIATIONS:
+            masculine = wardrobe._variation_rule(item, "masculine")
+            self.assertNotRegex(masculine.lower(), r"\b(?:pump|stiletto|heel)s?\b")
+            self.assertTrue(item["feminine"])
+            self.assertTrue(item["masculine"])
+            self.assertTrue(item["androgynous"])
 
     def test_a_new_portrait_invalidates_the_cache(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -798,7 +831,9 @@ class EyewearLockTests(unittest.TestCase):
             self.assertIn("IDENTITY LOCK", plate)
             self.assertIn("PROPORTION TARGET", plate)
             self.assertIn("HOUSE STYLE", plate)
-            self.assertIn(wardrobe.COLOR_RULE, plate)
+            self.assertIn(
+                wardrobe.resolved_color_rule("fuchsia"), plate)
+            self.assertNotIn(wardrobe.COLOR_RULE, plate)
             self.assertIn(wardrobe.LUXURY_FINISH_RULE, plate)
             self.assertIn(wardrobe.FEMININE_RULE, plate)
             self.assertIn(wardrobe.ACCESSORY_RULE, plate)
@@ -824,6 +859,13 @@ class EyewearLockTests(unittest.TestCase):
                 0.17229, (392, 72, 85, 107), (1152, 864, 3),
                 np.array([1.14, 1.4, 5.35], dtype=np.float32))
         self.assertIsNone(cleo_like)
+        # This exact 82x112 case used to fail only because its width was two
+        # pixels below an arbitrary threshold, despite containing more face
+        # detail than the nominal 84x100 target.
+        narrow_but_crisp = body._head_alignment_failure(
+            0.17229, (392, 72, 82, 112), (1152, 864, 3),
+            np.array([1.14, 1.4, 5.35], dtype=np.float32))
+        self.assertIsNone(narrow_but_crisp)
         self.assertIn(
             "transform is unsafe",
             body._head_alignment_failure(
@@ -833,6 +875,11 @@ class EyewearLockTests(unittest.TestCase):
             "too small for a crisp identity lock",
             body._head_alignment_failure(
                 0.172, (400, 75, 83, 99), (1152, 864, 3),
+                np.array([1.0, 2.0], dtype=np.float32)))
+        self.assertIn(
+            "too small for a crisp identity lock",
+            body._head_alignment_failure(
+                0.172, (400, 75, 70, 120), (1152, 864, 3),
                 np.array([1.0, 2.0], dtype=np.float32)))
         self.assertIn(
             "alignment is unstable",
@@ -938,7 +985,7 @@ class EyewearLockTests(unittest.TestCase):
         self.assertIn(wardrobe.ACCESSORY_RULE, direction)
 
     def test_safe_long_manual_prompt_keeps_the_full_editor_budget(self):
-        manual = "Tailored scarlet wool with precise seams and clean structure. " * 60
+        manual = "Tailored scarlet wool with precise seams and clean structure. " * 64
         self.assertGreater(len(manual), wardrobe.PROMPT_LIMIT)
         self.assertLessEqual(len(manual), 4000)
         self.assertEqual(manual.strip(), body._direction({"prompt": manual}))

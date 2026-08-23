@@ -204,8 +204,10 @@ includes("api('/api/avatar/companion'");
 for (const id of [
   'rig-modal', 'rig-controls', 'body-modal', 'body-walk-styles',
   'body-motion-poses', 'body-move-styles', 'body-walk-generate',
-  'body-idle-generate', 'body-move-generate',
+  'body-idle-generate', 'body-move-generate', 'body-prompt-variation',
 ]) includes(`id="${id}"`);
+includes('✦ New luxury look');
+includes("tailorBodyPrompt(BODY_SLUG, { refresh: true, force: true })");
 
 // Under-eye motion must survive a calibration round trip as an independent
 // target. It used to borrow the Cheeks value, which hid the target entirely

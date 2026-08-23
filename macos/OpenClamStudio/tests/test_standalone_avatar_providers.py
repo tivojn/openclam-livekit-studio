@@ -153,6 +153,47 @@ class StandaloneSelectionTests(unittest.TestCase):
 
 
 class FullBodyDirectWiringTests(unittest.TestCase):
+    def test_rejected_identity_plate_invalidates_generated_turnaround_cache(self):
+        try:
+            import cv2
+            import numpy as np
+            from studio import body
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"packaged avatar runtime is unavailable: {exc}")
+
+        config = {"provider": "xai", "model": "grok-imagine-image-quality",
+                  "api_key": "private-test-key"}
+        public = {"name": "xai", "title": "xAI Grok Image",
+                  "model": "grok-imagine-image-quality",
+                  "route": "direct:xai", "direct": True}
+
+        def edit(_prompt, _references, _lane, **options):
+            path = os.path.join(
+                options["output_dir"], options["file_name"] + ".png")
+            cv2.imwrite(path, np.full((360, 240, 3), 150, np.uint8))
+            return path
+
+        with tempfile.TemporaryDirectory() as directory:
+            keyframe = np.full((256, 256, 3), 127, np.uint8)
+            cv2.imwrite(os.path.join(directory, "keyframe.png"), keyframe)
+            cv2.imwrite(os.path.join(directory, "head.png"), keyframe)
+            with mock.patch.object(
+                    body, "image_provider_selection",
+                    return_value=(config, public)), \
+                 mock.patch.object(
+                    body.media_gen, "generate_image_edit_sync",
+                    side_effect=edit), \
+                 mock.patch.object(
+                    body, "_install_sources",
+                    side_effect=body.GeneratedBodyIdentityError(
+                        "generated head is too small")):
+                with self.assertRaises(body.GeneratedBodyIdentityError):
+                    body.build(
+                        directory,
+                        {"style": "photorealistic", "pose": "relaxed"},
+                        log=lambda _message: None)
+            self.assertFalse(Path(directory, ".body-cache").exists())
+
     def test_three_view_body_build_uses_direct_edits_without_persisting_key(self):
         try:
             import cv2

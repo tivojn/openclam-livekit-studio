@@ -37,13 +37,13 @@ _MIN_GENERATED_FACE_WIDTH_PX = 84
 _MIN_GENERATED_FACE_HEIGHT_PX = 100
 _MIN_GENERATED_FACE_WIDTH_RATIO = 0.075
 _MIN_GENERATED_FACE_HEIGHT_RATIO = 0.065
+_MIN_GENERATED_FACE_AXIS_FRACTION = 0.90
 DEFAULT_BODY_PROMPT = (
     "Create a photorealistic couture-level full-body wardrobe with tailored "
     "authority, editorial sensuality, and zero fast-fashion noise. Read only "
     "the subject's visible feminine, masculine, or androgynous presentation; "
     "do not claim a gender identity and never force a gendered shoe or beauty "
-    "code when the presentation is uncertain. Use exactly one hero colour from fuchsia, "
-    "scarlet, coral, ultramarine, or camel, plus one restrained accent and "
+    "code when the presentation is uncertain. Use ultramarine as the single hero colour, plus one restrained accent and "
     "quiet black, charcoal, taupe, or chocolate neutrals. Never use cobalt. "
     "Emerald belongs to the broader house palette but must become ultramarine "
     "on this cutout plate because green damages alpha extraction. Use opaque, "
@@ -58,6 +58,10 @@ DEFAULT_BODY_PROMPT = (
     "stay empty and clearly visible; nothing is held, carried, or slung on the "
     "body."
 )
+
+
+class GeneratedBodyIdentityError(RuntimeError):
+    """A generated plate that cannot safely receive the calibrated identity."""
 
 
 def _clean(value, maximum=800):
@@ -247,11 +251,25 @@ def _head_alignment_failure(scale, face_bounds, body_shape, residual):
         _MIN_GENERATED_FACE_HEIGHT_PX,
         int(round(body_height * _MIN_GENERATED_FACE_HEIGHT_RATIO)),
     )
-    if face_width < required_width or face_height < required_height:
+    # A one-axis cutoff made a perfectly usable 82x112 face fail a nominal
+    # 84x100 target forever. Judge actual face detail, while keeping a lower
+    # floor on both axes so a very narrow or flat detection cannot buy its way
+    # through with area alone. The landmark-fit gate below remains authoritative
+    # for shape/alignment quality.
+    required_area = required_width * required_height
+    minimum_width = max(
+        1, int(np.ceil(required_width * _MIN_GENERATED_FACE_AXIS_FRACTION)))
+    minimum_height = max(
+        1, int(np.ceil(required_height * _MIN_GENERATED_FACE_AXIS_FRACTION)))
+    face_area = face_width * face_height
+    if (face_width < minimum_width
+            or face_height < minimum_height
+            or face_area < required_area):
         return (
             "generated head is too small for a crisp identity lock "
-            f"({face_width}x{face_height}px; need at least "
-            f"{required_width}x{required_height}px)")
+            f"({face_width}x{face_height}px; need detail equivalent to "
+            f"{required_width}x{required_height}px, with neither axis below "
+            f"{minimum_width}x{minimum_height}px)")
 
     median_residual = float(np.median(residual))
     max_residual = float(np.max(residual))
@@ -299,9 +317,14 @@ def _prompt(options, view="front"):
     ]
     house_section = ""
     if not stylised:
-        repeated_rules += [wardrobe.COLOR_RULE, wardrobe.LUXURY_FINISH_RULE]
+        selected_color_rule = wardrobe.resolved_color_rule(
+            wardrobe._hero_from_text(direction))
+        repeated_rules += [
+            wardrobe.COLOR_RULE, selected_color_rule,
+            wardrobe.LUXURY_FINISH_RULE,
+        ]
         house_section = (
-            "\n\nHOUSE STYLE — " + wardrobe.COLOR_RULE + " "
+            "\n\nHOUSE STYLE — " + selected_color_rule + " "
             + wardrobe.LUXURY_FINISH_RULE)
     for rule in repeated_rules:
         direction = direction.replace(rule, " ")
@@ -401,13 +424,17 @@ def _detect(image, label):
 
 def _face_transform(keyframe, body_image):
     key_landmarks = _detect(keyframe, "identity portrait")
-    body_landmarks = _detect(body_image, "generated body")
+    try:
+        body_landmarks = _detect(body_image, "generated body")
+    except RuntimeError as error:
+        raise GeneratedBodyIdentityError(str(error)) from error
     source = key_landmarks[face.RIGID].astype(np.float32)
     target = body_landmarks[face.RIGID].astype(np.float32)
     transform, inliers = cv2.estimateAffinePartial2D(
         source, target, method=cv2.LMEDS, refineIters=20)
     if transform is None:
-        raise RuntimeError("could not align the original face to the generated body")
+        raise GeneratedBodyIdentityError(
+            "could not align the original face to the generated body")
     projected = cv2.transform(source[None, :, :], transform)[0]
     residual = np.linalg.norm(projected - target, axis=1)
     oval = body_landmarks[face.FACE_OVAL]
@@ -416,7 +443,7 @@ def _face_transform(keyframe, body_image):
     failure = _head_alignment_failure(
         scale, (x, y, width, height), body_image.shape, residual)
     if failure:
-        raise RuntimeError(failure)
+        raise GeneratedBodyIdentityError(failure)
     return transform, {
         "residual_median_px": round(float(np.median(residual)), 3),
         "residual_max_px": round(float(np.max(residual)), 3),
@@ -842,8 +869,19 @@ def build(avatar_dir, options, log=print, progress=None):
                 shutil.copy2(generated, cached_path)
                 generated = cached_path
             sources[view] = generated
-        metadata = _install_sources(
-            avatar_dir, sources, provider, options, log=log, progress=progress)
+        try:
+            metadata = _install_sources(
+                avatar_dir, sources, provider, options, log=log,
+                progress=progress)
+        except GeneratedBodyIdentityError:
+            # Side/back plates are generated from the rejected front plate. A
+            # retry must therefore render one fresh coherent turnaround instead
+            # of reusing the same doomed cache indefinitely.
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            log(
+                "discarded the rejected generated turnaround; the next try "
+                "will render fresh views")
+            raise
         shutil.rmtree(cache_dir, ignore_errors=True)
         return metadata
     finally:

@@ -42,9 +42,9 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 
 
 CACHE_NAME = ".wardrobe.json"
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 ANALYSIS_EDGE = 768
-PROMPT_LIMIT = 3200
+PROMPT_LIMIT = 3900
 
 # Garments that break the runtime rig rather than merely look wrong. Kept as
 # whole words so "overcoat" is caught but "coated" is not.
@@ -95,11 +95,122 @@ STRUCTURAL_RULE = f"{PROPORTION_RULE} {SILHOUETTE_RULE} {HANDS_RULE}"
 # that extraction contract changes. This is explicit instead of silently
 # turning the requested emerald into some arbitrary colour.
 COLOR_RULE = (
-    "Use exactly one hero colour from fuchsia, scarlet, coral, ultramarine, or "
-    "camel, plus exactly one restrained accent and quiet black, charcoal, taupe, "
-    "or chocolate neutrals. Never use cobalt. Emerald belongs to the house "
+    "Choose exactly one hero colour from fuchsia, scarlet, coral, ultramarine, "
+    "or camel; the list order has no priority and camel is never the default. "
+    "Use only that chosen hero with exactly one restrained accent and quiet "
+    "black, charcoal, taupe, or chocolate neutrals. Never use cobalt. Emerald belongs to the house "
     "palette but is unavailable on OpenClam cutout plates because green damages "
     "alpha extraction; substitute ultramarine if emerald is requested."
+)
+
+HERO_COLORS = ("fuchsia", "scarlet", "coral", "ultramarine", "camel")
+
+
+def resolved_color_rule(hero):
+    """A provider-facing colour rule containing one choice, not a menu.
+
+    Listing all five colours in every image request caused the image model to
+    treat the last, most conventional choice (camel) as a default. Portrait
+    analysis still sees the full house palette; the rendering prompt sees only
+    the selected colour.
+    """
+    hero = _clean(hero, 24).lower()
+    if hero not in HERO_COLORS:
+        hero = "ultramarine"
+    return (
+        f"The single hero colour for this look is {hero}. Use no other house "
+        "hero colour in the wardrobe. Add exactly one restrained accent and "
+        "quiet black, charcoal, taupe, or chocolate neutrals. Never use cobalt. "
+        "Emerald is unavailable on OpenClam cutout plates because green damages "
+        "alpha extraction; substitute ultramarine if emerald is requested."
+    )
+
+
+# A deliberate rotation is more reliable than asking an image model to be
+# "varied" while showing it the same blazer-led menu on every request. Each
+# lane resolves to one hero colour and one presentation-appropriate silhouette.
+# Only the matching presentation branch is ever included in the final prompt.
+LUXURY_VARIATIONS = (
+    {
+        "id": "fuchsia-column",
+        "label": "Fuchsia sculpted column",
+        "hero": "fuchsia",
+        "feminine": "a sculpted midi or column dress with architectural seaming and a clean defined waist",
+        "masculine": "a fitted high-neck fine-gauge knit with narrow evening trousers and a long unbroken line",
+        "androgynous": "a collarless longline tunic over narrow trousers with an architectural tonal column",
+    },
+    {
+        "id": "scarlet-wrap",
+        "label": "Scarlet wrap precision",
+        "hero": "scarlet",
+        "feminine": "a precise wrap-front coat-dress with a controlled knee or midi hem and sculpted shoulders",
+        "masculine": "a sharply waisted dinner jacket with narrow straight trousers and a clean collar line",
+        "androgynous": "an asymmetric wrap-front longline jacket with narrow trousers and disciplined geometry",
+    },
+    {
+        "id": "coral-leather",
+        "label": "Coral leather sculpture",
+        "hero": "coral",
+        "feminine": "a close-cut matte leather midi dress or leather pencil skirt with a compact fine-gauge knit",
+        "masculine": "a close-cut collarless leather jacket over a fine-gauge knit with narrow tailored trousers",
+        "androgynous": "a compact collarless leather shell over a slim tonal column with minimal hardware",
+    },
+    {
+        "id": "ultramarine-evening",
+        "label": "Ultramarine modern evening",
+        "hero": "ultramarine",
+        "feminine": "an asymmetric draped midi dress with controlled structure and one clean sculptural line",
+        "masculine": "a precise double-breasted evening suit with a sculpted shoulder and narrow straight trousers",
+        "androgynous": "a sharply cut sleeved jumpsuit with a defined waist and narrow full-length leg",
+    },
+    {
+        "id": "camel-knit",
+        "label": "Camel quiet knit",
+        "hero": "camel",
+        "feminine": "a fine-gauge knit midi dress with a disciplined neckline, defined waist, and clean column hem",
+        "masculine": "a refined fitted knit polo with narrow tailored trousers and quiet Loro Piana restraint",
+        "androgynous": "a fitted rib-knit tunic and narrow trousers forming one minimal uninterrupted silhouette",
+    },
+    {
+        "id": "fuchsia-tweed",
+        "label": "Fuchsia modern tweed",
+        "hero": "fuchsia",
+        "feminine": "a collarless modern tweed jacket with a fitted pencil skirt, clean edges, and no decorative clutter",
+        "masculine": "a compact collarless textured jacket with narrow trousers and a precise monochrome base",
+        "androgynous": "a cropped architectural tweed jacket over a slim skirt or narrow trouser chosen from the visible presentation",
+    },
+    {
+        "id": "scarlet-waistcoat",
+        "label": "Scarlet waistcoat tailoring",
+        "hero": "scarlet",
+        "feminine": "a sculpted longline waistcoat with a pencil skirt or narrow cigarette trouser and no conventional blazer",
+        "masculine": "a sharply fitted waistcoat with a fine-gauge base and narrow dinner trousers, without a blazer",
+        "androgynous": "vest-led architectural tailoring with a longline waistcoat and a narrow lower silhouette",
+    },
+    {
+        "id": "coral-minimal",
+        "label": "Coral soft structure",
+        "hero": "coral",
+        "feminine": "a softly structured boat-neck midi dress with controlled drape and a sharply resolved waist",
+        "masculine": "a close-cut silk-wool shirt jacket with narrow trousers and restrained Bottega material finish",
+        "androgynous": "a minimal silk-wool top and narrow tonal lower silhouette with crisp asymmetric seaming",
+    },
+    {
+        "id": "ultramarine-velvet",
+        "label": "Ultramarine velvet line",
+        "hero": "ultramarine",
+        "feminine": "a close-cut velvet midi dress with a clean square neckline and long uninterrupted seam lines",
+        "masculine": "a lean velvet evening jacket over a matte fine-gauge base with narrow straight trousers",
+        "androgynous": "an asymmetric velvet tunic over a narrow matte lower silhouette with minimal visible fastening",
+    },
+    {
+        "id": "camel-coat-dress",
+        "label": "Camel architectural coat-dress",
+        "hero": "camel",
+        "feminine": "a close-cut sleeveless coat-dress with architectural seams, a defined waist, and a controlled midi hem",
+        "masculine": "a fitted collarless wool overshirt with narrow tailored trousers and quiet Max Mara material discipline",
+        "androgynous": "a collarless architectural wool shirt-jacket over a narrow tonal column, with no conventional lapels",
+    },
 )
 
 ACCESSORY_RULE = (
@@ -128,9 +239,11 @@ LUXURY_FINISH_RULE = (
 
 FEMININE_RULE = (
     "For a feminine-presenting photographic subject, use the design discipline of "
-    "Saint Laurent power tailoring, Dior wrap blazers, The Row or Khaite "
-    "minimalism, Chanel tweed, Bottega Veneta leather garments, or a close-cut "
-    "Max Mara camel coat. Finish with elegant heels of at least 90mm in the spirit "
+    "Saint Laurent structure, Dior sculpted dresses and wrap construction, The "
+    "Row or Khaite minimalism, Chanel modern tweed, Bottega Veneta leather, or "
+    "Max Mara precision. Follow the selected look direction: do not default to a "
+    "blazer with trousers when a dress, coat-dress, skirt, waistcoat, knit column, "
+    "leather piece, or jumpsuit is specified. Finish with elegant heels of at least 90mm in the spirit "
     "of Christian Louboutin, Manolo Blahnik, Gianvito Rossi, or Aquazzura. Keep "
     "makeup restrained; for evening choose either a smoky eye or a bold lip, never "
     "both."
@@ -140,7 +253,8 @@ MASCULINE_RULE = (
     "For a masculine-presenting photographic subject, use the design discipline of "
     "Saint Laurent or Tom Ford power tailoring, Dior Men precision, The Row "
     "minimalism, Bottega Veneta leather garments, Zegna or Loro Piana refinement, "
-    "or a close-cut camel coat. Finish with polished loafers, Oxfords, Derbies, or "
+    "or Max Mara precision. Follow the selected look direction instead of always "
+    "returning a conventional suit. Finish with polished loafers, Oxfords, Derbies, or "
     "sharp ankle boots in the spirit of Berluti, John Lobb, Edward Green, Saint "
     "Laurent, or Bottega Veneta. Never assign pumps, stilettos, or high heels to "
     "this masculine branch. Use polished natural grooming, clean skin texture, "
@@ -152,7 +266,8 @@ ANDROGYNOUS_RULE = (
     "For an androgynous or visually ambiguous photographic subject, do not infer a "
     "gender identity. Preserve the presentation visible in the reference through "
     "architectural Saint Laurent, Dior, The Row, Khaite, or Bottega Veneta "
-    "tailoring, and finish with polished loafers or sharp ankle boots rather than "
+    "construction. Follow the selected look direction instead of defaulting to a "
+    "blazer-and-trouser suit, and finish with polished loafers or sharp ankle boots rather than "
     "defaulting to heels. Preserve the reference's visible grooming and makeup "
     "language instead of imposing a feminine or masculine beauty code."
 )
@@ -336,6 +451,88 @@ def _clean(value, maximum=PROMPT_LIMIT):
     return re.sub(r"\s+", " ", value).strip()[:maximum]
 
 
+def _variation_by_id(variation_id):
+    return next(
+        (item for item in LUXURY_VARIATIONS if item["id"] == variation_id),
+        None,
+    )
+
+
+def _cached_variation_id(avatar_dir, digest):
+    try:
+        with open(os.path.join(avatar_dir, CACHE_NAME)) as handle:
+            cached = json.load(handle)
+    except Exception:
+        return ""
+    if not isinstance(cached, dict) or cached.get("digest") != digest:
+        return ""
+    return _clean(cached.get("variation_id"), 48)
+
+
+def _select_variation(avatar_dir, digest, refresh=False):
+    """Stable across ordinary opens, deliberately advances on refresh."""
+    base = int(digest[:16], 16) % len(LUXURY_VARIATIONS)
+    if refresh:
+        previous = _variation_by_id(_cached_variation_id(avatar_dir, digest))
+        if previous:
+            base = (LUXURY_VARIATIONS.index(previous) + 1) % len(
+                LUXURY_VARIATIONS)
+        else:
+            base = (base + 1) % len(LUXURY_VARIATIONS)
+    return LUXURY_VARIATIONS[base]
+
+
+def _variation_instruction(variation):
+    return (
+        f"CURATED LOOK FOR THIS DRAFT: {variation['label']}. For a photographic "
+        f"subject, {resolved_color_rule(variation['hero'])} Choose only the "
+        "silhouette below that matches the subject's visible presentation: "
+        f"feminine — {variation['feminine']}; masculine — "
+        f"{variation['masculine']}; androgynous or ambiguous — "
+        f"{variation['androgynous']}. This curated look is mandatory and replaces "
+        "any habitual camel blazer-and-trouser default. For a stylised subject, "
+        "ignore this fashion look and preserve the reference costume register."
+    )
+
+
+def _variation_rule(variation, presentation):
+    presentation = _normalise_presentation(presentation)
+    return (
+        f"CURATED LOOK — {variation['label']}: use "
+        f"{variation[presentation]}. This selected silhouette overrides any "
+        "generic or habitual blazer-and-trouser styling in earlier prose."
+    )
+
+
+def _hero_from_text(text):
+    text = str(text or "")
+    explicit = re.search(
+        r"single hero colou?r(?: for this look)? is\s+"
+        r"(fuchsia|scarlet|coral|ultramarine|camel)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if explicit:
+        return explicit.group(1).lower()
+    found = [
+        color for color in HERO_COLORS
+        if re.search(rf"\b{re.escape(color)}\b", text, re.IGNORECASE)
+    ]
+    return found[0] if len(found) == 1 else ""
+
+
+def _apply_selected_hero(direction, hero):
+    """Make the chosen lane authoritative even if the model falls into habit."""
+    hero = hero if hero in HERO_COLORS else "ultramarine"
+    pattern = re.compile(
+        r"\b(?:" + "|".join(map(re.escape, HERO_COLORS)) + r")\b",
+        re.IGNORECASE,
+    )
+    if pattern.search(direction or ""):
+        return pattern.sub(hero, direction)
+    return f"Use {hero} as the single hero colour. {direction}"
+
+
 def migrate_legacy_prompt(
         value, *, stored=False, ensure_rule=False, maximum=PROMPT_LIMIT):
     """Return a policy-safe projection of an old OpenClam-authored prompt.
@@ -432,12 +629,15 @@ def _encoded_reference(image_path):
     return base64.b64encode(buffer.tobytes()).decode("ascii")
 
 
-def _chat(route, model, encoded):
+def _chat(route, model, encoded, variation=None):
     config = dict(route)
     if model:
         config["model"] = str(model)
+    user_text = USER_TEXT
+    if variation:
+        user_text = f"{USER_TEXT}\n\n{_variation_instruction(variation)}"
     return media_gen.generate_text_sync(
-        SYSTEM, USER_TEXT, config, image_b64=encoded, max_tokens=900)
+        SYSTEM, user_text, config, image_b64=encoded, max_tokens=900)
 
 
 def _normalise_presentation(value):
@@ -490,7 +690,9 @@ def _parse(text):
     return direction, traits
 
 
-def _finalise(direction, presentation="androgynous", medium="photograph"):
+def _finalise(
+        direction, presentation="androgynous", medium="photograph",
+        variation=None):
     """Refuse anything that broke a hard ban, then append the structural rules.
 
     The check runs on the model's own words BEFORE the rules are appended: the
@@ -519,10 +721,16 @@ def _finalise(direction, presentation="androgynous", medium="photograph"):
     stylised = _clean(medium, 40).lower() in {
         "game art", "anime", "illustration", "3d render",
     }
+    if not stylised and variation:
+        direction = _apply_selected_hero(direction, variation["hero"])
+    hero = (variation or {}).get("hero") or _hero_from_text(direction)
+    provider_color_rule = resolved_color_rule(hero)
     suffix_rules = (
         [STYLISED_RULE, ACCESSORY_RULE, STRUCTURAL_RULE]
         if stylised else
-        [COLOR_RULE, _presentation_rule(presentation, medium),
+        [provider_color_rule,
+         *([_variation_rule(variation, presentation)] if variation else []),
+         _presentation_rule(presentation, medium),
          ACCESSORY_RULE, LUXURY_FINISH_RULE, STRUCTURAL_RULE]
     )
     suffix = " ".join(suffix_rules)
@@ -592,6 +800,7 @@ def _read_cache(avatar_dir, digest):
         "traits": traits if isinstance(traits, dict) else {},
         "cached": True,
         "migrated": legacy,
+        "variation_id": _clean(cached.get("variation_id"), 48),
     }
 
 
@@ -634,11 +843,18 @@ def tailored_prompt(avatar_dir, refresh=False, log=None):
         if cached:
             return cached
 
+    variation = _select_variation(avatar_dir, digest, refresh=refresh)
     try:
         route, model = _llm_route()
-        direction, traits = _parse(_chat(route, model, _encoded_reference(reference)))
+        direction, traits = _parse(_chat(
+            route, model, _encoded_reference(reference), variation))
+        if _clean(traits.get("medium"), 40).lower() not in {
+                "game art", "anime", "illustration", "3d render"}:
+            traits["look"] = variation["label"]
+            traits["hero_color"] = variation["hero"]
         prompt = _finalise(
-            direction, traits.get("presentation"), traits.get("medium"))
+            direction, traits.get("presentation"), traits.get("medium"),
+            variation=variation)
     except Exception as error:
         note(f"portrait-tailored prompt unavailable, using the preset: {error}")
         return {"prompt": preset_prompt(), "source": "preset",
@@ -649,6 +865,7 @@ def tailored_prompt(avatar_dir, refresh=False, log=None):
         "digest": digest,
         "prompt": prompt,
         "traits": traits,
+        "variation_id": variation["id"],
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     try:
@@ -656,4 +873,10 @@ def tailored_prompt(avatar_dir, refresh=False, log=None):
     except Exception:
         pass
     note("composed a portrait-tailored full-body prompt")
-    return {"prompt": prompt, "source": "tailored", "traits": traits, "cached": False}
+    return {
+        "prompt": prompt,
+        "source": "tailored",
+        "traits": traits,
+        "cached": False,
+        "variation_id": variation["id"],
+    }

@@ -1292,6 +1292,7 @@ document.documentElement.dataset.design='quiet';</script>
           <div class="body-actions" style="margin-top:8px">
             <p class="note" id="body-prompt-note" style="margin:0" aria-live="polite">Written for this portrait, and editable before every generation.</p>
             <div class="grow"></div>
+            <button class="btn sm" id="body-prompt-variation" type="button" title="Create a different curated colour and silhouette while preserving this portrait">✦ New luxury look</button>
             <button class="btn sm" id="body-prompt-ai" type="button" title="Say what to change; the brief above is rewritten around it">✦ Rewrite the prompt from my key points</button>
           </div>
         </div>
@@ -3734,6 +3735,7 @@ function setBodyBusy(busy) {
   ['body-style', 'body-pose', 'body-prompt', 'body-prompt-ai'].forEach(id => {
     $('#' + id).disabled = busy;
   });
+  $('#body-prompt-variation').disabled = busy || BODY_PROMPT_BUSY;
   document.querySelectorAll('[data-body-view]').forEach(button => {
     button.disabled = busy;
   });
@@ -4241,8 +4243,9 @@ function setBodyPromptNote(source, traits) {
       (traits || {}).presentation, (traits || {}).age_band, (traits || {}).medium
     ].filter(Boolean).join(' · ');
     const register = (traits || {}).register;
+    const look = (traits || {}).look;
     note.textContent = read
-      ? `Written for this portrait — ${read}${register ? ' · ' + register : ''}.`
+      ? `Written for this portrait — ${read}${register ? ' · ' + register : ''}${look ? ' · ' + look : ''}.`
       : 'Written for this portrait. Editable before every generation.';
     return;
   }
@@ -4257,6 +4260,7 @@ async function tailorBodyPrompt(slug, { refresh = false, force = false } = {}) {
   const field = $('#body-prompt');
   if (!force && field.value.trim() !== BODY_PROMPT_FILLED.trim()) return;
   BODY_PROMPT_BUSY = true;
+  $('#body-prompt-variation').disabled = true;
   setBodyPromptNote('working', null);
   try {
     const result = await api('/api/avatar/body/prompt', {
@@ -4279,6 +4283,7 @@ async function tailorBodyPrompt(slug, { refresh = false, force = false } = {}) {
     if (BODY_SLUG === slug) setBodyPromptNote('preset', null);
   } finally {
     BODY_PROMPT_BUSY = false;
+    $('#body-prompt-variation').disabled = BODY_BUSY;
   }
 }
 
@@ -4775,6 +4780,8 @@ async function draftPromptFromGist(kind, field, button) {
 }
 $('#body-prompt-ai').onclick = () =>
   rewriteFromKeyPoints($('#body-prompt'), $('#body-prompt-ai'));
+$('#body-prompt-variation').onclick = () =>
+  tailorBodyPrompt(BODY_SLUG, { refresh: true, force: true });
 $('#body-walk-prompt-ai').onclick = () =>
   draftPromptFromGist('walk', $('#body-walk-prompt'), $('#body-walk-prompt-ai'));
 $('#body-motion-prompt-ai').onclick = () =>
