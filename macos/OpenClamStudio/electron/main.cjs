@@ -3,6 +3,7 @@
 const {
   app,
   BrowserWindow,
+  clipboard,
   Menu,
   Tray,
   dialog,
@@ -43,12 +44,23 @@ const DEFAULT_PORT = 8777;
 const START_TIMEOUT_MS = 120_000;
 const APP_ID = 'com.lionheart.openclam.macos';
 const APP_NAME = 'OpenClam Studio';
+const DEV_APP_ID = `${APP_ID}.dev`;
+const DEV_APP_NAME = `${APP_NAME} Dev`;
 const AUTH_HEADER = 'X-OpenClam-Token';
 const LIVEKIT_BROKER_URL = 'https://openclam-livekit-pilot-broker.openclam-live.workers.dev/v1/live-talk/sessions';
 const LIVEKIT_SERVER_HOST = 'openclam-live-voice-kse86f6p.livekit.cloud';
 
-app.setName(APP_NAME);
-app.setAppUserModelId(APP_ID);
+if (app.isPackaged) {
+  app.setName(APP_NAME);
+  app.setAppUserModelId(APP_ID);
+} else {
+  // A source run must not lose the single-instance race to an installed or
+  // mounted release. Keeping its shell state and lock in a distinct user-data
+  // directory makes `npm start` reliably open the current checkout.
+  app.setName(DEV_APP_NAME);
+  app.setPath('userData', path.join(app.getPath('appData'), DEV_APP_NAME));
+  app.setAppUserModelId(DEV_APP_ID);
+}
 
 // The local renderer and the loopback-only Python service authenticate each
 // other with a persistent random token scoped to this standalone app.
@@ -237,6 +249,16 @@ function avatarStore() {
 function avatarStoreSender(event) {
   return Boolean(settingsWindow && !settingsWindow.isDestroyed()
     && event && event.sender === settingsWindow.webContents);
+}
+
+function writeSettingsClipboard(event, value) {
+  if (!avatarStoreSender(event) || typeof value !== 'string') return false;
+  const text = value.trim();
+  // Settings copies only short, single-line device/pairing codes. The bridge
+  // is deliberately write-only and cannot inspect the user's clipboard.
+  if (!text || text.length > 256 || /[\r\n\0]/.test(text)) return false;
+  clipboard.writeText(text);
+  return true;
 }
 
 function avatarStoreFailure(error) {
@@ -2531,6 +2553,7 @@ async function restartBackend() {
 function installIpc() {
   ipcMain.handle('openclam:get-state', (event) => (
     isBuddySender(event) ? buddyShellState() : shellState()));
+  ipcMain.handle('openclam:copy-settings-text', writeSettingsClipboard);
   ipcMain.handle('openclam:save-motion-asset', saveMotionAsset);
   ipcMain.handle('openclam:avatar-store-catalog', avatarStoreCatalog);
   ipcMain.handle('openclam:avatar-store-thumbnail', avatarStoreThumbnail);

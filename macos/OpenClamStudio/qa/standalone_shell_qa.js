@@ -51,6 +51,9 @@ assert.match(main, /'--host', HOST, '--port', String\(port\)/);
 assert.match(main, /const AUTH_HEADER = 'X-OpenClam-Token';/);
 assert.match(main, /details\.requestHeaders\[AUTH_HEADER\] = backendToken/);
 assert.match(main, /const APP_ID = 'com\.lionheart\.openclam\.macos';/);
+assert.match(main, /const DEV_APP_ID = `\$\{APP_ID\}\.dev`;/);
+assert.match(main, /app\.setPath\('userData', path\.join\(app\.getPath\('appData'\), DEV_APP_NAME\)\)/,
+  'source runs must use an independent single-instance lock and shell state');
 assert.match(main, /OPENCLAM_LIVEKIT_BROKER_URL: LIVEKIT_BROKER_URL/);
 assert.match(main, /OPENCLAM_LIVEKIT_SERVER_HOST: LIVEKIT_SERVER_HOST/);
 assert.match(main, /delete inherited\.OPENCLAM_VAULT_FILE/);
@@ -89,7 +92,11 @@ for (const required of [
   "downloadAvatarStoreItem: (id) => ipcRenderer.invoke('openclam:avatar-store-download'",
   "cancelAvatarStoreItem: (id) => ipcRenderer.invoke('openclam:avatar-store-cancel'",
   "onAvatarStoreProgress: (callback) => subscribe('openclam:avatar-store-progress'",
+  "copySettingsText: (value) => ipcRenderer.invoke(",
 ]) assert.ok(preload.includes(required), `missing Avatar Store bridge: ${required}`);
+assert.match(main, /ipcMain\.handle\('openclam:copy-settings-text', writeSettingsClipboard\)/);
+assert.match(main, /if \(!avatarStoreSender\(event\)[\s\S]*clipboard\.writeText\(text\);/,
+  'clipboard writes must be settings-only, bounded, and write-only');
 assert.match(main, /fs\.openAsBlob\(file, \{type: 'application\/vnd\.openclam\.avatar\+zip'\}\)/,
   'Store packages must stream into the existing bounded AVTR import route');
 assert.match(main, /\/api\/avatar\/import/);

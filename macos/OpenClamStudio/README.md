@@ -107,6 +107,12 @@ npm run check
 npm start
 ```
 
+`npm start` runs **OpenClam Studio Dev** directly from this checkout. It uses a
+separate Electron instance lock and shell-state folder, so an installed or
+mounted OpenClam Studio release may remain open without stealing the dev launch.
+The Python service still loads the source files from this directory; no DMG
+installation is involved.
+
 The app listens only on loopback. Electron creates a private local
 authentication token for each installation, stores it in its mode-0600 app
 data file, and the backend fails closed if it is absent. The renderer never

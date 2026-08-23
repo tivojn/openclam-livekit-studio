@@ -245,6 +245,11 @@ for (const id of [
   'openclaw-install-panel', 'openclaw-setup-key', 'openclaw-install',
   'openclaw-update-channel',
 ]) includes(`id="${id}"`);
+includes('async function copySettingsText(value)');
+includes("typeof SHELL.copySettingsText === 'function'");
+includes('if (!await copySettingsText(code))');
+excludes(/openclaw-pairing-copy[\s\S]{0,400}navigator\.clipboard\.writeText\(code\)/,
+  'The packaged pairing button must use the Electron clipboard bridge');
 includes("api('/api/openclaw/pairing'");
 includes("api('/api/openclaw/pairing', {method: 'POST'}");
 includes("api('/api/openclaw/install'");

@@ -25,6 +25,8 @@ function subscribe(channel, callback) {
 const api = Object.freeze({
   isElectron: true,
   getState: () => ipcRenderer.invoke('openclam:get-state'),
+  copySettingsText: (value) => ipcRenderer.invoke(
+    'openclam:copy-settings-text', String(value || '')),
   openSettings: () => ipcRenderer.invoke('openclam:open-settings'),
   openAppearance: () => ipcRenderer.invoke('openclam:open-appearance'),
   showAvatar: () => ipcRenderer.invoke('openclam:show-main'),
@@ -71,5 +73,5 @@ const api = Object.freeze({
 });
 
 // The product bridge exposes app-local controls only: no device discovery,
-// pairing, system-audio capture, or credential reads.
+// pairing, system-audio capture, credential reads, or clipboard reads.
 contextBridge.exposeInMainWorld('openclam', api);

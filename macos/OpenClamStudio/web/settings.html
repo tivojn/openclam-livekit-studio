@@ -1436,6 +1436,19 @@ const api = async (p, o) => (await fetch(p, o)).json();
 let OPENCLAW_PAIRING_EXPIRES_AT = 0;
 let OPENCLAW_PAIRING_TIMER = 0;
 
+async function copySettingsText(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (SHELL && SHELL.isElectron && typeof SHELL.copySettingsText === 'function') {
+    return (await SHELL.copySettingsText(text)) === true;
+  }
+  if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+    return false;
+  }
+  await navigator.clipboard.writeText(text);
+  return true;
+}
+
 function refreshOpenClawPairingCodeState() {
   const field = $('#openclaw-pairing-countdown');
   const card = $('#openclaw-pairing-code-card');
@@ -1598,7 +1611,7 @@ $('#openclaw-pairing-copy').onclick = async () => {
   const code = $('#openclaw-pairing-code').textContent.trim();
   if (!code) return;
   try {
-    await navigator.clipboard.writeText(code);
+    if (!await copySettingsText(code)) throw new Error('clipboard unavailable');
     $('#openclaw-pairing-state').textContent = 'Pairing code copied.';
   } catch {
     $('#openclaw-pairing-state').textContent = 'Copy failed. Select the code and copy it manually.';
@@ -5884,7 +5897,9 @@ function renderXaiAccount() {
   const copy = box.querySelector('[data-xai-copy-code]');
   if (copy) copy.onclick = async () => {
     try {
-      await navigator.clipboard.writeText(String((XAI_ACCOUNT.flow || {}).user_code || ''));
+      if (!await copySettingsText(String((XAI_ACCOUNT.flow || {}).user_code || ''))) {
+        throw new Error('clipboard unavailable');
+      }
       copy.textContent = 'Copied';
     } catch (_error) {
       const state = $('#xai-device-state');
