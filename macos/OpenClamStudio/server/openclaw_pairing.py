@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import time
+from pathlib import Path
+from urllib.parse import urlsplit
 
 
 PAIRING_CODE = re.compile(
@@ -17,6 +19,8 @@ UUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 MAX_OUTPUT_BYTES = 64 * 1024
+MAX_PLUGIN_BYTES = 5 * 1024 * 1024
+SETUP_KEY = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 
 
 class OpenClawPairingError(RuntimeError):
@@ -52,13 +56,20 @@ def _safe_environment() -> dict[str, str]:
     return environment
 
 
-def _run(arguments: list[str], timeout: float = 25) -> str:
+def _run(
+    arguments: list[str],
+    timeout: float = 25,
+    extra_environment: dict[str, str] | None = None,
+) -> str:
     executable = _executable()
     if not executable:
         raise OpenClawPairingError(
             "OpenClaw is not installed on this Mac. Install and configure OpenClaw first."
         )
     try:
+        environment = _safe_environment()
+        if extra_environment:
+            environment.update(extra_environment)
         result = subprocess.run(
             [executable, *arguments],
             stdin=subprocess.DEVNULL,
@@ -66,7 +77,7 @@ def _run(arguments: list[str], timeout: float = 25) -> str:
             stderr=subprocess.PIPE,
             check=False,
             timeout=timeout,
-            env=_safe_environment(),
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise OpenClawPairingError(
@@ -82,6 +93,73 @@ def _run(arguments: list[str], timeout: float = 25) -> str:
         return result.stdout.decode("utf-8", errors="strict").strip()
     except UnicodeDecodeError as error:
         raise OpenClawPairingError("OpenClaw returned an invalid response.") from error
+
+
+def _plugin_package() -> str:
+    candidates = [
+        os.environ.get("OPENCLAM_OPENCLAW_PLUGIN_PACKAGE", ""),
+        str(Path(__file__).resolve().parents[1]
+            / ".electron-openclaw-plugin" / "openclam-channel.tgz"),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+            stat = resolved.stat()
+        except OSError:
+            continue
+        if (
+            resolved.suffix == ".tgz"
+            and resolved.is_file()
+            and not path.is_symlink()
+            and 0 < stat.st_size <= MAX_PLUGIN_BYTES
+        ):
+            return str(resolved)
+    raise OpenClawPairingError(
+        "This OpenClam Studio build does not include the OpenClaw channel package."
+    )
+
+
+def _bridge_origin() -> str:
+    raw_path = os.environ.get("OPENCLAM_OPENCLAW_INSTALL_CONFIG", "")
+    if not raw_path:
+        raise OpenClawPairingError(
+            "This OpenClam Studio build is not provisioned for OpenClaw setup."
+        )
+    path = Path(raw_path).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+        value = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise OpenClawPairingError(
+            "This OpenClam Studio build has an invalid OpenClaw setup configuration."
+        ) from error
+    if not isinstance(value, dict) or set(value) != {"v", "bridge_origin"}:
+        raise OpenClawPairingError(
+            "This OpenClam Studio build has an invalid OpenClaw setup configuration."
+        )
+    origin = value.get("bridge_origin")
+    if value.get("v") != 1 or not isinstance(origin, str) or len(origin) > 512:
+        raise OpenClawPairingError(
+            "This OpenClam Studio build has an invalid OpenClaw setup configuration."
+        )
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or origin.rstrip("/") != f"https://{parsed.netloc}"
+    ):
+        raise OpenClawPairingError(
+            "This OpenClam Studio build has an invalid OpenClaw setup configuration."
+        )
+    return origin.rstrip("/")
 
 
 def _account(value: object) -> dict[str, str]:
@@ -103,20 +181,37 @@ def _account(value: object) -> dict[str, str]:
     }
 
 
+def _parse_json_object(output: str) -> dict[str, object]:
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(output):
+        if character != "{":
+            continue
+        try:
+            value, end = decoder.raw_decode(output, index)
+        except json.JSONDecodeError:
+            continue
+        if output[end:].strip() or not isinstance(value, dict):
+            continue
+        return value
+    raise OpenClawPairingError("OpenClaw returned an invalid response.")
+
+
 def status() -> dict[str, object]:
     executable = _executable()
     if not executable:
         return {
             "available": False,
+            "channel_installed": False,
             "configured": False,
             "gateway_label": "",
             "accounts": [],
         }
     try:
-        value = json.loads(_run(["openclam", "status"]))
-    except (json.JSONDecodeError, OpenClawPairingError):
+        value = _parse_json_object(_run(["openclam", "status"]))
+    except OpenClawPairingError:
         return {
             "available": True,
+            "channel_installed": False,
             "configured": False,
             "gateway_label": "",
             "accounts": [],
@@ -129,6 +224,7 @@ def status() -> dict[str, object]:
         raise OpenClawPairingError("OpenClaw returned an invalid agent list.")
     return {
         "available": True,
+        "channel_installed": True,
         "configured": bool(value.get("paired")),
         "gateway_label": (
             gateway_label.strip()[:80]
@@ -139,11 +235,7 @@ def status() -> dict[str, object]:
     }
 
 
-def create_pairing_code() -> dict[str, object]:
-    try:
-        value = json.loads(_run(["openclam", "pair-device", "--json"]))
-    except json.JSONDecodeError as error:
-        raise OpenClawPairingError("OpenClaw returned an invalid pairing response.") from error
+def _pairing_result(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != {
         "v", "code", "connectionId", "expiresAt", "gatewayLabel", "accounts"
     }:
@@ -170,6 +262,65 @@ def create_pairing_code() -> dict[str, object]:
         or not 1 <= len(accounts) <= 32
     ):
         raise OpenClawPairingError("OpenClaw returned an invalid pairing response.")
+    return {
+        "code": code,
+        "connection_id": connection_id,
+        "expires_at": expires_at,
+        "gateway_label": gateway_label,
+        "accounts": [_account(account) for account in accounts],
+    }
+
+
+def install_channel(setup_key: str = "") -> dict[str, object]:
+    if not _executable():
+        raise OpenClawPairingError(
+            "OpenClaw is not installed on this Mac. Install OpenClaw first."
+        )
+    package = _plugin_package()
+    existing = status()
+    _run(["plugins", "install", package, "--force"], timeout=90)
+    if existing.get("configured") is True:
+        _run(["gateway", "restart"], timeout=35)
+        updated = status()
+        return {
+            **updated,
+            "updated": True,
+            "gateway_restarted": True,
+        }
+    key = setup_key.strip()
+    if SETUP_KEY.fullmatch(key) is None:
+        raise OpenClawPairingError(
+            "Enter the OpenClam bridge setup key to connect this OpenClaw installation."
+        )
+    try:
+        value = _parse_json_object(_run(
+            [
+                "openclam", "pair", "--bridge-url", _bridge_origin(),
+                "--bootstrap-secret-env", "OPENCLAM_STUDIO_SETUP_KEY", "--json",
+            ],
+            timeout=60,
+            extra_environment={"OPENCLAM_STUDIO_SETUP_KEY": key},
+        ))
+    except OpenClawPairingError as error:
+        raise OpenClawPairingError("OpenClaw returned an invalid pairing response.") from error
+    result = _pairing_result(value)
+    _run(["gateway", "restart"], timeout=35)
+    return {
+        **result,
+        "available": True,
+        "channel_installed": True,
+        "configured": True,
+        "updated": False,
+        "gateway_restarted": True,
+    }
+
+
+def create_pairing_code() -> dict[str, object]:
+    try:
+        value = _parse_json_object(_run(["openclam", "pair-device", "--json"]))
+    except OpenClawPairingError as error:
+        raise OpenClawPairingError("OpenClaw returned an invalid pairing response.") from error
+    result = _pairing_result(value)
 
     restart_warning = ""
     try:
@@ -180,11 +331,7 @@ def create_pairing_code() -> dict[str, object]:
             "Restart the OpenClaw gateway before sending a message."
         )
     return {
-        "code": code,
-        "connection_id": connection_id,
-        "expires_at": expires_at,
-        "gateway_label": gateway_label,
-        "accounts": [_account(account) for account in accounts],
+        **result,
         "gateway_restarted": not restart_warning,
         "warning": restart_warning,
     }

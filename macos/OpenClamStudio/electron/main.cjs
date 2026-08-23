@@ -543,6 +543,16 @@ function backendEnvironment() {
       app.isPackaged ? 'native' : '.electron-native',
       'person-cutout',
     ),
+    OPENCLAM_OPENCLAW_PLUGIN_PACKAGE: path.join(
+      app.isPackaged ? process.resourcesPath : root,
+      app.isPackaged ? 'openclaw' : '.electron-openclaw-plugin',
+      'openclam-channel.tgz',
+    ),
+    OPENCLAM_OPENCLAW_INSTALL_CONFIG: path.join(
+      app.isPackaged ? process.resourcesPath : root,
+      app.isPackaged ? 'openclaw' : '.electron-openclaw-plugin',
+      'install-config.json',
+    ),
     OPENCLAM_NO_RVM: '1',
     OPENCLAM_PACKAGED: app.isPackaged ? '1' : '0',
     OPENCLAM_AUTH_TOKEN: backendToken,

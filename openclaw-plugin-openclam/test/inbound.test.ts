@@ -14,6 +14,7 @@ import type {
   ActivityStatus,
   OpenClamAttachmentUpload,
   TurnSubmitFrame,
+  WorkStep,
 } from "../src/types.js";
 
 function testFrame(capabilities?: TurnSubmitFrame["payload"]["capabilities"]): TurnSubmitFrame {
@@ -55,6 +56,7 @@ function testSink() {
   return {
     activity: vi.fn(async (_status: ActivityStatus) => undefined),
     clearActivity: vi.fn(async () => undefined),
+    work: vi.fn(async (_step: WorkStep) => undefined),
     partial: vi.fn(async (_text: string) => undefined),
     attachment: vi.fn(async (_attachment: OpenClamAttachmentUpload) => undefined),
     completed: vi.fn(async (_text: string) => undefined),
@@ -220,12 +222,115 @@ describe("OpenClam inbound authorization", () => {
 
     expect(sink.activity.mock.calls.map((call) => call[0])).toEqual([
       "thinking",
+      "thinking",
       "planning",
       "searching",
+      "finalizing",
     ]);
     expect(sink.completed).toHaveBeenCalledWith("visible answer");
     expect(JSON.stringify(sink.activity.mock.calls)).not.toContain("private");
     expect(JSON.stringify(sink.completed.mock.calls)).not.toContain("hidden");
+  });
+
+  it("always emits bounded Work lifecycle steps even when OpenClaw sends no optional callbacks", async () => {
+    const channel = {
+      reply: {
+        finalizeInboundContext: vi.fn((value: Record<string, unknown>) => value),
+        dispatchReplyWithBufferedBlockDispatcher: vi.fn(),
+      },
+      session: { recordInboundSession: vi.fn() },
+      inbound: {
+        dispatchReply: vi.fn(async (params: any) => {
+          await params.delivery.deliver({ text: "Fast answer" });
+        }),
+      },
+    };
+    setOpenClamRuntime({ channel } as any);
+    const frame = testFrame(["activity-v1", "work-v1"]);
+    const sink = testSink();
+
+    await dispatchOpenClamTurn({
+      ctx: testContext(frame.connectionId),
+      frame,
+      signal: new AbortController().signal,
+      sink,
+    });
+
+    expect(sink.work.mock.calls.map((call) => call[0])).toEqual([
+      expect.objectContaining({
+        stepId: "reasoning", state: "running", title: "Understanding the request",
+      }),
+      expect.objectContaining({
+        stepId: "reasoning", state: "completed", title: "Understanding the request",
+      }),
+      expect.objectContaining({
+        stepId: "response", state: "completed", title: "Preparing the response",
+      }),
+    ]);
+    expect(sink.completed).toHaveBeenCalledWith("Fast answer");
+  });
+
+  it("emits expandable work steps without raw arguments, commands, or output", async () => {
+    const channel = {
+      reply: {
+        finalizeInboundContext: vi.fn((value: Record<string, unknown>) => value),
+        dispatchReplyWithBufferedBlockDispatcher: vi.fn(),
+      },
+      session: { recordInboundSession: vi.fn() },
+      inbound: {
+        dispatchReply: vi.fn(async (params: any) => {
+          await params.replyOptions.onReplyStart();
+          await params.replyOptions.onPlanUpdate({
+            title: "Inspect and create",
+            steps: ["Read the source", "Create the image"],
+          });
+          await params.replyOptions.onToolStart({
+            toolCallId: "call-1",
+            name: "exec_command",
+            args: {
+              command: [
+                "curl -H",
+                "Authorization:" + "Bearer",
+                "fixture-value",
+                "/srv/openclaw/private",
+              ].join(" "),
+            },
+          });
+          await params.replyOptions.onCommandOutput({
+            toolCallId: "call-1",
+            name: "exec_command",
+            status: "completed",
+            output: [
+              "Saved /srv/openclaw/private/out.png",
+              ["api", "key"].join("_") + "=fixture-value",
+            ].join(" "),
+            cwd: "/srv/openclaw/private",
+          });
+          await params.delivery.deliver({ text: "Done" });
+        }),
+      },
+    };
+    setOpenClamRuntime({ channel } as any);
+    const frame = testFrame(["activity-v1", "attachments-v1", "work-v1"]);
+    const sink = testSink();
+
+    await dispatchOpenClamTurn({
+      ctx: testContext(frame.connectionId),
+      frame,
+      signal: new AbortController().signal,
+      sink,
+    });
+
+    const encoded = JSON.stringify(sink.work.mock.calls);
+    expect(sink.work.mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(encoded).toContain("Understanding the request");
+    expect(encoded).toContain("Inspect and create");
+    expect(encoded).toContain("Command output stays private");
+    expect(encoded).not.toContain("/srv/openclaw/private");
+    expect(encoded).not.toContain("fixture-value");
+    expect(encoded).not.toContain("curl -H");
+    expect(encoded).not.toContain("Saved ");
+    expect(encoded).not.toContain("args");
   });
 
   it("stages official media, suppresses a path-bearing partial, and sends only a safe filename", async () => {

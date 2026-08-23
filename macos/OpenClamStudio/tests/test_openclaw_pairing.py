@@ -41,6 +41,7 @@ class OpenClawPairingTests(unittest.TestCase):
             result = openclaw_pairing.status()
         self.assertEqual(result, {
             "available": True,
+            "channel_installed": True,
             "configured": True,
             "gateway_label": "OpenClam Mac",
             "accounts": [{
@@ -113,6 +114,71 @@ class OpenClawPairingTests(unittest.TestCase):
             result = openclaw_pairing.status()
         self.assertEqual(result["gateway_label"], "")
         self.assertNotIn("must-not-render", json.dumps(result))
+
+    def test_status_accepts_bounded_openclaw_notices_before_its_json(self):
+        value = {
+            "paired": False,
+            "gatewayLabel": "OpenClam Mac",
+            "accounts": [],
+        }
+        output = b"OpenClaw notice: another plugin needs attention\n" + json.dumps(value).encode()
+        with patch.object(openclaw_pairing, "_executable", return_value="/bin/openclaw"), \
+             patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+                 ["openclaw"], 0, output, b"private diagnostic"
+             )):
+            result = openclaw_pairing.status()
+        self.assertTrue(result["channel_installed"])
+        self.assertFalse(result["configured"])
+        self.assertNotIn("attention", json.dumps(result))
+
+    def test_install_channel_uses_setup_key_once_without_storing_or_echoing_it(self):
+        now = int(time.time() * 1000)
+        pairing = {
+            "v": 1,
+            "code": "OC-2345-6789-ABCD",
+            "connectionId": "11111111-1111-4111-8111-111111111111",
+            "expiresAt": now + 600_000,
+            "gatewayLabel": "OpenClam Mac",
+            "accounts": [{
+                "accountId": "ara",
+                "agentId": "ara",
+                "displayName": "Ara",
+            }],
+        }
+        secret = "safe_setup_key_0123456789_ABCDEFGH"
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            if "pair" in command:
+                return self.result(pairing)
+            return subprocess.CompletedProcess(command, 0, b"ok\n", b"")
+
+        with patch.object(openclaw_pairing, "_executable", return_value="/bin/openclaw"), \
+             patch.object(openclaw_pairing, "_plugin_package", return_value="/tmp/channel.tgz"), \
+             patch.object(openclaw_pairing, "_bridge_origin", return_value="https://bridge.example"), \
+             patch.object(openclaw_pairing, "status", return_value={
+                 "available": True,
+                 "channel_installed": False,
+                 "configured": False,
+                 "gateway_label": "",
+                 "accounts": [],
+             }), \
+             patch.object(subprocess, "run", side_effect=run):
+            result = openclaw_pairing.install_channel(secret)
+
+        self.assertEqual(calls[0][0], [
+            "/bin/openclaw", "plugins", "install", "/tmp/channel.tgz", "--force"
+        ])
+        self.assertEqual(calls[1][0][:5], [
+            "/bin/openclaw", "openclam", "pair", "--bridge-url", "https://bridge.example"
+        ])
+        self.assertEqual(calls[1][1]["env"].get("OPENCLAM_STUDIO_SETUP_KEY"), secret)
+        self.assertNotIn("OPENCLAM_STUDIO_SETUP_KEY", calls[0][1]["env"])
+        self.assertNotIn("OPENCLAM_STUDIO_SETUP_KEY", calls[2][1]["env"])
+        self.assertEqual(result["code"], pairing["code"])
+        self.assertTrue(result["configured"])
+        self.assertNotIn(secret, json.dumps(result))
 
 
 if __name__ == "__main__":

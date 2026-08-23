@@ -127,6 +127,19 @@ assert.doesNotMatch(source, /avatarCarouselButton\.addEventListener\('click',[\s
 for (const route of ['/reply', '/stt', '/say', '/api/livekit/session']) {
   assert.ok(source.includes(`'${route}'`), `missing same-origin route ${route}`);
 }
+for (const route of ['/api/openclaw/agents', '/api/openclaw/turn']) {
+  assert.ok(source.includes(`'${route}'`), `missing same-origin OpenClaw route ${route}`);
+}
+assert.equal((source.match(/id="agentModeSelect"/g) || []).length, 1);
+assert.match(source, /async function submitTurn\(text\)[\s\S]{0,260}selectedOpenClawAgent\(\)/,
+  'the Mac composer must switch between local and OpenClaw agents without changing screens');
+assert.match(source, /const createWorkTimeline = \(\) =>/);
+assert.match(source, /event\.type === 'work'[\s\S]{0,100}updateWorkTimeline/);
+assert.match(source, /event\.type === 'attachment'[\s\S]{0,120}appendOpenClawAttachment/);
+assert.match(source, /textContent = step\.title/,
+  'work details must use text nodes rather than executable markup');
+assert.doesNotMatch(source, /innerHTML\s*=\s*step\./,
+  'OpenClaw work updates must never write untrusted HTML');
 assert.match(source, /new library\.Room\(\{ adaptiveStream: true, dynacast: true \}\)/);
 assert.match(source, /localParticipant\.setMicrophoneEnabled\(true\)/);
 assert.match(source, /RoomEvent\.TranscriptionReceived/);

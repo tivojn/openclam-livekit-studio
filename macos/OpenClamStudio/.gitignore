@@ -14,6 +14,7 @@ models/
 .electron-models/
 .electron-ffmpeg/
 .electron-native/
+.electron-openclaw-plugin/
 
 # Local analysis records
 .learnings/

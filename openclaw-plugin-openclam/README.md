@@ -58,6 +58,12 @@ not need any inbound port because it connects out to the bridge.
    repository does not install, configure, or restart the user's live Gateway
    automatically.
 
+The signed OpenClam Studio macOS app packages these same runtime files and can
+perform the install, initial pairing, and Gateway restart from its Settings
+panel. The first connection requires the bridge setup key, which is not
+stored; later channel upgrades reuse the existing revocable adapter credential
+and do not need that key.
+
 To expose only selected agents:
 
 ```bash
@@ -142,9 +148,12 @@ credential or bridge bootstrap token.
 - A stable OpenClam conversation ID maps to a stable OpenClaw session route.
 - Partial replies are sent as cumulative `assistant.delta` snapshots.
 - Updated clients receive a single coalesced activity card using fixed safe
-  categories such as Thinking, Searching, Editing, and Preparing files. The
-  adapter never forwards plan text, reasoning, tool names, arguments, output,
-  commands, or local paths as progress.
+  categories such as Thinking, Searching, Editing, and Preparing files.
+- Clients that advertise `work-v1` also receive a bounded, expandable Work
+  timeline. It contains user-facing plan/status summaries and sanitized tool
+  labels only. Private chain-of-thought, raw arguments, commands, tool output,
+  credentials, and absolute local paths are never forwarded. Legacy clients
+  receive no Work frames.
 - Generated media is resolved only with OpenClaw's official agent-scoped
   outbound-media helpers. The plugin advertises channel media support, uploads
   validated files privately to the bridge, waits for durable attachment

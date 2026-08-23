@@ -38,6 +38,7 @@ const ADAPTER_KINDS = new Set([
   "assistant.delta",
   "assistant.activity.upsert",
   "assistant.activity.clear",
+  "assistant.work.upsert",
   "assistant.attachment",
   "assistant.completed",
   "turn.error",
@@ -48,6 +49,7 @@ const RELAY_RECEIPT_KINDS = new Set<FrameKind>([
   "assistant.delta",
   "assistant.activity.upsert",
   "assistant.activity.clear",
+  "assistant.work.upsert",
   "assistant.attachment",
   "assistant.completed",
   "turn.cancel",
@@ -866,6 +868,9 @@ export class ConnectorSession extends DurableObject<Env> {
       ...(frame.kind === "assistant.attachment"
         ? { attachmentId: frame.payload.attachmentId as string }
         : {}),
+      ...(frame.kind === "assistant.work.upsert"
+        ? { workStepId: frame.payload.stepId as string }
+        : {}),
     });
     await this.persistSession(record);
     await this.scheduleCleanup(record);
@@ -933,6 +938,16 @@ export class ConnectorSession extends DurableObject<Env> {
           item.turnId !== turnId ||
           (item.kind !== "assistant.activity.upsert" &&
             item.kind !== "assistant.activity.clear"),
+      );
+    }
+    if (frame.kind === "assistant.work.upsert") {
+      const stepId = frame.payload.stepId as string;
+      return pending.filter(
+        (item) =>
+          item.from !== role ||
+          item.turnId !== turnId ||
+          item.kind !== "assistant.work.upsert" ||
+          item.workStepId !== stepId,
       );
     }
     return pending;
@@ -1088,6 +1103,17 @@ export class ConnectorSession extends DurableObject<Env> {
       return this.replaceTurn(record, activeIndex, {
         ...active,
         lastActivityRevision: revision,
+        lastActivityAt: now,
+      });
+    }
+    if (frame.kind === "assistant.work.upsert") {
+      if (active.accepted !== true) return "turn_not_accepted";
+      if (!active.capabilities?.includes("work-v1")) return "capability_not_negotiated";
+      const revision = frame.payload.revision as number;
+      if (revision <= (active.lastWorkRevision ?? 0)) return "revision_replay";
+      return this.replaceTurn(record, activeIndex, {
+        ...active,
+        lastWorkRevision: revision,
         lastActivityAt: now,
       });
     }

@@ -9,20 +9,37 @@ import {
   uniqueMediaSources,
 } from "./media.js";
 import { getOpenClamRuntime } from "./runtime.js";
+import { sanitizeWorkStep, sanitizeWorkText, workState, workStepId } from "./work-sanitizer.js";
 import type {
   ActivityStatus,
   OpenClamAttachmentUpload,
   ResolvedOpenClamAccount,
   TurnSubmitFrame,
+  WorkStep,
 } from "./types.js";
 
 export type OpenClamReplySink = {
   partial: (text: string) => Promise<void>;
   activity: (status: ActivityStatus) => Promise<void>;
   clearActivity: () => Promise<void>;
+  work?: (step: WorkStep) => Promise<void>;
   attachment: (attachment: OpenClamAttachmentUpload) => Promise<void>;
   completed: (text: string) => Promise<void>;
 };
+
+async function emitWork(
+  sink: OpenClamReplySink,
+  step: WorkStep,
+): Promise<void> {
+  if (!sink.work) return;
+  const safe = sanitizeWorkStep(step);
+  if (safe) await sink.work(safe);
+}
+
+function safeToolTitle(name?: string): string {
+  const safe = sanitizeWorkText(name, 80);
+  return safe ? `Using ${safe}` : "Using a tool";
+}
 
 const HIDDEN_REPLY_KEYS = [
   "isReasoning",
@@ -180,6 +197,13 @@ export async function dispatchOpenClamTurn(params: {
   const mediaReferenceReplacements = new Map<string, string>();
   const supportsAttachments = frame.payload.capabilities?.includes("attachments-v1") === true;
   const loadMedia = params.loadMedia ?? loadOpenClamMedia;
+  await params.sink.activity("thinking");
+  await emitWork(params.sink, {
+    stepId: "reasoning",
+    category: "reasoning_summary",
+    state: "running",
+    title: "Understanding the request",
+  });
   await channelRuntime.inbound.dispatchReply({
     cfg: params.ctx.cfg,
     channel: "openclam",
@@ -257,9 +281,39 @@ export async function dispatchOpenClamTurn(params: {
       suppressDefaultToolProgressMessages: true,
       allowToolLifecycleWhenProgressHidden: true,
       forceToolResultProgress: true,
-      onReplyStart: async () => params.sink.activity("thinking"),
-      onPlanUpdate: async () => params.sink.activity("planning"),
-      onToolStart: async (payload) => params.sink.activity(toolActivity(payload.name)),
+      onReplyStart: async () => {
+        await params.sink.activity("thinking");
+        await emitWork(params.sink, {
+          stepId: "reasoning",
+          category: "reasoning_summary",
+          state: "running",
+          title: "Understanding the request",
+        });
+      },
+      onPlanUpdate: async (payload) => {
+        await params.sink.activity("planning");
+        const steps = Array.isArray(payload.steps)
+          ? payload.steps.map((step) => sanitizeWorkText(step, 180)).filter(Boolean).join(" · ")
+          : undefined;
+        await emitWork(params.sink, {
+          stepId: "plan",
+          category: "plan",
+          state: workState(payload.phase),
+          title: sanitizeWorkText(payload.title, 120) ?? "Planning the work",
+          detail: steps,
+        });
+      },
+      onToolStart: async (payload) => {
+        await params.sink.activity(toolActivity(payload.name));
+        await emitWork(params.sink, {
+          stepId: workStepId("tool", payload.toolCallId, payload.itemId, payload.name),
+          category: "tool",
+          state: workState(payload.phase),
+          title: safeToolTitle(payload.name),
+          tool: sanitizeWorkText(payload.name, 80),
+          detail: "OpenClaw started this tool. Arguments stay private.",
+        });
+      },
       onItemEvent: async (payload) => {
         const status = `${payload.status ?? ""} ${payload.phase ?? ""}`.toLowerCase();
         await params.sink.activity(
@@ -267,13 +321,80 @@ export async function dispatchOpenClamTurn(params: {
             ? "waiting_for_approval"
             : toolActivity(payload.name ?? payload.kind),
         );
+        await emitWork(params.sink, {
+          stepId: workStepId("tool", payload.toolCallId, payload.itemId, payload.name, payload.kind),
+          category: status.includes("approval") ? "approval" : "tool",
+          state: workState(payload.status, payload.phase),
+          title: sanitizeWorkText(payload.title, 120)
+            ?? safeToolTitle(payload.name ?? payload.kind),
+          tool: sanitizeWorkText(payload.name ?? payload.kind, 80),
+          detail: sanitizeWorkText(payload.summary ?? payload.progressText, 1_000),
+        });
       },
-      onApprovalEvent: async () => params.sink.activity("waiting_for_approval"),
-      onCommandOutput: async () => params.sink.activity("running_action"),
-      onPatchSummary: async () => params.sink.activity("editing"),
-      onCompactionStart: async () => params.sink.activity("thinking"),
-      onCompactionEnd: async () => params.sink.activity("finalizing"),
-      onAssistantMessageStart: async () => params.sink.activity("finalizing"),
+      onApprovalEvent: async (payload) => {
+        await params.sink.activity("waiting_for_approval");
+        await emitWork(params.sink, {
+          stepId: workStepId("approval", payload.approvalId, payload.toolCallId, payload.itemId),
+          category: "approval",
+          state: workState(payload.status ?? "waiting", payload.phase),
+          title: sanitizeWorkText(payload.title, 120) ?? "Approval needed on the OpenClaw host",
+          detail: sanitizeWorkText(payload.reason ?? payload.message, 1_000),
+        });
+      },
+      onCommandOutput: async (payload) => {
+        await params.sink.activity("running_action");
+        await emitWork(params.sink, {
+          stepId: workStepId("command", payload.toolCallId, payload.itemId, payload.name),
+          category: "command",
+          state: workState(payload.status, payload.phase),
+          title: sanitizeWorkText(payload.title, 120) ?? "Running a command",
+          tool: sanitizeWorkText(payload.name, 80),
+          detail: "Command output stays private on the OpenClaw host.",
+        });
+      },
+      onPatchSummary: async (payload) => {
+        await params.sink.activity("editing");
+        const counts = [
+          Number.isFinite(payload.added) ? `${payload.added} added` : "",
+          Number.isFinite(payload.modified) ? `${payload.modified} modified` : "",
+          Number.isFinite(payload.deleted) ? `${payload.deleted} deleted` : "",
+        ].filter(Boolean).join(" · ");
+        await emitWork(params.sink, {
+          stepId: workStepId("patch", payload.toolCallId, payload.itemId, payload.name),
+          category: "file",
+          state: workState(payload.phase ?? "completed"),
+          title: sanitizeWorkText(payload.title, 120) ?? "Updated files",
+          detail: sanitizeWorkText(payload.summary, 1_000) ?? counts,
+          tool: sanitizeWorkText(payload.name, 80),
+        });
+      },
+      onCompactionStart: async () => {
+        await params.sink.activity("thinking");
+        await emitWork(params.sink, {
+          stepId: "context",
+          category: "status",
+          state: "running",
+          title: "Organizing the session context",
+        });
+      },
+      onCompactionEnd: async () => {
+        await params.sink.activity("finalizing");
+        await emitWork(params.sink, {
+          stepId: "context",
+          category: "status",
+          state: "completed",
+          title: "Session context organized",
+        });
+      },
+      onAssistantMessageStart: async () => {
+        await params.sink.activity("finalizing");
+        await emitWork(params.sink, {
+          stepId: "response",
+          category: "status",
+          state: "running",
+          title: "Preparing the response",
+        });
+      },
       onPartialReply: async (payload) => {
         const partial = payload as typeof payload & Record<string, unknown>;
         if (
@@ -308,6 +429,20 @@ export async function dispatchOpenClamTurn(params: {
   });
 
   if (deliveryFailure !== undefined) throw new Error(deliveryFailure);
+
+  await emitWork(params.sink, {
+    stepId: "reasoning",
+    category: "reasoning_summary",
+    state: "completed",
+    title: "Understanding the request",
+  });
+  await params.sink.activity("finalizing");
+  await emitWork(params.sink, {
+    stepId: "response",
+    category: "status",
+    state: "completed",
+    title: "Preparing the response",
+  });
 
   for (const attachment of stagedAttachments) {
     await params.sink.activity("preparing_files");

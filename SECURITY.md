@@ -32,6 +32,10 @@ or release archives.
 The OpenClaw connector accepts text-only input and is fail-closed. It must not
 expose a Gateway owner token, provider key, local iPhone file or tool, reasoning,
 tool argument or output, or approval surface. A capability-gated extension may
+show a bounded Work timeline made only from user-facing summaries and sanitized
+tool labels; private chain-of-thought, raw commands/output, secrets, and absolute
+paths remain on the OpenClaw host. The macOS ACP chat follows the same projection
+boundary. Another capability-gated extension may
 deliver generated files through authenticated, bounded storage; iOS verifies
 their declared type, length, and SHA-256 before persisting them. Sensitive media
 is excluded. Pairing credentials are role-scoped and revocable; token verifiers

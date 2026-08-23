@@ -392,6 +392,33 @@ require_sha256 "$WHISPER_STAGE/openclam-model-manifest.json" "$WHISPER_MANIFEST_
 
 npm run build:native
 npm run stage:backend
+npm run stage:openclaw
+
+require_exact_directory_files "$PROJECT_ROOT/.electron-openclaw-plugin" \
+  'staged OpenClaw channel installer' openclam-channel.tgz install-config.json
+"$AUDIT_PYTHON" - "$PROJECT_ROOT/.electron-openclaw-plugin" <<'PY'
+import json
+import pathlib
+import sys
+import urllib.parse
+
+root = pathlib.Path(sys.argv[1])
+archive = root / "openclam-channel.tgz"
+if not 0 < archive.stat().st_size <= 5 * 1024 * 1024:
+    raise SystemExit("OpenClaw channel archive has an invalid size")
+value = json.loads((root / "install-config.json").read_text(encoding="utf-8"))
+if not isinstance(value, dict) or set(value) != {"v", "bridge_origin"} or value.get("v") != 1:
+    raise SystemExit("OpenClaw install config has an invalid shape")
+origin = value.get("bridge_origin")
+parsed = urllib.parse.urlsplit(origin) if isinstance(origin, str) else None
+if (
+    parsed is None or parsed.scheme != "https" or not parsed.hostname
+    or parsed.username is not None or parsed.password is not None
+    or parsed.path or parsed.query or parsed.fragment
+    or origin != f"https://{parsed.netloc}"
+):
+    raise SystemExit("OpenClaw install config has an invalid origin")
+PY
 
 require_exact_directory_files "$PROJECT_ROOT/.electron-ffmpeg" \
   'staged FFmpeg directory' ffmpeg ffprobe LICENSE.LGPLv2.1.txt

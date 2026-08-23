@@ -180,7 +180,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
         }
     }
 
-    func testOverlayOpacitySwipeBrightensUpAndNeverDisappears() {
+    func testOverlayOpacitySwipeCoversFullyTransparentThroughFullyOpaque() {
         XCTAssertEqual(
             CaptainAyerOverlayTuning.opacity(
                 from: CaptainAyerOverlayTuning.initialOpacity,
@@ -197,7 +197,9 @@ final class CaptainAyerAvatarTests: XCTestCase {
             CaptainAyerOverlayTuning.minimumOpacity,
             accuracy: 0.0001
         )
-        XCTAssertGreaterThan(CaptainAyerOverlayTuning.minimumOpacity, 0)
+        XCTAssertEqual(CaptainAyerOverlayTuning.minimumOpacity, 0)
+        XCTAssertEqual(CaptainAyerOverlayTuning.maximumOpacity, 1)
+        XCTAssertEqual(CaptainAyerInteractionLayer.allCases, [.avatar, .thread])
     }
 
     func testStageDragIntentGivesVerticalOpacityExclusivePrecedence() {

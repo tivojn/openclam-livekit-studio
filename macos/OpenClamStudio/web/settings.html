@@ -204,6 +204,8 @@ button.xai-mode{width:100%;padding:0;border:0;background:none;color:inherit;font
   letter-spacing:.08em;color:var(--ink);overflow-wrap:anywhere}
 .openclaw-code-meta{grid-column:1/-1;color:var(--dim);font-size:11.5px}
 .openclaw-pairing-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px}
+.openclaw-setup{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:9px;margin-top:14px}
+.openclaw-setup input{min-width:0}
 .openclaw-pairing-state{min-height:1.4em;margin:10px 0 0;color:var(--dim);font-size:12px}
 .openclaw-pairing-state.bad{color:var(--bad-text)}
 @media(max-width:640px){.media-summary{flex-direction:column}.media-capabilities{
@@ -211,7 +213,8 @@ button.xai-mode{width:100%;padding:0;border:0;background:none;color:inherit;font
   flex-direction:column}.xai-device-line{grid-template-columns:1fr}.xai-device-line .btn{
   justify-self:start}.xai-global-note{flex-wrap:wrap}.xai-global-note .btn{margin-left:30px}
   .openclaw-pairing-head{flex-direction:column}.openclaw-code{grid-template-columns:1fr}
-  .openclaw-code-meta{grid-column:1}.openclaw-code .btn{justify-self:start}}
+  .openclaw-code-meta{grid-column:1}.openclaw-code .btn{justify-self:start}
+  .openclaw-setup{grid-template-columns:1fr}.openclaw-setup .btn{justify-self:start}}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px}
 .av{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;
   box-shadow:var(--shadow-sm);transition:box-shadow .15s,border-color .15s}
@@ -962,8 +965,15 @@ document.documentElement.dataset.design='quiet';</script>
       <span class="pill" id="openclaw-pairing-badge">Checking</span>
     </div>
     <div class="openclaw-agents" id="openclaw-pairing-agents" aria-label="OpenClaw agents"></div>
+    <div class="openclaw-setup" id="openclaw-install-panel" hidden>
+      <input id="openclaw-setup-key" type="password" autocomplete="off" spellcheck="false"
+        maxlength="256" placeholder="Bridge setup key"
+        aria-label="OpenClam bridge setup key">
+      <button class="btn pri" id="openclaw-install" type="button">Install &amp; connect</button>
+    </div>
     <div class="openclaw-pairing-actions">
       <button class="btn pri" id="openclaw-pairing-create" type="button" disabled>Create iPhone code</button>
+      <button class="btn sm" id="openclaw-update-channel" type="button" hidden>Update channel</button>
       <button class="btn sm" id="openclaw-pairing-refresh" type="button">Refresh status</button>
     </div>
     <div class="openclaw-code" id="openclaw-pairing-code-card" hidden>
@@ -972,9 +982,11 @@ document.documentElement.dataset.design='quiet';</script>
       <div class="openclaw-code-meta" id="openclaw-pairing-countdown" role="status" aria-live="polite"></div>
     </div>
     <p class="openclaw-pairing-state" id="openclaw-pairing-state" role="status" aria-live="polite"></p>
-    <p class="note">Creating a code safely replaces the previous iPhone pairing and
-      restarts the OpenClaw gateway. The one-time code is never saved here; if it
-      expires, create another in this same panel.</p>
+    <p class="note">Install &amp; connect adds only the bundled OpenClam channel and keeps
+      the bridge setup key out of OpenClaw configuration and app storage.
+      Creating a code safely replaces the previous iPhone pairing and
+      restarts the OpenClaw gateway. The code is not saved here. If pairing does not
+      finish, create another in this same panel—your agents and other channels stay unchanged.</p>
   </div>
 
   <h2 id="xai-account-title">xAI Account</h2>
@@ -1424,7 +1436,7 @@ const api = async (p, o) => (await fetch(p, o)).json();
 let OPENCLAW_PAIRING_EXPIRES_AT = 0;
 let OPENCLAW_PAIRING_TIMER = 0;
 
-function openClawPairingCountdown() {
+function refreshOpenClawPairingCodeState() {
   const field = $('#openclaw-pairing-countdown');
   const card = $('#openclaw-pairing-code-card');
   if (!field || !card || !OPENCLAW_PAIRING_EXPIRES_AT) return;
@@ -1432,19 +1444,19 @@ function openClawPairingCountdown() {
   if (!remaining) {
     card.hidden = true;
     field.textContent = '';
-    $('#openclaw-pairing-state').textContent = 'That one-time code expired. Create a new one here.';
-    clearInterval(OPENCLAW_PAIRING_TIMER);
+    $('#openclaw-pairing-state').textContent = 'This code is no longer active. Create another here.';
+    clearTimeout(OPENCLAW_PAIRING_TIMER);
     OPENCLAW_PAIRING_TIMER = 0;
     return;
   }
-  const totalSeconds = Math.ceil(remaining / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = String(totalSeconds % 60).padStart(2, '0');
-  field.textContent = `Valid for ${minutes}:${seconds} · enter it in OpenClam → Settings → Agent Connections.`;
+  field.textContent = 'Enter this in OpenClam on iPhone → Settings → Agent Connections.';
+  clearTimeout(OPENCLAW_PAIRING_TIMER);
+  OPENCLAW_PAIRING_TIMER = setTimeout(refreshOpenClawPairingCodeState, remaining + 50);
 }
 
 function renderOpenClawPairingStatus(status) {
   const available = Boolean(status && status.available);
+  const installed = Boolean(status && status.channel_installed);
   const configured = Boolean(status && status.configured);
   $('#openclaw-pairing-card').setAttribute('aria-busy', 'false');
   $('#openclaw-pairing-title').textContent = configured
@@ -1452,7 +1464,9 @@ function renderOpenClawPairingStatus(status) {
   $('#openclaw-pairing-detail').textContent = configured
     ? 'Ready to create a fresh one-time code for OpenClam on iPhone.'
     : (available
-      ? 'Configure the OpenClam channel in OpenClaw before pairing an iPhone.'
+      ? (installed
+        ? 'Enter the bridge setup key to connect the installed OpenClam channel.'
+        : 'Install and connect the bundled OpenClam channel without using Terminal.')
       : 'Install OpenClaw on this Mac before pairing an iPhone.');
   const badge = $('#openclaw-pairing-badge');
   badge.textContent = configured ? 'Ready' : (available ? 'Not configured' : 'Not installed');
@@ -1466,6 +1480,65 @@ function renderOpenClawPairingStatus(status) {
     agents.appendChild(item);
   }
   $('#openclaw-pairing-create').disabled = !configured;
+  $('#openclaw-pairing-create').hidden = !configured;
+  $('#openclaw-install-panel').hidden = configured || !available;
+  $('#openclaw-install').disabled = !available;
+  $('#openclaw-update-channel').hidden = !configured;
+}
+
+function showOpenClawPairingResult(result) {
+  if (!result || !result.code) return;
+  $('#openclaw-pairing-code').textContent = result.code;
+  $('#openclaw-pairing-code-card').hidden = false;
+  OPENCLAW_PAIRING_EXPIRES_AT = Number(result.expires_at) || 0;
+  clearTimeout(OPENCLAW_PAIRING_TIMER);
+  refreshOpenClawPairingCodeState();
+}
+
+async function installOpenClawChannel() {
+  const button = $('#openclaw-install');
+  const update = $('#openclaw-update-channel');
+  const field = $('#openclaw-setup-key');
+  const state = $('#openclaw-pairing-state');
+  const updating = !update.hidden;
+  const setupKey = updating ? '' : field.value.trim();
+  if (!updating && !setupKey) {
+    state.className = 'openclaw-pairing-state bad';
+    state.textContent = 'Enter the bridge setup key, then choose Install & connect.';
+    field.focus();
+    return;
+  }
+  button.disabled = true;
+  update.disabled = true;
+  state.className = 'openclaw-pairing-state';
+  state.textContent = updating
+    ? 'Updating only the OpenClam channel…'
+    : 'Installing the OpenClam channel and connecting your agents…';
+  try {
+    const result = await api('/api/openclaw/install', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({setup_key: setupKey}),
+    });
+    field.value = '';
+    if (!result || result.detail || !result.configured) {
+      state.classList.add('bad');
+      state.textContent = (result && result.detail) || 'OpenClam could not configure OpenClaw.';
+      return;
+    }
+    showOpenClawPairingResult(result);
+    await loadOpenClawPairingStatus();
+    state.textContent = result.updated
+      ? 'OpenClam channel updated. Your agents and other channels were unchanged.'
+      : 'OpenClam channel installed and connected. Use the code below on iPhone.';
+  } catch {
+    field.value = '';
+    state.classList.add('bad');
+    state.textContent = 'OpenClam could not configure OpenClaw. Check the setup key and try again.';
+  } finally {
+    button.disabled = false;
+    update.disabled = false;
+  }
 }
 
 async function loadOpenClawPairingStatus() {
@@ -1505,12 +1578,7 @@ async function createOpenClawPairingCode() {
         || 'OpenClaw could not create an iPhone code.';
       return;
     }
-    $('#openclaw-pairing-code').textContent = result.code;
-    $('#openclaw-pairing-code-card').hidden = false;
-    OPENCLAW_PAIRING_EXPIRES_AT = Number(result.expires_at) || 0;
-    clearInterval(OPENCLAW_PAIRING_TIMER);
-    OPENCLAW_PAIRING_TIMER = setInterval(openClawPairingCountdown, 1000);
-    openClawPairingCountdown();
+    showOpenClawPairingResult(result);
     await loadOpenClawPairingStatus();
     state.textContent = result.warning || 'Code ready. OpenClaw agents and other channels were not changed.';
   } catch {
@@ -1523,6 +1591,8 @@ async function createOpenClawPairingCode() {
 }
 
 $('#openclaw-pairing-create').onclick = () => void createOpenClawPairingCode();
+$('#openclaw-install').onclick = () => void installOpenClawChannel();
+$('#openclaw-update-channel').onclick = () => void installOpenClawChannel();
 $('#openclaw-pairing-refresh').onclick = () => void loadOpenClawPairingStatus();
 $('#openclaw-pairing-copy').onclick = async () => {
   const code = $('#openclaw-pairing-code').textContent.trim();

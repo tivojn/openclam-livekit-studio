@@ -108,6 +108,9 @@ The wire contract is in [`shared/agent-connector-v1`](../shared/agent-connector-
 - generated files may return only through the negotiated, authenticated,
   size-bounded attachment extension after local type, length, and SHA-256
   verification; sensitive media is excluded;
+- dynamic Work updates are strict, bounded summaries; private reasoning, raw
+  command lines/tool output, credentials, and absolute host paths never cross
+  the connector;
 - no remote tool-approval UI;
 - no transcript content in bridge logs;
 - no silent fallback from OpenClaw to a local provider.

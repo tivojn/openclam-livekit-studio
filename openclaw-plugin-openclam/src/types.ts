@@ -6,7 +6,7 @@ export const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 export const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
-export type ConnectorCapability = "activity-v1" | "attachments-v1";
+export type ConnectorCapability = "activity-v1" | "attachments-v1" | "work-v1";
 
 export type ActivityStatus =
   | "thinking"
@@ -20,6 +20,18 @@ export type ActivityStatus =
   | "preparing_files"
   | "waiting_for_approval"
   | "finalizing";
+
+export type WorkStep = {
+  stepId: string;
+  category: "reasoning_summary" | "plan" | "tool" | "command" | "file" | "approval" | "status";
+  state: "running" | "completed" | "failed" | "waiting";
+  title: string;
+  detail?: string;
+  tool?: string;
+  command?: string;
+  path?: string;
+  output?: string;
+};
 
 export type OpenClamAttachment = {
   attachmentId: string;
@@ -103,6 +115,7 @@ export type FrameKind =
   | "assistant.delta"
   | "assistant.activity.upsert"
   | "assistant.activity.clear"
+  | "assistant.work.upsert"
   | "assistant.attachment"
   | "assistant.completed"
   | "turn.cancel"

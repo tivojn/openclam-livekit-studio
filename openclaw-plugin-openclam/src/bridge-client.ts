@@ -25,6 +25,7 @@ import type {
   OpenClamAttachmentUpload,
   ResolvedOpenClamAccount,
   TurnSubmitFrame,
+  WorkStep,
 } from "./types.js";
 
 type AccountContext = ChannelGatewayContext<ResolvedOpenClamAccount>;
@@ -70,6 +71,14 @@ type ActiveTurn = {
   activityTimer?: NodeJS.Timeout;
   activityTask?: Promise<void>;
   lastActivityFrameAt: number;
+  workRevision: number;
+  workCount: number;
+  workStepIds: Set<string>;
+  pendingWork: Map<string, WorkStep>;
+  lastWork: Map<string, string>;
+  workTimer?: NodeJS.Timeout;
+  workTask?: Promise<void>;
+  lastWorkFrameAt: number;
 };
 
 type QueuedFrame = {
@@ -97,6 +106,9 @@ const MAX_ACTIVE_TURNS = 8;
 const RECOVERY_MARKER_TTL_MS = 15 * 60 * 1_000;
 const ACTIVITY_INTERVAL_MS = 750;
 const MAX_ACTIVITY_FRAMES_PER_TURN = 32;
+const WORK_INTERVAL_MS = 250;
+const MAX_WORK_STEPS_PER_TURN = 12;
+const MAX_WORK_FRAMES_PER_TURN = 64;
 
 function buildEventsUrl(bridgeUrl: string, connectionId: string): string {
   const base = new URL(bridgeUrl);
@@ -150,6 +162,7 @@ export class OpenClamBridgeClient {
   private readonly turnTasks = new Set<Promise<void>>();
   private readonly deltaTasks = new Set<Promise<void>>();
   private readonly activityTasks = new Set<Promise<void>>();
+  private readonly workTasks = new Set<Promise<void>>();
   private readonly deps: BridgeClientDependencies;
   private state?: AdapterState;
   private token = "";
@@ -212,6 +225,7 @@ export class OpenClamBridgeClient {
     for (const active of this.activeTurns.values()) {
       if (active.deltaTimer) clearTimeout(active.deltaTimer);
       if (active.activityTimer) clearTimeout(active.activityTimer);
+      if (active.workTimer) clearTimeout(active.workTimer);
       active.controller.abort();
     }
     for (const pending of this.relayOutbox.values()) pending.resolve(false);
@@ -219,6 +233,7 @@ export class OpenClamBridgeClient {
     await Promise.all([...this.turnTasks]);
     await Promise.all([...this.deltaTasks]);
     await Promise.all([...this.activityTasks]);
+    await Promise.all([...this.workTasks]);
     await this.recoveryTask.catch(() => undefined);
     await this.stateTask.catch(() => undefined);
   }
@@ -288,6 +303,7 @@ export class OpenClamBridgeClient {
         );
         this.detach(this.flushActiveDeltas(), "delta_flush_failed");
         this.flushActiveActivities();
+        this.flushActiveWork();
         this.detach(this.recoverInterruptedTurns(), "recovery_failed");
         heartbeat = setInterval(() => {
           if (socket.readyState === WebSocket.OPEN) socket.ping();
@@ -323,6 +339,8 @@ export class OpenClamBridgeClient {
           active.deltaTimer = undefined;
           if (active.activityTimer) clearTimeout(active.activityTimer);
           active.activityTimer = undefined;
+          if (active.workTimer) clearTimeout(active.workTimer);
+          active.workTimer = undefined;
         }
         this.updateAllStatuses({ connected: false, lastDisconnect: { at: Date.now(), status: code } });
         this.log("info", `disconnected code=${code}`);
@@ -429,6 +447,12 @@ export class OpenClamBridgeClient {
       activityRevision: 0,
       activityCount: 0,
       lastActivityFrameAt: 0,
+      workRevision: 0,
+      workCount: 0,
+      workStepIds: new Set(),
+      pendingWork: new Map(),
+      lastWork: new Map(),
+      lastWorkFrameAt: 0,
     };
     this.activeTurns.set(turnId, active);
     await this.mutateState((next) => {
@@ -517,6 +541,9 @@ export class OpenClamBridgeClient {
           },
           clearActivity: async () => {
             await this.offerActivity(active, null);
+          },
+          work: async (step) => {
+            this.offerWork(active, step);
           },
           partial: async (text) => {
             if (active.terminal || active.controller.signal.aborted) return;
@@ -655,6 +682,7 @@ export class OpenClamBridgeClient {
     } finally {
       this.clearDeltaTimer(active);
       this.clearActivityTimer(active);
+      this.clearWorkTimer(active);
       if (active.terminalTask) {
         active.terminalPersisted = await active.terminalTask;
       }
@@ -739,6 +767,7 @@ export class OpenClamBridgeClient {
     active.terminal = true;
     this.clearDeltaTimer(active);
     active.terminalTask = (async () => {
+      await this.drainWork(active);
       await this.markRecoveryError(active, recoveryError);
       return this.sendAwaitingRelayPersistence(
         kind,
@@ -801,7 +830,10 @@ export class OpenClamBridgeClient {
     active.pendingDelta = undefined;
   }
 
-  private supports(active: ActiveTurn, capability: "activity-v1" | "attachments-v1"): boolean {
+  private supports(
+    active: ActiveTurn,
+    capability: "activity-v1" | "attachments-v1" | "work-v1",
+  ): boolean {
     return active.frame.payload.capabilities?.includes(capability) === true;
   }
 
@@ -904,6 +936,117 @@ export class OpenClamBridgeClient {
     for (const active of this.activeTurns.values()) {
       this.scheduleActivity(active);
     }
+  }
+
+  private clearWorkTimer(active: ActiveTurn): void {
+    if (active.workTimer) clearTimeout(active.workTimer);
+    active.workTimer = undefined;
+  }
+
+  private offerWork(active: ActiveTurn, step: WorkStep): void {
+    if (
+      !this.supports(active, "work-v1") ||
+      active.terminal ||
+      active.controller.signal.aborted ||
+      active.workCount >= MAX_WORK_FRAMES_PER_TURN
+    ) {
+      return;
+    }
+    if (!active.workStepIds.has(step.stepId)) {
+      if (active.workStepIds.size >= MAX_WORK_STEPS_PER_TURN) return;
+      active.workStepIds.add(step.stepId);
+    }
+    const encoded = JSON.stringify(step);
+    if (active.lastWork.get(step.stepId) === encoded) return;
+    active.pendingWork.set(step.stepId, step);
+    this.scheduleWork(active);
+  }
+
+  private scheduleWork(active: ActiveTurn): void {
+    if (
+      this.lifecycle.signal.aborted ||
+      active.terminal ||
+      active.controller.signal.aborted ||
+      active.pendingWork.size === 0 ||
+      active.workCount >= MAX_WORK_FRAMES_PER_TURN ||
+      active.workTimer ||
+      active.workTask ||
+      this.socket?.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+    const remaining = WORK_INTERVAL_MS - (Date.now() - active.lastWorkFrameAt);
+    if (remaining <= 0) {
+      this.detach(this.flushWork(active), "work_flush_failed");
+      return;
+    }
+    active.workTimer = setTimeout(() => {
+      active.workTimer = undefined;
+      this.detach(this.flushWork(active), "work_flush_failed");
+    }, remaining);
+  }
+
+  private flushWork(active: ActiveTurn, force = false): Promise<void> {
+    if (active.workTask) return active.workTask;
+    const task = this.performWorkFlush(active, force);
+    active.workTask = task;
+    this.workTasks.add(task);
+    const settled = () => {
+      if (active.workTask === task) active.workTask = undefined;
+      this.workTasks.delete(task);
+      if (!active.terminal && active.pendingWork.size > 0) this.scheduleWork(active);
+    };
+    void task.then(settled, settled);
+    return task;
+  }
+
+  private async performWorkFlush(active: ActiveTurn, force: boolean): Promise<void> {
+    if (
+      this.lifecycle.signal.aborted ||
+      (!force && active.terminal) ||
+      active.controller.signal.aborted ||
+      active.pendingWork.size === 0 ||
+      active.workCount >= MAX_WORK_FRAMES_PER_TURN ||
+      this.socket?.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+    const next = active.pendingWork.entries().next().value as [string, WorkStep] | undefined;
+    if (!next) return;
+    const [stepId, step] = next;
+    active.pendingWork.delete(stepId);
+    const revision = active.workRevision + 1;
+    const persisted = await this.sendAwaitingRelayPersistence(
+      "assistant.work.upsert",
+      { turnId: active.frame.payload.turnId, revision, ...step },
+      active.frame.conversationId,
+      undefined,
+      active.controller.signal,
+    );
+    if (persisted) {
+      active.workRevision = revision;
+      active.workCount += 1;
+      active.lastWork.set(stepId, JSON.stringify(step));
+      active.lastWorkFrameAt = Date.now();
+    } else if (!active.controller.signal.aborted) {
+      active.pendingWork.set(stepId, step);
+    }
+  }
+
+  private async drainWork(active: ActiveTurn): Promise<void> {
+    this.clearWorkTimer(active);
+    while (
+      active.pendingWork.size > 0 &&
+      active.workCount < MAX_WORK_FRAMES_PER_TURN &&
+      this.socket?.readyState === WebSocket.OPEN &&
+      !active.controller.signal.aborted
+    ) {
+      await this.flushWork(active, true);
+    }
+  }
+
+  private flushActiveWork(): void {
+    for (const active of this.activeTurns.values()) this.scheduleWork(active);
   }
 
   private async deliverAttachment(
@@ -1046,6 +1189,7 @@ export class OpenClamBridgeClient {
       | "turn.accepted"
       | "assistant.activity.upsert"
       | "assistant.activity.clear"
+      | "assistant.work.upsert"
       | "assistant.attachment"
       | "assistant.completed"
       | "turn.error",

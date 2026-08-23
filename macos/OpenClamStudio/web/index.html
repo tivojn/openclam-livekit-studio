@@ -590,6 +590,81 @@
     .selection-action { color: var(--codex-text); }
     .selection-action:hover { background: rgba(255, 255, 255, .08); }
     .media-card { border-color: var(--codex-border); border-radius: 12px; background: var(--codex-under); }
+    #agentModeBar {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin: 0 7px 5px;
+      color: var(--codex-text-tertiary);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    #agentModeSelect {
+      min-width: 118px;
+      max-width: 220px;
+      height: 28px;
+      padding: 0 28px 0 9px;
+      border: 1px solid var(--codex-border);
+      border-radius: 9px;
+      background: var(--codex-control);
+      color: var(--codex-text);
+      font: inherit;
+    }
+    .work-card {
+      margin: 7px 0 9px;
+      border: 1px solid rgba(124, 126, 255, .22);
+      border-radius: 12px;
+      background: rgba(124, 126, 255, .07);
+      overflow: hidden;
+    }
+    .work-card > summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: 8px 10px;
+      color: var(--codex-text);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      list-style: none;
+    }
+    .work-card > summary::-webkit-details-marker { display: none; }
+    .work-card > summary::before { content: '▸'; color: var(--codex-text-tertiary); }
+    .work-card[open] > summary::before { content: '▾'; }
+    .work-count { margin-left: auto; color: var(--codex-text-tertiary); font-size: 10px; font-weight: 500; }
+    .work-list { padding: 0 10px 8px; }
+    .work-step { border-top: 1px solid var(--codex-border-light); }
+    .work-step > summary {
+      display: grid;
+      grid-template-columns: 17px minmax(0, 1fr) auto;
+      gap: 7px;
+      align-items: start;
+      padding: 8px 0;
+      color: var(--codex-text);
+      font-size: 11px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .work-step > summary::-webkit-details-marker { display: none; }
+    .work-state { color: var(--codex-text-tertiary); font-size: 10px; text-transform: capitalize; }
+    .work-detail { padding: 0 0 9px 24px; color: var(--codex-text-secondary); font-size: 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .work-detail code { font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .openclaw-file-card {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      margin: 7px 0;
+      padding: 9px;
+      border: 1px solid var(--codex-border);
+      border-radius: 12px;
+      background: var(--codex-under);
+    }
+    .openclaw-file-card img, .openclaw-file-card video { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; }
+    .openclaw-file-name { overflow: hidden; color: var(--codex-text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .openclaw-file-meta { color: var(--codex-text-tertiary); font-size: 10px; }
+    .openclaw-file-card a { color: var(--codex-text); font-size: 11px; }
 
     #composerRow {
       gap: 5px;
@@ -807,6 +882,12 @@
       <button id="selectionCopy" class="selection-action" type="button">Copy</button>
       <button id="selectionAskAI" class="selection-action" type="button" aria-keyshortcuts="Meta+Shift+A Control+Shift+A">Ask AI</button>
     </div>
+    <label id="agentModeBar" for="agentModeSelect">
+      <span>Agent</span>
+      <select id="agentModeSelect" aria-label="Conversation agent">
+        <option value="local">On this Mac</option>
+      </select>
+    </label>
     <div id="composerRow">
       <button id="pttButton" class="composer-button" type="button" aria-label="Hold to talk" title="Hold to talk · Space">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
@@ -861,6 +942,7 @@
     const selectionCopy = document.getElementById('selectionCopy');
     const selectionAskAI = document.getElementById('selectionAskAI');
     const composer = document.getElementById('composer');
+    const agentModeSelect = document.getElementById('agentModeSelect');
     const sendButton = document.getElementById('sendButton');
     const closeChatButton = document.getElementById('closeChatButton');
     const pttButton = document.getElementById('pttButton');
@@ -910,6 +992,7 @@
     let selectingFeedback = false;
     let turnController = null;
     let thinkingNode = null;
+    let openClawSessionID = localStorage.getItem('openclam.openclaw.session') || '';
     let ptt = null;
     let live = null;
     let audioContext = null;
@@ -2764,7 +2847,224 @@
       }
     }
 
-    async function submitTurn(text) {
+    const freshOpenClawSessionID = () => {
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+    };
+
+    const ensureOpenClawSessionID = () => {
+      if (!/^[0-9a-f]{32}$/.test(openClawSessionID)) {
+        openClawSessionID = freshOpenClawSessionID();
+        localStorage.setItem('openclam.openclaw.session', openClawSessionID);
+      }
+      return openClawSessionID;
+    };
+
+    const selectedOpenClawAgent = () => {
+      const value = String(agentModeSelect.value || '');
+      return value.startsWith('openclaw:') ? value.slice('openclaw:'.length) : '';
+    };
+
+    async function loadOpenClawAgents() {
+      const saved = localStorage.getItem('openclam.agent.mode') || 'local';
+      try {
+        const result = await fetch('/api/openclaw/agents', { cache: 'no-store' }).then(safeJSON);
+        for (const agent of Array.isArray(result.agents) ? result.agents : []) {
+          if (!agent || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(agent.agent_id || ''))) continue;
+          const option = document.createElement('option');
+          option.value = `openclaw:${agent.agent_id}`;
+          option.textContent = `OpenClaw · ${String(agent.display_name || agent.agent_id).slice(0, 80)}`;
+          agentModeSelect.appendChild(option);
+        }
+        agentModeSelect.value = [...agentModeSelect.options].some(option => option.value === saved)
+          ? saved : 'local';
+      } catch (_) {
+        agentModeSelect.value = 'local';
+      }
+    }
+
+    agentModeSelect.addEventListener('change', () => {
+      localStorage.setItem('openclam.agent.mode', agentModeSelect.value);
+      const agent = selectedOpenClawAgent();
+      composer.placeholder = agent ? 'Message this OpenClaw agent…' : 'Ask anything…';
+      setStatus(agent ? 'OpenClaw mode' : 'Ready', agent ? 'busy' : 'good');
+    });
+
+    const createWorkTimeline = () => {
+      const root = document.createElement('details');
+      root.className = 'work-card';
+      const summary = document.createElement('summary');
+      const title = document.createElement('span');
+      title.textContent = 'Work';
+      const count = document.createElement('span');
+      count.className = 'work-count';
+      count.textContent = 'Starting…';
+      summary.append(title, count);
+      const list = document.createElement('div');
+      list.className = 'work-list';
+      root.append(summary, list);
+      conversation.appendChild(root);
+      conversation.scrollTop = conversation.scrollHeight;
+      return { root, count, list, steps: new Map() };
+    };
+
+    const workStepIcon = step => {
+      if (step.state === 'completed') return '✓';
+      if (step.state === 'failed') return '×';
+      if (step.state === 'waiting') return 'Ⅱ';
+      return '●';
+    };
+
+    const updateWorkTimeline = (timeline, step) => {
+      if (!timeline || !step || typeof step.step_id !== 'string' || typeof step.title !== 'string') return;
+      let item = timeline.steps.get(step.step_id);
+      if (!item) {
+        const root = document.createElement('details');
+        root.className = 'work-step';
+        const summary = document.createElement('summary');
+        const icon = document.createElement('span');
+        const title = document.createElement('span');
+        const state = document.createElement('span');
+        state.className = 'work-state';
+        summary.append(icon, title, state);
+        const detail = document.createElement('div');
+        detail.className = 'work-detail';
+        root.append(summary, detail);
+        timeline.list.appendChild(root);
+        item = { root, icon, title, state, detail };
+        timeline.steps.set(step.step_id, item);
+      }
+      item.icon.textContent = workStepIcon(step);
+      item.title.textContent = step.title;
+      item.state.textContent = String(step.state || 'running').replace('_', ' ');
+      item.detail.replaceChildren();
+      const append = (label, value, code = false) => {
+        if (typeof value !== 'string' || !value) return;
+        const line = document.createElement('div');
+        const lead = document.createElement('strong');
+        lead.textContent = `${label}: `;
+        const content = document.createElement(code ? 'code' : 'span');
+        content.textContent = value;
+        line.append(lead, content);
+        item.detail.appendChild(line);
+      };
+      append('Details', step.detail);
+      append('Tool', step.tool);
+      append('Command', step.command, true);
+      append('File', step.path, true);
+      append('Output', step.output, true);
+      item.root.open = item.root.open && item.detail.childNodes.length > 0;
+      timeline.count.textContent = `${timeline.steps.size} step${timeline.steps.size === 1 ? '' : 's'} · updating`;
+      conversation.scrollTop = conversation.scrollHeight;
+    };
+
+    const appendOpenClawAttachment = async attachment => {
+      if (!attachment || typeof attachment.url !== 'string'
+          || !attachment.url.startsWith('api/openclaw/artifacts/')) return;
+      const response = await fetch(attachment.url, { cache: 'no-store' });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      const objectURL = URL.createObjectURL(blob);
+      const card = document.createElement('div');
+      card.className = 'openclaw-file-card';
+      let preview;
+      if (blob.type.startsWith('image/')) {
+        preview = document.createElement('img');
+        preview.src = objectURL;
+      } else if (blob.type.startsWith('video/')) {
+        preview = document.createElement('video');
+        preview.src = objectURL;
+        preview.muted = true;
+      } else {
+        preview = document.createElement('div');
+        preview.textContent = 'FILE';
+        preview.className = 'openclaw-file-meta';
+      }
+      const copy = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'openclaw-file-name';
+      name.textContent = String(attachment.name || 'OpenClaw file').slice(0, 160);
+      const meta = document.createElement('div');
+      meta.className = 'openclaw-file-meta';
+      const bytes = Number(attachment.byte_count) || blob.size;
+      meta.textContent = `${blob.type || 'File'} · ${Math.max(1, Math.round(bytes / 1024))} KB`;
+      copy.append(name, meta);
+      const open = document.createElement('a');
+      open.href = objectURL;
+      open.download = name.textContent;
+      open.textContent = 'Save';
+      card.append(preview, copy, open);
+      conversation.appendChild(card);
+      conversation.scrollTop = conversation.scrollHeight;
+    };
+
+    async function submitOpenClawTurn(value, agentID) {
+      stopSpeech();
+      openChat(false);
+      addMessage('user', value, { readable: false });
+      addWorking();
+      const work = createWorkTimeline();
+      turnController = new AbortController();
+      sendButton.disabled = true;
+      pttButton.disabled = true;
+      agentModeSelect.disabled = true;
+      setStatus('Connecting to OpenClaw…', 'busy');
+      let finalText = '';
+      try {
+        const response = await fetch('/api/openclaw/turn', {
+          method: 'POST',
+          headers: { 'Accept': 'application/x-ndjson', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+          body: JSON.stringify({ agent_id: agentID, session_id: ensureOpenClawSessionID(), prompt: value }),
+          signal: turnController.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`OpenClaw request failed (${response.status})`);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = '';
+        for (;;) {
+          const chunk = await reader.read();
+          buffered += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+          const lines = buffered.split('\n');
+          buffered = chunk.done ? '' : lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const event = JSON.parse(line);
+            if (event.type === 'accepted') {
+              setStatus(`${String(event.agent || 'OpenClaw').slice(0, 80)} is working…`, 'busy');
+            } else if (event.type === 'work') {
+              updateWorkTimeline(work, event.step);
+              setStatus(String(event.step && event.step.title || 'OpenClaw is working').slice(0, 120), 'busy');
+            } else if (event.type === 'text') {
+              finalText = String(event.text || '').slice(0, 64000);
+            } else if (event.type === 'attachment') {
+              await appendOpenClawAttachment(event.attachment);
+            } else if (event.type === 'complete') {
+              finalText = String(event.text || finalText).slice(0, 64000);
+            } else if (event.type === 'error') {
+              throw new Error(String(event.message || 'OpenClaw could not complete this turn').slice(0, 180));
+            }
+          }
+          if (chunk.done) break;
+        }
+        removeWorking();
+        addMessage('assistant', finalText || 'OpenClaw completed without a text reply.');
+        work.count.textContent = `${work.steps.size} step${work.steps.size === 1 ? '' : 's'} · finished`;
+        setStatus('Ready', 'good');
+      } catch (error) {
+        removeWorking();
+        if (error.name !== 'AbortError') {
+          addMessage('assistant', `OpenClaw is unavailable: ${String(error.message || error).slice(0, 150)}`, { readable: false });
+          setStatus('Check OpenClaw', '');
+        }
+      } finally {
+        turnController = null;
+        agentModeSelect.disabled = false;
+        pttButton.disabled = Boolean(live);
+        sendButton.disabled = !composer.value.trim();
+      }
+    }
+
+    async function submitLocalTurn(text) {
       const value = String(text || '').trim();
       if (!value || turnController || avatarOnlyMotion) return;
       if (live) {
@@ -2802,6 +3102,14 @@
         pttButton.disabled = Boolean(live);
         sendButton.disabled = !composer.value.trim();
       }
+    }
+
+    async function submitTurn(text) {
+      const value = String(text || '').trim();
+      if (!value || turnController || avatarOnlyMotion) return;
+      const agentID = selectedOpenClawAgent();
+      if (agentID) return submitOpenClawTurn(value, agentID);
+      return submitLocalTurn(value);
     }
 
     const submitComposer = () => {
@@ -3825,6 +4133,9 @@
     resizeComposer();
     reportControlRects(true);
     loadAvatar();
+    loadOpenClawAgents().then(() => {
+      agentModeSelect.dispatchEvent(new Event('change'));
+    });
     setTimeout(healthPoll, 1600);
   })();
   </script>

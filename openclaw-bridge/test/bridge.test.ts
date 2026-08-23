@@ -1246,6 +1246,78 @@ describe("authenticated connector WebSockets", () => {
     client.close(1000, "done");
   });
 
+  it("relays only capability-gated, bounded, path-safe work steps", async () => {
+    const { created, redeemed } = await paired();
+    const client = await openSocket("client", created.connectionId, redeemed.clientToken);
+    const adapter = await openSocket("adapter", created.connectionId, created.adapterToken);
+    const conversationId = crypto.randomUUID();
+    const turnId = crypto.randomUUID();
+    const submitted = message(adapter);
+    send(client, frame(
+      created.connectionId,
+      "turn.submit",
+      1,
+      {
+        turnId,
+        accountId: "main",
+        text: "show the work",
+        capabilities: ["activity-v1", "attachments-v1", "work-v1"],
+      },
+      conversationId,
+    ));
+    await submitted;
+
+    let delivered = message(client);
+    send(adapter, frame(
+      created.connectionId,
+      "turn.accepted",
+      1,
+      { turnId },
+      conversationId,
+    ));
+    await delivered;
+
+    delivered = message(client);
+    send(adapter, frame(
+      created.connectionId,
+      "assistant.work.upsert",
+      2,
+      {
+        turnId,
+        revision: 1,
+        stepId: "tool-call-1",
+        category: "tool",
+        state: "running",
+        title: "Searching documentation",
+        tool: "web_search",
+        detail: "Looking for the supported API",
+      },
+      conversationId,
+    ));
+    const work = JSON.parse((await delivered).data as string) as ConnectorFrame;
+    expect(work.kind).toBe("assistant.work.upsert");
+    expect(work.payload.stepId).toBe("tool-call-1");
+
+    const rejected = closed(adapter);
+    send(adapter, frame(
+      created.connectionId,
+      "assistant.work.upsert",
+      3,
+      {
+        turnId,
+        revision: 2,
+        stepId: "tool-call-1",
+        category: "command",
+        state: "completed",
+        title: "Command finished",
+        output: "authorization: Bearer secret-material",
+      },
+      conversationId,
+    ));
+    expect((await rejected).reason).toBe("invalid_frame");
+    client.close(1000, "done");
+  });
+
   it("keeps a long-running turn active when acceptance and deltas refresh activity", async () => {
     const { created, redeemed } = await paired();
     const client = await openSocket("client", created.connectionId, redeemed.clientToken);

@@ -81,6 +81,7 @@ DENIED_DIR_NAMES = {
     ".git",
     ".electron-ffmpeg",
     ".electron-models",
+    ".electron-openclaw-plugin",
     ".electron-python-runtime",
     ".mypy_cache",
     ".npm",
@@ -545,6 +546,7 @@ ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS = {
     Path("openclaw-plugin-openclam/dist/src/protocol.js"),
     Path("openclaw-plugin-openclam/dist/src/runtime.js"),
     Path("openclaw-plugin-openclam/dist/src/types.js"),
+    Path("openclaw-plugin-openclam/dist/src/work-sanitizer.js"),
 }
 
 MAX_SOURCE_BYTES = 10 * 1024 * 1024

@@ -13,6 +13,7 @@ const FRAME_KINDS = new Set([
     "assistant.delta",
     "assistant.activity.upsert",
     "assistant.activity.clear",
+    "assistant.work.upsert",
     "assistant.attachment",
     "assistant.completed",
     "turn.cancel",
@@ -94,9 +95,9 @@ export function parseBridgeInbound(raw, expectedConnectionId) {
             !validString(value.payload.text, 1, MAX_TEXT_LENGTH) ||
             (value.payload.capabilities !== undefined &&
                 (!Array.isArray(value.payload.capabilities) ||
-                    value.payload.capabilities.length > 2 ||
+                    value.payload.capabilities.length > 3 ||
                     new Set(value.payload.capabilities).size !== value.payload.capabilities.length ||
-                    value.payload.capabilities.some((capability) => capability !== "activity-v1" && capability !== "attachments-v1")))) {
+                    value.payload.capabilities.some((capability) => capability !== "activity-v1" && capability !== "attachments-v1" && capability !== "work-v1")))) {
             throw new Error("invalid_frame");
         }
     }

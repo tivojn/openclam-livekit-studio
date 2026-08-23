@@ -70,6 +70,7 @@ struct AgentConnectorPendingTurn: Codable, Equatable, Sendable {
     /// preserve decoding of Build 31 outboxes without migration or re-pairing.
     var activity: AgentConnectorActivityUpdate? = nil
     var attachments: [AgentConnectorStoredAttachment]? = nil
+    var workSteps: [AgentConnectorWorkStep]? = nil
 
     var binding: AvatarAgentConnectorBinding {
         .init(
@@ -148,6 +149,13 @@ struct AgentConnectorPendingTurn: Codable, Equatable, Sendable {
                 throw AgentConnectorError.invalidFrame
             }
         }
+        let durableWork = workSteps ?? []
+        guard durableWork.count <= 12,
+              Set(durableWork.map(\.stepID)).count == durableWork.count,
+              Set(durableWork.map(\.revision)).count == durableWork.count else {
+            throw AgentConnectorError.invalidFrame
+        }
+        for step in durableWork { _ = try step.validated() }
         return self
     }
 
@@ -180,7 +188,9 @@ struct AgentConnectorPendingTurn: Codable, Equatable, Sendable {
             guard frame.payload.accountID == accountID,
                   frame.payload.text == text,
                   frame.payload.capabilities == nil
-                    || frame.payload.capabilities == ["activity-v1", "attachments-v1"] else {
+                    || frame.payload.capabilities == [
+                        "activity-v1", "attachments-v1", "work-v1",
+                    ] else {
                 throw AgentConnectorError.invalidFrame
             }
         }

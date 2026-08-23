@@ -1,6 +1,6 @@
 export type SocketRole = "client" | "adapter";
 
-export type ConnectorCapability = "activity-v1" | "attachments-v1";
+export type ConnectorCapability = "activity-v1" | "attachments-v1" | "work-v1";
 
 export type ActivityStatus =
   | "thinking"
@@ -14,6 +14,17 @@ export type ActivityStatus =
   | "preparing_files"
   | "waiting_for_approval"
   | "finalizing";
+
+export type WorkCategory =
+  | "reasoning_summary"
+  | "plan"
+  | "tool"
+  | "command"
+  | "file"
+  | "approval"
+  | "status";
+
+export type WorkState = "running" | "completed" | "failed" | "waiting";
 
 export interface AccountDescriptor {
   accountId: string;
@@ -43,6 +54,7 @@ export type FrameKind =
   | "assistant.delta"
   | "assistant.activity.upsert"
   | "assistant.activity.clear"
+  | "assistant.work.upsert"
   | "assistant.attachment"
   | "assistant.completed"
   | "turn.cancel"
@@ -105,6 +117,7 @@ export interface PendingFrame {
   kind?: FrameKind;
   turnId?: string;
   attachmentId?: string;
+  workStepId?: string;
 }
 
 export interface EncryptedPayload {
@@ -137,6 +150,7 @@ export interface ActiveTurn {
   finalState?: "completed" | "error";
   capabilities?: ConnectorCapability[];
   lastActivityRevision?: number;
+  lastWorkRevision?: number;
 }
 
 export interface AttachmentRecord {

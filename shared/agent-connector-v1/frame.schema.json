@@ -16,6 +16,7 @@
         "assistant.delta",
         "assistant.activity.upsert",
         "assistant.activity.clear",
+        "assistant.work.upsert",
         "assistant.attachment",
         "assistant.completed",
         "turn.cancel",
@@ -37,7 +38,7 @@
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
     "capability": {
-      "enum": ["activity-v1", "attachments-v1"]
+      "enum": ["activity-v1", "attachments-v1", "work-v1"]
     }
   },
   "allOf": [
@@ -97,7 +98,7 @@
               "text": { "type": "string", "minLength": 1, "maxLength": 32000 },
               "capabilities": {
                 "type": "array",
-                "maxItems": 2,
+                "maxItems": 3,
                 "uniqueItems": true,
                 "items": { "$ref": "#/$defs/capability" }
               }
@@ -182,6 +183,37 @@
             "properties": {
               "turnId": { "$ref": "#/$defs/uuid" },
               "revision": { "type": "integer", "minimum": 1, "maximum": 100000 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "assistant.work.upsert" } } },
+      "then": {
+        "required": ["conversationId"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turnId", "revision", "stepId", "category", "state", "title"],
+            "properties": {
+              "turnId": { "$ref": "#/$defs/uuid" },
+              "revision": { "type": "integer", "minimum": 1, "maximum": 100000 },
+              "stepId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$" },
+              "category": { "enum": ["reasoning_summary", "plan", "tool", "command", "file", "approval", "status"] },
+              "state": { "enum": ["running", "completed", "failed", "waiting"] },
+              "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+              "detail": { "type": "string", "minLength": 1, "maxLength": 1000 },
+              "tool": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "command": { "type": "string", "minLength": 1, "maxLength": 1000 },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!\\\\\\\\)(?!file:)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "output": { "type": "string", "minLength": 1, "maxLength": 2000 }
             }
           }
         }

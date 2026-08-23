@@ -246,6 +246,8 @@ struct ConversationView: View {
     @State private var presentedConnectorArtifact: ConnectorArtifactPresentation?
     @State private var sharedConnectorArtifact: ConnectorArtifactPresentation?
     @State private var connectorArtifactError: String?
+    @State private var expandedWorkCards: Set<UUID> = []
+    @State private var expandedWorkSteps: Set<String> = []
     @State private var warmEarEnabled = OpenClamWarmEarControl.isEnabled
     @StateObject private var avatarInteractions = CaptainAyerOverlayInteractionRelay()
     @StateObject private var liveTalk = LiveTalkSessionController()
@@ -730,6 +732,15 @@ struct ConversationView: View {
                     in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                 )
 
+            if !message.workSteps.isEmpty {
+                openClawWorkCard(
+                    steps: message.workSteps,
+                    cardID: message.id,
+                    isLive: false
+                )
+                .padding(.top, 4)
+            }
+
             if ConversationMessageInteractionPolicy.supportsAssistantActions(message) {
                 assistantMessageActions(message)
             }
@@ -911,6 +922,15 @@ struct ConversationView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                if !conversation.remoteAgentWorkSteps.isEmpty {
+                    openClawWorkCard(
+                        steps: conversation.remoteAgentWorkSteps,
+                        cardID: activity.id,
+                        isLive: true
+                    )
+                    .padding(.top, 2)
+                }
+
                 if activity.allowsRetry || activity.allowsCancel || activity.allowsRepair {
                     HStack(spacing: 10) {
                         if activity.allowsRepair {
@@ -957,6 +977,202 @@ struct ConversationView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("openclam-openclaw-activity-card")
         .id(activity.id)
+    }
+
+    private func openClawWorkCard(
+        steps: [AgentConnectorWorkStep],
+        cardID: UUID,
+        isLive: Bool
+    ) -> some View {
+        let ordered = steps.sorted { lhs, rhs in
+            if lhs.revision == rhs.revision { return lhs.stepID < rhs.stepID }
+            return lhs.revision < rhs.revision
+        }
+        let completedCount = ordered.filter { $0.state == .completed }.count
+        return DisclosureGroup(
+            isExpanded: workCardExpansionBinding(cardID)
+        ) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(ordered) { step in
+                    openClawWorkStep(step, cardID: cardID)
+                    if step.id != ordered.last?.id {
+                        Divider().padding(.leading, 30)
+                    }
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.rectangle.portrait.fill")
+                    .foregroundStyle(.indigo)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Work")
+                        .font(.caption.weight(.semibold))
+                    Text(
+                        isLive
+                            ? "Updating · \(ordered.count) steps"
+                            : "\(completedCount) of \(ordered.count) completed"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+            }
+        }
+        .tint(.secondary)
+        .padding(10)
+        .background(
+            Color.indigo.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.indigo.opacity(0.12))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("openclam-openclaw-work-\(cardID.uuidString)")
+    }
+
+    private func openClawWorkStep(
+        _ step: AgentConnectorWorkStep,
+        cardID: UUID
+    ) -> some View {
+        let key = "\(cardID.uuidString):\(step.stepID)"
+        let hasDetails = [
+            step.detail,
+            step.tool.map { "Tool · \($0)" },
+            step.command.map { "Command · \($0)" },
+            step.path.map { "File · \($0)" },
+            step.output.map { "Output · \($0)" },
+        ].contains { $0?.isEmpty == false }
+
+        return VStack(alignment: .leading, spacing: 5) {
+            Button {
+                guard hasDetails else { return }
+                if expandedWorkSteps.contains(key) {
+                    expandedWorkSteps.remove(key)
+                } else {
+                    expandedWorkSteps.insert(key)
+                }
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: workStepIcon(step))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(workStepColor(step))
+                        .frame(width: 20, height: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(step.title)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                        Text(workStateLabel(step.state))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 6)
+                    if hasDetails {
+                        Image(
+                            systemName: expandedWorkSteps.contains(key)
+                                ? "chevron.up"
+                                : "chevron.down"
+                        )
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasDetails)
+
+            if hasDetails, expandedWorkSteps.contains(key) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let detail = step.detail {
+                        Text(detail)
+                    }
+                    if let tool = step.tool {
+                        workDetailRow("Tool", value: tool, monospaced: false)
+                    }
+                    if let command = step.command {
+                        workDetailRow("Command", value: command, monospaced: true)
+                    }
+                    if let path = step.path {
+                        workDetailRow("File", value: path, monospaced: true)
+                    }
+                    if let output = step.output {
+                        workDetailRow("Output", value: output, monospaced: true)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(.leading, 28)
+                .padding(.bottom, 6)
+            }
+        }
+        .padding(.vertical, 7)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("openclam-openclaw-work-step-\(step.stepID)")
+    }
+
+    private func workDetailRow(
+        _ label: String,
+        value: String,
+        monospaced: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.caption2.weight(.semibold))
+            Text(value)
+                .font(monospaced ? .caption2.monospaced() : .caption2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func workCardExpansionBinding(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { expandedWorkCards.contains(id) },
+            set: { expanded in
+                if expanded {
+                    expandedWorkCards.insert(id)
+                } else {
+                    expandedWorkCards.remove(id)
+                }
+            }
+        )
+    }
+
+    private func workStateLabel(_ state: AgentConnectorWorkState) -> String {
+        switch state {
+        case .running: "In progress"
+        case .completed: "Completed"
+        case .failed: "Failed"
+        case .waiting: "Waiting"
+        }
+    }
+
+    private func workStepIcon(_ step: AgentConnectorWorkStep) -> String {
+        if step.state == .failed { return "xmark.circle.fill" }
+        if step.state == .completed { return "checkmark.circle.fill" }
+        if step.state == .waiting { return "pause.circle.fill" }
+        return switch step.category {
+        case .reasoningSummary: "brain.head.profile"
+        case .plan: "list.bullet.clipboard"
+        case .tool: "wrench.and.screwdriver.fill"
+        case .command: "terminal.fill"
+        case .file: "doc.fill"
+        case .approval: "person.badge.key.fill"
+        case .status: "circle.dotted"
+        }
+    }
+
+    private func workStepColor(_ step: AgentConnectorWorkStep) -> Color {
+        switch step.state {
+        case .running: .indigo
+        case .completed: .green
+        case .failed: .red
+        case .waiting: .orange
+        }
     }
 
     private func remoteAgentActivityIcon(

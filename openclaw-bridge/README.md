@@ -160,9 +160,11 @@ byte-for-byte replay awaiting the strict persistence receipt below.
   replaces the older one.
 
 The base Version 1 contract remains text-only. `turn.submit` may explicitly
-negotiate `activity-v1` and `attachments-v1`; without that capability the bridge
-rejects and never emits the extension kinds. Activity is a coalesced fixed enum,
-not arbitrary progress text.
+negotiate `activity-v1`, `attachments-v1`, and `work-v1`; without the matching
+capability the bridge rejects and never emits an extension kind. Activity is a
+coalesced fixed enum. Work is a strict, bounded upsert timeline with safe
+categories and replacement by step ID; the bridge never treats it as an
+unbounded transcript or raw tool-output stream.
 
 Generated files use separate authenticated HTTP routes:
 

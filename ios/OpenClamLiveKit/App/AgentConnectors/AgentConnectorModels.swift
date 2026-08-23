@@ -436,6 +436,86 @@ struct AgentConnectorActivityUpdate: Codable, Equatable, Sendable {
     }
 }
 
+enum AgentConnectorWorkCategory: String, Codable, Equatable, Sendable {
+    case reasoningSummary = "reasoning_summary"
+    case plan
+    case tool
+    case command
+    case file
+    case approval
+    case status
+}
+
+enum AgentConnectorWorkState: String, Codable, Equatable, Sendable {
+    case running
+    case completed
+    case failed
+    case waiting
+}
+
+struct AgentConnectorWorkStep: Codable, Equatable, Identifiable, Sendable {
+    let revision: Int
+    let stepID: String
+    let category: AgentConnectorWorkCategory
+    let state: AgentConnectorWorkState
+    let title: String
+    let detail: String?
+    let tool: String?
+    let command: String?
+    let path: String?
+    let output: String?
+
+    var id: String { stepID }
+
+    func validated() throws -> Self {
+        guard (1 ... 100_000).contains(revision),
+              stepID.range(
+                of: #"^[a-z0-9][a-z0-9._:-]{0,63}$"#,
+                options: .regularExpression
+              ) != nil,
+              Self.isSafe(title, maximum: 120),
+              detail.map({ Self.isSafe($0, maximum: 1_000) }) ?? true,
+              tool.map({ Self.isSafe($0, maximum: 80) }) ?? true,
+              command.map({ Self.isSafe($0, maximum: 1_000) }) ?? true,
+              output.map({ Self.isSafe($0, maximum: 2_000) }) ?? true,
+              path.map(Self.isSafeRelativePath) ?? true else {
+            throw AgentConnectorError.invalidFrame
+        }
+        return self
+    }
+
+    private static func isSafe(_ value: String, maximum: Int) -> Bool {
+        guard !value.isEmpty,
+              value.count <= maximum,
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              value.range(
+                of: #"(?:file://|(?:^|\s)[A-Za-z]:[\\/]|\\\\[^\s\\]+\\|(?:^|\s)/(?!/))"#,
+                options: [.regularExpression, .caseInsensitive]
+              ) == nil,
+              value.range(
+                of: #"(?:authorization\s*:|\bbearer\s+[A-Za-z0-9._~+\/-]+=*|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie)\s*[:=])"#,
+                options: [.regularExpression, .caseInsensitive]
+              ) == nil else {
+            return false
+        }
+        return true
+    }
+
+    private static func isSafeRelativePath(_ value: String) -> Bool {
+        isSafe(value, maximum: 512)
+            && !value.hasPrefix("/")
+            && !value.hasPrefix("\\\\")
+            && value.range(
+                of: #"^[A-Za-z]:[\\/]"#,
+                options: .regularExpression
+            ) == nil
+            && !value.lowercased().hasPrefix("file:")
+            && !value.replacingOccurrences(of: "\\", with: "/")
+                .split(separator: "/")
+                .contains("..")
+    }
+}
+
 struct AgentConnectorAttachmentMetadata: Codable, Equatable, Sendable {
     static let maximumByteCount = 32 * 1_024 * 1_024
 
@@ -514,6 +594,7 @@ enum AgentConnectorStreamEvent: Equatable, Sendable {
     case accepted
     case activity(AgentConnectorActivityUpdate)
     case activityCleared(revision: Int)
+    case work(AgentConnectorWorkStep)
     case attachment(AgentConnectorStoredAttachment)
     case cumulativeText(String)
     case completed(String)

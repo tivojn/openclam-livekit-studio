@@ -269,6 +269,7 @@ final class ConversationModel: ObservableObject {
     /// completion becomes one assistant message.
     @Published private(set) var streamingAssistantReply: String?
     @Published private(set) var remoteAgentActivity: RemoteAgentActivityPresentation?
+    @Published private(set) var remoteAgentWorkSteps: [AgentConnectorWorkStep] = []
     @Published private(set) var screenshotData: Data?
     @Published var observedText = ""
     @Published var screenshotAIShareText = ""
@@ -526,6 +527,7 @@ final class ConversationModel: ObservableObject {
     private func resetTransientCardsForChatChange() {
         streamingAssistantReply = nil
         remoteAgentActivity = nil
+        remoteAgentWorkSteps = []
         screenshotData = nil
         observedText = ""
         screenshotAIShareText = ""
@@ -1085,6 +1087,7 @@ final class ConversationModel: ObservableObject {
         onSubmissionSaved: (() -> Void)?
     ) async {
         streamingAssistantReply = nil
+        remoteAgentWorkSteps = []
         defer { streamingAssistantReply = nil }
         guard let agentConnections,
               let conversationID = historyController.selectedThreadID else {
@@ -1152,6 +1155,7 @@ final class ConversationModel: ObservableObject {
                 for: conversationID
             ) else {
                 remoteAgentActivity = nil
+                remoteAgentWorkSteps = []
                 return
             }
             pending = value
@@ -1189,6 +1193,7 @@ final class ConversationModel: ObservableObject {
                 turnID: pending.turnID
             )
             remoteAgentActivity = nil
+            remoteAgentWorkSteps = []
             return
         }
 
@@ -1391,6 +1396,8 @@ final class ConversationModel: ObservableObject {
             var completedText: String?
             var attachmentOrder: [UUID] = []
             var attachmentsByID: [UUID: ConversationAttachmentDescriptor] = [:]
+            var workOrder: [String] = []
+            var workByID: [String: AgentConnectorWorkStep] = [:]
             for try await event in stream {
                 try Task.checkCancellation()
                 switch event {
@@ -1424,6 +1431,21 @@ final class ConversationModel: ObservableObject {
                         title: "OpenClaw is working",
                         detail: nil,
                         showsProgress: true,
+                        allowsRetry: false,
+                        allowsCancel: true
+                    )
+                case let .work(step):
+                    if workByID[step.stepID] == nil { workOrder.append(step.stepID) }
+                    workByID[step.stepID] = step
+                    remoteAgentWorkSteps = workOrder.compactMap { workByID[$0] }
+                    remoteAgentActivity = .init(
+                        id: turnID,
+                        phase: step.category == .approval ? .queued : .usingTool,
+                        title: step.title,
+                        detail: step.state == .waiting
+                            ? "Open this Work card for details."
+                            : "Work · \(remoteAgentWorkSteps.count) steps",
+                        showsProgress: step.state == .running,
                         allowsRetry: false,
                         allowsCancel: true
                     )
@@ -1478,6 +1500,7 @@ final class ConversationModel: ObservableObject {
                 completedText,
                 id: assistantMessageID,
                 attachments: attachmentOrder.compactMap { attachmentsByID[$0] },
+                workSteps: workOrder.compactMap { workByID[$0] },
                 isEligibleForAIContext: false
             )
             if await persistConversationHistory() {
@@ -1486,6 +1509,7 @@ final class ConversationModel: ObservableObject {
                     turnID: turnID
                 )
                 remoteAgentActivity = nil
+                remoteAgentWorkSteps = []
             } else {
                 remoteAgentActivity = .init(
                     id: turnID,
@@ -1641,6 +1665,8 @@ final class ConversationModel: ObservableObject {
             pendingTurn = nil
         }
         let terminal = pendingTurn?.terminal
+        let durableWorkSteps = (pendingTurn?.workSteps ?? [])
+            .sorted { $0.revision < $1.revision }
         let connectorError = resolvedError as? AgentConnectorError
         let pairingMustBeRepaired = connectorError == .pairingRequired
         let isDurableOutcome = terminal != nil
@@ -1704,6 +1730,7 @@ final class ConversationModel: ObservableObject {
             text,
             id: assistantMessageID,
             attachments: durableAttachments,
+            workSteps: durableWorkSteps,
             isEligibleForAIContext: false,
             historyPersistence: isDurableOutcome ? .history : .ephemeral
         )
@@ -1725,6 +1752,7 @@ final class ConversationModel: ObservableObject {
                 )
             } else {
                 remoteAgentActivity = nil
+                remoteAgentWorkSteps = []
             }
         } else if isDurableOutcome {
             remoteAgentActivity = .init(
@@ -2586,6 +2614,7 @@ final class ConversationModel: ObservableObject {
         _ text: String,
         id: UUID = UUID(),
         attachments: [ConversationAttachmentDescriptor] = [],
+        workSteps: [AgentConnectorWorkStep] = [],
         isEligibleForAIContext: Bool = false,
         historyPersistence: ConversationMessage.HistoryPersistence = .history
     ) {
@@ -2595,6 +2624,7 @@ final class ConversationModel: ObservableObject {
                 role: .assistant,
                 text: text,
                 attachments: attachments,
+                workSteps: workSteps,
                 isEligibleForAIContext: isEligibleForAIContext,
                 historyPersistence: historyPersistence
             )

@@ -121,6 +121,10 @@ assert.deepEqual(ffmpegResource && ffmpegResource.filter,
   ['ffmpeg', 'ffprobe', 'LICENSE.LGPLv2.1.txt']);
 const contractResource = pkg.build.extraResources.find(
   (resource) => resource.from === 'contracts');
+const openClawResource = pkg.build.extraResources.find(
+  (resource) => resource.from === '.electron-openclaw-plugin');
+assert.deepEqual(openClawResource && openClawResource.filter,
+  ['openclam-channel.tgz', 'install-config.json']);
 for (const contract of [
   'avatar-package-v2/README.md',
   'avatar-package-v2/manifest.schema.json',
@@ -331,6 +335,7 @@ for (const required of [
   'mandatory release gate was skipped',
   'npm run check',
   'npm run check:privacy',
+  'npm run stage:openclaw',
   'check:avatar intentionally remains a local diagnostic',
   'npm audit\n',
   'npm audit --omit=dev',

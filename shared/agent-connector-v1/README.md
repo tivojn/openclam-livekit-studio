@@ -18,7 +18,7 @@ their own deployments and credentials while sharing this wire envelope.
 - Tokens are sent in `Authorization: Bearer ...` headers, never URLs, logs, or
   error bodies.
 - The base Version 1 contract is text-only. A client may explicitly negotiate
-  the bounded `activity-v1` and `attachments-v1` extensions per turn. Provider
+  the bounded `activity-v1`, `attachments-v1`, and `work-v1` extensions per turn. Provider
   credentials, local iPhone tools, tool approvals, reasoning, tool arguments,
   and tool output never cross this connector.
 
@@ -141,6 +141,15 @@ safe status enum in `assistant.activity.upsert`, or `assistant.activity.clear`;
 arbitrary progress text, chain of thought, tool names, arguments, output,
 commands, and paths are forbidden. Activity revisions increase per turn and the
 terminal frame implicitly clears the card.
+
+`work-v1` adds an expandable, durable workflow timeline. The adapter may upsert
+bounded steps for a plan, tool, command, approval, file, status, or a short
+reasoning *summary*. It never transports private chain-of-thought. Titles and
+details are allowlisted, commands and output are redacted and truncated, and a
+path is accepted only when it is a safe workspace-relative label. Absolute
+paths, `file:` URLs, traversal, credentials, environment secrets, request
+headers, cookies, and unfiltered tool output are forbidden. Clients that do not
+advertise `work-v1` receive no work frames.
 
 `attachments-v1` adds authenticated generated-file delivery:
 

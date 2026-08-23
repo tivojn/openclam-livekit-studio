@@ -122,6 +122,7 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
     let role: Role
     let text: String
     let attachments: [ConversationAttachmentDescriptor]
+    let workSteps: [AgentConnectorWorkStep]
     let date: Date
     var isEligibleForAIContext: Bool
     let historyPersistence: HistoryPersistence
@@ -136,6 +137,7 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
         text: String,
         attachmentNames: [String] = [],
         attachments: [ConversationAttachmentDescriptor] = [],
+        workSteps: [AgentConnectorWorkStep] = [],
         date: Date = Date(),
         isEligibleForAIContext: Bool = false,
         historyPersistence: HistoryPersistence = .history
@@ -146,6 +148,7 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
         self.attachments = attachments.isEmpty
             ? attachmentNames.map { ConversationAttachmentDescriptor(displayName: $0) }
             : attachments
+        self.workSteps = workSteps
         self.date = date
         self.isEligibleForAIContext = isEligibleForAIContext
         self.historyPersistence = historyPersistence
@@ -157,6 +160,7 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
         case text
         case attachmentNames
         case attachments
+        case workSteps
         case date
         case isEligibleForAIContext
         case historyPersistence
@@ -181,6 +185,10 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
                 ConversationAttachmentDescriptor(displayName: $0)
             }
         }
+        workSteps = try container.decodeIfPresent(
+            [AgentConnectorWorkStep].self,
+            forKey: .workSteps
+        ) ?? []
         date = try container.decodeIfPresent(Date.self, forKey: .date)
             ?? Date(timeIntervalSince1970: 0)
         isEligibleForAIContext = try container.decodeIfPresent(
@@ -199,6 +207,7 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
         try container.encode(role, forKey: .role)
         try container.encode(text, forKey: .text)
         try container.encode(attachments, forKey: .attachments)
+        try container.encode(workSteps, forKey: .workSteps)
         try container.encode(date, forKey: .date)
         try container.encode(isEligibleForAIContext, forKey: .isEligibleForAIContext)
         try container.encode(historyPersistence, forKey: .historyPersistence)

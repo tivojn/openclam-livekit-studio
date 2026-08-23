@@ -21,6 +21,15 @@ struct AgentConnectorWirePayload: Codable, Sendable {
     var capabilities: [String]?
     var revision: Int?
     var status: String?
+    var stepID: String?
+    var category: String?
+    var workState: String?
+    var title: String?
+    var detail: String?
+    var tool: String?
+    var command: String?
+    var path: String?
+    var output: String?
     var text: String?
     var code: String?
     var message: String?
@@ -40,6 +49,10 @@ struct AgentConnectorWirePayload: Codable, Sendable {
         case turnID = "turnId"
         case accountID = "accountId"
         case capabilities, revision, status, text, code, message, retryable, lastReceivedSeq
+        case stepID = "stepId"
+        case category
+        case workState = "state"
+        case title, detail, tool, command, path, output
         case attachmentID = "attachmentId"
         case fileName, mediaType, byteCount, sha256, downloadPath, expiresAt
     }
@@ -51,6 +64,15 @@ struct AgentConnectorWirePayload: Codable, Sendable {
         capabilities: [String]? = nil,
         revision: Int? = nil,
         status: String? = nil,
+        stepID: String? = nil,
+        category: String? = nil,
+        workState: String? = nil,
+        title: String? = nil,
+        detail: String? = nil,
+        tool: String? = nil,
+        command: String? = nil,
+        path: String? = nil,
+        output: String? = nil,
         text: String? = nil,
         code: String? = nil,
         message: String? = nil,
@@ -70,6 +92,15 @@ struct AgentConnectorWirePayload: Codable, Sendable {
         self.capabilities = capabilities
         self.revision = revision
         self.status = status
+        self.stepID = stepID
+        self.category = category
+        self.workState = workState
+        self.title = title
+        self.detail = detail
+        self.tool = tool
+        self.command = command
+        self.path = path
+        self.output = output
         self.text = text
         self.code = code
         self.message = message
@@ -91,6 +122,8 @@ struct AgentConnectorWirePayload: Codable, Sendable {
             allowed: [
                 "ackSeq", "turnId", "accountId", "revision", "text",
                 "capabilities", "status", "code", "message", "retryable",
+                "stepId", "category", "state", "title", "detail", "tool",
+                "command", "path", "output",
                 "lastReceivedSeq", "attachmentId", "fileName", "mediaType",
                 "byteCount", "sha256", "downloadPath", "expiresAt",
             ]
@@ -111,6 +144,15 @@ struct AgentConnectorWirePayload: Codable, Sendable {
         capabilities = try decodePresent([String].self, forKey: .capabilities)
         revision = try decodePresent(Int.self, forKey: .revision)
         status = try decodePresent(String.self, forKey: .status)
+        stepID = try decodePresent(String.self, forKey: .stepID)
+        category = try decodePresent(String.self, forKey: .category)
+        workState = try decodePresent(String.self, forKey: .workState)
+        title = try decodePresent(String.self, forKey: .title)
+        detail = try decodePresent(String.self, forKey: .detail)
+        tool = try decodePresent(String.self, forKey: .tool)
+        command = try decodePresent(String.self, forKey: .command)
+        path = try decodePresent(String.self, forKey: .path)
+        output = try decodePresent(String.self, forKey: .output)
         text = try decodePresent(String.self, forKey: .text)
         code = try decodePresent(String.self, forKey: .code)
         message = try decodePresent(String.self, forKey: .message)
@@ -133,6 +175,15 @@ struct AgentConnectorWirePayload: Codable, Sendable {
         try container.encodeIfPresent(capabilities, forKey: .capabilities)
         try container.encodeIfPresent(revision, forKey: .revision)
         try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(stepID, forKey: .stepID)
+        try container.encodeIfPresent(category, forKey: .category)
+        try container.encodeIfPresent(workState, forKey: .workState)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(detail, forKey: .detail)
+        try container.encodeIfPresent(tool, forKey: .tool)
+        try container.encodeIfPresent(command, forKey: .command)
+        try container.encodeIfPresent(path, forKey: .path)
+        try container.encodeIfPresent(output, forKey: .output)
         try container.encodeIfPresent(text, forKey: .text)
         try container.encodeIfPresent(code, forKey: .code)
         try container.encodeIfPresent(message, forKey: .message)
@@ -244,6 +295,12 @@ struct AgentConnectorWireFrame: Codable, Sendable {
             return keys == ["turnId", "revision", "status"]
         case "assistant.activity.clear":
             return keys == ["turnId", "revision"]
+        case "assistant.work.upsert":
+            let required: Set<String> = [
+                "turnId", "revision", "stepId", "category", "state", "title",
+            ]
+            let allowed = required.union(["detail", "tool", "command", "path", "output"])
+            return required.isSubset(of: keys) && keys.isSubset(of: allowed)
         case "assistant.attachment":
             return keys == [
                 "turnId", "attachmentId", "fileName", "mediaType", "byteCount",
@@ -435,7 +492,8 @@ struct AgentConnectorInboundValidator {
               [
                 "ack", "heartbeat", "turn.accepted", "assistant.delta",
                 "assistant.completed", "assistant.activity.upsert",
-                "assistant.activity.clear", "assistant.attachment", "turn.error",
+                "assistant.activity.clear", "assistant.work.upsert",
+                "assistant.attachment", "turn.error",
               ].contains(frame.kind) else {
             throw AgentConnectorError.invalidFrame
         }
@@ -487,6 +545,28 @@ struct AgentConnectorInboundValidator {
             case "assistant.activity.clear":
                 guard let revision = frame.payload.revision,
                       (1 ... 100_000).contains(revision) else {
+                    throw AgentConnectorError.invalidFrame
+                }
+            case "assistant.work.upsert":
+                guard let revision = frame.payload.revision,
+                      let stepID = frame.payload.stepID,
+                      let rawCategory = frame.payload.category,
+                      let category = AgentConnectorWorkCategory(rawValue: rawCategory),
+                      let rawState = frame.payload.workState,
+                      let state = AgentConnectorWorkState(rawValue: rawState),
+                      let title = frame.payload.title,
+                      (try? AgentConnectorWorkStep(
+                        revision: revision,
+                        stepID: stepID,
+                        category: category,
+                        state: state,
+                        title: title,
+                        detail: frame.payload.detail,
+                        tool: frame.payload.tool,
+                        command: frame.payload.command,
+                        path: frame.payload.path,
+                        output: frame.payload.output
+                      ).validated()) != nil else {
                     throw AgentConnectorError.invalidFrame
                 }
             case "assistant.attachment":
@@ -844,6 +924,7 @@ private actor OpenClawTurnSession {
     private var inboundValidator: AgentConnectorInboundValidator
     private var lastRevision = 0
     private var lastActivityRevision = 0
+    private var lastWorkRevision = 0
 
     init(
         origin: AgentConnectorOrigin,
@@ -923,6 +1004,10 @@ private actor OpenClawTurnSession {
             } else {
                 yield(.activity(activity))
             }
+        }
+        for step in (durableTurn.workSteps ?? []).sorted(by: { $0.revision < $1.revision }) {
+            lastWorkRevision = max(lastWorkRevision, step.revision)
+            yield(.work(step))
         }
 
         socket = try openSocket()
@@ -1089,6 +1174,43 @@ private actor OpenClawTurnSession {
                     try await acknowledge(frame)
                     lastActivityRevision = revision
                     yield(.activityCleared(revision: revision))
+                case "assistant.work.upsert":
+                    guard accepted,
+                          let revision = frame.payload.revision,
+                          let stepID = frame.payload.stepID,
+                          let rawCategory = frame.payload.category,
+                          let category = AgentConnectorWorkCategory(rawValue: rawCategory),
+                          let rawState = frame.payload.workState,
+                          let state = AgentConnectorWorkState(rawValue: rawState),
+                          let title = frame.payload.title else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    let step = try AgentConnectorWorkStep(
+                        revision: revision,
+                        stepID: stepID,
+                        category: category,
+                        state: state,
+                        title: title,
+                        detail: frame.payload.detail,
+                        tool: frame.payload.tool,
+                        command: frame.payload.command,
+                        path: frame.payload.path,
+                        output: frame.payload.output
+                    ).validated()
+                    if revision == lastWorkRevision {
+                        guard pendingTurn?.workSteps?.contains(step) == true else {
+                            throw AgentConnectorError.invalidFrame
+                        }
+                        try await acknowledge(frame)
+                        continue
+                    }
+                    guard revision > lastWorkRevision else {
+                        throw AgentConnectorError.invalidFrame
+                    }
+                    try persistWorkStep(step)
+                    try await acknowledge(frame)
+                    lastWorkRevision = revision
+                    yield(.work(step))
                 case "assistant.attachment":
                     guard accepted else { throw AgentConnectorError.invalidFrame }
                     // The relay may delete its blob as soon as this frame is ACKed. Full GET,
@@ -1222,7 +1344,7 @@ private actor OpenClawTurnSession {
             payload: .init(
                 turnID: request.turnID.uuidString.lowercased(),
                 accountID: request.accountID,
-                capabilities: ["activity-v1", "attachments-v1"],
+                capabilities: ["activity-v1", "attachments-v1", "work-v1"],
                 text: request.text
             )
         )
@@ -1286,6 +1408,28 @@ private actor OpenClawTurnSession {
             throw AgentConnectorError.invalidFrame
         }
         turn.activity = try activity.validated()
+        try outboxVault.save(turn)
+        pendingTurn = turn
+    }
+
+    private func persistWorkStep(_ rawStep: AgentConnectorWorkStep) throws {
+        let step = try rawStep.validated()
+        guard var turn = pendingTurn else {
+            throw AgentConnectorError.invalidFrame
+        }
+        var steps = turn.workSteps ?? []
+        if let index = steps.firstIndex(where: { $0.stepID == step.stepID }) {
+            guard step.revision > steps[index].revision else {
+                throw AgentConnectorError.invalidFrame
+            }
+            steps[index] = step
+        } else {
+            guard steps.count < 12 else {
+                throw AgentConnectorError.responseTooLarge
+            }
+            steps.append(step)
+        }
+        turn.workSteps = steps
         try outboxVault.save(turn)
         pendingTurn = turn
     }

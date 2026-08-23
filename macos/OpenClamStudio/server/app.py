@@ -26,7 +26,7 @@ sys.path.insert(0, ROOT)
 import numpy as np
 from fastapi import (FastAPI, UploadFile, File, Form, HTTPException, Query,
                      WebSocket, WebSocketDisconnect)
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
@@ -34,6 +34,7 @@ import providers as P
 import credentials
 import xai_oauth
 import openclaw_pairing
+import openclaw_acp
 import livekit_bridge as LK
 import avatar_package as AVTR
 import align
@@ -2530,6 +2531,72 @@ async def api_openclaw_pairing_create():
         return await asyncio.to_thread(openclaw_pairing.create_pairing_code)
     except openclaw_pairing.OpenClawPairingError as error:
         raise HTTPException(409, str(error)) from error
+
+
+class OpenClawInstallRequest(BaseModel):
+    setup_key: str = Field(default="", max_length=256)
+
+
+@app.post("/api/openclaw/install")
+async def api_openclaw_install(request: OpenClawInstallRequest):
+    try:
+        return await asyncio.to_thread(
+            openclaw_pairing.install_channel,
+            request.setup_key,
+        )
+    except openclaw_pairing.OpenClawPairingError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.get("/api/openclaw/agents")
+async def api_openclaw_agents():
+    try:
+        return {"agents": await asyncio.to_thread(openclaw_acp.public_agents)}
+    except openclaw_acp.OpenClawACPError as error:
+        raise HTTPException(503, str(error)) from error
+
+
+class OpenClawTurnRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=32, max_length=32)
+    prompt: str = Field(min_length=1, max_length=12_000)
+
+
+@app.post("/api/openclaw/turn")
+async def api_openclaw_turn(request: OpenClawTurnRequest):
+    async def events():
+        try:
+            async for event in openclaw_acp.stream_turn(
+                request.agent_id,
+                request.session_id,
+                request.prompt,
+            ):
+                yield json.dumps(
+                    event, separators=(",", ":"), ensure_ascii=False
+                ) + "\n"
+        except openclaw_acp.OpenClawACPError as error:
+            yield json.dumps(
+                {"type": "error", "message": str(error)},
+                separators=(",", ":"),
+            ) + "\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/openclaw/artifacts/{handle}")
+async def api_openclaw_artifact(handle: str):
+    path = openclaw_acp.artifact_path(handle)
+    if not path:
+        raise HTTPException(404, "OpenClaw file is no longer available")
+    return FileResponse(
+        path,
+        filename=os.path.basename(path),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 class XaiOAuthPollRequest(BaseModel):

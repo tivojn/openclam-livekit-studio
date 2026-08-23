@@ -319,6 +319,8 @@ for (const forbidden of [/Your iPhone/i, /Vivieen Keys/i]) {
 }
 assert.match(settings, /id="openclaw-pairing-card"/);
 assert.match(settings, /\/api\/openclaw\/pairing/);
+assert.match(settings, /id="openclaw-install"/);
+assert.match(settings, /\/api\/openclaw\/install/);
 
 // PTT and Live Talk need microphone input; no Apple Events automation or
 // Accessibility entitlement survives the standalone cut.

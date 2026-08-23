@@ -1703,7 +1703,7 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertFalse(submitted.isEligibleForAIContext)
     }
 
-    func testNewSubmitAdvertisesSafeActivityAndAttachmentCapabilities() async throws {
+    func testNewSubmitAdvertisesActivityAttachmentAndSafeWorkCapabilities() async throws {
         let suite = "AgentConnectorTests.capabilities.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -1735,15 +1735,32 @@ final class AgentConnectorTests: XCTestCase {
             conversationID: conversationID,
             payload: .init(turnID: turnID.uuidString.lowercased(), revision: 2)
         )
+        let work = try encodedFrame(
+            kind: "assistant.work.upsert",
+            seq: 4,
+            connectionID: connectionID,
+            conversationID: conversationID,
+            payload: .init(
+                turnID: turnID.uuidString.lowercased(),
+                revision: 1,
+                stepID: "tool:portrait",
+                category: AgentConnectorWorkCategory.tool.rawValue,
+                workState: AgentConnectorWorkState.running.rawValue,
+                title: "Preparing portrait",
+                detail: "Checking the generated image",
+                tool: "image"
+            )
+        )
         let completed = try encodedFrame(
             kind: "assistant.completed",
-            seq: 4,
+            seq: 5,
             connectionID: connectionID,
             conversationID: conversationID,
             payload: .init(turnID: turnID.uuidString.lowercased(), text: "Ready")
         )
         let sockets = ScriptedSocketConnector(scripts: [[
-            .text(accepted), .text(activity), .text(clear), .text(completed),
+            .text(accepted), .text(activity), .text(clear), .text(work),
+            .text(completed),
         ]])
         let connector = OpenClawAgentConnector(
             origin: try AgentConnectorOrigin("https://bridge.example.com"),
@@ -1767,15 +1784,71 @@ final class AgentConnectorTests: XCTestCase {
         }
         XCTAssertEqual(
             sockets.sentFrames.first(where: { $0.kind == "turn.submit" })?.payload.capabilities,
-            ["activity-v1", "attachments-v1"]
+            ["activity-v1", "attachments-v1", "work-v1"]
         )
         XCTAssertEqual(events, [
             .submissionSaved,
             .accepted,
             .activity(.init(revision: 1, status: .preparingFiles)),
             .activityCleared(revision: 2),
+            .work(.init(
+                revision: 1,
+                stepID: "tool:portrait",
+                category: .tool,
+                state: .running,
+                title: "Preparing portrait",
+                detail: "Checking the generated image",
+                tool: "image",
+                command: nil,
+                path: nil,
+                output: nil
+            )),
             .completed("Ready"),
         ])
+    }
+
+    func testWorkStepValidationRejectsPrivatePathsAndSecretOutput() throws {
+        let safe = AgentConnectorWorkStep(
+            revision: 1,
+            stepID: "file:portrait",
+            category: .file,
+            state: .completed,
+            title: "Created portrait",
+            detail: "The generated image is ready.",
+            tool: nil,
+            command: nil,
+            path: "outputs/portrait.png",
+            output: "Image verified"
+        )
+        XCTAssertNoThrow(try safe.validated())
+
+        let privatePath = AgentConnectorWorkStep(
+            revision: 2,
+            stepID: "file:private",
+            category: .file,
+            state: .running,
+            title: "Reading file",
+            detail: nil,
+            tool: nil,
+            command: nil,
+            path: "/srv/openclaw/private.txt",
+            output: nil
+        )
+        XCTAssertThrowsError(try privatePath.validated())
+
+        let secretOutput = AgentConnectorWorkStep(
+            revision: 3,
+            stepID: "tool:secret",
+            category: .tool,
+            state: .completed,
+            title: "Tool finished",
+            detail: nil,
+            tool: "network",
+            command: nil,
+            path: nil,
+            output: "Authorization: Bearer not-for-display"
+        )
+        XCTAssertThrowsError(try secretOutput.validated())
     }
 
     func testAcceptedSavedBeforeAckRelaunchAcknowledgesReplayAndCompletes() async throws {
@@ -2643,7 +2716,7 @@ final class AgentConnectorTests: XCTestCase {
             payload: .init(
                 turnID: turnID.uuidString.lowercased(),
                 accountID: "primary",
-                capabilities: ["activity-v1", "attachments-v1"],
+                capabilities: ["activity-v1", "attachments-v1", "work-v1"],
                 text: userText
             )
         )

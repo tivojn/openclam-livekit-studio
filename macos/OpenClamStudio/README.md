@@ -8,13 +8,17 @@ It is not a companion controller for the iPhone app. The Mac and iPhone keep
 separate conversations, provider settings, credentials, avatars, and local
 state, with no background synchronization. When the OpenClaw channel is
 installed, the Mac Settings screen can create a one-time code that pairs an
-iPhone directly with those OpenClaw agents. This does not synchronize either
-app's local data. Their only avatar-file boundary remains explicit AVTR export
+iPhone directly with those OpenClaw agents. The Mac composer can also switch
+from its local model to any configured OpenClaw agent for that conversation.
+This does not synchronize either app's local data. Their only avatar-file boundary remains explicit AVTR export
 from the Mac and explicit import on the iPhone.
 
 ## What it includes
 
 - Regular chat with user-selected local or BYOK language models.
+- OpenClaw chat mode with a live, expandable Work timeline and generated-file
+  delivery. Only user-facing summaries and sanitized tool labels appear;
+  private reasoning, raw commands/output, secrets, and host paths stay private.
 - Hold-to-talk transcription and read-aloud voices with independent STT and
   TTS choices.
 - LiveKit Live Talk with independently selectable LLM, STT, TTS, model,
@@ -22,6 +26,12 @@ from the Mac and explicit import on the iPhone.
   the same Cloudflare broker and LiveKit agent deployment as OpenClam on iOS.
 - A Settings panel that creates and copies a one-time OpenClaw iPhone pairing
   code without Terminal or another OpenClaw bootstrap secret.
+- A guided **Install & connect** action for a new OpenClaw setup. The signed
+  app carries the reviewed runtime-only OpenClam channel package, installs or
+  upgrades only that channel, advertises the existing OpenClaw agents, and
+  restarts only the OpenClaw Gateway. A new bridge connection still requires
+  its setup key; the key is sent only to the local installer process
+  and is never saved in OpenClam, OpenClaw config, or shell history.
 - A desktop avatar with calibrated face rig, lip sync, gaze, blinking, brows,
   full body, click reactions, walk, edge idle, and authored moves.
 - Avatar Studio for portrait preparation, visemes, full-body turnaround,
@@ -101,6 +111,15 @@ The app listens only on loopback. Electron creates a private local
 authentication token for each installation, stores it in its mode-0600 app
 data file, and the backend fails closed if it is absent. The renderer never
 receives stored provider keys or the LiveKit pilot token.
+
+For a brand-new OpenClaw installation, open **Settings → AI & Voice →
+OpenClaw · iPhone pairing**, paste the bridge setup key, and choose
+**Install & connect**. Release packaging uses
+`scripts/stage-openclaw-plugin.sh` to build and embed the exact runtime-only
+channel archive and its non-secret bridge origin. Once connected, **Update
+channel** upgrades the bundled OpenClam channel in one click without requiring
+the setup key again. Neither action changes Telegram or another OpenClaw
+channel.
 
 `npm run fetch:model` (also run by the source start/dev preflight) downloads
 the pinned MediaPipe files and the `mlx-community/whisper-small-mlx-4bit`

@@ -7,6 +7,8 @@ import type {
   CreatePairingRequest,
   FrameKind,
   RedeemPairingRequest,
+  WorkCategory,
+  WorkState,
 } from "./types";
 
 export const CREATE_BODY_LIMIT_BYTES = 16_384;
@@ -23,9 +25,13 @@ const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{
 const DOWNLOAD_PATH = /^\/v1\/connectors\/([0-9a-f-]{36})\/attachments\/([0-9a-f-]{36})$/;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
 const FILE_NAME_SEPARATOR = /[\\/]/u;
+const WORK_STEP_ID = /^[a-z0-9][a-z0-9._:-]{0,63}$/u;
+const PRIVATE_PATH = /(?:file:\/\/|(?:^|\s)[A-Za-z]:[\\/]|\\\\[^\s\\]+\\|(?:^|\s)\/(?!\/))/iu;
+const SECRET_MATERIAL = /(?:authorization\s*:|\bbearer\s+[A-Za-z0-9._~+\/-]+=*|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie)\s*[:=])/iu;
 const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
   "activity-v1",
   "attachments-v1",
+  "work-v1",
 ]);
 const ACTIVITY_STATUSES = new Set<ActivityStatus>([
   "thinking",
@@ -40,6 +46,12 @@ const ACTIVITY_STATUSES = new Set<ActivityStatus>([
   "waiting_for_approval",
   "finalizing",
 ]);
+const WORK_CATEGORIES = new Set<WorkCategory>([
+  "reasoning_summary", "plan", "tool", "command", "file", "approval", "status",
+]);
+const WORK_STATES = new Set<WorkState>([
+  "running", "completed", "failed", "waiting",
+]);
 const FRAME_KINDS = new Set<FrameKind>([
   "ack",
   "heartbeat",
@@ -48,6 +60,7 @@ const FRAME_KINDS = new Set<FrameKind>([
   "assistant.delta",
   "assistant.activity.upsert",
   "assistant.activity.clear",
+  "assistant.work.upsert",
   "assistant.attachment",
   "assistant.completed",
   "turn.cancel",
@@ -102,7 +115,7 @@ function positiveInteger(value: unknown): number {
 }
 
 function parseCapabilities(value: unknown): ConnectorCapability[] {
-  if (!Array.isArray(value) || value.length > 2) invalidRequest();
+  if (!Array.isArray(value) || value.length > 3) invalidRequest();
   const capabilities = value.map((item) => {
     if (typeof item !== "string" || !CONNECTOR_CAPABILITIES.has(item as ConnectorCapability)) {
       invalidRequest();
@@ -116,6 +129,12 @@ function parseCapabilities(value: unknown): ConnectorCapability[] {
 function nonnegativeInteger(value: unknown): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) invalidRequest();
   return value as number;
+}
+
+function safeWorkText(value: unknown, maximum: number): string {
+  const parsed = boundedString(value, 1, maximum, true);
+  if (PRIVATE_PATH.test(parsed) || SECRET_MATERIAL.test(parsed)) invalidRequest();
+  return parsed;
 }
 
 function parseAccount(value: unknown): AccountDescriptor {
@@ -234,6 +253,46 @@ function parsePayload(
     const revision = positiveInteger(value.revision);
     if (revision > 100_000) invalidRequest();
     return { turnId: uuid(value.turnId), revision };
+  }
+  if (kind === "assistant.work.upsert") {
+    exactKeys(
+      value,
+      ["turnId", "revision", "stepId", "category", "state", "title"],
+      ["detail", "tool", "command", "path", "output"],
+    );
+    const revision = positiveInteger(value.revision);
+    const stepId = boundedString(value.stepId, 1, 64);
+    if (
+      revision > 100_000 ||
+      !WORK_STEP_ID.test(stepId) ||
+      typeof value.category !== "string" ||
+      !WORK_CATEGORIES.has(value.category as WorkCategory) ||
+      typeof value.state !== "string" ||
+      !WORK_STATES.has(value.state as WorkState)
+    ) {
+      invalidRequest();
+    }
+    const path = value.path === undefined ? undefined : safeWorkText(value.path, 512);
+    if (
+      path !== undefined &&
+      (path.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(path) || path.startsWith("\\\\") ||
+        path.startsWith("file:") || path.split("/").includes(".."))
+    ) {
+      invalidRequest();
+    }
+    return {
+      turnId: uuid(value.turnId),
+      revision,
+      stepId,
+      category: value.category,
+      state: value.state,
+      title: safeWorkText(value.title, 120),
+      ...(value.detail === undefined ? {} : { detail: safeWorkText(value.detail, 1_000) }),
+      ...(value.tool === undefined ? {} : { tool: safeWorkText(value.tool, 80) }),
+      ...(value.command === undefined ? {} : { command: safeWorkText(value.command, 1_000) }),
+      ...(path === undefined ? {} : { path }),
+      ...(value.output === undefined ? {} : { output: safeWorkText(value.output, 2_000) }),
+    };
   }
   if (kind === "assistant.attachment") {
     exactKeys(value, [

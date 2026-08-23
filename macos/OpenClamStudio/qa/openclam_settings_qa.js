@@ -242,11 +242,17 @@ for (const id of [
   'openclaw-pairing-refresh', 'openclaw-pairing-code-card',
   'openclaw-pairing-code', 'openclaw-pairing-copy',
   'openclaw-pairing-countdown', 'openclaw-pairing-state',
+  'openclaw-install-panel', 'openclaw-setup-key', 'openclaw-install',
+  'openclaw-update-channel',
 ]) includes(`id="${id}"`);
 includes("api('/api/openclaw/pairing'");
 includes("api('/api/openclaw/pairing', {method: 'POST'}");
+includes("api('/api/openclaw/install'");
 includes('all other channels stay unchanged');
-includes('The one-time code is never saved here');
+includes('The code is not saved here');
+includes('bridge setup key out of OpenClaw configuration and app storage');
+includes('Enter this in OpenClam on iPhone');
+excludes(/Valid for \$\{minutes\}:\$\{seconds\}/);
 excludes(/Telegram|BotFather|bot token/i);
 excludes(/relay/i);
 excludes(/selfie|capture="user"|takeSelfie/i);

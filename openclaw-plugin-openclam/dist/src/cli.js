@@ -16,6 +16,7 @@ export const registerOpenClamCli = ({ program, config }) => {
         .option("--bootstrap-secret-env <name>", "Environment variable holding the bridge bootstrap token", "OPENCLAM_BRIDGE_BOOTSTRAP_TOKEN")
         .option("--credential-directory <path>", "Parent directory for the new connection credential")
         .option("--replace", "Switch to a fresh connection and then revoke the old one", false)
+        .option("--json", "Print machine-readable pairing details", false)
         .option("--allow-insecure-localhost", "Allow HTTP only for a localhost development bridge", false)
         .action(async (raw) => {
         const options = {
@@ -30,6 +31,17 @@ export const registerOpenClamCli = ({ program, config }) => {
             allowInsecureLocalhost: raw.allowInsecureLocalhost === true,
         };
         const result = await pairOpenClam(config, options);
+        if (raw.json === true) {
+            process.stdout.write(`${JSON.stringify({
+                v: 1,
+                code: result.code,
+                connectionId: result.connectionId,
+                expiresAt: result.expiresAt,
+                gatewayLabel: result.gatewayLabel,
+                accounts: result.accounts,
+            })}\n`);
+            return;
+        }
         process.stdout.write(`Pairing code: ${result.code}\n`);
         process.stdout.write(`Expires: ${new Date(result.expiresAt).toISOString()}\n`);
         process.stdout.write(`Agents: ${result.accounts.map((account) => account.displayName).join(", ")}\n`);

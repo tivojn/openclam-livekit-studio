@@ -512,6 +512,11 @@ actor ConversationHistoryStore {
                     .prefix(limits.maximumAttachmentsPerMessage)
                     .map(sanitized)
             ),
+            workSteps: Array(
+                message.workSteps
+                    .compactMap { try? $0.validated() }
+                    .prefix(12)
+            ),
             date: message.date,
             isEligibleForAIContext: message.isEligibleForAIContext,
             historyPersistence: .history
