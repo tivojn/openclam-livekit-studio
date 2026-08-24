@@ -265,8 +265,8 @@ final class ConversationModel: ObservableObject {
     @Published private(set) var isHistoryReady = false
     @Published private(set) var isChangingChat = false
     @Published private(set) var isWorking = false
-    /// Ephemeral cumulative remote reply. It is never written to history; only the authoritative
-    /// completion becomes one assistant message.
+    /// Ephemeral cumulative provider or remote reply. It is never written to history; only the
+    /// authoritative completion becomes one assistant message.
     @Published private(set) var streamingAssistantReply: String?
     /// Live Talk partials are visible in the current thread but stay out of history until
     /// LiveKit marks the utterance final. This keeps relaunch history authoritative while still
@@ -2809,6 +2809,8 @@ extension ConversationModel {
         latestUserInput: String,
         submittedMessageID: UUID
     ) async {
+        streamingAssistantReply = nil
+        defer { streamingAssistantReply = nil }
         do {
             let client = try aiConfiguration.makeClient()
             let webSearchService = try? aiConfiguration.makeWebSearchService()
@@ -2842,13 +2844,16 @@ extension ConversationModel {
                     webSearchService: webSearchService
                 )
             }
-            let result = try await client.respond(
+            let result = try await client.respondStreaming(
                 input: input,
                 instructions: promptContext.applyingPersona(to: replyOnly
                     ? Self.replyOnlyAgentInstructions
                     : Self.agentInstructionsWithTrustedClock()),
                 tools: try Self.agentTools(forLatestUserInput: latestUserInput),
-                executor: executor
+                executor: executor,
+                onPartialText: { text in
+                    await self.showStreamingAssistantReply(text)
+                }
             )
             reply(result.text, isEligibleForAIContext: !replyOnly)
         } catch is CancellationError {
@@ -2858,6 +2863,10 @@ extension ConversationModel {
             excludeMessageFromAIContext(submittedMessageID)
             reply(error.localizedDescription)
         }
+    }
+
+    private func showStreamingAssistantReply(_ text: String) {
+        streamingAssistantReply = text.isEmpty ? nil : text
     }
 
     func excludeMessageFromAIContext(_ messageID: UUID) {

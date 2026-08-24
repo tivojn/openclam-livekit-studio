@@ -4820,12 +4820,61 @@
       sendButton.disabled = true;
       pttButton.disabled = true;
       setStatus('Thinking…', 'busy');
+      let liveReply = null;
       try {
-        const result = await postJSON('/reply', { history }, turnController.signal);
+        const response = await fetch('/reply/stream', {
+          method: 'POST',
+          headers: { 'Accept': 'application/x-ndjson', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+          body: JSON.stringify({ history }),
+          signal: turnController.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`Model request failed (${response.status})`);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = '';
+        let result = null;
+        for (;;) {
+          const chunk = await reader.read();
+          buffered += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+          const lines = buffered.split('\n');
+          buffered = chunk.done ? '' : lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const event = JSON.parse(line);
+            if (event.type === 'text') {
+              const partial = String(event.text || '').slice(0, 64000);
+              if (!partial) continue;
+              removeWorking();
+              resumeChatSpeakingPose();
+              if (!liveReply) {
+                liveReply = addMessage('assistant', '', { readable: false, persist: false });
+                liveReply.row.classList.add('streaming');
+              }
+              liveReply.bubble.textContent = partial;
+              latestAssistantText = partial;
+              setStatus('Answering…', 'busy');
+              conversation.scrollTop = conversation.scrollHeight;
+            } else if (event.type === 'complete') {
+              result = event;
+            } else if (event.type === 'error') {
+              throw new Error(String(event.message || 'The model stream failed').slice(0, 180));
+            }
+          }
+          if (chunk.done) break;
+        }
+        if (!result) throw new Error('The model stream ended before completion');
         removeWorking();
         const answer = String(result.text || 'I lost that thought. Please try again.');
         resumeChatSpeakingPose();
-        addMessage('assistant', answer);
+        if (liveReply) {
+          liveReply.bubble.textContent = answer;
+          latestAssistantText = answer;
+          liveReply.row.classList.remove('streaming');
+          appendAssistantActions(liveReply.row, answer);
+          recordThreadItem({ kind: 'message', role: 'assistant', text: answer, readable: true });
+        } else {
+          addMessage('assistant', answer);
+        }
         history.push({ role: 'assistant', content: answer });
         if (history.length > 24) history.splice(0, history.length - 24);
         await appendMedia(result.media);
@@ -4833,6 +4882,7 @@
         else setStatus('Ready', 'good');
       } catch (error) {
         removeWorking();
+        if (liveReply) liveReply.row.remove();
         if (error.name !== 'AbortError') {
           resumeChatSpeakingPose();
           const message = `I could not answer: ${String(error.message || error).slice(0, 150)}`;

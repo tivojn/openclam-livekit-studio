@@ -4,6 +4,43 @@ import XCTest
 @testable import OpenClamLiveKit
 
 final class OpenAIResponsesClientTests: XCTestCase {
+    @MainActor
+    func testStreamingResponsePublishesCumulativeTextAndFinalizesOnce() async throws {
+        let transport = StubResponsesTransport(responses: [
+            .json(
+                """
+                data: {"type":"response.output_text.delta","delta":"Hel"}
+
+                data: {"type":"response.output_text.delta","delta":"lo"}
+
+                data: {"type":"response.completed","response":{"id":"resp_stream","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}}
+
+                data: [DONE]
+                """
+            ),
+        ])
+        let recorder = PartialTextRecorder()
+        let client = try makeClient(apiKey: "sk-test", transport: transport)
+
+        let result = try await client.respondStreaming(
+            input: [.message(role: .user, content: "Say hello")],
+            instructions: nil,
+            tools: [],
+            executor: nil,
+            onPartialText: { text in await recorder.append(text) }
+        )
+
+        XCTAssertEqual(result.text, "Hello")
+        XCTAssertEqual(result.requestCount, 1)
+        let partials = await recorder.values()
+        XCTAssertEqual(partials, ["Hel", "Hello", "Hello"])
+        let requests = await transport.recordedRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+        let body = try jsonObject(XCTUnwrap(request.httpBody))
+        XCTAssertEqual(body["stream"] as? Bool, true)
+    }
+
     func testTypedMessageEncodesResponsesContentPartsAndKeepsStringAPI() throws {
         let imageDataURL = "data:image/jpeg;base64,\(Data([0xFF, 0xD8, 0xFF, 0xD9]).base64EncodedString())"
         let fileDataURL = "data:application/pdf;base64,\(Data("%PDF".utf8).base64EncodedString())"
@@ -778,6 +815,18 @@ private actor RecordingToolExecutor: OpenAIToolExecutor {
 
     func recordedCalls() -> [OpenAIToolCall] {
         calls
+    }
+}
+
+private actor PartialTextRecorder {
+    private var partials: [String] = []
+
+    func append(_ text: String) {
+        partials.append(text)
+    }
+
+    func values() -> [String] {
+        partials
     }
 }
 

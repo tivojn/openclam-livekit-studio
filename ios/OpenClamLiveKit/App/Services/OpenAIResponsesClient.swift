@@ -5,15 +5,41 @@ struct OpenAITransportResponse: Sendable {
     let response: HTTPURLResponse
 }
 
+struct OpenAITransportStream: Sendable {
+    let lines: AsyncThrowingStream<String, Error>
+    let response: HTTPURLResponse
+}
+
 protocol OpenAIResponsesTransport: Sendable {
     func send(_ request: URLRequest) async throws -> OpenAITransportResponse
+    func stream(_ request: URLRequest) async throws -> OpenAITransportStream
+}
+
+extension OpenAIResponsesTransport {
+    func stream(_ request: URLRequest) async throws -> OpenAITransportStream {
+        let result = try await send(request)
+        guard let text = String(data: result.data, encoding: .utf8) else {
+            throw OpenAIResponsesTransportError.invalidStreamEncoding
+        }
+        let lines = AsyncThrowingStream<String, Error> { continuation in
+            text.enumerateLines { line, _ in continuation.yield(line) }
+            continuation.finish()
+        }
+        return .init(lines: lines, response: result.response)
+    }
 }
 
 enum OpenAIResponsesTransportError: Error, Equatable, LocalizedError {
     case nonHTTPResponse
+    case invalidStreamEncoding
 
     var errorDescription: String? {
-        "The model service returned an invalid network response."
+        switch self {
+        case .nonHTTPResponse:
+            "The model service returned an invalid network response."
+        case .invalidStreamEncoding:
+            "The model service returned an unreadable stream."
+        }
     }
 }
 
@@ -49,6 +75,28 @@ final class URLSessionOpenAIResponsesTransport: OpenAIResponsesTransport, @unche
             throw OpenAIResponsesTransportError.nonHTTPResponse
         }
         return .init(data: data, response: httpResponse)
+    }
+
+    func stream(_ request: URLRequest) async throws -> OpenAITransportStream {
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenAIResponsesTransportError.nonHTTPResponse
+        }
+        let lines = AsyncThrowingStream<String, Error> { continuation in
+            let task = Task {
+                do {
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        continuation.yield(line)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+        return .init(lines: lines, response: httpResponse)
     }
 }
 
@@ -174,6 +222,100 @@ struct OpenAIResponsesClient: Sendable {
         }
     }
 
+    func respondStreaming(
+        input: [OpenAIInputItem],
+        instructions: String?,
+        tools: [OpenAIFunctionTool],
+        executor: OpenAIToolExecutor?,
+        onPartialText: @escaping @Sendable (String) async -> Void
+    ) async throws -> OpenAIResponsesResult {
+        try validate(input: input, instructions: instructions, tools: tools, executor: executor)
+        guard let savedKey = try credentialStore.loadAPIKey() else {
+            throw OpenAIResponsesClientError.missingAPIKey
+        }
+        let apiKey = try AgentCredentialValidator.normalizedAPIKey(savedKey)
+        var workingInput = input
+        var toolRoundCount = 0
+        var requestCount = 0
+        var seenToolCallIDs = Set<String>()
+        let allowedToolNames = Set(tools.map(\.name))
+
+        while true {
+            try Task.checkCancellation()
+            try validateInputLimits(workingInput, instructions: instructions)
+            let request = try makeRequest(
+                apiKey: apiKey,
+                input: workingInput,
+                instructions: instructions,
+                tools: tools,
+                streaming: true
+            )
+            let transportStream = try await transport.stream(request)
+            requestCount += 1
+            let apiResponse = try await decodeStream(
+                transportStream,
+                redacting: apiKey,
+                onPartialText: onPartialText
+            )
+            let parsed = try parseOutput(apiResponse.output)
+
+            guard !parsed.calls.isEmpty else {
+                let text = parsed.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else {
+                    throw OpenAIResponsesClientError.missingAssistantOutput
+                }
+                await onPartialText(text)
+                return .init(
+                    text: text,
+                    responseID: apiResponse.id,
+                    toolRoundCount: toolRoundCount,
+                    requestCount: requestCount
+                )
+            }
+
+            await onPartialText("")
+            let callIDs = parsed.calls.map(\.callID)
+            guard callIDs.count == Set(callIDs).count,
+                  callIDs.allSatisfy({ seenToolCallIDs.insert($0).inserted }) else {
+                throw OpenAIResponsesClientError.duplicateToolCallID
+            }
+            guard parsed.calls.count <= configuration.maxToolCallsPerRound else {
+                throw OpenAIResponsesClientError.toolCallLimitExceeded(
+                    configuration.maxToolCallsPerRound
+                )
+            }
+            if let unknownName = parsed.calls.map(\.name).first(where: {
+                !allowedToolNames.contains($0)
+            }) {
+                throw OpenAIResponsesClientError.unknownTool(unknownName)
+            }
+            guard toolRoundCount < configuration.maxToolRounds else {
+                throw OpenAIResponsesClientError.toolRoundLimitExceeded(
+                    configuration.maxToolRounds
+                )
+            }
+            guard let executor else {
+                throw OpenAIResponsesClientError.missingToolExecutor
+            }
+
+            workingInput.append(contentsOf: apiResponse.output.map(OpenAIInputItem.responseOutput))
+            for call in parsed.calls {
+                try Task.checkCancellation()
+                let result: AgentJSONValue
+                do {
+                    result = try await executor.execute(call)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw OpenAIResponsesClientError.toolExecutionFailed(call.name)
+                }
+                let output = try serializedToolOutput(result, toolName: call.name)
+                workingInput.append(.functionCallOutput(callID: call.callID, output: output))
+            }
+            toolRoundCount += 1
+        }
+    }
+
     private func validate(
         input: [OpenAIInputItem],
         instructions: String?,
@@ -247,7 +389,8 @@ struct OpenAIResponsesClient: Sendable {
         apiKey: String,
         input: [OpenAIInputItem],
         instructions: String?,
-        tools: [OpenAIFunctionTool]
+        tools: [OpenAIFunctionTool],
+        streaming: Bool = false
     ) throws -> URLRequest {
         let body = RequestBody(
             model: configuration.model,
@@ -255,7 +398,8 @@ struct OpenAIResponsesClient: Sendable {
             instructions: instructions?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty,
             input: input,
             tools: requestTools(from: tools),
-            toolChoice: tools.isEmpty && !enablesXSearch ? nil : "auto"
+            toolChoice: tools.isEmpty && !enablesXSearch ? nil : "auto",
+            stream: streaming
         )
 
         var request = URLRequest(
@@ -266,7 +410,10 @@ struct OpenAIResponsesClient: Sendable {
         request.httpMethod = "POST"
         request.httpBody = try makeEncoder().encode(body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            streaming ? "text/event-stream" : "application/json",
+            forHTTPHeaderField: "Accept"
+        )
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         return request
     }
@@ -315,6 +462,80 @@ struct OpenAIResponsesClient: Sendable {
             throw OpenAIResponsesClientError.malformedResponse
         }
 
+        return try validatedResponse(response, httpResponse: transportResponse.response, apiKey: apiKey)
+    }
+
+    private func decodeStream(
+        _ transportStream: OpenAITransportStream,
+        redacting apiKey: String,
+        onPartialText: @escaping @Sendable (String) async -> Void
+    ) async throws -> ResponseBody {
+        let statusCode = transportStream.response.statusCode
+        let requestID = redactedBoundedServerText(
+            transportStream.response.value(forHTTPHeaderField: "x-request-id"),
+            apiKey: apiKey
+        )
+        guard (200..<300).contains(statusCode) else {
+            throw OpenAIResponsesClientError.httpError(
+                statusCode: statusCode,
+                requestID: requestID,
+                message: nil
+            )
+        }
+        var consumedBytes = 0
+        var cumulativeText = ""
+        var completed: ResponseBody?
+        for try await rawLine in transportStream.lines {
+            try Task.checkCancellation()
+            consumedBytes += rawLine.utf8.count + 1
+            guard consumedBytes <= configuration.maxResponseBytes else {
+                throw OpenAIResponsesClientError.responseTooLarge
+            }
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard !payload.isEmpty, payload != "[DONE]",
+                  let data = payload.data(using: .utf8) else { continue }
+            let event: ResponsesStreamEvent
+            do {
+                event = try makeDecoder().decode(ResponsesStreamEvent.self, from: data)
+            } catch {
+                throw OpenAIResponsesClientError.malformedResponse
+            }
+            switch event.type {
+            case "response.output_text.delta", "response.refusal.delta":
+                if let delta = event.delta {
+                    cumulativeText += delta
+                    guard cumulativeText.utf8.count <= configuration.maxResponseBytes else {
+                        throw OpenAIResponsesClientError.responseTooLarge
+                    }
+                    await onPartialText(cumulativeText)
+                }
+            case "response.completed", "response.failed", "response.incomplete":
+                completed = event.response
+            case "error":
+                throw OpenAIResponsesClientError.apiFailure(
+                    redactedBoundedServerText(event.error?.message, apiKey: apiKey)
+                )
+            default:
+                continue
+            }
+        }
+        guard let completed else {
+            throw OpenAIResponsesClientError.malformedResponse
+        }
+        return try validatedResponse(
+            completed,
+            httpResponse: transportStream.response,
+            apiKey: apiKey
+        )
+    }
+
+    private func validatedResponse(
+        _ response: ResponseBody,
+        httpResponse: HTTPURLResponse,
+        apiKey: String
+    ) throws -> ResponseBody {
         if let apiError = response.error {
             throw OpenAIResponsesClientError.apiFailure(
                 redactedBoundedServerText(apiError.message, apiKey: apiKey)
@@ -523,6 +744,7 @@ private struct RequestBody: Encodable {
     let input: [OpenAIInputItem]
     let tools: [ResponsesTool]?
     let toolChoice: String?
+    let stream: Bool
     let store = false
     let parallelToolCalls = false
 
@@ -533,6 +755,7 @@ private struct RequestBody: Encodable {
         case input
         case tools
         case toolChoice = "tool_choice"
+        case stream
         case store
         case parallelToolCalls = "parallel_tool_calls"
     }
@@ -575,6 +798,13 @@ private struct ResponseBody: Decodable {
 
 private struct APIErrorBody: Decodable {
     let message: String
+}
+
+private struct ResponsesStreamEvent: Decodable {
+    let type: String
+    let delta: String?
+    let response: ResponseBody?
+    let error: APIErrorBody?
 }
 
 private struct ErrorEnvelope: Decodable {

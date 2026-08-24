@@ -185,9 +185,29 @@ assert.doesNotMatch(source, /avatarCarouselButton\.addEventListener\('click',[\s
 
 // Ordinary chat, hold-to-talk, explicit read-aloud, and the LiveKit room all
 // stay on authenticated same-origin routes (Electron injects the auth header).
-for (const route of ['/reply', '/stt', '/say', '/api/livekit/session']) {
+for (const route of ['/reply/stream', '/stt', '/say', '/api/livekit/session']) {
   assert.ok(source.includes(`'${route}'`), `missing same-origin route ${route}`);
 }
+assert.match(source, /fetch\('\/reply\/stream',[\s\S]{0,900}response\.body\.getReader\(\)/,
+  'local Mac chat must consume the authenticated incremental reply stream');
+assert.match(source, /liveReply = addMessage\('assistant', '', \{ readable: false, persist: false \}\)/,
+  'streamed text must use one ephemeral assistant bubble until completion');
+assert.match(source, /event\.type === 'complete'[\s\S]{0,120}result = event/,
+  'only an authoritative completion may finalize a local streamed turn');
+const localStreamingSource = source.match(
+  /async function submitLocalTurn\(text, options = \{\}\) \{([\s\S]*?)\n    async function submitTurn/,
+);
+assert.ok(localStreamingSource, 'local streaming chat implementation must remain inspectable');
+assert.ok(
+  localStreamingSource[1].indexOf("event.type === 'complete'")
+    < localStreamingSource[1].indexOf('history.push({ role: \'assistant\''),
+  'the final assistant message must enter history only after stream completion',
+);
+assert.ok(
+  localStreamingSource[1].indexOf("event.type === 'complete'")
+    < localStreamingSource[1].indexOf('playSpeech(result.audio'),
+  'speech must wait for the authoritative completion rather than token deltas',
+);
 for (const route of ['/api/openclaw/agents', '/api/openclaw/turn', '/api/openclaw/uploads']) {
   assert.ok(source.includes(`'${route}'`), `missing same-origin OpenClaw route ${route}`);
 }

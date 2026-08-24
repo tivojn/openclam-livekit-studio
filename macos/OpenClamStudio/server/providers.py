@@ -143,6 +143,8 @@ _MAX_XAI_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_XAI_TEXT_CHARS = 128_000
 _MAX_XAI_INPUT_CHARS = 1_000_000
 _MAX_XAI_IMAGE_DATA_CHARS = 32 * 1024 * 1024
+_MAX_STREAMED_LLM_BYTES = 4 * 1024 * 1024
+_MAX_STREAMED_LLM_TEXT_CHARS = 64_000
 _API_KEY_METHODS = frozenset({"api_key", "api-key", "apikey"})
 
 
@@ -1313,6 +1315,33 @@ async def chat(messages, c, system=""):
         raise
 
 
+async def chat_stream(messages, c, system=""):
+    """Yield cumulative assistant text while retaining the direct-route receipt.
+
+    Cumulative snapshots make provider-specific delta formats an internal
+    detail and let clients safely replace one ephemeral bubble. The caller
+    persists and speaks only the final snapshot.
+    """
+    if not spec("llm", c.get("provider")):
+        raise RuntimeError("Choose a direct language model in OpenClam Settings")
+    _route_begin("llm", _direct_route("llm", c))
+    latest = ""
+    try:
+        async for snapshot in _chat_direct_stream(messages, c, system):
+            snapshot = str(snapshot or "")
+            if len(snapshot) > _MAX_STREAMED_LLM_TEXT_CHARS:
+                raise RuntimeError("the selected model returned an oversized response")
+            if snapshot != latest:
+                latest = snapshot
+                yield latest
+        if not latest.strip():
+            raise RuntimeError("the selected model returned an empty response")
+        _route_finish("llm", "success")
+    except Exception:
+        _route_finish("llm", "failed")
+        raise
+
+
 # A provider with a key but no model chosen is the commonest way to a
 # dead chat: the request goes out with model:"" and the provider rejects
 # it, which surfaced as "ROUTE FAILED - my model is not answering" with
@@ -1595,6 +1624,221 @@ async def _xai_chat_direct(messages, c, system=""):
         return _xai_stream_text(response, responses_api=use_search)
     payload = response.json()
     return _xai_responses_text(payload) if use_search else _xai_chat_completion_text(payload)
+
+
+async def _stream_json_events(response, *, sse=True,
+                              max_bytes=_MAX_STREAMED_LLM_BYTES):
+    """Decode bounded one-line JSON events from SSE or NDJSON responses."""
+    length = str((getattr(response, "headers", {}) or {}).get("content-length") or "")
+    if length.isdigit() and int(length) > max_bytes:
+        raise RuntimeError("the selected model returned an oversized response")
+    consumed = 0
+    async for line in response.aiter_lines():
+        consumed += len(line.encode("utf-8")) + 1
+        if consumed > max_bytes:
+            raise RuntimeError("the selected model returned an oversized response")
+        value = line.strip()
+        if not value or (sse and not value.startswith("data:")):
+            continue
+        if sse:
+            value = value[5:].strip()
+        if not value or value == "[DONE]":
+            continue
+        try:
+            event = json.loads(value)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError("the selected model returned an invalid stream") from error
+        if not isinstance(event, dict):
+            raise RuntimeError("the selected model returned an invalid stream")
+        yield event
+
+
+def _openai_stream_delta(event):
+    choices = event.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return ""
+    content = (choices[0].get("delta") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(block.get("text") or "") for block in content[:256]
+            if isinstance(block, dict)
+            and block.get("type") in {"text", "output_text"}
+        )
+    return ""
+
+
+async def _xai_chat_direct_stream(messages, c, system=""):
+    _validate_xai_base_override(c)
+    model = (c.get("model") or "").strip() or FALLBACK_MODEL["xai"]
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]{1,160}", model):
+        raise RuntimeError("Choose a valid xAI model")
+    system = str(system or "")
+    if len(system) > _MAX_XAI_TEXT_CHARS:
+        raise RuntimeError("the xAI system instruction is too long")
+    messages = _bounded_xai_messages(messages, len(system))
+    maxtok = max(1, min(int(c.get("max_tokens", 160)), 4096))
+    try:
+        temperature = float(c.get("temperature", 0.8))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Choose an xAI temperature from 0 to 2") from exc
+    if not math.isfinite(temperature) or not 0 <= temperature <= 2:
+        raise RuntimeError("Choose an xAI temperature from 0 to 2")
+    use_search = bool(c.get("web_search", False))
+    base, headers, _secret, mode = await _resolve_xai_auth(
+        model=model, cli_for_oauth=True)
+    oauth_mode = mode == _xai_oauth_manager().OAUTH2_MODE
+    if oauth_mode and model not in XAI_OAUTH_LLM_MODELS:
+        raise RuntimeError("Choose a supported Grok model for the shared xAI sign-in")
+    headers = {
+        **headers,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    if use_search:
+        request = {
+            "model": "grok-build" if oauth_mode else model,
+            "input": _xai_responses_input(messages),
+            "tools": [{"type": "web_search"}],
+            "max_output_tokens": maxtok,
+            "stream": True,
+        }
+        if system:
+            request["instructions"] = system
+    else:
+        request = {
+            "model": "grok-build" if oauth_mode else model,
+            "messages": ([{"role": "system", "content": system}] if system else [])
+                        + list(messages or []),
+            "temperature": temperature,
+            "max_completion_tokens": maxtok,
+            "stream": True,
+        }
+    endpoint = "/responses" if use_search else "/chat/completions"
+    latest = ""
+    async with httpx.AsyncClient(
+            timeout=180, follow_redirects=False, trust_env=False) as client:
+        async with client.stream(
+                "POST", f"{base}{endpoint}", headers=headers, json=request) as response:
+            _require_xai_response(response, "language-model response")
+            async for event in _stream_json_events(
+                    response, max_bytes=_MAX_XAI_RESPONSE_BYTES):
+                kind = str(event.get("type") or "")
+                if kind in {"response.output_text.delta", "response.refusal.delta"}:
+                    delta = event.get("delta")
+                    if isinstance(delta, str):
+                        latest += delta
+                elif kind == "response.completed" and use_search:
+                    completed = event.get("response") or event
+                    final = _xai_responses_text(completed)
+                    if final:
+                        latest = final
+                else:
+                    latest += _openai_stream_delta(event)
+                if len(latest) > _MAX_XAI_TEXT_CHARS:
+                    raise RuntimeError("xAI returned an oversized streaming response")
+                if latest:
+                    yield latest
+
+
+async def _chat_direct_stream(messages, c, system=""):
+    p = c.get("provider")
+    if p == "xai":
+        async for snapshot in _xai_chat_direct_stream(messages, c, system):
+            yield snapshot
+        return
+    base, key = _base("llm", c), c.get("api_key") or ""
+    model = (c.get("model") or "").strip() or FALLBACK_MODEL.get(p, "")
+    temp = float(c.get("temperature", 0.8))
+    maxtok = int(c.get("max_tokens", 160))
+    latest = ""
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        if p == "ollama":
+            msgs = ([{"role": "system", "content": system}] if system else []) + messages
+            async with client.stream(
+                    "POST", f"{base or 'http://localhost:11434'}/api/chat", json={
+                        "model": model, "messages": msgs, "stream": True, "think": False,
+                        "options": {"temperature": temp, "num_predict": maxtok}}) as response:
+                response.raise_for_status()
+                async for event in _stream_json_events(response, sse=False):
+                    latest += str((event.get("message") or {}).get("content") or "")
+                    if latest:
+                        yield latest
+            return
+
+        if p == "anthropic":
+            async with client.stream("POST", f"{base}/messages", headers={
+                    "x-api-key": key, "anthropic-version": "2023-06-01",
+                    "content-type": "application/json", "accept": "text/event-stream"}, json={
+                        "model": model, "max_tokens": maxtok, "temperature": temp,
+                        "system": system, "messages": messages, "stream": True}) as response:
+                response.raise_for_status()
+                async for event in _stream_json_events(response):
+                    if event.get("type") == "content_block_start":
+                        block = event.get("content_block") or {}
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            latest += str(block.get("text") or "")
+                    elif event.get("type") == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                            latest += str(delta.get("text") or "")
+                    elif event.get("type") == "error":
+                        raise RuntimeError("Anthropic could not complete the streamed response")
+                    if latest:
+                        yield latest
+            return
+
+        if p == "gemini":
+            contents = [{"role": "model" if m["role"] == "assistant" else "user",
+                         "parts": [{"text": m["content"]}]} for m in messages]
+            body = {"contents": contents,
+                    "generationConfig": {"temperature": temp, "maxOutputTokens": maxtok}}
+            if system:
+                body["systemInstruction"] = {"parts": [{"text": system}]}
+            async with client.stream(
+                    "POST", f"{base}/models/{model}:streamGenerateContent",
+                    params={"key": key, "alt": "sse"}, json=body) as response:
+                response.raise_for_status()
+                async for event in _stream_json_events(response):
+                    candidates = event.get("candidates") or []
+                    if candidates and isinstance(candidates[0], dict):
+                        parts = (candidates[0].get("content") or {}).get("parts") or []
+                        latest += "".join(
+                            str(part.get("text") or "") for part in parts[:256]
+                            if isinstance(part, dict)
+                        )
+                    if latest:
+                        yield latest
+            return
+
+        msgs = ([{"role": "system", "content": system}] if system else []) + messages
+        headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        body = {"model": model, "messages": msgs, "temperature": temp,
+                "max_completion_tokens": maxtok, "stream": True}
+        async with client.stream(
+                "POST", f"{base}/chat/completions", headers=headers, json=body) as response:
+            if response.status_code == 400:
+                await response.aread()
+            else:
+                response.raise_for_status()
+                async for event in _stream_json_events(response):
+                    latest += _openai_stream_delta(event)
+                    if latest:
+                        yield latest
+                return
+        body.pop("max_completion_tokens", None)
+        body["max_tokens"] = maxtok
+        async with client.stream(
+                "POST", f"{base}/chat/completions", headers=headers, json=body) as response:
+            response.raise_for_status()
+            async for event in _stream_json_events(response):
+                latest += _openai_stream_delta(event)
+                if latest:
+                    yield latest
 
 
 async def _chat_direct(messages, c, system=""):

@@ -12,9 +12,34 @@ protocol LLMAgentClient: Sendable {
         tools: [OpenAIFunctionTool],
         executor: OpenAIToolExecutor?
     ) async throws -> OpenAIResponsesResult
+
+    func respondStreaming(
+        input: [OpenAIInputItem],
+        instructions: String?,
+        tools: [OpenAIFunctionTool],
+        executor: OpenAIToolExecutor?,
+        onPartialText: @escaping @Sendable (String) async -> Void
+    ) async throws -> OpenAIResponsesResult
 }
 
 extension LLMAgentClient {
+    func respondStreaming(
+        input: [OpenAIInputItem],
+        instructions: String?,
+        tools: [OpenAIFunctionTool],
+        executor: OpenAIToolExecutor?,
+        onPartialText: @escaping @Sendable (String) async -> Void
+    ) async throws -> OpenAIResponsesResult {
+        let result = try await respond(
+            input: input,
+            instructions: instructions,
+            tools: tools,
+            executor: executor
+        )
+        await onPartialText(result.text)
+        return result
+    }
+
     func respond(
         input: [OpenAIInputItem],
         instructions: String? = nil

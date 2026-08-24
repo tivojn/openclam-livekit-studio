@@ -949,7 +949,7 @@ struct ConversationView: View {
                 Spacer(minLength: 18)
             }
             .padding(.horizontal, 2)
-            .accessibilityLabel("OpenClaw response in progress")
+            .accessibilityLabel("Assistant response in progress")
             .accessibilityValue(streaming)
             .accessibilityIdentifier("openclam-openclaw-streaming-reply")
         } else if conversation.remoteAgentActivity == nil {

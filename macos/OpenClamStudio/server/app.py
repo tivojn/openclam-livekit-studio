@@ -3422,7 +3422,6 @@ async def api_generated_file(handle: str):
 
 @app.post("/reply")
 async def reply(t: Turn):
-    import media_gen
     cfg = P.load()
     msgs = list(t.history[-12:])
     # The brain has no clock of its own: without this it books "tomorrow"
@@ -3441,6 +3440,24 @@ async def reply(t: Turn):
                 "My model is not answering. Check the provider in Settings.")
     if not text:
         text = "I lost that thread for a second. Say it again?"
+    return await _finish_direct_reply(text, cfg)
+
+
+def _stream_visible_reply(raw_text):
+    """Hide private media directives while their tokens are still arriving."""
+    text = _OWN_TOOL_CALL.sub("", str(raw_text or ""))
+    marker = text.rfind("<<")
+    if marker >= 0:
+        tail = text[marker:].lower()
+        prefixes = ("<<openclam:image", "<<openclam:video")
+        if any(prefix.startswith(tail) for prefix in prefixes) \
+                or tail.startswith("<<openclam:"):
+            text = text[:marker]
+    return text.rstrip()
+
+
+async def _finish_direct_reply(text, cfg):
+    import media_gen
     cards = []
     call = _OWN_TOOL_CALL.search(text)
     if call:
@@ -3467,6 +3484,54 @@ async def reply(t: Turn):
     result["media"] = cards
     result["llm_route"] = P.last_route("llm")
     return result
+
+
+@app.post("/reply/stream")
+async def reply_stream(t: Turn):
+    cfg = P.load()
+    msgs = list(t.history[-12:])
+    now = datetime.datetime.now().astimezone()
+    system = (effective_persona(cfg) + _OWN_TOOLS
+              + "\n\nRIGHT NOW it is " + now.strftime("%A %Y-%m-%dT%H:%M %Z")
+              + ". Compute every relative date from this.")
+
+    async def events():
+        raw_text = ""
+        visible_text = ""
+        try:
+            async for snapshot in P.chat_stream(msgs, cfg["llm"], system=system):
+                raw_text = snapshot
+                visible = _stream_visible_reply(snapshot)
+                if visible and visible != visible_text:
+                    visible_text = visible
+                    yield json.dumps(
+                        {"type": "text", "text": visible},
+                        separators=(",", ":"), ensure_ascii=False,
+                    ) + "\n"
+        except Exception as error:
+            print("[openclam] streamed llm failed:", P.safe_error(error), flush=True)
+            hint = P.failure_hint(error)
+            raw_text = (f"My model is not answering — {hint}. Check the provider in Settings."
+                        if hint else
+                        "My model is not answering. Check the provider in Settings.")
+            visible_text = raw_text
+            yield json.dumps(
+                {"type": "text", "text": visible_text},
+                separators=(",", ":"), ensure_ascii=False,
+            ) + "\n"
+        if not raw_text:
+            raw_text = "I lost that thread for a second. Say it again?"
+        result = await _finish_direct_reply(raw_text, cfg)
+        yield json.dumps(
+            {"type": "complete", **result},
+            separators=(",", ":"), ensure_ascii=False,
+        ) + "\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 class Say(BaseModel):
