@@ -85,7 +85,7 @@ assert.match(electron, /backgroundColor: '#181818'/);
 // The visual rewrite may never turn icon-only desktop controls into unnamed
 // AX nodes, or turn the settings sidebar into an unlabeled row of buttons.
 for (const label of [
-  'Start Live Talk', 'Switch to next avatar', 'Show portrait framing',
+  'Start Live Talk', 'Switch to next avatar', 'Switch to Avatar mode',
   'Choose avatar motion', 'Read latest reply aloud',
   'Bring avatar layer forward', 'Adjust avatar opacity', 'Mirror avatar',
   'Open Character Studio', 'Fold controls', 'Hold to talk', 'Message',

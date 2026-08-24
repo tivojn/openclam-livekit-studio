@@ -105,12 +105,30 @@ assert.match(main, /const CHAT_MODE_MINIMUM = Object\.freeze\(\{ width: 760, hei
   'Chat\/Talk mode must remain a readable full-window surface');
 assert.match(main, /const START_IN_CHAT_MODE = process\.argv\.includes\('--chat'\);/,
   'source runs need an explicit Chat\/Talk launch option');
-assert.match(main, /createMainWindow\(\);\n  if \(START_IN_CHAT_MODE\) setChatMode\(true\);/,
-  'the --chat source launch option must open the normal Chat\/Talk window');
+assert.match(main, /interfaceMode: 'avatar'/,
+  'Avatar and Chat\/Talk must share one persisted mode authority');
+assert.match(main, /state\.interfaceMode = 'chat'/);
+assert.match(main, /state\.interfaceMode = 'avatar'/);
+assert.match(main, /createMainWindow\(\);\n  if \(START_IN_CHAT_MODE \|\| state\.interfaceMode === 'chat'\) setChatMode\(true\);/,
+  'the --chat option or saved mode must open the normal Chat\/Talk window');
+assert.match(main, /title: `\$\{app\.getName\(\)\} · Chat\/Talk`/,
+  'development windows must identify the current source app rather than looking like the mounted release');
+assert.match(main, /mainWindow\.on\('page-title-updated', event => event\.preventDefault\(\)\)/,
+  'renderer page titles must not overwrite the source app identity');
+assert.match(main, /chatWindow\.on\('page-title-updated', event => event\.preventDefault\(\)\)/,
+  'the Chat\/Talk window must retain the source app identity');
 assert.match(main, /function createChatWindow\(\)[\s\S]{0,1000}frame: true,[\s\S]{0,250}transparent: false,[\s\S]{0,350}resizable: true/,
   'Chat\/Talk must be a standard, opaque, resizable macOS application window');
 assert.match(main, /function setChatMode\(value\)[\s\S]{0,900}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,850}mainWindow\.showInactive\(\)/,
   'mode switching must move between the normal chat window and standby companion');
+const avatarMenu = main.match(/function showPetMenu\(\) \{([\s\S]*?)\n\}\n\nfunction createTray/);
+assert.ok(avatarMenu, 'Avatar mode must retain one focused right-click menu');
+for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Moves', 'Character Studio…']) {
+  assert.ok(avatarMenu[1].includes(label), `missing meaningful Avatar menu item: ${label}`);
+}
+for (const retired of ['React', 'Rest', 'Click-Through Gaps', 'Lock Position', 'Always on Top', 'Hide Avatar']) {
+  assert.ok(!avatarMenu[1].includes(retired), `legacy Avatar menu item must stay removed: ${retired}`);
+}
 assert.match(main, /ipcMain\.handle\('openclam:copy-settings-text', writeSettingsClipboard\)/);
 assert.match(main, /if \(!avatarStoreSender\(event\)[\s\S]*clipboard\.writeText\(text\);/,
   'clipboard writes must be settings-only, bounded, and write-only');

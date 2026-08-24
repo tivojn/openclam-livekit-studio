@@ -114,22 +114,25 @@ class WhitePlateMatte(unittest.TestCase):
 
 
 class MoveRuntime(unittest.TestCase):
-    def test_hair_double_tap_and_menu_trigger_the_show(self):
+    def test_moves_remain_explicit_while_avatar_double_click_is_live_talk(self):
         renderer = (ROOT / "web" / "index.html").read_text()
-        self.assertIn("const toggleMove = () => {", renderer)
-        self.assertIn("if (!motion.move)", renderer)
+        self.assertIn("const toggleMove = async () => {", renderer)
+        self.assertIn("if (!await ensureMotion('move')) return", renderer)
         self.assertIn("moveUntil = performance.now()", renderer)
+        self.assertIn("canvas.addEventListener('dblclick', event => {", renderer)
+        self.assertIn("toggleLiveTalk();", renderer)
         self.assertIn(
-            "const action = avatarDoubleClickActionAt({ x: event.clientX, y: event.clientY });",
+            "movesButton.addEventListener('click', () => { void toggleMove(); });",
             renderer,
         )
-        self.assertIn("if (action === 'move') toggleMove();", renderer)
-        self.assertIn("movesButton.addEventListener('click', toggleMove)", renderer)
-        self.assertIn("shell.onPetMoves(toggleMove)", renderer)
+        self.assertIn(
+            "shell.onPetMoves(() => { void toggleMove(); });",
+            renderer,
+        )
         preload = (ROOT / "electron" / "preload.cjs").read_text()
         self.assertIn("pet-moves", preload)
         main = (ROOT / "electron" / "main.cjs").read_text()
-        self.assertIn("name: 'Moves', hint: '2×tap hair'", main)
+        self.assertIn("name: 'Moves', hint: 'play once'", main)
         self.assertIn("pet-moves", main)
 
     def test_left_preview_panel_has_a_moves_tab(self):

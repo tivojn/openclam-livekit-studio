@@ -310,8 +310,11 @@
       white-space: nowrap;
     }
 
-    html.recording #recordingChip { display: flex; }
+    html.recording #recordingChip,
+    #recordingChip[data-visible="true"] { display: flex; }
     #recordingLevel { display: flex; align-items: center; gap: 2px; height: 16px; }
+    #recordingLevel[hidden],
+    #recordingClock[hidden] { display: none; }
     #recordingLevel i { width: 2px; height: 3px; border-radius: 2px; background: currentColor; transition: height 70ms ease; }
 
     #toast {
@@ -694,6 +697,7 @@
     .openclaw-file-card a { color: var(--codex-text); font-size: 11px; }
 
     #composerShell {
+      position: relative;
       margin: 0 8px 8px;
       padding: 8px 10px 7px;
       border: 1px solid var(--codex-border);
@@ -876,6 +880,12 @@
        original transparent companion. Chat/Talk mode is a complete Codex
        Work surface whose avatar and thread remain independent layers. */
     .chat-only-control { display: none; }
+    html:not(.chat-mode) #topline,
+    html:not(.chat-mode) #rail,
+    html:not(.chat-mode) #chatDock,
+    html:not(.chat-mode) #toast,
+    html:not(.chat-mode) .rail-picker,
+    html:not(.chat-mode) .email-review { display: none !important; }
     .rail-picker {
       position: fixed;
       z-index: 54;
@@ -903,6 +913,12 @@
     }
     .rail-picker button:hover { background: var(--codex-hover); color: var(--codex-text); }
     .rail-picker button[aria-checked="true"] { background: var(--codex-pressed); color: var(--codex-text); }
+    .rail-picker button:disabled {
+      color: var(--codex-text-tertiary);
+      cursor: default;
+      opacity: .72;
+    }
+    .rail-picker button:disabled:hover { background: transparent; color: var(--codex-text-tertiary); }
     .opacity-picker { top: 258px; width: 224px; padding: 12px; }
     .opacity-picker label { display: flex; justify-content: space-between; margin-bottom: 10px; color: var(--codex-text-secondary); font-size: 12px; }
     .opacity-picker output { color: var(--codex-text); font-variant-numeric: tabular-nums; }
@@ -920,11 +936,15 @@
     html.chat-mode #stage {
       z-index: 1;
       transform-origin: center center;
-      transition: opacity 140ms ease, filter 160ms ease;
+      transition: opacity 140ms ease, filter 160ms ease, z-index 0s linear 160ms;
     }
     html.chat-mode.avatar-mirrored #stage { transform: scaleX(-1); }
-    html.chat-mode.thread-layer-top #stage { filter: saturate(.92) contrast(.96); }
-    html.chat-mode.avatar-layer-top #stage { filter: none; }
+    html.chat-mode.thread-layer-top #stage { z-index: 1; filter: saturate(.92) contrast(.96); }
+    html.chat-mode.avatar-layer-top #stage {
+      z-index: 32;
+      filter: none;
+      transition-delay: 0s;
+    }
     html.chat-mode #topline {
       z-index: 48;
       top: 64px;
@@ -1016,7 +1036,30 @@
     }
     html.chat-mode #composer { min-height: 48px; max-height: 180px; font-size: 15px; }
     html.chat-mode #composerFooter { min-height: 40px; }
-    html.chat-mode #recordingChip { bottom: 104px; }
+    html.chat-mode #recordingChip {
+      position: static;
+      left: auto;
+      bottom: auto;
+      width: 100%;
+      min-height: 34px;
+      margin: 0 0 6px;
+      transform: none;
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 12px;
+      background: var(--codex-hover);
+      color: var(--codex-text-secondary);
+      box-shadow: none;
+      white-space: normal;
+    }
+    html.chat-mode #recordingChip[data-state="error"] {
+      background: rgba(181, 31, 27, .10);
+      color: #c23b35;
+    }
+    html.chat-mode #recordingChip[data-state="busy"] {
+      background: var(--codex-pressed);
+      color: var(--codex-text-secondary);
+    }
     html.chat-mode #selectionActions { z-index: 70; }
     html.chat-mode.avatar-layer-top #rail,
     html.chat-mode.avatar-layer-top .rail-picker { pointer-events: auto; }
@@ -1176,7 +1219,7 @@
     <button id="avatarCarouselButton" class="round-button" type="button" aria-label="Switch to next avatar" title="Switch to next avatar">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12a2 2 0 0 1 2 2v12h-2V5H5V3Zm-2 4h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Zm0 2v10h12V9H3Zm2 2h8v6H5v-6Z"/></svg>
     </button>
-    <button id="framingButton" class="round-button chat-only-control" type="button" aria-label="Show portrait framing" title="Show portrait framing">
+    <button id="avatarModeButton" class="round-button chat-only-control" type="button" aria-label="Switch to Avatar mode" title="Switch to Avatar mode">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h5v2H5v4H3V4a1 1 0 0 1 1-1Zm11 0h5a1 1 0 0 1 1 1v5h-2V5h-4V3ZM3 15h2v4h4v2H4a1 1 0 0 1-1-1v-5Zm16 0h2v5a1 1 0 0 1-1 1h-5v-2h4v-4ZM12 7a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm-5 10c.35-2.25 2.03-3.5 5-3.5s4.65 1.25 5 3.5H7Z"/></svg>
     </button>
     <button id="motionMenuButton" class="round-button" type="button" aria-expanded="false" aria-controls="motionPicker" aria-label="Choose avatar motion" title="Choose avatar motion">
@@ -1203,8 +1246,8 @@
   </nav>
 
   <div id="motionPicker" class="rail-picker" role="menu" aria-label="Avatar motion" hidden>
-    <button id="walkButton" type="button" role="menuitemcheckbox" aria-checked="false">Walk</button>
-    <button id="edgeIdleButton" type="button" role="menuitemcheckbox" aria-checked="false">Edge idle</button>
+    <button id="walkButton" type="button" role="menuitemcheckbox" aria-checked="false">Horizon Walk</button>
+    <button id="edgeIdleButton" type="button" role="menuitemcheckbox" aria-checked="false">Edge Idle</button>
     <button id="movesButton" type="button" role="menuitemcheckbox" aria-checked="false">Moves</button>
   </div>
   <div id="opacityPanel" class="rail-picker opacity-picker" hidden>
@@ -1228,17 +1271,17 @@
       </div>
       <div id="chatHistoryList" role="list"></div>
     </aside>
-    <div id="recordingChip" role="status" aria-live="polite">
-      <span>Listening</span>
-      <span id="recordingLevel" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-      <span id="recordingClock">0:00.0</span>
-    </div>
     <div id="conversation" role="log" aria-live="polite" aria-relevant="additions"></div>
     <div id="selectionActions" role="toolbar" aria-label="Selected response actions" aria-hidden="true" inert>
       <button id="selectionCopy" class="selection-action" type="button">Copy</button>
       <button id="selectionAskAI" class="selection-action" type="button" aria-keyshortcuts="Meta+Shift+A Control+Shift+A">Ask AI</button>
     </div>
     <div id="composerShell">
+      <div id="recordingChip" role="status" aria-live="polite" data-visible="false" data-state="idle">
+        <span id="recordingLabel">Listening…</span>
+        <span id="recordingLevel" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <span id="recordingClock">0:00.0</span>
+      </div>
       <div id="composerRow">
         <textarea id="composer" rows="1" maxlength="12000" autocomplete="off" dir="auto" aria-label="Message" placeholder="Ask anything…"></textarea>
       </div>
@@ -1292,7 +1335,7 @@
     const rail = document.getElementById('rail');
     const liveButton = document.getElementById('liveTalkButton');
     const avatarCarouselButton = document.getElementById('avatarCarouselButton');
-    const framingButton = document.getElementById('framingButton');
+    const avatarModeButton = document.getElementById('avatarModeButton');
     const motionMenuButton = document.getElementById('motionMenuButton');
     const speakerButton = document.getElementById('speakerButton');
     const layerButton = document.getElementById('layerButton');
@@ -1326,6 +1369,9 @@
     const pttButton = document.getElementById('pttButton');
     const emptyState = document.getElementById('emptyState');
     const toast = document.getElementById('toast');
+    const recordingChip = document.getElementById('recordingChip');
+    const recordingLabel = document.getElementById('recordingLabel');
+    const recordingLevel = document.getElementById('recordingLevel');
     const recordingClock = document.getElementById('recordingClock');
     const recordingBars = [...document.querySelectorAll('#recordingLevel i')];
 
@@ -1339,6 +1385,7 @@
     const visemeImages = new Map();
     const layers = { eyes: {}, gaze: {}, brow: {}, cheek: {}, eyebag: {} };
     const motion = {};
+    const motionLoadTasks = {};
     let assetRevision = Date.now();
     let pixelRatio = 1;
     let shellState = { onBattery: false, pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
@@ -1372,6 +1419,7 @@
     let latestAssistantText = '';
     let opacityGestureValue = null;
     let toastTimer = 0;
+    let dictationStatusTimer = 0;
     let emailReviewState = null;
     let selectedFeedback = null;
     let selectingFeedback = false;
@@ -1809,9 +1857,36 @@
       if (event.key === LIVE_RIG_KEY) syncLiveRigOverride(event.newValue);
     });
 
+    const motionControlSpecs = {
+      walk: { button: walkButton, label: 'Horizon Walk' },
+      idle: { button: edgeIdleButton, label: 'Edge Idle' },
+      move: { button: movesButton, label: 'Moves' },
+    };
+
+    const authoredMotion = kind => Boolean(
+      manifest && manifest.motion && manifest.motion[kind]);
+
+    const updateMotionControlsAvailability = () => {
+      for (const [kind, spec] of Object.entries(motionControlSpecs)) {
+        const authored = authoredMotion(kind);
+        const loaded = Boolean(motion[kind]);
+        spec.button.disabled = !authored;
+        spec.button.textContent = loaded ? spec.label
+          : authored ? `${spec.label} · Retry`
+            : `${spec.label} · Not built`;
+        spec.button.title = loaded ? `Preview ${spec.label}`
+          : authored ? `${spec.label} is available; retry loading it`
+            : `Build ${spec.label} in Character Studio first`;
+      }
+    };
+
     const loadMotion = async kind => {
       const clip = manifest && manifest.motion && manifest.motion[kind];
-      if (!clip) return;
+      if (!clip) {
+        delete motion[kind];
+        updateMotionControlsAvailability();
+        return false;
+      }
       const loaded = { ...clip, sheets: [] };
       if (kind !== 'walk' && clip.alpha_stream) {
         const video = document.createElement('video');
@@ -1858,6 +1933,23 @@
         }
       }
       if (loaded.video || loaded.sheets.length) motion[kind] = loaded;
+      else delete motion[kind];
+      updateMotionControlsAvailability();
+      return Boolean(motion[kind]);
+    };
+
+    const ensureMotion = async kind => {
+      if (motion[kind]) return true;
+      if (!authoredMotion(kind)) {
+        updateMotionControlsAvailability();
+        return false;
+      }
+      if (!motionLoadTasks[kind]) {
+        motionLoadTasks[kind] = loadMotion(kind).finally(() => {
+          delete motionLoadTasks[kind];
+        });
+      }
+      return Boolean(await motionLoadTasks[kind]);
     };
 
     const motionPlaybackProfile = () => {
@@ -1923,7 +2015,11 @@
           layerJobs.push(loadImage(manifest.cutout.src).then(image => { cutoutImage = image; }));
         }
         await Promise.all(layerJobs);
-        await Promise.all(['walk', 'idle', 'move'].map(loadMotion));
+        updateMotionControlsAvailability();
+        // The authored atlas sheets are large. Loading one motion at a time
+        // avoids a transient Chromium image-decoder spike that could leave
+        // Walk missing even though the avatar bundle contains it.
+        for (const kind of ['walk', 'idle', 'move']) await loadMotion(kind);
         publishMotionReadiness();
         ready = true;
         emptyState.classList.remove('show');
@@ -1932,6 +2028,8 @@
         requestAnimationFrame(renderLoop);
       } catch (_) {
         manifest = null;
+        for (const kind of Object.keys(motion)) delete motion[kind];
+        updateMotionControlsAvailability();
         ready = false;
         setAvatarOnlyMotion(false);
         emptyState.classList.add('show');
@@ -2896,10 +2994,9 @@
       if (avatarOnlyMotion) return [];
       const draft = document.querySelector('.email-review');
       if (draft) return [draft];
-      const values = root.classList.contains('chat-mode')
-        ? [rail, motionPicker.hidden ? null : motionPicker,
-          opacityPanel.hidden ? null : opacityPanel]
-        : [liveButton, avatarCarouselButton, motionMenuButton, settingsButton];
+      if (!root.classList.contains('chat-mode')) return [];
+      const values = [rail, motionPicker.hidden ? null : motionPicker,
+        opacityPanel.hidden ? null : opacityPanel];
       if (root.classList.contains('chat-open')
           && !(root.classList.contains('chat-mode') && interactionLayer === 'avatar')) {
         values.push(chatDock);
@@ -3214,16 +3311,16 @@
         && local.y >= face[1] - face[3] * .7 && local.y <= face[1] + face[3] * 1.3;
     };
 
-    const avatarBodyDoubleClickAction = (local, geometry) => {
+    const avatarBodyTapAction = (local, geometry) => {
       if (!local || !geometry) return null;
       const face = geometry.metadata && geometry.metadata.alignment
         && geometry.metadata.alignment.face_bounds;
-      if (!geometry.hasBody || !Array.isArray(face) || face.length < 4) return 'move';
+      if (!geometry.hasBody || !Array.isArray(face) || face.length < 4) return null;
       const headMargin = Number(face[2]) * .45;
       if (local.x >= Number(face[0]) - headMargin
           && local.x <= Number(face[0]) + Number(face[2]) + headMargin
           && local.y >= Number(face[1]) - Number(face[3]) * .7
-          && local.y <= Number(face[1]) + Number(face[3]) * 1.3) return 'move';
+          && local.y <= Number(face[1]) + Number(face[3]) * 1.3) return null;
       const rawBounds = geometry.metadata && geometry.metadata.bounds;
       const bounds = Array.isArray(rawBounds) && rawBounds.length >= 4
         ? rawBounds.map(Number) : [0, 0, geometry.width, geometry.height];
@@ -3233,14 +3330,11 @@
       if (horizontal >= .20 && horizontal <= .80 && vertical >= .20 && vertical < .48) {
         return 'opacity-up';
       }
-      // The lower calf/foot zone owns Opacity −. The upper leg remains the
-      // non-conflicting Horizon Walk gesture advertised by the pet menu.
-      if (vertical >= .76 && vertical <= 1.04) return 'opacity-down';
-      if (vertical >= .48 && vertical < .76) return 'walk';
+      if (vertical >= .48 && vertical <= 1.04) return 'opacity-down';
       return null;
     };
 
-    const avatarDoubleClickActionAt = point => avatarBodyDoubleClickAction(
+    const avatarTapActionAt = point => avatarBodyTapAction(
       avatarLocalPoint(point), lastBodyGeometry);
 
     const steppedAvatarOpacity = (current, direction) => {
@@ -3954,6 +4048,25 @@
 
     const recordingMime = () => ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported(type)) || '';
 
+    const setDictationFeedback = (text = '', state = 'idle', duration = 0) => {
+      clearTimeout(dictationStatusTimer);
+      const message = String(text || '').slice(0, 180);
+      recordingLabel.textContent = message;
+      recordingChip.dataset.state = state;
+      recordingChip.dataset.visible = message ? 'true' : 'false';
+      const listening = state === 'listening';
+      recordingLevel.hidden = !listening;
+      recordingClock.hidden = !listening;
+      if (message && duration > 0) {
+        dictationStatusTimer = setTimeout(() => {
+          recordingChip.dataset.visible = 'false';
+          recordingChip.dataset.state = 'idle';
+          reportControlRects(true);
+        }, duration);
+      }
+      reportControlRects(true);
+    };
+
     async function startRecording() {
       if (avatarOnlyMotion || ptt || live || turnController) return;
       stopSpeech();
@@ -3964,6 +4077,7 @@
       root.classList.add('recording');
       pttButton.classList.add('recording');
       pttButton.setAttribute('aria-label', 'Release to transcribe');
+      setDictationFeedback('Listening…', 'listening');
       setStatus('Listening…', 'live');
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -3981,7 +4095,7 @@
       } catch (error) {
         if (ptt === session) ptt = null;
         finishRecordingUI();
-        notify(`Microphone unavailable: ${String(error.message || error).slice(0, 110)}`);
+        setDictationFeedback(`Microphone unavailable: ${String(error.message || error).slice(0, 110)}`, 'error', 5200);
         setStatus('Ready', 'good');
       }
     }
@@ -3998,24 +4112,27 @@
       }
     }
 
-    const finishRecordingUI = () => {
+    const finishRecordingUI = (preserveFeedback = false) => {
       root.classList.remove('recording');
       pttButton.classList.remove('recording');
       pttButton.setAttribute('aria-label', 'Hold to talk');
       recordingClock.textContent = '0:00.0';
       recordingBars.forEach(bar => { bar.style.height = '3px'; });
+      if (!preserveFeedback) setDictationFeedback();
       reportControlRects(true);
     };
 
     async function transcribeRecording(session) {
       if (ptt === session) ptt = null;
-      finishRecordingUI();
+      finishRecordingUI(true);
       if (session.stream) session.stream.getTracks().forEach(track => track.stop());
       if (session.meterContext) session.meterContext.close().catch(() => {});
       if (session.cancelled || performance.now() - session.started < 220 || !session.chunks.length) {
+        setDictationFeedback();
         setStatus('Ready', 'good');
         return;
       }
+      setDictationFeedback('Transcribing…', 'busy');
       setStatus('Transcribing…', 'busy');
       try {
         const blob = new Blob(session.chunks, { type: session.recorder && session.recorder.mimeType || 'audio/webm' });
@@ -4024,9 +4141,10 @@
         const result = await fetch('/stt', { method: 'POST', body: form }).then(safeJSON);
         const heard = String(result.text || '').trim();
         if (!heard) throw new Error(result.error || 'I did not catch that');
+        setDictationFeedback();
         await submitTurn(heard);
       } catch (error) {
-        notify(`Could not transcribe: ${String(error.message || error).slice(0, 120)}`);
+        setDictationFeedback(`Could not transcribe: ${String(error.message || error).slice(0, 120)}`, 'error', 5200);
         setStatus('Ready', 'good');
       }
     }
@@ -4569,8 +4687,8 @@
       reportControlRects(true);
     }
 
-    const toggleMove = () => {
-      if (!motion.move) { notify('Build a Moves clip in Character Studio first.'); return; }
+    const toggleMove = async () => {
+      if (!await ensureMotion('move')) return;
       if (root.classList.contains('chat-mode')) {
         manualMotionKind = manualMotionKind === 'move' ? null : 'move';
         movesButton.setAttribute('aria-checked', String(manualMotionKind === 'move'));
@@ -4594,7 +4712,7 @@
     };
 
     const toggleWalk = async () => {
-      if (!motion.walk) { notify('Build a Walk clip in Character Studio first.'); return; }
+      if (!await ensureMotion('walk')) return;
       if (root.classList.contains('chat-mode')) {
         manualMotionKind = manualMotionKind === 'walk' ? null : 'walk';
         walkButton.setAttribute('aria-checked', String(manualMotionKind === 'walk'));
@@ -4607,8 +4725,8 @@
       await shell.setPetRoam(!(shellState.pet && shellState.pet.roam));
     };
 
-    const toggleEdgeIdle = () => {
-      if (!motion.idle) { notify('Build an Edge Idle clip in Character Studio first.'); return; }
+    const toggleEdgeIdle = async () => {
+      if (!await ensureMotion('idle')) return;
       manualMotionKind = manualMotionKind === 'idle' ? null : 'idle';
       edgeIdleButton.setAttribute('aria-checked', String(manualMotionKind === 'idle'));
       walkButton.setAttribute('aria-checked', 'false');
@@ -4647,7 +4765,6 @@
       canvas.style.opacity = value.chatMode ? String(opacity) : '1';
       avatarOpacityRange.value = String(Math.round(opacity * 100));
       avatarOpacityValue.textContent = `${Math.round(opacity * 100)}%`;
-      framingButton.setAttribute('aria-pressed', String(pet.view !== 'full'));
       if (value.chatMode) {
         applyInteractionLayer(interactionLayer);
         applyRailFold(railFolded);
@@ -4800,16 +4917,24 @@
       }
       if (event && event.button === 0 && performance.now() - gesture.at < 420) {
         if (root.classList.contains('chat-mode')) return;
+        const action = avatarTapActionAt({ x: gesture.x, y: gesture.y });
+        if (!action) return;
         clearTimeout(avatarTapTimer);
         avatarTapTimer = setTimeout(() => {
           avatarTapTimer = 0;
-          if (root.classList.contains('chat-open')) closeChat(); else openChat(false);
+          if (action === 'opacity-up') void adjustAvatarOpacity(1);
+          else if (action === 'opacity-down') void adjustAvatarOpacity(-1);
         }, 300);
       }
     };
 
     canvas.addEventListener('pointerdown', event => {
-      if (event.button !== 0 || !avatarHit) return;
+      const freshAvatarHit = avatarHit || (root.classList.contains('chat-mode')
+        && interactionLayer === 'avatar' && paintedAvatarAt({
+          x: event.clientX, y: event.clientY, inside: true,
+        }));
+      if (event.button !== 0 || !freshAvatarHit) return;
+      handleGlobalPointer({ x: event.clientX, y: event.clientY, inside: true });
       clearTimeout(avatarTapTimer);
       avatarTapTimer = 0;
       markActivity();
@@ -4870,27 +4995,27 @@
     canvas.addEventListener('dblclick', event => {
       clearTimeout(avatarTapTimer);
       avatarTapTimer = 0;
-      const action = avatarDoubleClickActionAt({ x: event.clientX, y: event.clientY });
-      if (!action) return;
+      if (root.classList.contains('chat-mode') || !paintedAvatarAt({
+        x: event.clientX, y: event.clientY, inside: true,
+      })) return;
       event.preventDefault();
-      markActivity();
-      if (action === 'move') toggleMove();
-      else if (action === 'walk') void toggleWalk();
-      else if (action === 'opacity-up') void adjustAvatarOpacity(1);
-      else if (action === 'opacity-down') void adjustAvatarOpacity(-1);
+      toggleLiveTalk();
     });
     canvas.addEventListener('contextmenu', event => {
+      if (root.classList.contains('chat-mode')) return;
       event.preventDefault();
       if (shell && typeof shell.showPetMenu === 'function') shell.showPetMenu();
     });
 
-    liveButton.addEventListener('click', () => { markActivity(); if (live) stopLiveTalk('ended'); else startLiveTalk(); });
+    const toggleLiveTalk = () => {
+      markActivity();
+      if (live) stopLiveTalk('ended');
+      else startLiveTalk();
+    };
+
+    liveButton.addEventListener('click', toggleLiveTalk);
     avatarCarouselButton.addEventListener('click', cycleAvatar);
-    framingButton.addEventListener('click', async () => {
-      if (!shell || typeof shell.setPetView !== 'function') return;
-      const next = shellState.pet && shellState.pet.view === 'full' ? 'head' : 'full';
-      try { applyShellState(await shell.setPetView(next)); } catch (_) { notify('Could not change framing.'); }
-    });
+    avatarModeButton.addEventListener('click', closeChat);
     motionMenuButton.addEventListener('click', event => {
       event.stopPropagation();
       const next = motionPicker.hidden;
@@ -4899,11 +5024,11 @@
       motionMenuButton.setAttribute('aria-expanded', String(next));
       reportControlRects(true);
     });
-    movesButton.addEventListener('click', toggleMove);
+    movesButton.addEventListener('click', () => { void toggleMove(); });
     movesButton.addEventListener('click', closeRailPickers);
     walkButton.addEventListener('click', toggleWalk);
     walkButton.addEventListener('click', closeRailPickers);
-    edgeIdleButton.addEventListener('click', () => { toggleEdgeIdle(); closeRailPickers(); });
+    edgeIdleButton.addEventListener('click', () => { void toggleEdgeIdle(); closeRailPickers(); });
     speakerButton.addEventListener('click', () => {
       if (latestAssistantText) void readAloud(latestAssistantText);
       else notify('There is no assistant reply to read yet.');
@@ -5058,9 +5183,9 @@
         roamPresentationKey = nextPresentationKey;
         roamState = nextRoamState;
       });
-      if (typeof shell.onPetMoves === 'function') shell.onPetMoves(toggleMove);
+      if (typeof shell.onPetMoves === 'function') shell.onPetMoves(() => { void toggleMove(); });
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
-      if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(() => { if (live) stopLiveTalk('ended'); else startLiveTalk(); });
+      if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(toggleLiveTalk);
     } else {
       root.classList.add('chat-open');
     }

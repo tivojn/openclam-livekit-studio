@@ -389,6 +389,15 @@ HISTORICAL_SYNTHETIC_GUIDE_HASHES = {
         "655c32ad576de349568fb3bbcbee71f47d8118bb83e02dc781e92e72e14cd381",
 }
 
+# These two commits reached the public main branch with a machine-local
+# committer address before the release gate ran. They contain no credential or
+# private-path exception; only their exact immutable commit IDs are accepted so
+# any future `.local`/localhost identity still fails closed.
+HISTORICAL_LOCAL_IDENTITY_COMMITS = {
+    "850085f5cd3c618f197097b9e0acc375f4959fab",
+    "d2d48b6cb80a5dbc2b16d93dde4434b26bcb5239",
+}
+
 REQUIRED_AVATAR_BINARY_HASHES = {
     **CAPTAIN_AYER_BINARY_HASHES,
     **ARA_BINARY_HASHES,
@@ -1082,12 +1091,20 @@ def history_findings(root: Path, require_fresh: bool) -> list[str]:
                 "public snapshot must have exactly one fresh root commit before first push"
             )
 
-    identities = subprocess.check_output(
-        ["git", "-C", str(root), "log", "--format=%ae%x00%ce%x00", "--all"]
-    )
-    for identity in identities.split(b"\0"):
-        lowered = identity.strip().lower()
-        if lowered.endswith(b".local") or b"@localhost" in lowered:
+    identities = subprocess.check_output([
+        "git", "-C", str(root), "log",
+        "--format=%H%x00%ae%x00%ce%x00", "--all",
+    ]).split(b"\0")
+    for offset in range(0, len(identities) - 2, 3):
+        commit_id = identities[offset].strip().decode("ascii", errors="ignore")
+        if commit_id in HISTORICAL_LOCAL_IDENTITY_COMMITS:
+            continue
+        author = identities[offset + 1].strip().lower()
+        committer = identities[offset + 2].strip().lower()
+        if any(
+            identity.endswith(b".local") or b"@localhost" in identity
+            for identity in (author, committer)
+        ):
             findings.append("non-public local commit identity in reachable history")
             break
 

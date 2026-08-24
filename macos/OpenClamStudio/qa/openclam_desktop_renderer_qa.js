@@ -41,15 +41,19 @@ assert.doesNotMatch(source, /navigator\.userAgent/);
 assert.equal((source.match(/id="liveTalkButton"/g) || []).length, 1);
 assert.match(source, /data-state="idle" aria-label="Start Live Talk"/);
 assert.match(source, /setLiveButton\('connected'\)/);
-assert.match(source, /if \(live\) stopLiveTalk\('ended'\); else startLiveTalk\(\)/);
+assert.match(source, /const toggleLiveTalk = \(\) => \{[\s\S]{0,120}if \(live\) stopLiveTalk\('ended'\);[\s\S]{0,80}else startLiveTalk\(\);/);
 
 // The old rail chat shortcut is now a local avatar carousel. Chat/PTT remains
 // discoverable before an avatar exists through the canvas/menu and the empty
 // card, without creating another Live Talk surface.
 assert.equal((source.match(/id="avatarCarouselButton"/g) || []).length, 1);
+assert.equal((source.match(/id="avatarModeButton"/g) || []).length, 1);
 assert.equal((source.match(/id="chatButton"/g) || []).length, 0);
 assert.equal((source.match(/id="emptyChat"/g) || []).length, 1);
 assert.match(source, /aria-label="Switch to next avatar"/);
+assert.match(source, /aria-label="Switch to Avatar mode"/);
+assert.match(source, /html:not\(\.chat-mode\) #topline,[\s\S]{0,220}html:not\(\.chat-mode\) #rail,[\s\S]{0,280}display: none !important;/,
+  'Avatar mode must be one pure avatar surface without chat status or rail chrome');
 assert.match(source, /Chat &amp; Push to Talk/);
 assert.match(source, /#emptyState \{[\s\S]{0,100}z-index: 25;/);
 assert.match(source, /#chatDock \{[\s\S]{0,100}z-index: 35;/);
@@ -78,6 +82,25 @@ assert.match(composerRowRule, /border:\s*0;/);
 assert.match(composerRowRule, /background:\s*transparent;/);
 assert.match(composerRowRule, /box-shadow:\s*none;/,
   'the textarea row must not draw a second shell inside the composer');
+const composerShellMarkup = source.indexOf('<div id="composerShell">');
+const recordingChipMarkup = source.indexOf('<div id="recordingChip"');
+const composerRowMarkup = source.indexOf('<div id="composerRow">');
+assert.ok(composerShellMarkup >= 0 && recordingChipMarkup > composerShellMarkup
+  && recordingChipMarkup < composerRowMarkup,
+  'push-to-talk state must live inside the composer rather than floating over the avatar');
+assert.match(source, /html\.chat-mode #recordingChip \{[\s\S]{0,420}position:\s*static;[\s\S]{0,420}background:\s*var\(--codex-hover\);/,
+  'chat-mode dictation feedback must be an integrated neutral composer row');
+assert.match(source, /setDictationFeedback\('Transcribing…', 'busy'\)/);
+assert.match(source, /setDictationFeedback\(`Could not transcribe:[\s\S]{0,140}'error', 5200\)/,
+  'speech recognition failures must remain inside the composer');
+assert.doesNotMatch(source, /notify\(`Could not transcribe:/,
+  'speech recognition failures must not cover the avatar with a global dark toast');
+assert.match(source, /html\.chat-mode\.avatar-layer-top #stage \{[\s\S]{0,120}z-index:\s*32;/,
+  'the avatar layer must actually composite above the thread at full opacity');
+assert.match(source, /html\.chat-mode\.thread-layer-top #stage \{\s*z-index:\s*1;/,
+  'thread-first mode must return the avatar beneath the scroll surface');
+assert.match(source, /canvas\.addEventListener\('pointerdown', event => \{[\s\S]{0,300}interactionLayer === 'avatar'[\s\S]{0,180}paintedAvatarAt\(/,
+  'avatar-first vertical gestures must freshly hit-test the visible avatar before starting');
 assert.match(source, /#conversation \{[\s\S]{0,180}height: min\(64dvh, 680px\);/,
   'Open conversation history must expose a full Work-style scrolling thread');
 assert.match(source, /#chatDock:has\(#conversation:not\(:empty\)\)/,
@@ -532,6 +555,14 @@ assert.match(source, /const blink = blinkAmount\(now, reducedMotion\.matches\);/
 // Horizon Walk and either Edge Idle road are avatar-only presentation states.
 // A rendered frame is the authority: missing assets/failures restore the UI,
 // and Moves deliberately keeps the controls visible.
+assert.match(source, /for \(const kind of \['walk', 'idle', 'move'\]\) await loadMotion\(kind\);/,
+  'large motion atlases must load sequentially so one decode spike cannot silently drop Walk');
+assert.match(source, /const ensureMotion = async kind => \{/);
+assert.match(source, /spec\.button\.disabled = !authored;/,
+  'a motion not authored for this avatar must be disabled in its own menu');
+assert.match(source, /`\$\{spec\.label\} · Not built`/);
+assert.doesNotMatch(source, /notify\('Build an? (?:Walk|Edge Idle|Moves) clip/,
+  'motion capability feedback belongs inside its picker, never in an avatar-covering dark toast');
 assert.match(source, /html\.avatar-only-motion #rail[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
 assert.match(source, /html\.avatar-only-motion #chatDock,[\s\S]{0,220}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
 assert.match(source, /html\.avatar-only-motion #emptyState[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
@@ -1153,29 +1184,29 @@ assert.match(source, /publishAvatarZoom\('move'\)/);
 assert.match(source, /publishAvatarZoom\('end'\)/);
 assert.match(source, /canvas\.addEventListener\('wheel', handleAvatarPinch, \{ passive: false \}\)/);
 
-// Double-click affordances use source-body regions only after the exact
-// canvas pixel passes alpha hit-testing: head = Moves, chest = Opacity +,
-// upper leg = Walk, and lower calf/foot = Opacity −.
-const avatarDoubleClickSource = inline[1].match(
-  /(const avatarBodyDoubleClickAction = \(local, geometry\) => \{[\s\S]*?\n    \};)/,
+// A single painted-body tap keeps the two direct opacity gestures: chest
+// raises opacity and the lower body lowers it. Head gestures are reserved for
+// hold-to-PTT and double-click Live Talk, while motion lives in the menu.
+const avatarTapSource = inline[1].match(
+  /(const avatarBodyTapAction = \(local, geometry\) => \{[\s\S]*?\n    \};)/,
 );
-assert.ok(avatarDoubleClickSource, 'body-relative double-click policy must remain independently testable');
-const avatarBodyDoubleClickAction = new Function(
-  `'use strict'; ${avatarDoubleClickSource[1]}; return avatarBodyDoubleClickAction;`,
+assert.ok(avatarTapSource, 'body-relative tap policy must remain independently testable');
+const avatarBodyTapAction = new Function(
+  `'use strict'; ${avatarTapSource[1]}; return avatarBodyTapAction;`,
 )();
 const clickGeometry = {
   hasBody: true, width: 100, height: 100,
   metadata: { bounds: [20, 0, 60, 100], alignment: { face_bounds: [40, 5, 20, 20] } },
 };
-assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 10 }, clickGeometry), 'move');
-assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 35 }, clickGeometry), 'opacity-up');
-assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 60 }, clickGeometry), 'walk');
-assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 90 }, clickGeometry), 'opacity-down');
-assert.equal(avatarBodyDoubleClickAction({ x: 10, y: 35 }, clickGeometry), null,
+assert.equal(avatarBodyTapAction({ x: 50, y: 10 }, clickGeometry), null);
+assert.equal(avatarBodyTapAction({ x: 50, y: 35 }, clickGeometry), 'opacity-up');
+assert.equal(avatarBodyTapAction({ x: 50, y: 60 }, clickGeometry), 'opacity-down');
+assert.equal(avatarBodyTapAction({ x: 50, y: 90 }, clickGeometry), 'opacity-down');
+assert.equal(avatarBodyTapAction({ x: 10, y: 35 }, clickGeometry), null,
   'an arm-height click outside the chest must not change opacity');
-assert.equal(avatarBodyDoubleClickAction({ x: 50, y: 10 }, {
+assert.equal(avatarBodyTapAction({ x: 50, y: 10 }, {
   ...clickGeometry, hasBody: false,
-}), 'move', 'a face-only avatar keeps the head gesture');
+}), null, 'a face-only avatar reserves its surface for PTT and Live Talk');
 const steppedOpacitySource = inline[1].match(
   /(const steppedAvatarOpacity = \(current, direction\) => \{[\s\S]*?\n    \};)/,
 );
@@ -1191,13 +1222,17 @@ assert.equal(steppedAvatarOpacity(.03, -1), 0);
 assert.equal(steppedAvatarOpacity(0, -1), 0);
 assert.match(source, /if \(!geometry \|\| !paintedAvatarAt\(\{ \.\.\.point, inside: true \}\)\) return null;/,
   'transparent gaps must never acquire a body-region gesture');
-assert.match(source, /else if \(action === 'opacity-up'\) void adjustAvatarOpacity\(1\);/);
+assert.match(source, /if \(action === 'opacity-up'\) void adjustAvatarOpacity\(1\);/);
 assert.match(source, /else if \(action === 'opacity-down'\) void adjustAvatarOpacity\(-1\);/);
 assert.match(source, /const state = await shell\.setPetOpacity\(next\);/);
 assert.match(source, /canvas\.addEventListener\('dblclick', event => \{\n      clearTimeout\(avatarTapTimer\);/,
-  'the first click must not open and resize chat underneath a double-click gesture');
-assert.match(source, /avatarTapTimer = setTimeout\(\(\) => \{[\s\S]{0,180}openChat\(false\);[\s\S]{0,80}\}, 300\);/,
-  'an ordinary body click must still open chat after the double-click arbitration window');
+  'the first opacity tap must not fire beneath a double-click Live Talk gesture');
+assert.match(source, /canvas\.addEventListener\('dblclick',[\s\S]{0,360}paintedAvatarAt\([\s\S]{0,180}toggleLiveTalk\(\);/,
+  'double-clicking any painted avatar pixel must own Live Talk');
+assert.match(source, /if \(pointOnHead\([\s\S]{0,260}startRecording\(\);/,
+  'holding the avatar head must retain push to talk');
+assert.doesNotMatch(source, /avatarTapTimer = setTimeout\(\(\) => \{[\s\S]{0,180}openChat\(false\);/,
+  'a body tap must no longer expose chat chrome in pure Avatar mode');
 
 // Transparent-window behavior stays explicit and bounded to local shell APIs.
 for (const bridge of [

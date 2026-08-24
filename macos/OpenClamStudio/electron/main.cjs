@@ -685,6 +685,7 @@ async function startBackend() {
 
 function defaultState() {
   return {
+    interfaceMode: 'avatar',
     alwaysOnTop: true,
     petMode: true,
     petOpacity: 1,
@@ -752,6 +753,7 @@ function loadState() {
     next.petZoom = clampPetZoom(next.petZoom, PET_ZOOM_RANGE);
     next.petRoamZoom = clampPetZoom(next.petRoamZoom, PET_ROAM_ZOOM_RANGE);
     next.petView = PET_VIEWS.has(next.petView) ? next.petView : defaults.petView;
+    next.interfaceMode = next.interfaceMode === 'chat' ? 'chat' : 'avatar';
     next.petRoam = Boolean(next.petRoam);
     next.petHomeBounds = next.petHomeBounds && typeof next.petHomeBounds === 'object'
       ? next.petHomeBounds : null;
@@ -844,6 +846,7 @@ function setChatMode(value) {
       state.petHomeBounds = null;
     }
     chatMode = true;
+    state.interfaceMode = 'chat';
     preDockBounds = null;
     mainWindow.hide();
     createChatWindow();
@@ -854,6 +857,7 @@ function setChatMode(value) {
     app.focus({ steal: true });
   } else {
     chatMode = false;
+    state.interfaceMode = 'avatar';
     if (chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
     applyPetZoom(state.petZoom);
     mainWindow.setOpacity(state.petOpacity > 0 ? state.petOpacity : 0.5);
@@ -1869,7 +1873,7 @@ function createBuddyWindow(slug) {
     fullscreenable: false,
     skipTaskbar: true,
     acceptFirstMouse: true,
-    title: APP_NAME,
+    title: app.getName(),
     webPreferences: {
       backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.cjs'),
@@ -1882,6 +1886,7 @@ function createBuddyWindow(slug) {
       spellcheck: false,
     },
   });
+  buddyWindow.on('page-title-updated', event => event.preventDefault());
   buddyWindow.setOpacity(buddyOpacityValue() > 0 ? buddyOpacityValue() : 0.5);
   setBuddyHit(false);
   applyPetWindowLevel(buddyWindow, buddyRoam);
@@ -2181,7 +2186,7 @@ function createAppearanceWindow() {
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    title: `${APP_NAME} Appearance`,
+    title: `${app.getName()} Appearance`,
     webPreferences: {
       preload: path.join(__dirname, 'appearance-preload.cjs'),
       contextIsolation: true,
@@ -2241,7 +2246,7 @@ function createChatWindow() {
     fullscreenable: true,
     skipTaskbar: false,
     acceptFirstMouse: true,
-    title: `${APP_NAME} · Chat/Talk`,
+    title: `${app.getName()} · Chat/Talk`,
     webPreferences: {
       backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.cjs'),
@@ -2254,6 +2259,7 @@ function createChatWindow() {
       spellcheck: true,
     },
   });
+  chatWindow.on('page-title-updated', event => event.preventDefault());
   guardNavigation(chatWindow, 'main');
   chatWindow.loadURL(`${baseUrl()}/?electron=1&chat=1&app=${encodeURIComponent(app.getVersion())}`);
   chatWindow.once('ready-to-show', () => {
@@ -2293,7 +2299,7 @@ function createMainWindow() {
     fullscreenable: false,
     skipTaskbar: true,
     acceptFirstMouse: true,
-    title: APP_NAME,
+    title: app.getName(),
     webPreferences: {
       backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.cjs'),
@@ -2306,6 +2312,7 @@ function createMainWindow() {
       spellcheck: false,
     },
   });
+  mainWindow.on('page-title-updated', event => event.preventDefault());
   mainWindow.setOpacity(state.petOpacity > 0 ? state.petOpacity : 0.5);
   petPointerInteractive = null;
   setPetHit(false);
@@ -2473,7 +2480,7 @@ function openSettings() {
     minWidth: 760,
     minHeight: 620,
     show: false,
-    title: `${APP_NAME} Settings`,
+    title: `${app.getName()} Settings`,
     backgroundColor: '#181818',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -2585,45 +2592,26 @@ function showPetMenu() {
   showMenuWindow([
     { name: 'Open Chat/Talk', hint: 'full conversation workspace',
       click: showChat },
-    { name: liveTalkActive ? 'End live talk' : 'Live talk',
-      hint: liveTalkActive ? 'hang up now' : 'realtime voice',
+    { name: liveTalkActive ? 'End Live Talk' : 'Live Talk',
+      hint: liveTalkActive ? 'hang up now' : 'double-click avatar',
       click: () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           post(mainWindow, 'openclam:live-toggle');
         }
       } },
     { type: 'separator' },
-    { name: state.petRoam ? 'Walking' : 'Walk',
+    { name: state.petRoam ? 'Stop Horizon Walk' : 'Horizon Walk',
       hint: !petMotionReady ? 'generate first'
-        : state.petRoam ? 'hover to stop' : '2×tap leg',
+        : state.petRoam ? 'return to standing' : 'cross the desktop',
       type: 'checkbox', checked: state.petRoam, enabled: petMotionReady,
       click: () => applyPetRoam(!state.petRoam) },
-    { name: 'Moves', hint: '2×tap hair', click: () => {
+    { name: 'Moves', hint: 'play once', click: () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         post(mainWindow, 'openclam:pet-moves');
       }
     } },
-    { name: 'React', hint: 'tap arm or chest', enabled: false },
-    { name: 'Rest', hint: 'still for 10s', enabled: false },
-    { type: 'separator' },
-    { name: 'Opacity +', hint: '2×tap chest',
-      click: () => applyPetOpacity(Math.min(1, state.petOpacity + 0.12)) },
-    { name: 'Opacity −', hint: '2×tap foot',
-      click: () => applyPetOpacity(Math.max(0.15, state.petOpacity - 0.12)) },
-    { name: 'Size & Opacity…', click: showAppearanceWindow },
-    { name: 'View', enabled: !state.petRoam, submenu: petViewItems() },
-    { type: 'separator' },
-    { name: 'Click-Through Gaps', type: 'checkbox', checked: state.petClickThrough,
-      click: () => applyPetClickThrough(!state.petClickThrough) },
-    { name: 'Lock Position', type: 'checkbox', checked: state.petLocked,
-      enabled: !state.petRoam, click: () => applyPetLock(!state.petLocked) },
-    { name: 'Always on Top', type: 'checkbox', checked: state.alwaysOnTop,
-      click: () => applyAlwaysOnTop(!state.alwaysOnTop) },
     { type: 'separator' },
     { name: 'Character Studio…', click: openSettings },
-    { name: 'Check for Updates…', click: () => { void checkForUpdates(true); } },
-    { name: 'Hide Avatar', click: () => mainWindow.hide() },
-    { name: `Quit ${APP_NAME}`, click: () => app.quit() },
   ], () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const point = screen.getCursorScreenPoint();
@@ -2639,7 +2627,7 @@ function showPetMenu() {
 
 function createTray() {
   tray = new Tray(trayImage());
-  tray.setToolTip(APP_NAME);
+  tray.setToolTip(app.getName());
   tray.on('click', () => {
     const activeWindow = chatMode ? chatWindow : mainWindow;
     if (activeWindow && activeWindow.isVisible()) activeWindow.hide();
@@ -3283,7 +3271,7 @@ async function boot() {
   installRequestAuthentication();
   installPermissions();
   createMainWindow();
-  if (START_IN_CHAT_MODE) setChatMode(true);
+  if (START_IN_CHAT_MODE || state.interfaceMode === 'chat') setChatMode(true);
   createTray();
   installRecoveryShortcut();
   scheduleUpdateChecks();
