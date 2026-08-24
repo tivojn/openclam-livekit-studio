@@ -1555,7 +1555,8 @@
     const motionLoadTasks = {};
     let assetRevision = Date.now();
     let pixelRatio = 1;
-    let shellState = { onBattery: false, pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
+    let shellState = { onBattery: false, chatCloseUp: false, desktopCloseUp: false,
+      pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
     let roamState = { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
     let roamPresentationKey = '';
     let moveUntil = 0;
@@ -1763,7 +1764,8 @@
       lastActivity = performance.now();
       if (idleDocked) {
         idleDocked = false;
-        if (shell && typeof shell.undockPet === 'function') shell.undockPet();
+        if (!root.classList.contains('chat-mode')
+            && shell && typeof shell.undockPet === 'function') shell.undockPet();
       }
     };
 
@@ -2318,16 +2320,38 @@
       return { x: full.x, y: full.y, w: full.w, h: Math.max(1, full.h * portion) };
     };
 
+    const chatCloseUpGeometry = (crop, viewportWidth, viewportHeight, zoom = 1) => {
+      const safeWidth = Math.max(1, Number(viewportWidth) || 1);
+      const safeHeight = Math.max(1, Number(viewportHeight) || 1);
+      const targetWidth = Math.max(240, safeWidth * .4);
+      const targetHeight = Math.max(300, safeHeight * .72);
+      const adjustment = Math.max(.9, Math.min(1.25, Number(zoom) || 1));
+      const scale = Math.min(targetWidth / crop.w, targetHeight / crop.h) * adjustment;
+      const rightOverflow = crop.w * scale * .035;
+      const bottomOverflow = crop.h * scale * .08;
+      return {
+        scale,
+        x: safeWidth + rightOverflow - (crop.x + crop.w) * scale,
+        y: safeHeight + bottomOverflow - (crop.y + crop.h) * scale,
+        crop,
+      };
+    };
+
     const cameraFor = (meta, width, height, forcedView = null) => {
-      const crop = viewCrop(meta, width, height, forcedView);
       const fullChat = root.classList.contains('chat-mode');
+      const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
+      if ((fullChat && shellState.chatCloseUp)
+          || (!fullChat && shellState.desktopCloseUp)) {
+        const closeUpCrop = viewCrop(meta, width, height, 'bust');
+        return chatCloseUpGeometry(closeUpCrop, innerWidth, innerHeight, 1);
+      }
+      const crop = viewCrop(meta, width, height, forcedView);
       const chatReserve = root.classList.contains('chat-open') && !fullChat
         && !(shellState.pet && shellState.pet.roam)
         ? Math.min(innerHeight * .38, chatDock.getBoundingClientRect().height + 24) : 0;
       const availableHeight = Math.max(160, innerHeight - chatReserve);
       const margin = shellState.pet && shellState.pet.roam ? .995 : .94;
       const baseScale = Math.min(innerWidth / crop.w, availableHeight / crop.h) * margin;
-      const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
       const chatZoom = fullChat
         ? Math.max(.42, Math.min(2.4, (Number.isFinite(requestedZoom) ? requestedZoom : .6) / .6))
         : 1;
@@ -2361,11 +2385,9 @@
       return current + (next - current) * fraction;
     };
 
-    const chatWindowMotionFit = (kind, meta, width, height, now, clip = null) => {
+    const chatWindowMotionFit = (kind, meta, width, height, now, clip = null, edge = 'right') => {
       const crop = viewCrop(meta, width, height, 'full');
-      const composerTop = composerShell && composerShell.getBoundingClientRect().top;
-      const floor = Math.max(190, Number.isFinite(composerTop) && composerTop > 0
-        ? composerTop - 18 : innerHeight - 164);
+      const floor = Math.max(190, innerHeight - 4);
       const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
       const zoom = Math.max(.45, Math.min(2.4,
         (Number.isFinite(requestedZoom) ? requestedZoom : .6) / .6));
@@ -2378,7 +2400,7 @@
       let direction = -1;
       let phase = null;
       if (kind === 'idle') {
-        figureLeft = Math.max(left, innerWidth - 3 - crop.w * scale);
+        figureLeft = edge === 'left' ? 3 : innerWidth - 3 - crop.w * scale;
       }
       if (kind === 'walk') {
         const motionNow = canvasGesture && canvasGesture.positionAdjusting
@@ -2398,7 +2420,8 @@
         direction = bounced <= span ? 1 : -1;
         figureLeft = left + (bounced <= span ? bounced : span * 2 - bounced);
       }
-      const offset = boundedChatAvatarOffset(chatAvatarOffset);
+      const offset = kind === 'idle' ? { x: 0, y: 0 }
+        : boundedChatAvatarOffset(chatAvatarOffset);
       return {
         scale,
         x: figureLeft - crop.x * scale + offset.x,
@@ -3012,14 +3035,17 @@
     const drawMotion = (kind, now, edge = null) => {
       const clip = motion[kind];
       if (!clip) return false;
-      const chatScoped = root.classList.contains('chat-mode') && manualMotionKind === kind;
-      const displayEdge = chatScoped && kind === 'idle' ? 'right' : edge;
+      const chatScoped = root.classList.contains('chat-mode')
+        && (manualMotionKind === kind
+          || (kind === 'idle' && (edge === 'left' || edge === 'right')));
+      const displayEdge = chatScoped && kind === 'idle'
+        ? (edge === 'left' ? 'left' : 'right') : edge;
       const presentationKey = beginMotionPresentation(kind, displayEdge, clip);
       const width = Number(clip.frame_width) || 720;
       const height = Number(clip.frame_height) || 1088;
       const metadata = { bounds: clip.bounds || [0, 0, width, height] };
       const fit = chatScoped && (kind === 'walk' || kind === 'idle')
-        ? chatWindowMotionFit(kind, metadata, width, height, now, clip)
+        ? chatWindowMotionFit(kind, metadata, width, height, now, clip, displayEdge)
         : cameraFor(metadata, width, height, 'full');
       const direction = chatScoped && kind === 'walk'
         ? fit.direction : Number(roamState.direction) || 1;
@@ -3032,11 +3058,18 @@
       let x = fit.x;
       if (chatScoped && kind === 'idle') {
         const anchors = clip.edge_anchors || {};
-        const frameAnchors = Array.isArray(anchors.right_frames) ? anchors.right_frames : [];
+        const frameAnchors = Array.isArray(anchors[`${displayEdge}_frames`])
+          ? anchors[`${displayEdge}_frames`] : [];
         const support = Number(frameAnchors[frame ? frame.index : 0]);
-        const rightSupport = Number.isFinite(support) ? support
-          : Number(anchors.right) || Number(fit.crop.x + fit.crop.w);
-        x = innerWidth - 3 - rightSupport * fit.scale + fit.offset.x;
+        if (displayEdge === 'left') {
+          const leftSupport = Number.isFinite(support) ? support
+            : Number(anchors.left) || Number(fit.crop.x);
+          x = 3 - leftSupport * fit.scale;
+        } else {
+          const rightSupport = Number.isFinite(support) ? support
+            : Number(anchors.right) || Number(fit.crop.x + fit.crop.w);
+          x = innerWidth - 3 - rightSupport * fit.scale;
+        }
       }
       if (kind === 'idle' && displayEdge && !freeIdle && !chatScoped) {
         const anchors = clip.edge_anchors || {};
@@ -3127,8 +3160,10 @@
         bounds: manifest.cutout && manifest.cutout.bounds || [0, 0, width, height],
         alignment: { face_bounds: [width * .2, height * .08, width * .6, height * .64] },
       };
-      const fit = presentation === 'chat-edge-idle'
-        ? chatWindowMotionFit('idle', metadata, width, height, now, null)
+      const chatIdleEdge = presentation === 'chat-edge-idle-left' ? 'left'
+        : presentation === 'chat-edge-idle-right' ? 'right' : null;
+      const fit = chatIdleEdge
+        ? chatWindowMotionFit('idle', metadata, width, height, now, null, chatIdleEdge)
         : cameraFor(metadata, width, height);
       const bounds = metadata.bounds || [0, 0, width, height];
       const pivotX = bounds[0] + bounds[2] * .5;
@@ -3142,7 +3177,8 @@
       context.save();
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * fit.x, pixelRatio * fit.y);
       context.translate(pivotX, pivotY);
-      context.rotate(sway + (presentation === 'chat-edge-idle' ? -.018 : 0));
+      context.rotate(sway + (chatIdleEdge === 'left' ? .018
+        : chatIdleEdge === 'right' ? -.018 : 0));
       context.scale(breathe, 1);
       context.translate(-pivotX, -pivotY);
       context.drawImage(image, 0, 0, width, height);
@@ -3158,9 +3194,14 @@
       lastBodyGeometry = { fit, width, height, metadata, pivotX, pivotY, sway, breathe, hasBody };
     };
 
-    const edgeIdleActive = now => Boolean(motion.idle && !roamState.enabled
-      && !root.classList.contains('chat-open') && !speechSource && !agentSpeaking
-      && now - lastActivity > 12000);
+    const chatStandbyEdge = value => Number(value && value.x) < 0 ? 'left' : 'right';
+    const standbyIdleDelay = inChat => inChat ? 10000 : 12000;
+    const edgeIdleActive = now => {
+      const inChat = root.classList.contains('chat-mode');
+      return Boolean((motion.idle || inChat) && !roamState.enabled
+        && !speechSource && !agentSpeaking && !live && !ptt && !turnController
+        && now - lastActivity > standbyIdleDelay(inChat));
+    };
 
     const roamMotionKind = (mode, presentationMode = null) => {
       const presented = mode === 'stand' ? String(presentationMode || 'walk') : String(mode || '');
@@ -3196,7 +3237,7 @@
         if (root.classList.contains('chat-mode') && manualMotionKind === 'idle') {
           endMotionPresentation();
           setAvatarOnlyMotion(false);
-          drawAvatar(now, 'chat-edge-idle');
+          drawAvatar(now, `chat-edge-idle-${chatStandbyEdge(chatAvatarOffset)}`);
           return;
         }
         manualMotionKind = null;
@@ -3215,14 +3256,25 @@
         movesButton.classList.remove('showing');
       }
       if (edgeIdleActive(now)) {
+        const inChat = root.classList.contains('chat-mode');
+        const idleEdge = inChat ? chatStandbyEdge(chatAvatarOffset) : side;
         if (!idleDocked) {
           idleDocked = true;
-          if (shell && typeof shell.dockPet === 'function') shell.dockPet();
+          if (!inChat && shell && typeof shell.dockPet === 'function') shell.dockPet();
         }
-        if (drawPresentedMotion('idle', now, side)) return;
+        if (inChat) {
+          const rendered = motion.idle && drawMotion('idle', now, idleEdge);
+          setAvatarOnlyMotion(false);
+          if (rendered) return;
+          endMotionPresentation();
+          drawAvatar(now, `chat-edge-idle-${idleEdge}`);
+          return;
+        }
+        if (drawPresentedMotion('idle', now, idleEdge)) return;
       } else if (idleDocked) {
         idleDocked = false;
-        if (shell && typeof shell.undockPet === 'function') shell.undockPet();
+        if (!root.classList.contains('chat-mode')
+          && shell && typeof shell.undockPet === 'function') shell.undockPet();
       }
       endMotionPresentation();
       setAvatarOnlyMotion(false);
@@ -3266,7 +3318,7 @@
           Boolean(motion.move && motion.move.video && motion.move.video.ended));
       }
       if (edgeIdleActive(now)) {
-        return motionFrameDelay(motion.idle, false);
+        return motion.idle ? motionFrameDelay(motion.idle, false) : 32;
       }
       if (dragging || avatarZoomGesture) return 16;
       const active = speechSource || hasAttachedAgentAudio() || agentSpeaking || ptt;
@@ -3382,7 +3434,7 @@
       const hit = dragging || Boolean(ptt) || Boolean(avatarZoomGesture) || chromeHit || figureHit;
       avatarHit = figureHit;
       root.classList.toggle('avatar-hover', figureHit);
-      if (hit) markActivity();
+      if (hit && !root.classList.contains('chat-mode')) markActivity();
       const now = performance.now();
       if (hit !== petHit || force || now - lastHitSent > 550) {
         petHit = hit;
@@ -5401,6 +5453,8 @@
 
     const applyShellState = value => {
       if (!value || typeof value !== 'object') return;
+      const closeUpChanged = Boolean(value.chatCloseUp) !== Boolean(shellState.chatCloseUp)
+        || Boolean(value.desktopCloseUp) !== Boolean(shellState.desktopCloseUp);
       shellState = value;
       const pet = value.pet || {};
       root.classList.toggle('chat-mode', Boolean(value.chatMode));
@@ -5416,6 +5470,15 @@
       if (value.chatMode) {
         applyInteractionLayer(interactionLayer);
         applyRailFold(railFolded);
+      }
+      if (closeUpChanged) {
+        manualMotionKind = null;
+        manualMotionStartedAt = 0;
+        walkButton.setAttribute('aria-checked', 'false');
+        edgeIdleButton.setAttribute('aria-checked', 'false');
+        movesButton.setAttribute('aria-checked', 'false');
+        markActivity();
+        lastFrame = 0;
       }
       if (motion.walk) publishMotionReadiness();
     };
@@ -5439,7 +5502,10 @@
           // its fast gaze-settling lane. Only real pointer motion renews it.
           at: changed ? performance.now() : pointer.at,
         };
-        if (changed) lastFrame = 0;
+        if (changed) {
+          lastFrame = 0;
+          if (root.classList.contains('chat-mode')) markActivity();
+        }
         updateHit(false);
         // Frozen Edge Idle paints only on a low-rate maintenance cadence.
         // Pointer IPC is already event-driven, so use it to engage/release a

@@ -619,18 +619,18 @@ assert.match(source, /spec\.button\.disabled = !available;/,
 assert.match(source, /`\$\{spec\.label\} · Not built`/);
 assert.doesNotMatch(source, /notify\('Build an? (?:Walk|Edge Idle|Moves) clip/,
   'motion capability feedback belongs inside its picker, never in an avatar-covering dark toast');
-assert.match(source, /const chatWindowMotionFit = \(kind, meta, width, height, now, clip = null\) => \{/);
-assert.match(source, /const floor = Math\.max\(190,[\s\S]{0,160}composerTop - 18/,
-  'Chat\/Talk motion must use the composer as its lower window edge');
+assert.match(source, /const chatWindowMotionFit = \(kind, meta, width, height, now, clip = null, edge = 'right'\) => \{/);
+assert.match(source, /const floor = Math\.max\(190, innerHeight - 4\);/,
+  'Chat\/Talk motion must use the chat canvas bottom as its lower edge');
 assert.match(source, /const motionTravelAtPhase = \(clip, phase\) => \{/);
 assert.match(source, /const travelled = \(completedCycles \* cycleDistance[\s\S]{0,120}motionTravelAtPhase\(clip, phase\)\) \* scale;/,
   'Horizon Walk screen travel must use the authored gait trajectory rather than a fixed conveyor-belt duration');
 assert.match(source, /const phase = chatScoped && kind === 'walk' \? fit\.phase/,
   'the traversing body frames and its lower-edge travel must share one gait phase');
-assert.match(source, /anchors\.right_frames[\s\S]{0,260}innerWidth - 3 - rightSupport \* fit\.scale/,
-  'authored Edge Idle must pin its measured support point directly to the chat window side');
-assert.match(source, /drawAvatar\(now, 'chat-edge-idle'\)/,
-  'Edge Idle must fall back to a lower-right standing lean when no authored clip exists');
+assert.match(source, /anchors\[`\$\{displayEdge\}_frames`\][\s\S]{0,520}innerWidth - 3 - rightSupport \* fit\.scale/,
+  'authored Edge Idle must pin its measured support point directly to either chat window side');
+assert.match(source, /drawAvatar\(now, `chat-edge-idle-\$\{idleEdge\}`\)/,
+  'Edge Idle must fall back to a standing lean at the selected chat-window edge');
 assert.match(source, /html\.avatar-only-motion #rail[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
 assert.match(source, /html\.avatar-only-motion #chatDock,[\s\S]{0,220}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
 assert.match(source, /html\.avatar-only-motion #emptyState[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
@@ -856,6 +856,53 @@ assert.equal(endedPainter('move', 7000), true);
 assert.equal(endedPaints.length, 1, 'the final decoded Move frame must remain visible');
 assert.equal(replayCalls, 0, 'the final decoded Move frame must not restart');
 
+// Each mode owns its avatar canvas. Close-Up is the same bottom-right camera
+// intent inside either the Chat/Talk window or the selected desktop display;
+// ten seconds of genuine Chat inactivity selects the nearest window edge.
+const chatCloseUpGeometrySource = inline[1].match(
+  /(const chatCloseUpGeometry = \(crop, viewportWidth, viewportHeight, zoom = 1\) => \{[\s\S]*?\n    \};)/,
+);
+const chatStandbyEdgeSource = inline[1].match(
+  /(const chatStandbyEdge = value =>[^;]+;)/,
+);
+const standbyIdleDelaySource = inline[1].match(
+  /(const standbyIdleDelay = inChat =>[^;]+;)/,
+);
+assert.ok(chatCloseUpGeometrySource, 'Chat\/Talk close-up geometry must remain independently testable');
+assert.ok(chatStandbyEdgeSource, 'Chat\/Talk idle edge selection must remain independently testable');
+assert.ok(standbyIdleDelaySource, 'Chat\/Talk standby timing must remain independently testable');
+const chatCloseUpGeometry = new Function(
+  `'use strict'; ${chatCloseUpGeometrySource[1]}; return chatCloseUpGeometry;`,
+)();
+const chatStandbyEdge = new Function(
+  `'use strict'; ${chatStandbyEdgeSource[1]}; return chatStandbyEdge;`,
+)();
+const standbyIdleDelay = new Function(
+  `'use strict'; ${standbyIdleDelaySource[1]}; return standbyIdleDelay;`,
+)();
+const closeUp = chatCloseUpGeometry({x: 100, y: 50, w: 600, h: 900}, 1180, 860, 1);
+const closeUpTop = closeUp.y + 50 * closeUp.scale;
+const closeUpRight = closeUp.x + 700 * closeUp.scale;
+const closeUpBottom = closeUp.y + 950 * closeUp.scale;
+assert.ok(closeUpTop > 860 * .15 && closeUpTop < 860 * .35,
+  'Chat\/Talk close-up must read as head-and-shoulders rather than a full-body fit');
+assert.ok(closeUpRight > 1180 && closeUpBottom > 860,
+  'Chat\/Talk close-up must crop softly through the right and bottom window edges');
+assert.match(source, /\(fullChat && shellState\.chatCloseUp\)[\s\S]{0,100}!fullChat && shellState\.desktopCloseUp/,
+  'the same close-up camera must be scoped to each mode\'s own canvas');
+assert.equal(chatStandbyEdge({x: -1}), 'left');
+assert.equal(chatStandbyEdge({x: 0}), 'right');
+assert.equal(standbyIdleDelay(true), 10000,
+  'Chat\/Talk Edge Idle must begin after ten seconds of inactivity');
+assert.equal(standbyIdleDelay(false), 12000,
+  'Avatar-mode automatic edge timing remains unchanged');
+assert.match(source, /const edgeIdleActive = now => \{[\s\S]{0,420}\(motion\.idle \|\| inChat\)/,
+  'Chat\/Talk must retain a standing-lean fallback when no authored idle clip is loaded');
+assert.match(source, /if \(hit && !root\.classList\.contains\('chat-mode'\)\) markActivity\(\);/,
+  'a stationary cursor inside Chat\/Talk must not keep resetting its idle timer');
+assert.match(drawMotionSource[1], /anchors\[`\$\{displayEdge\}_frames`\]/,
+  'Chat\/Talk Edge Idle must use authored anchors for both window edges');
+
 const motionFrameDelaySource = inline[1].match(
   /(const motionFrameDelay = \(clip, frozen = false\) => \{[\s\S]*?\n    \};)/,
 );
@@ -917,7 +964,7 @@ assert.equal(standbyFrames, 4,
   'an unchanged standing avatar must schedule exactly four paints per second');
 assert.match(source, /at: changed \? performance\.now\(\) : pointer\.at,/,
   'stationary pointer heartbeats must not renew the fast gaze lane');
-assert.match(source, /if \(changed\) lastFrame = 0;/,
+assert.match(source, /if \(changed\) \{\s*lastFrame = 0;/,
   'real pointer motion must make its gaze paint due on the next refresh');
 assert.doesNotMatch(source, /recordingAnimation/,
   'the recording meter must share the renderer clock instead of owning a second perpetual rAF');

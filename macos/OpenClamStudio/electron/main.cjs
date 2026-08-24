@@ -115,6 +115,9 @@ let appearancePushAt = 0;
 let petMotionReady = false;
 let liveTalkActive = false;
 let chatMode = false;
+let chatCloseUp = false;
+let desktopCloseUp = false;
+let companionHold = null;
 let avatarStoreInstance = null;
 const avatarStoreJobs = new Map();
 let petMotionProfile = {
@@ -784,6 +787,8 @@ function shellState() {
     backendUrl: baseUrl(),
     packaged: app.isPackaged,
     chatMode,
+    chatCloseUp,
+    desktopCloseUp,
     pet: {
       enabled: Boolean(state && state.petMode),
       opacity: Number(state && state.petOpacity),
@@ -843,6 +848,9 @@ function setChatMode(value) {
     return shellState();
   }
   if (next) {
+    restoreCompanionHold();
+    chatCloseUp = false;
+    desktopCloseUp = false;
     if (state.petRoam) {
       state.petRoam = false;
       stopPetRoamMotion(false);
@@ -860,6 +868,8 @@ function setChatMode(value) {
     app.focus({ steal: true });
   } else {
     chatMode = false;
+    chatCloseUp = false;
+    desktopCloseUp = false;
     state.interfaceMode = 'avatar';
     if (chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
     applyPetZoom(state.petZoom);
@@ -2363,10 +2373,12 @@ function showChat() {
 
 function recoverCompanion() {
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-  // Recovery shortcuts can be invoked while the separate Chat/Talk window is
-  // active. Return to Avatar mode before resizing, otherwise the chat window
-  // remains visible underneath a newly revealed transparent companion.
-  if (chatMode) setChatMode(false);
+  if (chatMode) {
+    chatCloseUp = false;
+    broadcastState();
+    return;
+  }
+  desktopCloseUp = false;
   // Reset the zoom before anything re-applies it: keeping the current size
   // once "recovered" a pinch-blown window to a spot still off every edge.
   // Recovery is the safe reset: whole figure, and a zoom that provably
@@ -2406,47 +2418,60 @@ function installRecoveryShortcut() {
   if (!globalShortcut.register(accelerator, standbyCompanionMode)) {
     writeBackendLog(`[shortcut unavailable] ${accelerator}\n`);
   }
-  // Cmd+Shift+9: enlarge to the biggest whole-avatar overlay that fits the
-  // current display. A second press restores the exact prior zoom and bounds.
+  // Cmd+Shift+9: the owner's close-up composition. Avatar mode uses the
+  // screen as its canvas; Chat/Talk applies the same camera intent inside
+  // the chat window without revealing or resizing the hidden desktop pet.
   const companion = 'CommandOrControl+Shift+9';
   if (!globalShortcut.register(companion, deskCompanionMode)) {
     writeBackendLog(`[shortcut unavailable] ${companion}\n`);
   }
 }
 
-let companionHold = null;
 function standbyCompanionMode() {
   companionHold = null;
+  if (chatMode) {
+    chatCloseUp = false;
+    applyPetOpacity(1, false);
+    return;
+  }
+  desktopCloseUp = false;
   recoverCompanion();
   applyPetOpacity(1);
 }
 
+function restoreCompanionHold() {
+  if (!companionHold || !mainWindow || mainWindow.isDestroyed()) return false;
+  const hold = companionHold;
+  companionHold = null;
+  desktopCloseUp = false;
+  state.petZoom = hold.zoom;
+  mainWindow.setBounds(hold.bounds, false);
+  state.bounds = { ...hold.bounds };
+  return true;
+}
+
 function deskCompanionMode() {
+  if (chatMode) {
+    chatCloseUp = !chatCloseUp;
+    applyPetOpacity(1, false);
+    return;
+  }
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-  // Chat/Talk is a separate native window. It must be hidden before revealing
-  // and resizing the companion or both surfaces remain stacked on the desk.
-  if (chatMode) setChatMode(false);
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (companionHold) {
-    const hold = companionHold;
-    companionHold = null;
-    state.petZoom = hold.zoom;
-    mainWindow.setBounds(hold.bounds, false);
-    state.bounds = { ...hold.bounds };
+  if (restoreCompanionHold()) {
     saveStateSoon();
     broadcastState();
     return;
   }
   if (state.petRoam) applyPetRoam(false);
   companionHold = { zoom: state.petZoom, bounds: mainWindow.getBounds() };
+  desktopCloseUp = true;
   applyPetOpacity(1);
-  const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
-  state.petZoom = clampPetZoom(
-    fitPetZoomToArea(
-      PET_BASE_SIZE, PET_NORMAL_MINIMUM, PET_ZOOM_RANGE.max, area, PET_DOCK_MARGIN),
-    PET_ZOOM_RANGE);
-  const size = petZoomSize(PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom);
-  const bounds = dockedPetBounds(size, area, PET_DOCK_MARGIN);
+  // In Avatar mode the canvas is the selected display. Keep that canvas at a
+  // GPU-safe screen size and let the renderer crop the full-resolution source
+  // into the owner's bottom-right head-and-shoulders composition. A 4x pet
+  // window can exceed Chromium's transparent-canvas limits and render blank.
+  const bounds = { ...screen.getDisplayMatching(mainWindow.getBounds()).bounds };
   mainWindow.setBounds(bounds, false);
   state.bounds = { ...bounds };
   if (state.petOpacity > 0.001) mainWindow.showInactive();

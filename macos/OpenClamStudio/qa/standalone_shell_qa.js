@@ -119,14 +119,22 @@ assert.match(main, /chatWindow\.on\('page-title-updated', event => event\.preven
   'the Chat\/Talk window must retain the source app identity');
 assert.match(main, /function createChatWindow\(\)[\s\S]{0,1000}frame: true,[\s\S]{0,250}transparent: false,[\s\S]{0,350}resizable: true/,
   'Chat\/Talk must be a standard, opaque, resizable macOS application window');
-assert.match(main, /function setChatMode\(value\)[\s\S]{0,900}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,850}mainWindow\.showInactive\(\)/,
+assert.match(main, /function setChatMode\(value\)[\s\S]{0,1400}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,1000}mainWindow\.showInactive\(\)/,
   'mode switching must move between the normal chat window and standby companion');
-assert.match(main, /function recoverCompanion\(\)[\s\S]{0,300}if \(chatMode\) setChatMode\(false\);/,
-  'Standby recovery must hide the separate Chat\/Talk window before revealing the avatar');
-assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,360}if \(chatMode\) setChatMode\(false\);/,
-  'Close-Up Companion must leave Chat\/Talk mode before resizing the avatar window');
-assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,1400}fitPetZoomToArea\([\s\S]{0,300}dockedPetBounds\(size, area, PET_DOCK_MARGIN\)/,
-  'Close-Up Companion must remain fully inside the active display work area');
+assert.match(main, /chatMode,\s*chatCloseUp,\s*desktopCloseUp,/,
+  'the renderer must receive the canvas-specific close-up presentation');
+assert.match(main, /function standbyCompanionMode\(\)[\s\S]{0,260}if \(chatMode\) \{[\s\S]{0,160}chatCloseUp = false;[\s\S]{0,100}return;/,
+  'Standby Size must reset the avatar inside Chat\/Talk without closing its window');
+assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,240}if \(chatMode\) \{[\s\S]{0,100}chatCloseUp = !chatCloseUp;[\s\S]{0,100}return;/,
+  'Close-Up Companion must toggle the chat-window canvas without revealing the desktop pet');
+const closeUpMode = main.match(/function deskCompanionMode\(\) \{([\s\S]*?)\n\}\n\nfunction openSettings/);
+assert.ok(closeUpMode, 'Close-Up Companion must remain independently auditable');
+assert.match(closeUpMode[1], /companionHold = \{ zoom: state\.petZoom, bounds: mainWindow\.getBounds\(\) \};[\s\S]{0,160}desktopCloseUp = true;/,
+  'Avatar-mode Close-Up Companion must preserve and switch renderer presentation state');
+assert.match(closeUpMode[1], /screen\.getDisplayMatching\(mainWindow\.getBounds\(\)\)\.bounds[\s\S]{0,120}mainWindow\.setBounds\(bounds, false\)/,
+  'Avatar-mode Close-Up must use the selected display as its canvas');
+assert.ok(!closeUpMode[1].includes('state.petZoom = PET_ZOOM_RANGE.max'),
+  'Close-Up must not create a GPU-unsafe oversized transparent window');
 const avatarMenu = main.match(/function showPetMenu\(\) \{([\s\S]*?)\n\}\n\nfunction createTray/);
 assert.ok(avatarMenu, 'Avatar mode must retain one focused right-click menu');
 for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Moves',
