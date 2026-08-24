@@ -13,4 +13,5 @@ interface Env {
   LIVEKIT_API_KEY: string;
   LIVEKIT_API_SECRET: string;
   PILOT_APP_TOKEN: string;
+  PILOT_APP_TOKEN_NEXT?: string;
 }

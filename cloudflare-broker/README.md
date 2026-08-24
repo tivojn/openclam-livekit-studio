@@ -103,8 +103,11 @@ metadata.
 ## Authentication seam
 
 `AUTH_MODE=pilot` accepts `Authorization: Bearer <PILOT_APP_TOKEN>` only for the
-internal TestFlight pilot. A static token embedded in an app can be extracted,
-so it is an abuse-control gate, not production device identity.
+internal TestFlight pilot. During a device migration, the optional
+`PILOT_APP_TOKEN_NEXT` secret can enroll the replacement device without
+invalidating the bearer already present in active pilot builds. A static token
+embedded in an app can be extracted, so either bearer is an abuse-control gate,
+not production device identity.
 
 Before public distribution, implement automatic Apple App Attest verification:
 
@@ -146,6 +149,8 @@ npx wrangler secret put LIVEKIT_API_SECRET
 npx wrangler secret put BYOK_KEK_B64
 npx wrangler secret put OPENCLAM_BROKER_AGENT_TOKEN
 npx wrangler secret put PILOT_APP_TOKEN
+# Optional during a device migration; remove after clients move to App Attest.
+npx wrangler secret put PILOT_APP_TOKEN_NEXT
 ```
 
 Set `LIVEKIT_URL`, the exact named `LIVEKIT_AGENT_NAME`, and a real locked origin

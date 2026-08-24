@@ -17,6 +17,7 @@ export default defineConfig({
           LIVEKIT_API_SECRET: "test-livekit-api-secret-test-livekit-api-secret",
           LIVEKIT_TOKEN_TTL_SECONDS: "600",
           LIVEKIT_URL: "wss://test.livekit.cloud",
+          PILOT_APP_TOKEN_NEXT: "test-next-pilot-token-that-is-long-enough",
           PILOT_APP_TOKEN: "test-pilot-app-token-that-is-long-enough",
         },
       },

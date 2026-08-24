@@ -8,4 +8,7 @@ BYOK_KEK_B64="replace-with-32-byte-base64-key"
 
 # Separate secrets for the iOS pilot and the deployed LiveKit agent.
 PILOT_APP_TOKEN="replace-with-long-random-pilot-token"
+# Optional second bearer for enrolling a replacement device without revoking
+# the token already embedded in an active pilot build.
+PILOT_APP_TOKEN_NEXT="replace-with-long-random-next-pilot-token"
 OPENCLAM_BROKER_AGENT_TOKEN="replace-with-long-random-agent-token"

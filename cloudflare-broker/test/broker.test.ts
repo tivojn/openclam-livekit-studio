@@ -9,6 +9,7 @@ import worker from "../src/index";
 import type { ModelPolicy } from "../src/types";
 
 const APP_TOKEN = "test-pilot-app-token-that-is-long-enough";
+const NEXT_APP_TOKEN = "test-next-pilot-token-that-is-long-enough";
 const AGENT_TOKEN = "test-agent-broker-secret-that-is-long-enough";
 
 function base64Url(bytes: Uint8Array): string {
@@ -404,6 +405,18 @@ describe("broker", () => {
     const response = await start(byokBody(), "wrong-token");
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "unauthorized" });
+  });
+
+  it("accepts the optional next pilot token during device migration", async () => {
+    const response = await start(
+      {
+        participant_name: "Replacement Mac",
+        profile: managedProfile(),
+        credentials: {},
+      },
+      NEXT_APP_TOKEN,
+    );
+    expect(response.status).toBe(201);
   });
 
   it("requires agent authentication", async () => {

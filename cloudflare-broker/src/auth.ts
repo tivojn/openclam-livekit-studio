@@ -52,11 +52,24 @@ export async function authenticateClient(
   }
 
   const candidate = bearerValue(request);
-  if (
-    candidate === null ||
-    env.PILOT_APP_TOKEN.length < 32 ||
-    !(await secureEqual(candidate, env.PILOT_APP_TOKEN))
-  ) {
+  if (candidate === null) {
+    unauthorized();
+  }
+
+  // A second bounded bearer lets an operator enroll a replacement device
+  // without invalidating the token already present in pilot builds. Both
+  // comparisons run before the result is checked so the accepted slot is not
+  // exposed through an early return.
+  const expectedTokens = [env.PILOT_APP_TOKEN, env.PILOT_APP_TOKEN_NEXT].filter(
+    (token): token is string => typeof token === "string" && token.length >= 32,
+  );
+  if (expectedTokens.length === 0) {
+    unauthorized();
+  }
+  const matches = await Promise.all(
+    expectedTokens.map((expected) => secureEqual(candidate, expected)),
+  );
+  if (!matches.some(Boolean)) {
     unauthorized();
   }
 }
