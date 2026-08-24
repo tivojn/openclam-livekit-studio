@@ -116,6 +116,7 @@ let petMotionReady = false;
 let liveTalkActive = false;
 let chatMode = false;
 let chatCloseUp = false;
+let chatCloseUpBaseZoom = 1;
 let desktopCloseUp = false;
 let companionHold = null;
 let avatarStoreInstance = null;
@@ -788,6 +789,7 @@ function shellState() {
     packaged: app.isPackaged,
     chatMode,
     chatCloseUp,
+    chatCloseUpBaseZoom,
     desktopCloseUp,
     pet: {
       enabled: Boolean(state && state.petMode),
@@ -847,9 +849,23 @@ function setChatMode(value) {
     broadcastState();
     return shellState();
   }
+  // Opening an already-open Chat/Talk window is an idempotent focus request.
+  // Message submission calls this path before every turn; it must not discard
+  // the user's Cmd+Shift+9 presentation or its zoom baseline.
+  if (next && chatMode) {
+    state.interfaceMode = 'chat';
+    createChatWindow();
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      chatWindow.show();
+      chatWindow.focus();
+    }
+    app.focus({ steal: true });
+    return shellState();
+  }
   if (next) {
     restoreCompanionHold();
     chatCloseUp = false;
+    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
     desktopCloseUp = false;
     if (state.petRoam) {
       state.petRoam = false;
@@ -869,6 +885,7 @@ function setChatMode(value) {
   } else {
     chatMode = false;
     chatCloseUp = false;
+    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
     desktopCloseUp = false;
     state.interfaceMode = 'avatar';
     if (chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
@@ -2375,6 +2392,7 @@ function recoverCompanion() {
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   if (chatMode) {
     chatCloseUp = false;
+    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
     broadcastState();
     return;
   }
@@ -2431,6 +2449,7 @@ function standbyCompanionMode() {
   companionHold = null;
   if (chatMode) {
     chatCloseUp = false;
+    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
     applyPetOpacity(1, false);
     return;
   }
@@ -2453,6 +2472,7 @@ function restoreCompanionHold() {
 function deskCompanionMode() {
   if (chatMode) {
     chatCloseUp = !chatCloseUp;
+    chatCloseUpBaseZoom = chatCloseUp ? (Number(state.petZoom) || 1) : 1;
     applyPetOpacity(1, false);
     return;
   }

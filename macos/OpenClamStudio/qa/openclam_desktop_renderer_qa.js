@@ -110,6 +110,10 @@ assert.match(source, /html\.chat-mode\.avatar-layer-top #stage \{[\s\S]{0,120}z-
   'the avatar layer must actually composite above the thread at full opacity');
 assert.match(source, /html\.chat-mode\.thread-layer-top #stage \{\s*z-index:\s*1;/,
   'thread-first mode must return the avatar beneath the scroll surface');
+assert.match(source, /html\.chat-mode\.thread-layer-top #stage \{[^}]*filter:\s*none;/,
+  'thread-first mode must not alter the opacity slider result with a canvas filter');
+assert.match(source, /html\.chat-mode #chatDock,[\s\S]{0,900}background:\s*transparent;/,
+  'thread-first mode must not composite a translucent wash over the avatar canvas');
 assert.match(source, /canvas\.addEventListener\('pointerdown', event => \{[\s\S]{0,300}interactionLayer === 'avatar'[\s\S]{0,180}paintedAvatarAt\(/,
   'avatar-first drags must freshly hit-test the visible avatar before starting');
 assert.match(source, /canvasGesture\.positionAdjusting = true;[\s\S]{0,100}root\.classList\.add\('position-adjusting'\)/,
@@ -385,7 +389,7 @@ assert.match(source, /if \(live\) syncLiveTalkAudioStatus\(live, now\)/,
   'the render loop must apply the exact samples measured for reactive visemes to Live Talk status');
 assert.match(source, /live !== session \|\| session\.ending \|\| !session\.agentReady \|\| !session\.audioAttachments\.size/,
   'audio status must be scoped to an attached, ready, current Live Talk session');
-assert.match(source, /RoomEvent\.ActiveSpeakersChanged[\s\S]{0,180}agentSpeaking = participants\.some\(participant => participant\.isAgent\)/,
+assert.match(source, /RoomEvent\.ActiveSpeakersChanged[\s\S]{0,180}nextAgentSpeaking = participants\.some\(participant => participant\.isAgent\)[\s\S]{0,180}agentSpeaking = nextAgentSpeaking/,
   'LiveKit active-speaker semantics must continue to drive body expression independently');
 assert.match(source, /RoomEvent\.Reconnecting[\s\S]{0,180}session\.agentReady = false;[\s\S]{0,180}Live Talk · reconnecting…/,
   'remote audio status must remain gated while the room is reconnecting');
@@ -888,8 +892,21 @@ assert.ok(closeUpTop > 860 * .15 && closeUpTop < 860 * .35,
   'Chat\/Talk close-up must read as head-and-shoulders rather than a full-body fit');
 assert.ok(closeUpRight > 1180 && closeUpBottom > 860,
   'Chat\/Talk close-up must crop softly through the right and bottom window edges');
-assert.match(source, /\(fullChat && shellState\.chatCloseUp\)[\s\S]{0,100}!fullChat && shellState\.desktopCloseUp/,
+const zoomedCloseUp = chatCloseUpGeometry({x: 100, y: 50, w: 600, h: 900}, 1180, 860, 1.5);
+assert.ok(zoomedCloseUp.scale > closeUp.scale * 1.49,
+  'pinch zoom must adjust the close-up preset rather than being discarded');
+assert.match(source, /if \(fullChat && shellState\.chatCloseUp\)[\s\S]{0,520}requestedZoom \/ baseZoom[\s\S]{0,360}fit\.x \+ offset\.x[\s\S]{0,120}fit\.y \+ offset\.y/,
+  'Chat\/Talk close-up must retain its own zoom baseline and dragged position');
+assert.match(source, /if \(!fullChat && shellState\.desktopCloseUp\)/,
   'the same close-up camera must be scoped to each mode\'s own canvas');
+assert.match(source, /openclam\.chat\.close-up-offset\.v1/,
+  'the close-up drag position must persist independently from standard framing');
+assert.match(source, /const resumeChatSpeakingPose = \(\) => \{[\s\S]{0,100}markActivity\(\);[\s\S]{0,80}lastFrame = 0;/,
+  'conversation activity must resume the saved speaking pose from temporary Edge Idle');
+assert.match(source, /const submitComposer = \(\) => \{[\s\S]{0,420}resumeChatSpeakingPose\(\);/,
+  'sending a message must retain the selected close-up\/zoom\/drag pose');
+assert.match(source, /speechSource = source;[\s\S]{0,100}resumeChatSpeakingPose\(\);[\s\S]{0,500}source\.onended[\s\S]{0,220}resumeChatSpeakingPose\(\);/,
+  'TTS start and end must restore the saved pose and restart the idle timer');
 assert.equal(chatStandbyEdge({x: -1}), 'left');
 assert.equal(chatStandbyEdge({x: 0}), 'right');
 assert.equal(standbyIdleDelay(true), 10000,
@@ -902,6 +919,10 @@ assert.match(source, /if \(hit && !root\.classList\.contains\('chat-mode'\)\) ma
   'a stationary cursor inside Chat\/Talk must not keep resetting its idle timer');
 assert.match(drawMotionSource[1], /anchors\[`\$\{displayEdge\}_frames`\]/,
   'Chat\/Talk Edge Idle must use authored anchors for both window edges');
+assert.match(source, /#conversation::\-webkit-scrollbar \{[\s\S]{0,100}display: none;[\s\S]{0,100}width: 0;/,
+  'the Chat\/Talk thread must scroll without painting a Chromium scrollbar');
+assert.match(source, /#conversation \{[\s\S]{0,500}scrollbar-width: none;/,
+  'the Chat\/Talk thread must also hide standards-based scrollbars');
 
 const motionFrameDelaySource = inline[1].match(
   /(const motionFrameDelay = \(clip, frozen = false\) => \{[\s\S]*?\n    \};)/,

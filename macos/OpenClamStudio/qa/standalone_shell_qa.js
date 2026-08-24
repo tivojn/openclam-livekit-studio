@@ -119,13 +119,15 @@ assert.match(main, /chatWindow\.on\('page-title-updated', event => event\.preven
   'the Chat\/Talk window must retain the source app identity');
 assert.match(main, /function createChatWindow\(\)[\s\S]{0,1000}frame: true,[\s\S]{0,250}transparent: false,[\s\S]{0,350}resizable: true/,
   'Chat\/Talk must be a standard, opaque, resizable macOS application window');
-assert.match(main, /function setChatMode\(value\)[\s\S]{0,1400}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,1000}mainWindow\.showInactive\(\)/,
+assert.match(main, /function setChatMode\(value\)[\s\S]{0,2400}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,1000}mainWindow\.showInactive\(\)/,
   'mode switching must move between the normal chat window and standby companion');
-assert.match(main, /chatMode,\s*chatCloseUp,\s*desktopCloseUp,/,
+assert.match(main, /chatMode,\s*chatCloseUp,\s*chatCloseUpBaseZoom,\s*desktopCloseUp,/,
   'the renderer must receive the canvas-specific close-up presentation');
-assert.match(main, /function standbyCompanionMode\(\)[\s\S]{0,260}if \(chatMode\) \{[\s\S]{0,160}chatCloseUp = false;[\s\S]{0,100}return;/,
+assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,420}return shellState\(\);[\s\S]{0,120}if \(next\) \{[\s\S]{0,120}chatCloseUp = false;/,
+  'reopening an active Chat\/Talk window must preserve its close-up state');
+assert.match(main, /function standbyCompanionMode\(\)[\s\S]{0,320}if \(chatMode\) \{[\s\S]{0,220}chatCloseUp = false;[\s\S]{0,160}return;/,
   'Standby Size must reset the avatar inside Chat\/Talk without closing its window');
-assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,240}if \(chatMode\) \{[\s\S]{0,100}chatCloseUp = !chatCloseUp;[\s\S]{0,100}return;/,
+assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,320}if \(chatMode\) \{[\s\S]{0,100}chatCloseUp = !chatCloseUp;[\s\S]{0,180}chatCloseUpBaseZoom = chatCloseUp[\s\S]{0,100}return;/,
   'Close-Up Companion must toggle the chat-window canvas without revealing the desktop pet');
 const closeUpMode = main.match(/function deskCompanionMode\(\) \{([\s\S]*?)\n\}\n\nfunction openSettings/);
 assert.ok(closeUpMode, 'Close-Up Companion must remain independently auditable');

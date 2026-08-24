@@ -157,9 +157,15 @@
       background: var(--glass);
       backdrop-filter: blur(24px) saturate(1.12);
       box-shadow: var(--shadow);
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,.25) transparent;
+      scrollbar-width: none;
+      scrollbar-color: transparent transparent;
       overscroll-behavior: contain;
+    }
+
+    #conversation::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
     }
 
     #conversation:empty { display: none; }
@@ -595,7 +601,8 @@
       background: transparent;
       backdrop-filter: none;
       box-shadow: none;
-      scrollbar-color: var(--codex-border-heavy) transparent;
+      scrollbar-width: none;
+      scrollbar-color: transparent transparent;
     }
     .message { gap: 8px; margin: 22px 0; }
     .bubble {
@@ -1000,7 +1007,7 @@
       transition: opacity 140ms ease, filter 160ms ease, z-index 0s linear 160ms;
     }
     html.chat-mode.avatar-mirrored #stage { transform: scaleX(-1); }
-    html.chat-mode.thread-layer-top #stage { z-index: 1; filter: saturate(.92) contrast(.96); }
+    html.chat-mode.thread-layer-top #stage { z-index: 1; filter: none; }
     html.chat-mode.avatar-layer-top #stage {
       z-index: 32;
       filter: none;
@@ -1032,10 +1039,9 @@
       padding: 0 76px 18px 20px;
       border: 0;
       border-radius: 18px;
-      background: linear-gradient(90deg,
-        color-mix(in srgb, var(--codex-surface) 93%, transparent) 0%,
-        color-mix(in srgb, var(--codex-surface) 78%, transparent) 54%,
-        color-mix(in srgb, var(--codex-surface) 34%, transparent) 100%);
+      /* Layer priority changes interaction and stacking only. An overlay here
+         would composite over the canvas and make a 100% avatar look faded. */
+      background: transparent;
       box-shadow: none;
       transform: none;
       opacity: 1;
@@ -1555,7 +1561,8 @@
     const motionLoadTasks = {};
     let assetRevision = Date.now();
     let pixelRatio = 1;
-    let shellState = { onBattery: false, chatCloseUp: false, desktopCloseUp: false,
+    let shellState = { onBattery: false, chatCloseUp: false, chatCloseUpBaseZoom: 1,
+      desktopCloseUp: false,
       pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
     let roamState = { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
     let roamPresentationKey = '';
@@ -1585,15 +1592,20 @@
     let avatarMirrored = localStorage.getItem('openclam.chat.avatar-mirrored') === '1';
     let manualMotionKind = null;
     let manualMotionStartedAt = 0;
-    let chatAvatarOffset = (() => {
+    const loadChatAvatarOffset = key => {
       try {
-        const saved = JSON.parse(localStorage.getItem('openclam.chat.avatar-offset.v1') || '{}');
+        const saved = JSON.parse(localStorage.getItem(key) || '{}');
         return {
           x: Number.isFinite(Number(saved.x)) ? Number(saved.x) : 0,
           y: Number.isFinite(Number(saved.y)) ? Number(saved.y) : 0,
         };
       } catch (_) { return { x: 0, y: 0 }; }
-    })();
+    };
+    const chatAvatarOffsets = {
+      standard: loadChatAvatarOffset('openclam.chat.avatar-offset.v1'),
+      closeUp: loadChatAvatarOffset('openclam.chat.close-up-offset.v1'),
+    };
+    let chatAvatarOffset = { ...chatAvatarOffsets.standard };
     let latestAssistantText = '';
     let toastTimer = 0;
     let threadNoticeTimer = 0;
@@ -1769,6 +1781,14 @@
       }
     };
 
+    // Edge Idle is a temporary presentation, never a new camera state. Any
+    // conversation activity resumes the user's saved close-up/zoom/drag pose;
+    // the ordinary paint path then reads that pose from cameraFor().
+    const resumeChatSpeakingPose = () => {
+      markActivity();
+      lastFrame = 0;
+    };
+
     const boundedChatAvatarOffset = value => ({
       x: Math.max(-innerWidth * .55, Math.min(innerWidth * .55, Number(value && value.x) || 0)),
       y: Math.max(-innerHeight * .45, Math.min(innerHeight * .45, Number(value && value.y) || 0)),
@@ -1776,7 +1796,11 @@
 
     const saveChatAvatarOffset = () => {
       chatAvatarOffset = boundedChatAvatarOffset(chatAvatarOffset);
-      localStorage.setItem('openclam.chat.avatar-offset.v1', JSON.stringify(chatAvatarOffset));
+      const presentation = shellState.chatCloseUp ? 'closeUp' : 'standard';
+      chatAvatarOffsets[presentation] = { ...chatAvatarOffset };
+      const key = presentation === 'closeUp'
+        ? 'openclam.chat.close-up-offset.v1' : 'openclam.chat.avatar-offset.v1';
+      localStorage.setItem(key, JSON.stringify(chatAvatarOffset));
     };
 
     const motionChrome = [statusLine, rail, chatDock, emptyState, toast];
@@ -2325,7 +2349,7 @@
       const safeHeight = Math.max(1, Number(viewportHeight) || 1);
       const targetWidth = Math.max(240, safeWidth * .4);
       const targetHeight = Math.max(300, safeHeight * .72);
-      const adjustment = Math.max(.9, Math.min(1.25, Number(zoom) || 1));
+      const adjustment = Math.max(.42, Math.min(2.4, Number(zoom) || 1));
       const scale = Math.min(targetWidth / crop.w, targetHeight / crop.h) * adjustment;
       const rightOverflow = crop.w * scale * .035;
       const bottomOverflow = crop.h * scale * .08;
@@ -2340,8 +2364,16 @@
     const cameraFor = (meta, width, height, forcedView = null) => {
       const fullChat = root.classList.contains('chat-mode');
       const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
-      if ((fullChat && shellState.chatCloseUp)
-          || (!fullChat && shellState.desktopCloseUp)) {
+      if (fullChat && shellState.chatCloseUp) {
+        const closeUpCrop = viewCrop(meta, width, height, 'bust');
+        const baseZoom = Number(shellState.chatCloseUpBaseZoom);
+        const closeUpZoom = Number.isFinite(requestedZoom) && Number.isFinite(baseZoom) && baseZoom > 0
+          ? requestedZoom / baseZoom : 1;
+        const fit = chatCloseUpGeometry(closeUpCrop, innerWidth, innerHeight, closeUpZoom);
+        const offset = boundedChatAvatarOffset(chatAvatarOffset);
+        return { ...fit, x: fit.x + offset.x, y: fit.y + offset.y };
+      }
+      if (!fullChat && shellState.desktopCloseUp) {
         const closeUpCrop = viewCrop(meta, width, height, 'bust');
         return chatCloseUpGeometry(closeUpCrop, innerWidth, innerHeight, 1);
       }
@@ -3960,6 +3992,7 @@
       source.connect(audioAnalyser);
       source.connect(graph.destination);
       speechSource = source;
+      resumeChatSpeakingPose();
       speechTrack = stabiliseTrack(
         track,
         buffer.duration,
@@ -3972,6 +4005,7 @@
           speechSource = null;
           speechTrack = [];
           currentViseme = 'sil';
+          resumeChatSpeakingPose();
           setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
         }
       };
@@ -4564,6 +4598,7 @@
     async function submitOpenClawTurn(value, agentID, options = {}) {
       stopSpeech();
       if (!options.keepAvatarMode) await openChat(false);
+      resumeChatSpeakingPose();
       addMessage('user', value, { readable: false });
       const inputAttachments = Array.isArray(options.attachments)
         ? options.attachments.slice(0, 8) : [];
@@ -4608,6 +4643,7 @@
               updateWorkTimeline(work, event.step);
               setStatus(String(event.step && event.step.title || 'OpenClaw is working').slice(0, 120), 'busy');
             } else if (event.type === 'text') {
+              resumeChatSpeakingPose();
               finalText = String(event.text || '').slice(0, 64000);
               if (!liveReply) {
                 liveReply = addMessage('assistant', '', { readable: false, persist: false });
@@ -4627,6 +4663,7 @@
           if (chunk.done) break;
         }
         const completedText = finalText || 'OpenClaw completed without a text reply.';
+        resumeChatSpeakingPose();
         if (liveReply) {
           liveReply.bubble.textContent = completedText;
           latestAssistantText = completedText;
@@ -4641,6 +4678,7 @@
       } catch (error) {
         finishWorkTimeline(work, 'failed');
         if (error.name !== 'AbortError') {
+          resumeChatSpeakingPose();
           addMessage('assistant', `OpenClaw is unavailable: ${String(error.message || error).slice(0, 150)}`, { readable: false });
           setStatus('Check OpenClaw', '');
           if (!pendingComposerAttachments.length && inputAttachments.length) {
@@ -4665,6 +4703,7 @@
       }
       stopSpeech();
       if (!options.keepAvatarMode) await openChat(false);
+      resumeChatSpeakingPose();
       addMessage('user', value, { readable: false });
       history.push({ role: 'user', content: value });
       addWorking();
@@ -4676,6 +4715,7 @@
         const result = await postJSON('/reply', { history }, turnController.signal);
         removeWorking();
         const answer = String(result.text || 'I lost that thought. Please try again.');
+        resumeChatSpeakingPose();
         addMessage('assistant', answer);
         history.push({ role: 'assistant', content: answer });
         if (history.length > 24) history.splice(0, history.length - 24);
@@ -4685,6 +4725,7 @@
       } catch (error) {
         removeWorking();
         if (error.name !== 'AbortError') {
+          resumeChatSpeakingPose();
           const message = `I could not answer: ${String(error.message || error).slice(0, 150)}`;
           addMessage('assistant', message, { readable: false });
           setStatus('Check model settings', '');
@@ -4717,6 +4758,7 @@
         notify('Hang up Live Talk before sending a regular chat message.');
         return;
       }
+      resumeChatSpeakingPose();
       const value = typedValue || `Please review the attached file${attachments.length === 1 ? '' : 's'}.`;
       composer.value = '';
       pendingComposerAttachments = [];
@@ -5315,7 +5357,9 @@
       room.on(library.RoomEvent.TranscriptionReceived, (segments, participant) => handleTranscript(session, segments, participant));
       room.on(library.RoomEvent.ActiveSpeakersChanged, participants => {
         if (live !== session) return;
-        agentSpeaking = participants.some(participant => participant.isAgent);
+        const nextAgentSpeaking = participants.some(participant => participant.isAgent);
+        if (nextAgentSpeaking !== agentSpeaking) resumeChatSpeakingPose();
+        agentSpeaking = nextAgentSpeaking;
       });
       room.on(library.RoomEvent.Reconnecting, () => {
         if (live !== session) return;
@@ -5365,6 +5409,7 @@
       clearTimeout(session.guard);
       stopConnectionSound(session);
       agentSpeaking = false;
+      resumeChatSpeakingPose();
       currentViseme = 'sil';
       reactiveMouthState.viseme = 'sil';
       reactiveMouthState.audibleUntil = 0;
@@ -5453,9 +5498,14 @@
 
     const applyShellState = value => {
       if (!value || typeof value !== 'object') return;
-      const closeUpChanged = Boolean(value.chatCloseUp) !== Boolean(shellState.chatCloseUp)
+      const chatCloseUpChanged = Boolean(value.chatCloseUp) !== Boolean(shellState.chatCloseUp);
+      const closeUpChanged = chatCloseUpChanged
         || Boolean(value.desktopCloseUp) !== Boolean(shellState.desktopCloseUp);
       shellState = value;
+      if (chatCloseUpChanged) {
+        const presentation = value.chatCloseUp ? 'closeUp' : 'standard';
+        chatAvatarOffset = boundedChatAvatarOffset({ ...chatAvatarOffsets[presentation] });
+      }
       const pet = value.pet || {};
       root.classList.toggle('chat-mode', Boolean(value.chatMode));
       root.classList.toggle('chat-open', Boolean(value.chatMode) || root.classList.contains('chat-open'));
