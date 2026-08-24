@@ -123,8 +123,16 @@ assert.match(main, /function setChatMode\(value\)[\s\S]{0,2400}mainWindow\.hide\
   'mode switching must move between the normal chat window and standby companion');
 assert.match(main, /chatMode,\s*chatCloseUp,\s*chatCloseUpBaseZoom,\s*desktopCloseUp,/,
   'the renderer must receive the canvas-specific close-up presentation');
-assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,420}return shellState\(\);[\s\S]{0,120}if \(next\) \{[\s\S]{0,120}chatCloseUp = false;/,
+assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,700}return shellState\(\);[\s\S]{0,120}if \(next\) \{[\s\S]{0,120}chatCloseUp = false;/,
   'reopening an active Chat\/Talk window must preserve its close-up state');
+assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,360}mainWindow\.hide\(\);[\s\S]{0,420}return shellState\(\);/,
+  'reopening Chat\/Talk must repair any accidental desktop-avatar reveal');
+assert.match(main, /mainWindow\.once\('ready-to-show',[\s\S]{0,260}if \(chatMode\) \{[\s\S]{0,100}mainWindow\.hide\(\);[\s\S]{0,80}return;/,
+  'a late desktop-renderer ready event must never reveal a duplicate Chat\/Talk window');
+assert.match(main, /mainWindow\.on\('show',[\s\S]{0,160}if \(chatMode\) \{[\s\S]{0,80}mainWindow\.hide\(\);/,
+  'Chat\/Talk mode must veto every stray desktop-avatar show event');
+assert.match(main, /function applyPetOpacity\(value, reveal = true\)[\s\S]{0,260}if \(chatMode\) \{[\s\S]{0,100}mainWindow\.hide\(\);/,
+  'changing chat avatar opacity must keep the hidden desktop renderer hidden');
 assert.match(main, /function standbyCompanionMode\(\)[\s\S]{0,320}if \(chatMode\) \{[\s\S]{0,220}chatCloseUp = false;[\s\S]{0,160}return;/,
   'Standby Size must reset the avatar inside Chat\/Talk without closing its window');
 assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,320}if \(chatMode\) \{[\s\S]{0,100}chatCloseUp = !chatCloseUp;[\s\S]{0,180}chatCloseUpBaseZoom = chatCloseUp[\s\S]{0,100}return;/,
@@ -205,7 +213,7 @@ assert.match(main, /const dragCursorPoint = \(point\) => \{[\s\S]{0,260}screen\.
 // renderer explicitly makes that pet the key window so macOS sends it text.
 assert.match(preload, /focusPetWindow: \(\) => ipcRenderer\.send\('openclam:pet-focus'\)/);
 assert.match(main, /ipcMain\.on\('openclam:pet-focus',[\s\S]{0,900}app\.focus\(\{ steal: true \}\);\s*window\.focus\(\);/);
-assert.match(main, /mainWindow\.once\('ready-to-show',[\s\S]{0,420}mainWindow\.showInactive\(\);/,
+assert.match(main, /mainWindow\.once\('ready-to-show',[\s\S]{0,900}mainWindow\.showInactive\(\);/,
   'The automatic pet reveal must not take key focus from cold-launch Settings');
 assert.doesNotMatch(main, /mainWindow\.once\('ready-to-show',[\s\S]{0,420}mainWindow\.show\(\);/,
   'Only an explicit user action may activate the pet window');

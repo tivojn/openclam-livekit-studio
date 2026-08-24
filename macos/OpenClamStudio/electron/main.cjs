@@ -854,6 +854,10 @@ function setChatMode(value) {
   // the user's Cmd+Shift+9 presentation or its zoom baseline.
   if (next && chatMode) {
     state.interfaceMode = 'chat';
+    // Chat/Talk is the sole visible surface in this mode. The transparent
+    // Avatar renderer can finish loading after Chat/Talk has opened; hiding it
+    // again here repairs any late ready-to-show or external focus reveal.
+    mainWindow.hide();
     createChatWindow();
     if (chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.show();
@@ -1040,6 +1044,7 @@ function applyPetOpacity(value, reveal = true) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (chatMode) {
       mainWindow.setOpacity(1);
+      mainWindow.hide();
     } else if (opacity <= 0.001) mainWindow.hide();
     else {
       mainWindow.setOpacity(opacity);
@@ -2338,14 +2343,27 @@ function createMainWindow() {
   guardNavigation(mainWindow, 'main');
   mainWindow.loadURL(`${baseUrl()}/?electron=1&app=${encodeURIComponent(app.getVersion())}`);
   mainWindow.once('ready-to-show', () => {
+    // Startup may enter Chat/Talk before this transparent renderer finishes
+    // loading. Never let its delayed ready event reveal a miniature duplicate
+    // chat surface beside the real chat window.
+    if (chatMode) {
+      mainWindow.hide();
+      return;
+    }
     if (state.petRoam && petMotionReady) startPetRoamMotion();
     else applyPetZoom(state.petZoom);
     // Startup is an ambient reveal, not an interaction. Settings may have
     // opened while the pet renderer was loading, so never make the pet key
     // here; explicit chat clicks activate it through openclam:pet-focus.
-    if (state.petOpacity > 0.001) mainWindow.showInactive();
+    if (!chatMode && state.petOpacity > 0.001) mainWindow.showInactive();
   });
-  mainWindow.on('show', protectSettingsFromPetOverlay);
+  mainWindow.on('show', () => {
+    if (chatMode) {
+      mainWindow.hide();
+      return;
+    }
+    protectSettingsFromPetOverlay();
+  });
   mainWindow.on('focus', protectSettingsFromPetOverlay);
   mainWindow.on('move', () => { if (!state.petRoam && !chatMode) saveStateSoon(); });
   mainWindow.on('resize', () => { if (!state.petRoam && !chatMode) saveStateSoon(); });

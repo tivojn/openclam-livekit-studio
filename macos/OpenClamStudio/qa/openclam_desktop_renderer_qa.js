@@ -627,8 +627,16 @@ assert.match(source, /const chatWindowMotionFit = \(kind, meta, width, height, n
 assert.match(source, /const floor = Math\.max\(190, innerHeight - 4\);/,
   'Chat\/Talk motion must use the chat canvas bottom as its lower edge');
 assert.match(source, /const motionTravelAtPhase = \(clip, phase\) => \{/);
-assert.match(source, /const travelled = \(completedCycles \* cycleDistance[\s\S]{0,120}motionTravelAtPhase\(clip, phase\)\) \* scale;/,
+assert.match(source, /const motionTravelSincePhase = \(clip, startPhase, elapsedSeconds\) => \{[\s\S]{0,620}motionTravelAtPhase\(clip, phase\) - motionTravelAtPhase\(clip, initial\);/,
   'Horizon Walk screen travel must use the authored gait trajectory rather than a fixed conveyor-belt duration');
+assert.match(source, /const left = 3;[\s\S]{0,100}innerWidth - 3 - crop\.w \* scale/,
+  'Chat\/Talk Horizon Walk must traverse the full chat-window width');
+assert.match(source, /A saved conversational drag must not shift Walk[\s\S]{0,180}const offset = \{ x: 0, y: 0 \};/,
+  'the chat-window motion lane must remain independent from the speaking pose offset');
+assert.match(source, /const advanceChatWalkState = \(state, now, walkClip, idleClip, span\) => \{[\s\S]{0,1500}runtime\.mode = `ledge-\$\{edge\}`;[\s\S]{0,180}motionRoundSeconds\(idleClip\) \* 1000/,
+  'Chat\/Talk Horizon Walk must enter one authored Edge Idle round at each edge');
+assert.match(source, /const chatWalk = inChat && manualMotionKind === 'walk'[\s\S]{0,180}presentedKind = chatWalk \? chatWalk\.kind/,
+  'the manual Walk control must render the state machine\'s Walk or Edge Idle presentation');
 assert.match(source, /const phase = chatScoped && kind === 'walk' \? fit\.phase/,
   'the traversing body frames and its lower-edge travel must share one gait phase');
 assert.match(source, /anchors\[`\$\{displayEdge\}_frames`\][\s\S]{0,520}innerWidth - 3 - rightSupport \* fit\.scale/,
@@ -640,6 +648,80 @@ assert.match(source, /html\.avatar-only-motion #chatDock,[\s\S]{0,220}opacity: 0
 assert.match(source, /html\.avatar-only-motion #emptyState[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
 assert.match(source, /transition-duration: 160ms;/);
 assert.match(source, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,700}html\.avatar-only-motion #rail/);
+
+const motionTravelAtPhaseSource = inline[1].match(
+  /(const motionTravelAtPhase = \(clip, phase\) => \{[\s\S]*?\n    \};)/,
+);
+const motionCycleSecondsSource = inline[1].match(
+  /(const motionCycleSeconds = clip =>[\s\S]*?\n      \|\| Math\.max[\s\S]*?\);)/,
+);
+const motionRoundSecondsSource = inline[1].match(
+  /(const motionRoundSeconds = clip => \{[\s\S]*?\n    \};)/,
+);
+const motionTravelSincePhaseSource = inline[1].match(
+  /(const motionTravelSincePhase = \(clip, startPhase, elapsedSeconds\) => \{[\s\S]*?\n    \};)/,
+);
+const createChatWalkStateSource = inline[1].match(
+  /(const createChatWalkState = now => \(\{[\s\S]*?\n    \}\);)/,
+);
+const advanceChatWalkStateSource = inline[1].match(
+  /(const advanceChatWalkState = \(state, now, walkClip, idleClip, span\) => \{[\s\S]*?\n    \};)/,
+);
+for (const [name, match] of [
+  ['motion travel', motionTravelAtPhaseSource],
+  ['motion cadence', motionCycleSecondsSource],
+  ['motion round', motionRoundSecondsSource],
+  ['phase-aware travel', motionTravelSincePhaseSource],
+  ['chat walk initialiser', createChatWalkStateSource],
+  ['chat walk state machine', advanceChatWalkStateSource],
+]) assert.ok(match, `${name} helper must remain independently testable`);
+const chatWalkProbe = new Function(
+  `'use strict'; ${motionTravelAtPhaseSource[1]}; ${motionCycleSecondsSource[1]}; `
+    + `${motionRoundSecondsSource[1]}; ${motionTravelSincePhaseSource[1]}; `
+    + `${createChatWalkStateSource[1]}; ${advanceChatWalkStateSource[1]}; `
+    + 'return { createChatWalkState, advanceChatWalkState, motionRoundSeconds };',
+)();
+const chatWalkClip = {
+  cycle_seconds: 1, cycle_distance: 100, ground_speed: 100,
+  frames: 10, fps: 10,
+};
+const chatIdleClip = { frames: 20, fps: 10 };
+const chatWalkRuntime = chatWalkProbe.createChatWalkState(0);
+let chatWalkStep = chatWalkProbe.advanceChatWalkState(
+  chatWalkRuntime, 1000, chatWalkClip, chatIdleClip, 250);
+assert.deepEqual(
+  {kind: chatWalkStep.kind, direction: chatWalkStep.direction, position: chatWalkStep.position},
+  {kind: 'walk', direction: 1, position: 100},
+  'Chat\/Talk must walk toward the right edge first');
+chatWalkStep = chatWalkProbe.advanceChatWalkState(
+  chatWalkRuntime, 2500, chatWalkClip, chatIdleClip, 250);
+assert.deepEqual(
+  {kind: chatWalkStep.kind, edge: chatWalkStep.edge, position: chatWalkStep.position},
+  {kind: 'idle', edge: 'right', position: 250},
+  'reaching the right edge must enter Edge Idle instead of bouncing');
+assert.equal(chatWalkRuntime.holdUntil, 4500,
+  'the right edge must hold for exactly one authored Edge Idle round');
+chatWalkStep = chatWalkProbe.advanceChatWalkState(
+  chatWalkRuntime, 4499, chatWalkClip, chatIdleClip, 250);
+assert.equal(chatWalkStep.kind, 'idle');
+chatWalkStep = chatWalkProbe.advanceChatWalkState(
+  chatWalkRuntime, 4500, chatWalkClip, chatIdleClip, 250);
+assert.deepEqual(
+  {kind: chatWalkStep.kind, direction: chatWalkStep.direction, position: chatWalkStep.position},
+  {kind: 'walk', direction: -1, position: 250},
+  'one idle round later the avatar must turn and walk toward the opposite edge');
+chatWalkStep = chatWalkProbe.advanceChatWalkState(
+  chatWalkRuntime, 7000, chatWalkClip, chatIdleClip, 250);
+assert.deepEqual(
+  {kind: chatWalkStep.kind, edge: chatWalkStep.edge, position: chatWalkStep.position},
+  {kind: 'idle', edge: 'left', position: 0},
+  'the return traversal must enter Edge Idle at the left chat-window edge');
+chatWalkStep = chatWalkProbe.advanceChatWalkState(
+  chatWalkRuntime, 9000, chatWalkClip, chatIdleClip, 250);
+assert.deepEqual(
+  {kind: chatWalkStep.kind, direction: chatWalkStep.direction, position: chatWalkStep.position},
+  {kind: 'walk', direction: 1, position: 0},
+  'the full Walk–Idle cycle must continue back toward the right edge');
 
 const presentedMotionSource = inline[1].match(
   /(const drawPresentedMotion = \(kind, now, edge = null\) => \{[\s\S]*?\n    \};)/,

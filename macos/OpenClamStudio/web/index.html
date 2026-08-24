@@ -1592,6 +1592,7 @@
     let avatarMirrored = localStorage.getItem('openclam.chat.avatar-mirrored') === '1';
     let manualMotionKind = null;
     let manualMotionStartedAt = 0;
+    let chatWalkState = null;
     const loadChatAvatarOffset = key => {
       try {
         const saved = JSON.parse(localStorage.getItem(key) || '{}');
@@ -2417,6 +2418,85 @@
       return current + (next - current) * fraction;
     };
 
+    const motionCycleSeconds = clip => Number(clip && clip.cycle_seconds)
+      || Math.max(.1, Number(clip && clip.frames || 1)
+        / Math.max(1, Number(clip && clip.fps || 1)));
+
+    const motionRoundSeconds = clip => {
+      const authored = Number(clip && clip.frames) / Math.max(1, Number(clip && clip.fps));
+      if (Number.isFinite(authored) && authored > 0) return authored;
+      const decoded = Number(clip && clip.video && clip.video.duration);
+      if (Number.isFinite(decoded) && decoded > 0) return decoded;
+      return 9;
+    };
+
+    const motionTravelSincePhase = (clip, startPhase, elapsedSeconds) => {
+      const cycleSeconds = motionCycleSeconds(clip);
+      const cycleDistance = Number(clip && clip.cycle_distance)
+        || Number(clip && clip.ground_speed) * cycleSeconds || 64 * cycleSeconds;
+      const initial = ((Number(startPhase) || 0) % 1 + 1) % 1;
+      const progress = initial + Math.max(0, Number(elapsedSeconds) || 0) / cycleSeconds;
+      const completedCycles = Math.floor(progress);
+      const phase = progress - completedCycles;
+      const travelled = completedCycles * cycleDistance
+        + motionTravelAtPhase(clip, phase) - motionTravelAtPhase(clip, initial);
+      return { phase, travelled: Math.max(0, travelled) };
+    };
+
+    const createChatWalkState = now => ({
+      mode: 'walk',
+      direction: 1,
+      edge: null,
+      segmentStartedAt: Math.max(0, Number(now) || 0),
+      holdUntil: 0,
+      phaseStart: 0,
+      phase: 0,
+    });
+
+    // Chat/Talk owns a renderer-local roam engine because the chat window is
+    // the canvas. It mirrors Avatar mode's walk/ledge state machine: touch an
+    // edge, play one complete authored Edge Idle round, turn, and cross to the
+    // opposite edge without resetting the gait phase.
+    const advanceChatWalkState = (state, now, walkClip, idleClip, span) => {
+      const runtime = state || createChatWalkState(now);
+      const sampledAt = Math.max(0, Number(now) || 0);
+      const safeSpan = Math.max(1, Number(span) || 1);
+      if (String(runtime.mode).startsWith('ledge-')) {
+        const edge = runtime.mode === 'ledge-left' ? 'left' : 'right';
+        if (sampledAt < Number(runtime.holdUntil)) {
+          return {
+            state: runtime, kind: 'idle', edge,
+            direction: runtime.direction, phase: runtime.phase,
+            position: edge === 'left' ? 0 : safeSpan,
+          };
+        }
+        runtime.direction = edge === 'right' ? -1 : 1;
+        runtime.mode = 'walk';
+        runtime.edge = null;
+        runtime.phaseStart = runtime.phase;
+        runtime.segmentStartedAt = sampledAt;
+      }
+      const elapsed = Math.max(0, (sampledAt - Number(runtime.segmentStartedAt)) / 1000);
+      const travel = motionTravelSincePhase(walkClip, runtime.phaseStart, elapsed);
+      runtime.phase = travel.phase;
+      if (travel.travelled >= safeSpan) {
+        const edge = runtime.direction < 0 ? 'left' : 'right';
+        runtime.mode = `ledge-${edge}`;
+        runtime.edge = edge;
+        runtime.holdUntil = sampledAt + motionRoundSeconds(idleClip) * 1000;
+        return {
+          state: runtime, kind: 'idle', edge,
+          direction: runtime.direction, phase: runtime.phase,
+          position: edge === 'left' ? 0 : safeSpan,
+        };
+      }
+      return {
+        state: runtime, kind: 'walk', edge: null,
+        direction: runtime.direction, phase: runtime.phase,
+        position: runtime.direction < 0 ? safeSpan - travel.travelled : travel.travelled,
+      };
+    };
+
     const chatWindowMotionFit = (kind, meta, width, height, now, clip = null, edge = 'right') => {
       const crop = viewCrop(meta, width, height, 'full');
       const floor = Math.max(190, innerHeight - 4);
@@ -2426,34 +2506,33 @@
       const targetHeight = Math.max(150, Math.min(floor * .48, innerHeight * .46));
       const targetWidth = Math.max(110, innerWidth * .24);
       const scale = Math.min(targetWidth / crop.w, targetHeight / crop.h) * zoom;
-      const left = 32;
-      const right = Math.max(left, innerWidth - 104 - crop.w * scale);
+      const left = 3;
+      const right = Math.max(left, innerWidth - 3 - crop.w * scale);
       let figureLeft = right;
       let direction = -1;
       let phase = null;
+      let motionKind = kind;
+      let motionEdge = kind === 'idle' ? edge : null;
       if (kind === 'idle') {
         figureLeft = edge === 'left' ? 3 : innerWidth - 3 - crop.w * scale;
       }
       if (kind === 'walk') {
         const motionNow = canvasGesture && canvasGesture.positionAdjusting
           ? canvasGesture.motionAt : Number(now) || 0;
-        const cycleSeconds = Number(clip && clip.cycle_seconds)
-          || Math.max(.1, Number(clip && clip.frames || 1)
-            / Math.max(1, Number(clip && clip.fps || 1)));
-        const elapsed = Math.max(0, (motionNow - manualMotionStartedAt) / 1000);
-        const completedCycles = Math.floor(elapsed / cycleSeconds);
-        phase = (elapsed / cycleSeconds) % 1;
-        const cycleDistance = Number(clip && clip.cycle_distance)
-          || Number(clip && clip.ground_speed) * cycleSeconds || 64 * cycleSeconds;
-        const travelled = (completedCycles * cycleDistance
-          + motionTravelAtPhase(clip, phase)) * scale;
         const span = Math.max(1, right - left);
-        const bounced = travelled % (span * 2);
-        direction = bounced <= span ? 1 : -1;
-        figureLeft = left + (bounced <= span ? bounced : span * 2 - bounced);
+        const presentation = advanceChatWalkState(
+          chatWalkState, motionNow, clip, motion.idle, span / scale);
+        chatWalkState = presentation.state;
+        motionKind = presentation.kind;
+        motionEdge = presentation.edge;
+        direction = presentation.direction;
+        phase = presentation.phase;
+        figureLeft = left + presentation.position * scale;
       }
-      const offset = kind === 'idle' ? { x: 0, y: 0 }
-        : boundedChatAvatarOffset(chatAvatarOffset);
+      // Motion owns the chat-window lane just as Avatar mode owns the screen
+      // lane. A saved conversational drag must not shift Walk past either
+      // edge or lift its feet away from the chat-window floor.
+      const offset = { x: 0, y: 0 };
       return {
         scale,
         x: figureLeft - crop.x * scale + offset.x,
@@ -2461,8 +2540,20 @@
         crop,
         direction,
         phase,
+        motionKind,
+        motionEdge,
         offset,
       };
+    };
+
+    const chatWalkPresentationAt = now => {
+      const clip = motion.walk;
+      if (!clip) return { kind: 'walk', edge: null };
+      const width = Number(clip.frame_width) || 720;
+      const height = Number(clip.frame_height) || 1088;
+      const metadata = { bounds: clip.bounds || [0, 0, width, height] };
+      const fit = chatWindowMotionFit('walk', metadata, width, height, now, clip);
+      return { kind: fit.motionKind || 'walk', edge: fit.motionEdge || null };
     };
 
     /* track-stabiliser:start */
@@ -3259,20 +3350,26 @@
       if (!ready) { clearStage(); setAvatarOnlyMotion(false); return; }
 
       if (manualMotionKind) {
-        const rendered = root.classList.contains('chat-mode')
-          ? drawMotion(manualMotionKind, now, side)
-          : drawPresentedMotion(manualMotionKind, now, side);
+        const inChat = root.classList.contains('chat-mode');
+        const chatWalk = inChat && manualMotionKind === 'walk'
+          ? chatWalkPresentationAt(now) : null;
+        const presentedKind = chatWalk ? chatWalk.kind : manualMotionKind;
+        const presentedEdge = chatWalk ? chatWalk.edge : side;
+        const rendered = inChat
+          ? drawMotion(presentedKind, now, presentedEdge)
+          : drawPresentedMotion(presentedKind, now, presentedEdge);
         if (rendered) {
-          if (root.classList.contains('chat-mode')) setAvatarOnlyMotion(false);
+          if (inChat) setAvatarOnlyMotion(false);
           return;
         }
-        if (root.classList.contains('chat-mode') && manualMotionKind === 'idle') {
+        if (inChat && presentedKind === 'idle') {
           endMotionPresentation();
           setAvatarOnlyMotion(false);
-          drawAvatar(now, `chat-edge-idle-${chatStandbyEdge(chatAvatarOffset)}`);
+          drawAvatar(now, `chat-edge-idle-${presentedEdge || chatStandbyEdge(chatAvatarOffset)}`);
           return;
         }
         manualMotionKind = null;
+        chatWalkState = null;
       }
 
       if (roamState.enabled) {
@@ -3334,9 +3431,13 @@
     const frameDelay = now => {
       if (document.hidden || Number(shellState.pet && shellState.pet.opacity) <= .001) return 250;
       if (manualMotionKind) {
-        const clip = motion[manualMotionKind];
+        const chatWalkIdle = root.classList.contains('chat-mode')
+          && manualMotionKind === 'walk'
+          && chatWalkState && String(chatWalkState.mode).startsWith('ledge-');
+        const clip = motion[chatWalkIdle ? 'idle' : manualMotionKind];
         if (clip) return motionFrameDelay(clip,
           Boolean(manualMotionKind === 'move' && clip.video && clip.video.ended));
+        if (chatWalkIdle) return 32;
       }
       if (roamState.enabled) {
         const kind = roamMotionKind(roamState.mode, roamState.presentationMode);
@@ -5433,6 +5534,7 @@
       if (root.classList.contains('chat-mode')) {
         manualMotionKind = manualMotionKind === 'move' ? null : 'move';
         manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
+        chatWalkState = null;
         movesButton.setAttribute('aria-checked', String(manualMotionKind === 'move'));
         walkButton.setAttribute('aria-checked', 'false');
         edgeIdleButton.setAttribute('aria-checked', 'false');
@@ -5458,6 +5560,8 @@
       if (root.classList.contains('chat-mode')) {
         manualMotionKind = manualMotionKind === 'walk' ? null : 'walk';
         manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
+        chatWalkState = manualMotionKind
+          ? createChatWalkState(manualMotionStartedAt) : null;
         walkButton.setAttribute('aria-checked', String(manualMotionKind === 'walk'));
         edgeIdleButton.setAttribute('aria-checked', 'false');
         movesButton.setAttribute('aria-checked', 'false');
@@ -5473,6 +5577,7 @@
       if (!chatFallback && !await ensureMotion('idle')) return;
       manualMotionKind = manualMotionKind === 'idle' ? null : 'idle';
       manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
+      chatWalkState = null;
       edgeIdleButton.setAttribute('aria-checked', String(manualMotionKind === 'idle'));
       walkButton.setAttribute('aria-checked', 'false');
       movesButton.setAttribute('aria-checked', 'false');
@@ -5524,6 +5629,7 @@
       if (closeUpChanged) {
         manualMotionKind = null;
         manualMotionStartedAt = 0;
+        chatWalkState = null;
         walkButton.setAttribute('aria-checked', 'false');
         edgeIdleButton.setAttribute('aria-checked', 'false');
         movesButton.setAttribute('aria-checked', 'false');
@@ -5661,7 +5767,15 @@
         dragging = false;
         root.classList.remove('dragging', 'position-adjusting');
         if (manualMotionKind === 'walk' && manualMotionStartedAt > 0) {
-          manualMotionStartedAt += Math.max(0, performance.now() - gesture.motionAt);
+          const pausedFor = Math.max(0, performance.now() - gesture.motionAt);
+          manualMotionStartedAt += pausedFor;
+          if (chatWalkState) {
+            if (String(chatWalkState.mode).startsWith('ledge-')) {
+              chatWalkState.holdUntil += pausedFor;
+            } else {
+              chatWalkState.segmentStartedAt += pausedFor;
+            }
+          }
         }
         saveChatAvatarOffset();
         updateHit(true);
