@@ -121,6 +121,12 @@ assert.match(main, /function createChatWindow\(\)[\s\S]{0,1000}frame: true,[\s\S
   'Chat\/Talk must be a standard, opaque, resizable macOS application window');
 assert.match(main, /function setChatMode\(value\)[\s\S]{0,900}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,850}mainWindow\.showInactive\(\)/,
   'mode switching must move between the normal chat window and standby companion');
+assert.match(main, /function recoverCompanion\(\)[\s\S]{0,300}if \(chatMode\) setChatMode\(false\);/,
+  'Standby recovery must hide the separate Chat\/Talk window before revealing the avatar');
+assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,360}if \(chatMode\) setChatMode\(false\);/,
+  'Close-Up Companion must leave Chat\/Talk mode before resizing the avatar window');
+assert.match(main, /function deskCompanionMode\(\)[\s\S]{0,1400}fitPetZoomToArea\([\s\S]{0,300}dockedPetBounds\(size, area, PET_DOCK_MARGIN\)/,
+  'Close-Up Companion must remain fully inside the active display work area');
 const avatarMenu = main.match(/function showPetMenu\(\) \{([\s\S]*?)\n\}\n\nfunction createTray/);
 assert.ok(avatarMenu, 'Avatar mode must retain one focused right-click menu');
 for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Moves',

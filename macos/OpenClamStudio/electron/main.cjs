@@ -2363,6 +2363,10 @@ function showChat() {
 
 function recoverCompanion() {
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+  // Recovery shortcuts can be invoked while the separate Chat/Talk window is
+  // active. Return to Avatar mode before resizing, otherwise the chat window
+  // remains visible underneath a newly revealed transparent companion.
+  if (chatMode) setChatMode(false);
   // Reset the zoom before anything re-applies it: keeping the current size
   // once "recovered" a pinch-blown window to a spot still off every edge.
   // Recovery is the safe reset: whole figure, and a zoom that provably
@@ -2402,11 +2406,8 @@ function installRecoveryShortcut() {
   if (!globalShortcut.register(accelerator, standbyCompanionMode)) {
     writeBackendLog(`[shortcut unavailable] ${accelerator}\n`);
   }
-  // Cmd+Shift+9: enlarge to a big (max-zoom) overlay and slide her into
-  // the bottom-right corner - head and shoulders on screen, the rest of
-  // the FULL body hanging below the display. View is never touched, so
-  // nothing is ever cropped (owner, final semantics 2026-08-02). A
-  // second press restores the exact prior zoom and bounds.
+  // Cmd+Shift+9: enlarge to the biggest whole-avatar overlay that fits the
+  // current display. A second press restores the exact prior zoom and bounds.
   const companion = 'CommandOrControl+Shift+9';
   if (!globalShortcut.register(companion, deskCompanionMode)) {
     writeBackendLog(`[shortcut unavailable] ${companion}\n`);
@@ -2421,6 +2422,10 @@ function standbyCompanionMode() {
 }
 
 function deskCompanionMode() {
+  if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+  // Chat/Talk is a separate native window. It must be hidden before revealing
+  // and resizing the companion or both surfaces remain stacked on the desk.
+  if (chatMode) setChatMode(false);
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (companionHold) {
     const hold = companionHold;
@@ -2436,17 +2441,12 @@ function deskCompanionMode() {
   companionHold = { zoom: state.petZoom, bounds: mainWindow.getBounds() };
   applyPetOpacity(1);
   const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
-  state.petZoom = PET_ZOOM_RANGE.max;
+  state.petZoom = clampPetZoom(
+    fitPetZoomToArea(
+      PET_BASE_SIZE, PET_NORMAL_MINIMUM, PET_ZOOM_RANGE.max, area, PET_DOCK_MARGIN),
+    PET_ZOOM_RANGE);
   const size = petZoomSize(PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom);
-  // Matched to the owner's reference: crown ~a third down the screen,
-  // face centred ~84% across, hair spilling past the right edge, body
-  // running off the bottom.
-  const bounds = {
-    x: Math.round(area.x + area.width * 0.84 - size.width / 2),
-    y: Math.round(area.y + area.height * 0.23),
-    width: size.width,
-    height: size.height,
-  };
+  const bounds = dockedPetBounds(size, area, PET_DOCK_MARGIN);
   mainWindow.setBounds(bounds, false);
   state.bounds = { ...bounds };
   if (state.petOpacity > 0.001) mainWindow.showInactive();

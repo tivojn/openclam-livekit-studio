@@ -233,10 +233,12 @@ assert.match(bodyResponsive, /@media\(max-width:860px\)/,
   'Full Body Studio must adapt at the settings window narrow breakpoint');
 assert.match(bodyResponsive, /#body-modal \.rig-dialog\{height:auto;min-height:100%;overflow:visible\}/,
   'The narrow modal must use its shell as the only page scroll surface');
-assert.match(bodyResponsive, /#body-modal \.body-visual\{height:clamp\(320px,58vh,440px\);min-height:0/,
+assert.match(bodyResponsive, /#body-modal \.body-visual\{height:clamp\(360px,62vh,500px\);min-height:0/,
   'The narrow preview must not retain the 660px desktop minimum');
-assert.match(bodyResponsive, /#body-modal \.body-preview\{position:absolute;inset:54px 18px 28px;/,
-  'The generated full body must fit the shorter preview instead of being cropped');
+assert.match(bodyResponsive, /#body-modal \.body-preview\{position:relative;inset:auto;width:100%;height:100%;max-height:none\}/,
+  'The generated full body must fit its reserved preview row instead of being cropped');
+assert.match(bodyResponsive, /#body-modal \.body-mode-tabs,#body-modal \.body-view-tabs\{position:relative;inset:auto;transform:none\}/,
+  'Body and view controls must consume layout space rather than covering the avatar');
 assert.match(bodyResponsive, /#body-modal \.body-panel\{max-height:none;overflow:visible/,
   'The narrow inspector must not create an independent vertical scroller');
 assert.match(bodyResponsive, /#body-modal \.rig-head\{position:sticky;top:0/,

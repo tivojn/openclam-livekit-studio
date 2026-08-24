@@ -414,26 +414,31 @@ body{padding-bottom:84px}
 .rig-foot .rig-status{margin:0;max-height:74px;overflow:auto}
 .rig-foot .note{margin:0;margin-right:auto;max-width:650px}
 .body-grid{display:grid;grid-template-columns:minmax(320px,1.15fr) minmax(300px,.85fr);min-height:580px}
-.body-visual{position:relative;display:grid;place-items:center;padding:30px;overflow:hidden;min-height:660px;
+.body-visual{position:relative;display:grid;grid-template-rows:auto minmax(0,1fr) auto;
+  place-items:stretch center;gap:10px;padding:16px 24px 12px;overflow:hidden;min-height:660px;
   border-right:1px solid var(--line);background:
   radial-gradient(circle at 50% 32%,var(--stage-a),var(--stage-b) 78%)}
 .body-visual:before{content:"";position:absolute;inset:8%;border:1px solid var(--line);
   opacity:.6;border-radius:50% 50% 12% 12%/22% 22% 9% 9%}
-.body-preview{position:relative;z-index:1;width:100%;height:min(68vh,650px);object-fit:contain;
+.body-preview-controls{position:relative;z-index:5;display:flex;align-items:center;justify-content:center;
+  align-self:start;gap:8px;width:100%;min-width:0;flex-wrap:wrap}
+.body-preview{position:relative;z-index:1;grid-row:2;width:100%;height:100%;min-height:0;
+  max-height:min(68vh,650px);object-fit:contain;
   filter:drop-shadow(0 22px 30px rgba(15,15,15,.18))}
-.body-view-tabs{position:absolute;z-index:3;top:64px;left:50%;transform:translateX(-50%);
+.body-view-tabs{position:relative;z-index:3;
   display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:8px;
   background:var(--glass);backdrop-filter:blur(12px);box-shadow:var(--shadow-sm)}
-.body-view-caption{position:absolute;z-index:3;left:24px;right:24px;bottom:16px;
+.body-view-caption{position:relative;z-index:3;grid-row:3;width:100%;
   color:var(--dim);font-size:11.5px;text-align:center}
-.body-mode-tabs{position:absolute;z-index:5;top:16px;left:50%;transform:translateX(-50%);
+.body-mode-tabs{position:relative;z-index:5;
   display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:8px;
   background:var(--glass);backdrop-filter:blur(14px);box-shadow:var(--shadow-pop)}
 .body-mode-tabs .rig-chip{white-space:nowrap}.body-mode-tabs .mode-count{display:inline-grid;
   place-items:center;min-width:17px;height:17px;margin-left:4px;padding:0 4px;border-radius:999px;
   background:var(--press);color:var(--dim);font-size:9px}
 .body-mode-tabs .rig-chip.on .mode-count{background:var(--accent);color:var(--accent-on,#fff)}
-.motion-library{position:absolute;z-index:2;inset:70px 12px 12px;overflow:auto;text-align:left;
+.motion-library{position:relative;z-index:2;grid-row:2 / 4;align-self:stretch;width:100%;min-height:0;
+  overflow:auto;text-align:left;
   padding:4px 7px 24px;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
 .motion-library-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:0 2px 14px}
 .motion-library-kicker{display:block;margin-bottom:4px;color:var(--accent-text);font-size:9.5px;font-weight:700;
@@ -474,7 +479,8 @@ body{padding-bottom:84px}
 .motion-save:hover{filter:brightness(1.04)}.motion-save:disabled{opacity:.5;cursor:wait}.motion-save-status{
   min-height:17px;margin:9px 2px 0;color:var(--dim);font-size:10.5px}.motion-library-empty{display:grid;grid-column:1/-1;place-items:center;
   min-height:300px;padding:26px;border:1px dashed var(--line-strong);border-radius:10px;color:var(--dim);text-align:center;line-height:1.6}
-.body-empty{position:relative;z-index:1;max-width:390px;text-align:center;color:var(--dim)}
+.body-empty{position:relative;z-index:1;grid-row:2;align-self:center;max-width:390px;
+  text-align:center;color:var(--dim)}
 .body-empty-mark{width:112px;height:210px;margin:0 auto 24px;border:1px solid var(--line-strong);
   border-radius:52% 52% 22% 22%/24% 24% 12% 12%;background:linear-gradient(180deg,var(--panel),var(--bg-sub));
   box-shadow:var(--shadow-pop)}
@@ -654,12 +660,11 @@ body{padding-bottom:84px}
     backdrop-filter:blur(16px)}
   #body-modal .body-grid{min-height:0}
   #body-modal{scroll-padding-top:76px}
-  #body-modal .body-visual{height:clamp(320px,58vh,440px);min-height:0;padding:18px}
-  #body-modal .body-preview{position:absolute;inset:54px 18px 28px;
-    width:calc(100% - 36px);height:calc(100% - 82px);max-height:none}
-  #body-modal .body-mode-tabs{top:14px;left:18px;transform:none}
-  #body-modal .body-view-tabs{top:14px;right:18px;left:auto;transform:none}
-  #body-modal .body-view-caption{bottom:7px}
+  #body-modal .body-visual{height:clamp(360px,62vh,500px);min-height:0;padding:14px 18px 10px;gap:8px}
+  #body-modal .body-preview-controls{position:relative;align-self:start;gap:7px}
+  #body-modal .body-preview{position:relative;inset:auto;width:100%;height:100%;max-height:none}
+  #body-modal .body-mode-tabs,#body-modal .body-view-tabs{position:relative;inset:auto;transform:none}
+  #body-modal .body-view-caption{position:relative;inset:auto}
   #body-modal .body-empty{max-width:460px;font-size:12px;line-height:1.4}
   #body-modal .body-empty-mark{width:72px;height:132px;margin-bottom:12px}
   #body-modal .body-panel{max-height:none;overflow:visible;padding:20px 24px 32px}
@@ -1236,16 +1241,18 @@ document.documentElement.dataset.design='quiet';</script>
     </div>
     <div class="body-grid">
       <div class="body-visual">
-        <div class="body-mode-tabs hidden" id="body-mode-tabs" role="tablist" aria-label="Full Body Studio output">
-          <button class="rig-chip on" type="button" data-body-mode="body" role="tab">Body</button>
-          <button class="rig-chip" type="button" data-body-mode="walk" role="tab">Walk <span class="mode-count" id="body-walk-file-count">0</span></button>
-          <button class="rig-chip" type="button" data-body-mode="idle" role="tab">Edge Idle <span class="mode-count" id="body-idle-file-count">0</span></button>
-          <button class="rig-chip" type="button" data-body-mode="move" role="tab">Moves <span class="mode-count" id="body-move-file-count">0</span></button>
-        </div>
-        <div class="body-view-tabs hidden" id="body-view-tabs" role="tablist" aria-label="Full-body view">
-          <button class="rig-chip on" data-body-view="front" role="tab">Front</button>
-          <button class="rig-chip" data-body-view="side" role="tab">Side</button>
-          <button class="rig-chip" data-body-view="back" role="tab">Back</button>
+        <div class="body-preview-controls">
+          <div class="body-mode-tabs hidden" id="body-mode-tabs" role="tablist" aria-label="Full Body Studio output">
+            <button class="rig-chip on" type="button" data-body-mode="body" role="tab">Body</button>
+            <button class="rig-chip" type="button" data-body-mode="walk" role="tab">Walk <span class="mode-count" id="body-walk-file-count">0</span></button>
+            <button class="rig-chip" type="button" data-body-mode="idle" role="tab">Edge Idle <span class="mode-count" id="body-idle-file-count">0</span></button>
+            <button class="rig-chip" type="button" data-body-mode="move" role="tab">Moves <span class="mode-count" id="body-move-file-count">0</span></button>
+          </div>
+          <div class="body-view-tabs hidden" id="body-view-tabs" role="tablist" aria-label="Full-body view">
+            <button class="rig-chip on" data-body-view="front" role="tab">Front</button>
+            <button class="rig-chip" data-body-view="side" role="tab">Side</button>
+            <button class="rig-chip" data-body-view="back" role="tab">Back</button>
+          </div>
         </div>
         <img class="body-preview hidden" id="body-preview" alt="Generated full-body companion">
         <div class="body-view-caption hidden" id="body-view-caption"></div>
