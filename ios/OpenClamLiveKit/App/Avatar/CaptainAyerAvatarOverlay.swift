@@ -294,6 +294,11 @@ enum CaptainAyerInteractionLayer: String, CaseIterable, Sendable {
     case avatar
     case thread
 
+    /// The avatar layer keeps its narrow silhouette gesture surface even at
+    /// 0% opacity so an upward swipe can make it visible again. Thread mode
+    /// remains fully pass-through regardless of the visual opacity.
+    var allowsAvatarGestures: Bool { self == .avatar }
+
     var title: String {
         switch self {
         case .avatar: "Avatar in front"
@@ -672,13 +677,10 @@ struct CaptainAyerAvatarOverlay: View {
                         x: proxy.size.width / 2,
                         y: stageTop + stageHeight / 2
                     )
-                    // Hidden mode removes this stage from layout entirely; this
-                    // explicit gate also prevents a transition frame from
-                    // retaining its silhouette gesture while fading out.
-                    .allowsHitTesting(
-                        interactionLayer == .avatar
-                            && opacity > CaptainAyerOverlayTuning.minimumOpacity
-                    )
+                    // Keep the narrow silhouette gesture surface alive at 0%
+                    // opacity so an upward swipe can recover the avatar. The
+                    // thread layer still disables the surface completely.
+                    .allowsHitTesting(interactionLayer.allowsAvatarGestures)
                     .transition(.opacity)
 
                     if let kind = motionSession.activeKind,
@@ -718,8 +720,8 @@ struct CaptainAyerAvatarOverlay: View {
         }
         .onAppear {
             // Older builds persisted a separate Hide flag. Migrate that state
-            // once to the new, explicit 0% opacity without leaving an invisible
-            // gesture surface mounted over the conversation.
+            // once to the new, explicit 0% opacity. Its narrow recovery gesture
+            // remains active only while the avatar layer is in front.
             if storedAvatarHidden {
                 storedOpacity = CaptainAyerOverlayTuning.minimumOpacity
                 storedAvatarHidden = false

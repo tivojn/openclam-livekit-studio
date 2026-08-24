@@ -268,6 +268,10 @@ final class ConversationModel: ObservableObject {
     /// Ephemeral cumulative remote reply. It is never written to history; only the authoritative
     /// completion becomes one assistant message.
     @Published private(set) var streamingAssistantReply: String?
+    /// Live Talk partials are visible in the current thread but stay out of history until
+    /// LiveKit marks the utterance final. This keeps relaunch history authoritative while still
+    /// showing both sides of the call as they speak.
+    @Published private(set) var liveTalkStreamingMessages: [ConversationMessage] = []
     @Published private(set) var remoteAgentActivity: RemoteAgentActivityPresentation?
     @Published private(set) var remoteAgentWorkSteps: [AgentConnectorWorkStep] = []
     @Published private(set) var screenshotData: Data?
@@ -327,6 +331,10 @@ final class ConversationModel: ObservableObject {
     private var historyStartupTask: Task<Bool, Never>?
     private var suppressesHistorySave = false
     private var deferredShortcutPromptDefaults: UserDefaults?
+    private var liveTalkTranscriptThreadID: UUID?
+    private var liveTalkTranscriptMessageIDs: [String: UUID] = [:]
+    private var liveTalkTranscriptDates: [String: Date] = [:]
+    private var committedLiveTalkTranscriptIDs: Set<String> = []
     let captainAyerAvatar: CaptainAyerLipSyncController
 
     init(
@@ -512,9 +520,85 @@ final class ConversationModel: ObservableObject {
         await saveCurrentChatImmediately()
     }
 
+    @discardableResult
+    func beginLiveTalkTranscriptSession() -> Bool {
+        guard isHistoryReady,
+              !isChangingChat,
+              let selectedThreadID = historyController.selectedThreadID else { return false }
+        liveTalkTranscriptThreadID = selectedThreadID
+        liveTalkTranscriptMessageIDs.removeAll(keepingCapacity: false)
+        liveTalkTranscriptDates.removeAll(keepingCapacity: false)
+        committedLiveTalkTranscriptIDs.removeAll(keepingCapacity: false)
+        liveTalkStreamingMessages = []
+        return true
+    }
+
+    func ingestLiveTalkTranscripts(_ transcripts: [LiveTalkTranscript]) {
+        guard let liveTalkTranscriptThreadID,
+              liveTalkTranscriptThreadID == historyController.selectedThreadID else { return }
+
+        var finalizedMessages: [ConversationMessage] = []
+        for transcript in transcripts where transcript.isFinal {
+            let key = liveTalkTranscriptKey(for: transcript)
+            guard committedLiveTalkTranscriptIDs.insert(key).inserted else { continue }
+            let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let messageID = liveTalkTranscriptMessageIDs[key] ?? UUID()
+            let date = liveTalkTranscriptDates[key] ?? Date()
+            liveTalkTranscriptMessageIDs[key] = messageID
+            liveTalkTranscriptDates[key] = date
+            finalizedMessages.append(
+                .init(
+                    id: messageID,
+                    role: transcript.role == .user ? .user : .assistant,
+                    text: text,
+                    date: date,
+                    isEligibleForAIContext: false
+                )
+            )
+        }
+        if !finalizedMessages.isEmpty {
+            messages.append(contentsOf: finalizedMessages)
+        }
+
+        liveTalkStreamingMessages = transcripts.compactMap { transcript in
+            let key = liveTalkTranscriptKey(for: transcript)
+            guard !transcript.isFinal,
+                  !committedLiveTalkTranscriptIDs.contains(key) else { return nil }
+            let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            let messageID = liveTalkTranscriptMessageIDs[key] ?? UUID()
+            let date = liveTalkTranscriptDates[key] ?? Date()
+            liveTalkTranscriptMessageIDs[key] = messageID
+            liveTalkTranscriptDates[key] = date
+            return .init(
+                id: messageID,
+                role: transcript.role == .user ? .user : .assistant,
+                text: text,
+                date: date,
+                isEligibleForAIContext: false,
+                historyPersistence: .ephemeral
+            )
+        }
+    }
+
+    func endLiveTalkTranscriptSession() {
+        liveTalkStreamingMessages = []
+        liveTalkTranscriptThreadID = nil
+        liveTalkTranscriptMessageIDs.removeAll(keepingCapacity: false)
+        liveTalkTranscriptDates.removeAll(keepingCapacity: false)
+        committedLiveTalkTranscriptIDs.removeAll(keepingCapacity: false)
+    }
+
+    private func liveTalkTranscriptKey(for transcript: LiveTalkTranscript) -> String {
+        let role = transcript.role == .user ? "user" : "agent"
+        return "\(role):\(transcript.id)"
+    }
+
     private func applySelectedHistory() {
         historySaveTask?.cancel()
         historySaveTask = nil
+        endLiveTalkTranscriptSession()
         suppressesHistorySave = true
         messages = historyController.selectedMessages.isEmpty
             ? Self.freshConversationMessages

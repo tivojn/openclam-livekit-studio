@@ -415,6 +415,14 @@ struct ConversationView: View {
         .onChange(of: appAudioActivityIsActive) { _, _ in
             synchronizeQuickDictationAudioOwnership()
         }
+        .onChange(of: liveTalk.transcripts) { _, transcripts in
+            conversation.ingestLiveTalkTranscripts(transcripts)
+        }
+        .onChange(of: liveTalk.phase) { previousPhase, currentPhase in
+            if previousPhase.isSessionActive, !currentPhase.isSessionActive {
+                conversation.endLiveTalkTranscriptSession()
+            }
+        }
         .onChange(of: conversation.pendingShortcutPrompt) { _, prompt in
             receivePendingShortcutPrompt(prompt)
         }
@@ -449,6 +457,7 @@ struct ConversationView: View {
                 cancelActiveRequest()
                 conversation.eventKitAgentSession.invalidate()
                 Task { await conversation.contactAgentSession.invalidate() }
+                conversation.endLiveTalkTranscriptSession()
                 Task { await liveTalk.stop() }
             }
         }
@@ -456,6 +465,7 @@ struct ConversationView: View {
             speech.cancel()
             conversation.stopSpeechOutput()
             cancelActiveRequest()
+            conversation.endLiveTalkTranscriptSession()
             Task { await liveTalk.stop() }
             keyboardDictationHost.setCompetingAppAudioActive(false)
         }
@@ -573,6 +583,11 @@ struct ConversationView: View {
                     scrollToLatest(using: proxy)
                 }
             }
+            .onChange(of: conversation.liveTalkStreamingMessages) { _, _ in
+                if threadPositioning.shouldFollowLatest {
+                    scrollToLatest(using: proxy)
+                }
+            }
     }
 
     private func observedThreadScroll(
@@ -616,6 +631,13 @@ struct ConversationView: View {
         LazyVStack(spacing: 14) {
             ForEach(conversation.messages) { message in
                 threadMessageRow(message, viewportWidth: viewport.size.width)
+            }
+
+            ForEach(conversation.liveTalkStreamingMessages) { message in
+                liveTalkStreamingThreadRow(
+                    message,
+                    viewportWidth: viewport.size.width
+                )
             }
 
             if conversation.messages.count == 1,
@@ -693,6 +715,57 @@ struct ConversationView: View {
                     : 0
             )
             .id(message.id)
+    }
+
+    private func liveTalkStreamingThreadRow(
+        _ message: ConversationMessage,
+        viewportWidth: CGFloat
+    ) -> some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            if message.role == .user { Spacer(minLength: 18) }
+            Text(message.text)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .padding(.horizontal, message.role == .user ? 14 : 2)
+                .padding(.vertical, message.role == .user ? 10 : 6)
+                .background(
+                    message.role == .user
+                        ? AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
+                        : AnyShapeStyle(Color.clear),
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+                .frame(
+                    width: message.role == .user
+                        ? ConversationThreadLayout.userBubbleWidth(
+                            viewportWidth: viewportWidth,
+                            naturalTextWidth: naturalUserMessageWidth(message.text),
+                            hasAttachments: false
+                        )
+                        : nil,
+                    alignment: .leading
+                )
+            ProgressView()
+                .controlSize(.mini)
+                .accessibilityLabel(
+                    message.role == .user
+                        ? "Transcribing your speech"
+                        : "Receiving the agent's reply"
+                )
+            if message.role == .assistant { Spacer(minLength: 18) }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(
+            physicalRightThreadEdge,
+            ConversationThreadLayout.additionalMessageRowTrailingPadding
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(
+            message.role == .user
+                ? "openclam-live-talk-user-transcript"
+                : "openclam-live-talk-agent-transcript"
+        )
+        .id(message.id)
     }
 
     @ViewBuilder
@@ -3359,6 +3432,8 @@ struct ConversationView: View {
     private func toggleLiveTalk() {
         dismissKeyboard()
         if liveTalk.phase.isSessionActive {
+            conversation.ingestLiveTalkTranscripts(liveTalk.transcripts)
+            conversation.endLiveTalkTranscriptSession()
             Task {
                 await liveTalk.stop()
                 liveTalkPTTNotice = nil
@@ -3370,6 +3445,10 @@ struct ConversationView: View {
         speech.cancel()
         conversation.stopSpeechOutput()
         liveTalkPTTNotice = nil
+        guard conversation.beginLiveTalkTranscriptSession() else {
+            liveTalkPTTNotice = "Wait for this chat to finish loading, then start Live Talk again."
+            return
+        }
         liveTalk.begin(
             avatar: aiConfiguration.activeAvatarProfile,
             sharedSettings: aiConfiguration.settings,

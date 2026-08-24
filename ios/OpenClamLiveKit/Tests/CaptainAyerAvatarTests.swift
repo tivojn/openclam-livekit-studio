@@ -200,6 +200,25 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertEqual(CaptainAyerOverlayTuning.minimumOpacity, 0)
         XCTAssertEqual(CaptainAyerOverlayTuning.maximumOpacity, 1)
         XCTAssertEqual(CaptainAyerInteractionLayer.allCases, [.avatar, .thread])
+        XCTAssertTrue(CaptainAyerInteractionLayer.avatar.allowsAvatarGestures)
+        XCTAssertFalse(CaptainAyerInteractionLayer.thread.allowsAvatarGestures)
+    }
+
+    func testFullyTransparentAvatarCanRecoverWithUpwardOpacitySwipe() throws {
+        var state = CaptainAyerOverlayGestureState()
+        let preview = try XCTUnwrap(
+            state.updateOpacityDrag(
+                startingOpacity: CaptainAyerOverlayTuning.minimumOpacity,
+                verticalTranslation: -90
+            )
+        )
+
+        XCTAssertEqual(preview, 0.30, accuracy: 0.0001)
+        XCTAssertEqual(
+            try XCTUnwrap(state.completeOpacityDrag()),
+            preview,
+            accuracy: 0.0001
+        )
     }
 
     func testStageDragIntentGivesVerticalOpacityExclusivePrecedence() {

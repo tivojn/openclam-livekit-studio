@@ -1599,6 +1599,89 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertTrue(window.items.isEmpty)
     }
 
+    func testLiveTalkThreadShowsPartialsAndPersistsFinalUtterancesOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let history = ConversationHistoryController(
+            store: ConversationHistoryStore(
+                fileURL: directory.appendingPathComponent("history.json")
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = ConversationModel(historyController: history)
+        for _ in 0..<100 where !model.isHistoryReady {
+            await Task.yield()
+        }
+        XCTAssertTrue(model.isHistoryReady)
+        XCTAssertTrue(model.beginLiveTalkTranscriptSession())
+
+        model.ingestLiveTalkTranscripts([
+            .init(id: "u1", role: .user, text: "Find nearby", isFinal: false),
+        ])
+        XCTAssertEqual(model.liveTalkStreamingMessages.map(\.text), ["Find nearby"])
+        XCTAssertFalse(model.messages.contains { $0.text == "Find nearby" })
+
+        model.ingestLiveTalkTranscripts([
+            .init(id: "u1", role: .user, text: "Find nearby McDonald's", isFinal: true),
+            .init(id: "a1", role: .agent, text: "I can help", isFinal: false),
+        ])
+        XCTAssertEqual(model.liveTalkStreamingMessages.map(\.text), ["I can help"])
+        XCTAssertEqual(model.messages.filter { $0.text == "Find nearby McDonald's" }.count, 1)
+
+        model.ingestLiveTalkTranscripts([
+            .init(id: "u1", role: .user, text: "Find nearby McDonald's", isFinal: true),
+            .init(id: "a1", role: .agent, text: "I can help with that.", isFinal: true),
+        ])
+        model.ingestLiveTalkTranscripts([
+            .init(id: "u1", role: .user, text: "Find nearby McDonald's", isFinal: true),
+            .init(id: "a1", role: .agent, text: "I can help with that.", isFinal: true),
+        ])
+
+        XCTAssertTrue(model.liveTalkStreamingMessages.isEmpty)
+        XCTAssertEqual(model.messages.filter { $0.text == "Find nearby McDonald's" }.count, 1)
+        XCTAssertEqual(model.messages.filter { $0.text == "I can help with that." }.count, 1)
+        XCTAssertEqual(model.messages.last?.role, .assistant)
+        XCTAssertFalse(model.messages.suffix(2).contains(where: \.isEligibleForAIContext))
+        let didPersist = await model.persistConversationHistory()
+        XCTAssertTrue(didPersist)
+        XCTAssertEqual(
+            history.selectedMessages.suffix(2).map(\.text),
+            ["Find nearby McDonald's", "I can help with that."]
+        )
+
+        model.endLiveTalkTranscriptSession()
+        XCTAssertTrue(model.liveTalkStreamingMessages.isEmpty)
+    }
+
+    func testLiveTalkThreadSessionDoesNotWriteIntoAnotherSelectedChat() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let history = ConversationHistoryController(
+            store: ConversationHistoryStore(
+                fileURL: directory.appendingPathComponent("history.json")
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = ConversationModel(historyController: history)
+        for _ in 0..<100 where !model.isHistoryReady {
+            await Task.yield()
+        }
+        XCTAssertTrue(model.beginLiveTalkTranscriptSession())
+        model.ingestLiveTalkTranscripts([
+            .init(id: "u0", role: .user, text: "Original chat partial", isFinal: false),
+        ])
+        await model.newChat()
+
+        XCTAssertTrue(model.liveTalkStreamingMessages.isEmpty)
+        model.ingestLiveTalkTranscripts([
+            .init(id: "u1", role: .user, text: "Must stay in the original chat", isFinal: true),
+        ])
+
+        XCTAssertFalse(model.messages.contains { $0.text == "Must stay in the original chat" })
+        XCTAssertTrue(model.liveTalkStreamingMessages.isEmpty)
+        model.endLiveTalkTranscriptSession()
+    }
+
     private func option(
         stage: LiveTalkStage,
         provider: String
