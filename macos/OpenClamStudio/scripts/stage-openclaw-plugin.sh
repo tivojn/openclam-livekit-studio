@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd -P)"
 PLUGIN_ROOT="$REPO_ROOT/openclaw-plugin-openclam"
 STAGE_ROOT="$PROJECT_ROOT/.electron-openclaw-plugin"
 TEMP_ROOT="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/openclam-channel-stage.XXXXXX")"
+BUILD_ROOT="$TEMP_ROOT/source"
 
 cleanup() {
   /bin/rm -rf -- "$TEMP_ROOT"
@@ -19,8 +20,30 @@ trap cleanup EXIT
   exit 1
 }
 
+for source_path in \
+  README.md index.ts openclaw.plugin.json package.json package-lock.json \
+  setup-entry.ts tsconfig.json tsconfig.build.json; do
+  [[ -f "$PLUGIN_ROOT/$source_path" ]] || {
+    echo "OpenClaw channel build input is unavailable: $source_path" >&2
+    exit 1
+  }
+done
+[[ -d "$PLUGIN_ROOT/src" ]] || {
+  echo 'OpenClaw channel source directory is unavailable.' >&2
+  exit 1
+}
+
+/bin/mkdir -p "$BUILD_ROOT"
+for source_path in \
+  README.md index.ts openclaw.plugin.json package.json package-lock.json \
+  setup-entry.ts tsconfig.json tsconfig.build.json; do
+  /bin/cp -p -- "$PLUGIN_ROOT/$source_path" "$BUILD_ROOT/$source_path"
+done
+/bin/cp -R -p -- "$PLUGIN_ROOT/src" "$BUILD_ROOT/src"
+
 (
-  cd "$PLUGIN_ROOT"
+  cd "$BUILD_ROOT"
+  npm ci --ignore-scripts --no-audit --no-fund >/dev/null
   npm run build >/dev/null
   npm pack --ignore-scripts --pack-destination "$TEMP_ROOT" >/dev/null
 )

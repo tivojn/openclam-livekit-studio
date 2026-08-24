@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const pkg = JSON.parse(read('package.json'));
 const release = read('scripts/release-macos.sh');
+const openClawStager = read('scripts/stage-openclaw-plugin.sh');
 const ffmpegStager = read('scripts/stage-electron-ffmpeg.sh');
 const opencvStager = read('scripts/stage-electron-opencv.sh');
 const opencvBuildInfoHook = read('scripts/opencv-cmake-hooks/STATUS_DUMP_EXTRA.cmake');
@@ -61,6 +62,15 @@ assert.equal(pkg.build.mac.identity, 'THE GREAT LIONHEART PTE. LTD. (X7R8N6MMSU)
 assert.equal(pkg.build.mac.notarize, false);
 assert.deepEqual(pkg.build.mac.target, ['dmg']);
 assert.equal(pkg.build.dmg.artifactName, 'OpenClam-Studio-${version}-${arch}.${ext}');
+for (const required of [
+  'BUILD_ROOT="$TEMP_ROOT/source"',
+  '/bin/cp -R -p -- "$PLUGIN_ROOT/src" "$BUILD_ROOT/src"',
+  'npm ci --ignore-scripts --no-audit --no-fund',
+  'cd "$BUILD_ROOT"',
+]) assert.ok(openClawStager.includes(required),
+  `OpenClaw release staging is missing clean-clone build gate ${required}`);
+assert.doesNotMatch(openClawStager, /cd "\$PLUGIN_ROOT"\s*\n\s*npm run build/,
+  'OpenClaw release staging must not depend on developer node_modules');
 for (const excluded of [
   '!electron/native/**',
   '!node_modules/**/src/**',
