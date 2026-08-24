@@ -123,11 +123,14 @@ assert.match(main, /function setChatMode\(value\)[\s\S]{0,900}mainWindow\.hide\(
   'mode switching must move between the normal chat window and standby companion');
 const avatarMenu = main.match(/function showPetMenu\(\) \{([\s\S]*?)\n\}\n\nfunction createTray/);
 assert.ok(avatarMenu, 'Avatar mode must retain one focused right-click menu');
-for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Moves', 'Character Studio…']) {
+for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Moves',
+  'Standby Size', 'Close-Up Companion', 'Always on Top', 'Character Studio…']) {
   assert.ok(avatarMenu[1].includes(label), `missing meaningful Avatar menu item: ${label}`);
 }
-for (const retired of ['React', 'Rest', 'Click-Through Gaps', 'Lock Position', 'Always on Top', 'Hide Avatar']) {
-  assert.ok(!avatarMenu[1].includes(retired), `legacy Avatar menu item must stay removed: ${retired}`);
+for (const retired of ['React', 'Rest', 'Click-Through Gaps', 'Click Through Empty Space',
+  'Lock Position', 'Hide Avatar']) {
+  assert.ok(!avatarMenu[1].includes(`name: '${retired}'`),
+    `legacy Avatar menu item must stay removed: ${retired}`);
 }
 assert.match(main, /ipcMain\.handle\('openclam:copy-settings-text', writeSettingsClipboard\)/);
 assert.match(main, /if \(!avatarStoreSender\(event\)[\s\S]*clipboard\.writeText\(text\);/,
@@ -168,34 +171,19 @@ assert.match(main, /settingsWindow\.on\('restore', protectSettingsFromPetOverlay
 assert.match(main, /settingsWindow\.on\('closed',[\s\S]{0,120}syncPetWindowLevels\(\)/);
 assert.doesNotMatch(main, /settingsWindow\.setAlwaysOnTop\(/);
 
-// Transparent gaps are enabled on first run and for legacy state that never
-// recorded a choice. Both explicit boolean choices survive migrations.
-const clickThroughPreferenceSource = main.match(
-  /(function petClickThroughPreference\(saved, fallback = true\) \{[\s\S]*?\n\})\n\nfunction loadState/,
-);
-assert.ok(clickThroughPreferenceSource,
-  'click-through default resolution must remain independently testable');
-const petClickThroughPreference = new Function(
-  `'use strict'; ${clickThroughPreferenceSource[1]}; return petClickThroughPreference;`,
-)();
-assert.equal(petClickThroughPreference({}, true), true,
-  'first run must enable click-through gaps');
-assert.equal(petClickThroughPreference({ appearanceDefaultVersion: 2 }, true), true,
-  'legacy state without a choice must adopt the enabled default');
-assert.equal(petClickThroughPreference({ petClickThrough: false }, true), false,
-  'an explicit saved off choice must survive an update');
-assert.equal(petClickThroughPreference({ petClickThrough: true }, false), true,
-  'an explicit saved on choice must survive an update');
-assert.equal(petClickThroughPreference({ petClickThrough: 'false' }, true), true,
-  'invalid persisted values must fall back to the safe product default');
-assert.match(main, /petClickThrough: true/,
-  'fresh default state must ship with click-through gaps enabled');
-assert.match(main,
-  /function recoverCompanion\(\)[\s\S]{0,1200}state\.petClickThrough = true;/,
-  'Recover Avatar must restore the enabled click-through-gaps product default');
-assert.doesNotMatch(main,
-  /function recoverCompanion\(\)[\s\S]{0,1200}state\.petClickThrough = false;/,
-  'Recover Avatar must not silently disable click-through gaps');
+// Transparent body gaps are a permanent interaction invariant, not a toggle.
+assert.doesNotMatch(main, /petClickThrough|set-pet-click-through|applyPetClickThrough/,
+  'Avatar gap click-through must not be exposed as mutable product state');
+assert.doesNotMatch(preload, /setPetClickThrough|set-pet-click-through/,
+  'The renderer must not receive a click-through preference API');
+assert.match(main, /const ignore = !value;\s*mainWindow\.setIgnoreMouseEvents\(ignore, \{ forward: true \}\);/,
+  'Transparent pixels must always pass input to the layer underneath');
+assert.match(main, /buddyWindow\.setIgnoreMouseEvents\(!value, \{ forward: true \}\);/,
+  'The second avatar must share the same permanent gap behavior');
+assert.match(main, /function setChatMode\(value\)[\s\S]{0,1000}if \(next && liveTalkActive\)/,
+  'An active Live Talk must keep the lip-sync renderer in Avatar mode');
+assert.match(main, /const dragCursorPoint = \(point\) => \{[\s\S]{0,260}screen\.getCursorScreenPoint\(\)/,
+  'Desktop dragging must use Electron global cursor coordinates');
 
 // An inactive transparent pet accepts the first composer click, then the
 // renderer explicitly makes that pet the key window so macOS sends it text.
@@ -364,9 +352,11 @@ assert.match(settings, /\/api\/openclaw\/pairing/);
 assert.match(settings, /id="openclaw-install"/);
 assert.match(settings, /\/api\/openclaw\/install/);
 
-// PTT and Live Talk need microphone input; no Apple Events automation or
-// Accessibility entitlement survives the standalone cut.
+// PTT and Live Talk need microphone input. The explicit composer camera action
+// needs camera input; no Apple Events automation or Accessibility entitlement
+// survives the standalone cut.
 assert.match(entitlements, /com\.apple\.security\.device\.audio-input/);
+assert.match(entitlements, /com\.apple\.security\.device\.camera/);
 assert.doesNotMatch(entitlements, /automation\.apple-events|accessibility/i);
 
 console.log('standalone Electron shell QA passed');

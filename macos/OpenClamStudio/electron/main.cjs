@@ -698,7 +698,6 @@ function defaultState() {
     petZoom: 0.6,
     petRoamZoom: 0.6,
     appearanceDefaultVersion: 4,
-    petClickThrough: true,
     petLocked: false,
     petRoam: false,
     petHomeBounds: null,
@@ -706,20 +705,11 @@ function defaultState() {
   };
 }
 
-function petClickThroughPreference(saved, fallback = true) {
-  // A missing value is a first-run/legacy-without-a-choice state. An actual
-  // boolean, including false, is a user preference and must survive updates.
-  return Object.hasOwn(saved, 'petClickThrough')
-    && typeof saved.petClickThrough === 'boolean'
-    ? saved.petClickThrough : Boolean(fallback);
-}
-
 function loadState() {
   try {
     const defaults = defaultState();
     const saved = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
     const next = { ...defaults, ...saved, bounds: { ...defaults.bounds, ...(saved.bounds || {}) } };
-    next.petClickThrough = petClickThroughPreference(saved, defaults.petClickThrough);
     // Retired integration fields are deliberately not carried into this
     // standalone app's runtime or its next saved state.
     for (const key of Object.keys(next)) {
@@ -736,9 +726,9 @@ function loadState() {
       next.petZoom = 0.6;
       next.appearanceDefaultVersion = 2;
     }
-    // v3 (2026-08-02): click-through-the-gaps ships ON when no preference
-    // exists. `petClickThroughPreference` deliberately preserves an explicit
-    // saved false; an update must never silently reverse the user's toggle.
+    // v3 (2026-08-02): transparent avatar gaps became click-through. The
+    // runtime now treats that as a permanent interaction invariant rather
+    // than a preference, so any legacy saved toggle is intentionally dropped.
     if (Number(saved.appearanceDefaultVersion || 0) < 3) {
       next.appearanceDefaultVersion = 3;
     }
@@ -800,7 +790,7 @@ function shellState() {
       view: (state && state.petView) || 'half',
       zoom: Number(state && state.petZoom) || 1,
       roamZoom: Number(state && state.petRoamZoom) || 1,
-      clickThrough: Boolean(state && state.petClickThrough),
+      clickThrough: true,
       locked: Boolean(state && state.petLocked),
       roam: Boolean(state && state.petRoam),
       motionReady: petMotionReady,
@@ -839,6 +829,19 @@ function chatWindowBounds() {
 function setChatMode(value) {
   if (!mainWindow || mainWindow.isDestroyed()) return shellState();
   const next = Boolean(value);
+  // LiveKit audio, lip-sync, and the avatar gesture session belong to the
+  // Avatar renderer. Switching windows mid-call would move the user away from
+  // the live renderer and make the companion appear silent, so the call owns
+  // Avatar mode until it ends.
+  if (next && liveTalkActive) {
+    chatMode = false;
+    state.interfaceMode = 'avatar';
+    if (chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
+    if (state.petOpacity > 0.001) mainWindow.showInactive();
+    saveStateSoon();
+    broadcastState();
+    return shellState();
+  }
   if (next) {
     if (state.petRoam) {
       state.petRoam = false;
@@ -931,7 +934,9 @@ function setPetHit(interactive, reason = 'renderer') {
   if (process.env.OPENCLAM_DEBUG_HIT) {
     console.error(`[pet-hit] interactive=${value} reason=${reason}`);
   }
-  const ignore = state.petClickThrough && !value;
+  // Opaque avatar pixels and controls are interactive; every transparent gap
+  // permanently passes through to the app underneath.
+  const ignore = !value;
   mainWindow.setIgnoreMouseEvents(ignore, { forward: true });
 }
 
@@ -979,13 +984,6 @@ function startPetPointerTracking() {
         || localPoint.inside !== previous.inside
         || Date.now() - previous.at > 250;
       if (sendNow) pointerLastSent[target.key] = { ...localPoint, at: Date.now() };
-      if (!state.petClickThrough) {
-        // The window is always interactive, but the gaze still needs the
-        // cursor, so the feed keeps flowing in this branch too.
-        target.setHit(true, 'click-through-off');
-        if (sendNow) post(window, 'openclam:pet-pointer', localPoint);
-        continue;
-      }
       if (sendNow) post(window, 'openclam:pet-pointer', localPoint);
       // A drag in flight owns the window. The cursor legitimately outruns
       // the moving bounds, and forcing click-through in that gap lost the
@@ -1136,14 +1134,6 @@ function applyPetZoomLive(payload) {
     return shellState();
   }
   petZoomGesture = null;
-  saveStateSoon();
-  broadcastState();
-  return shellState();
-}
-
-function applyPetClickThrough(value) {
-  state.petClickThrough = Boolean(value);
-  setPetHit(!state.petClickThrough);
   saveStateSoon();
   broadcastState();
   return shellState();
@@ -1554,7 +1544,7 @@ function setBuddyHit(interactive) {
   const value = Boolean(interactive);
   if (buddyPointerInteractive === value) return;
   buddyPointerInteractive = value;
-  buddyWindow.setIgnoreMouseEvents(state.petClickThrough && !value, { forward: true });
+  buddyWindow.setIgnoreMouseEvents(!value, { forward: true });
 }
 
 function buddyStartupBounds() {
@@ -2386,10 +2376,6 @@ function recoverCompanion() {
     state.petHomeBounds = null;
   }
   state.petOpacity = 0.5;
-  // Recovery restores product defaults too. The opaque avatar remains directly
-  // draggable, while empty pixels must continue to pass clicks through to the
-  // desktop just as they do on a fresh install.
-  state.petClickThrough = true;
   state.petLocked = false;
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const area = display.workArea;
@@ -2413,11 +2399,7 @@ function recoverCompanion() {
 
 function installRecoveryShortcut() {
   const accelerator = 'CommandOrControl+Shift+0';
-  if (!globalShortcut.register(accelerator, () => {
-    companionHold = null;
-    recoverCompanion();
-    applyPetOpacity(1);
-  })) {
+  if (!globalShortcut.register(accelerator, standbyCompanionMode)) {
     writeBackendLog(`[shortcut unavailable] ${accelerator}\n`);
   }
   // Cmd+Shift+9: enlarge to a big (max-zoom) overlay and slide her into
@@ -2432,6 +2414,12 @@ function installRecoveryShortcut() {
 }
 
 let companionHold = null;
+function standbyCompanionMode() {
+  companionHold = null;
+  recoverCompanion();
+  applyPetOpacity(1);
+}
+
 function deskCompanionMode() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (companionHold) {
@@ -2554,11 +2542,10 @@ function buildTrayMenu() {
     { label: petMotionReady ? 'Horizon Walk Along Dock' : 'Horizon Walk · Generate Motion First',
       type: 'checkbox', checked: state.petRoam, enabled: petMotionReady,
       click: (item) => applyPetRoam(item.checked) },
-    { label: 'Click Through Empty Space', type: 'checkbox', checked: state.petClickThrough,
-      click: (item) => applyPetClickThrough(item.checked) },
     { label: 'Lock Position', type: 'checkbox', checked: state.petLocked,
       enabled: !state.petRoam, click: (item) => applyPetLock(item.checked) },
-    { label: 'Recover Avatar', accelerator: 'CommandOrControl+Shift+0', click: recoverCompanion },
+    { label: 'Standby Size', accelerator: 'CommandOrControl+Shift+0', click: standbyCompanionMode },
+    { label: 'Close-Up Companion', accelerator: 'CommandOrControl+Shift+9', click: deskCompanionMode },
     { label: 'Restart Voice Engine', enabled: ownsBackend, click: restartBackend },
     { type: 'separator' },
     // Which build am I actually running? A question the owner should
@@ -2610,6 +2597,12 @@ function showPetMenu() {
         post(mainWindow, 'openclam:pet-moves');
       }
     } },
+    { type: 'separator' },
+    { name: 'Standby Size', hint: '⌘⇧0', click: standbyCompanionMode },
+    { name: companionHold ? 'Restore Previous Size' : 'Close-Up Companion',
+      hint: '⌘⇧9', click: deskCompanionMode },
+    { name: 'Always on Top', type: 'checkbox', checked: state.alwaysOnTop,
+      click: () => applyAlwaysOnTop(!state.alwaysOnTop) },
     { type: 'separator' },
     { name: 'Character Studio…', click: openSettings },
   ], () => {
@@ -2709,7 +2702,6 @@ function installIpc() {
     if ((mainWindow && event.sender === mainWindow.webContents)
         || (chatWindow && event.sender === chatWindow.webContents)) applyPetZoomLive(payload);
   });
-  ipcMain.handle('openclam:set-pet-click-through', (_event, value) => applyPetClickThrough(value));
   ipcMain.handle('openclam:set-pet-lock', (_event, value) => applyPetLock(value));
   ipcMain.handle('openclam:set-pet-roam', (event, value) => (
     isBuddySender(event) ? applyBuddyRoam(value) : applyPetRoam(value)));
@@ -2855,12 +2847,27 @@ function installIpc() {
     state.bounds = { ...bounds };
     saveStateSoon();
   });
+  // Renderer screen coordinates move with a transparent BrowserWindow on
+  // macOS. Feeding them back into the next frame creates a moving coordinate
+  // origin and can make the avatar travel opposite the cursor. Anchor every
+  // desktop drag to Electron's authoritative global cursor instead.
+  const dragCursorPoint = (point) => {
+    try {
+      const cursor = screen.getCursorScreenPoint();
+      if (Number.isFinite(cursor.x) && Number.isFinite(cursor.y)) return cursor;
+    } catch {}
+    return {
+      x: Number(point && point.screenX) || 0,
+      y: Number(point && point.screenY) || 0,
+    };
+  };
   ipcMain.on('openclam:drag-start', (event, point) => {
+    const cursor = dragCursorPoint(point);
     if (isBuddySender(event)) {
       if (state.petLocked || buddyRoam) return;
       buddyDrag = {
-        x: Number(point && point.screenX) || 0,
-        y: Number(point && point.screenY) || 0,
+        x: cursor.x,
+        y: cursor.y,
         bounds: buddyWindow.getBounds(),
       };
       return;
@@ -2868,8 +2875,8 @@ function installIpc() {
     if (!mainWindow || event.sender !== mainWindow.webContents
         || state.petLocked || state.petRoam) return;
     petDrag = {
-      x: Number(point && point.screenX) || 0,
-      y: Number(point && point.screenY) || 0,
+      x: cursor.x,
+      y: cursor.y,
       bounds: mainWindow.getBounds(),
     };
   });
@@ -2881,10 +2888,11 @@ function installIpc() {
     return Number.isFinite(value) && Math.abs(value) <= 0x7fffff ? value : null;
   };
   ipcMain.on('openclam:drag-move', (event, point) => {
+    const cursor = dragCursorPoint(point);
     if (isBuddySender(event)) {
       if (!buddyDrag || state.petLocked || buddyRoam) return;
-      const x = dragCoord(buddyDrag.bounds.x, point && point.screenX, buddyDrag.x);
-      const y = dragCoord(buddyDrag.bounds.y, point && point.screenY, buddyDrag.y);
+      const x = dragCoord(buddyDrag.bounds.x, cursor.x, buddyDrag.x);
+      const y = dragCoord(buddyDrag.bounds.y, cursor.y, buddyDrag.y);
       if (x !== null && y !== null) {
         try { buddyWindow.setPosition(x, y, false); } catch {}
       }
@@ -2892,8 +2900,8 @@ function installIpc() {
     }
     if (!petDrag || !mainWindow || event.sender !== mainWindow.webContents
         || state.petLocked || state.petRoam) return;
-    const x = dragCoord(petDrag.bounds.x, point && point.screenX, petDrag.x);
-    const y = dragCoord(petDrag.bounds.y, point && point.screenY, petDrag.y);
+    const x = dragCoord(petDrag.bounds.x, cursor.x, petDrag.x);
+    const y = dragCoord(petDrag.bounds.y, cursor.y, petDrag.y);
     if (x !== null && y !== null) {
       try { mainWindow.setPosition(x, y, false); } catch {}
     }
@@ -2944,20 +2952,21 @@ function installPermissions() {
   const sameOrigin = (value) => {
     try { return new URL(value).origin === allowedOrigin; } catch { return false; }
   };
-  const audioOnly = (details = {}) => {
+  const localMediaOnly = (details = {}) => {
     const mediaTypes = details.mediaTypes || [];
-    return mediaTypes.length === 0 || mediaTypes.every((value) => value === 'audio');
+    return mediaTypes.length === 0
+      || mediaTypes.every((value) => value === 'audio' || value === 'video');
   };
   session.defaultSession.setPermissionCheckHandler(
     (_webContents, permission, requestingOrigin, details) => (
-      permission === 'media' && sameOrigin(requestingOrigin) && audioOnly(details)
+      permission === 'media' && sameOrigin(requestingOrigin) && localMediaOnly(details)
     ),
   );
   session.defaultSession.setPermissionRequestHandler(
     (webContents, permission, callback, details = {}) => {
       const url = webContents.getURL();
       callback(permission === 'media' && sameOrigin(url)
-        && (details.mediaTypes || []).length > 0 && audioOnly(details));
+        && (details.mediaTypes || []).length > 0 && localMediaOnly(details));
     },
   );
 }

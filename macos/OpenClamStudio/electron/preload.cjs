@@ -40,7 +40,6 @@ const api = Object.freeze({
   setPetZoom: (value) => ipcRenderer.invoke('openclam:set-pet-zoom', Number(value)),
   setPetRoamZoom: (value) => ipcRenderer.invoke('openclam:set-pet-roam-zoom', Number(value)),
   setPetZoomLive: (payload) => ipcRenderer.send('openclam:pet-zoom-live', payload),
-  setPetClickThrough: (value) => ipcRenderer.invoke('openclam:set-pet-click-through', Boolean(value)),
   setPetLock: (value) => ipcRenderer.invoke('openclam:set-pet-lock', Boolean(value)),
   setPetRoam: (value) => ipcRenderer.invoke('openclam:set-pet-roam', Boolean(value)),
   setPetMotionReady: (value) => ipcRenderer.send('openclam:pet-motion-ready', value),

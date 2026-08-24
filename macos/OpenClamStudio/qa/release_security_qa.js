@@ -291,11 +291,13 @@ assert.match(security, /ten-scope/i,
 const appEntitlements = read('build/entitlements.mac.plist');
 assert.match(appEntitlements, /com\.apple\.security\.cs\.allow-jit/);
 assert.match(appEntitlements, /com\.apple\.security\.device\.audio-input/);
+assert.match(appEntitlements, /com\.apple\.security\.device\.camera/);
 assert.doesNotMatch(appEntitlements, /allow-unsigned-executable-memory/);
 
 const inheritedEntitlements = read('build/entitlements.mac.inherit.plist');
 assert.match(inheritedEntitlements, /com\.apple\.security\.cs\.allow-jit/);
 assert.match(inheritedEntitlements, /com\.apple\.security\.device\.audio-input/);
+assert.match(inheritedEntitlements, /com\.apple\.security\.device\.camera/);
 assert.match(inheritedEntitlements, /allow-unsigned-executable-memory/);
 
 for (const required of [

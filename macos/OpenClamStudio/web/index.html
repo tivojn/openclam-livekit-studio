@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>OpenClam Studio</title>
+  <script>
+    document.documentElement.dataset.theme = localStorage.getItem('openclam-theme')
+      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  </script>
   <script src="/livekit-client.js"></script>
   <style>
     :root {
@@ -69,6 +73,11 @@
       pointer-events: none;
       transition: opacity .2s ease, transform .2s ease;
     }
+
+    /* Status belongs in the conversation work stream. Keep this internal
+       node for existing state transitions, but never paint a floating avatar
+       badge over either presentation. */
+    #topline { display: none !important; }
 
     #statusDot {
       width: 7px;
@@ -480,23 +489,22 @@
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     }
 
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --codex-surface: #181818;
-        --codex-editor: #212121;
-        --codex-elevated: #282828;
-        --codex-control: #303030;
-        --codex-under: #0d0d0d;
-        --codex-text: #ffffff;
-        --codex-text-secondary: rgba(255, 255, 255, .70);
-        --codex-text-tertiary: rgba(255, 255, 255, .50);
-        --codex-border: rgba(255, 255, 255, .08);
-        --codex-border-heavy: rgba(255, 255, 255, .16);
-        --codex-border-light: rgba(255, 255, 255, .04);
-        --codex-hover: rgba(255, 255, 255, .08);
-        --codex-pressed: rgba(255, 255, 255, .12);
-        --shadow: 0 18px 60px rgba(0, 0, 0, .42);
-      }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --codex-surface: #181818;
+      --codex-editor: #212121;
+      --codex-elevated: #282828;
+      --codex-control: #303030;
+      --codex-under: #0d0d0d;
+      --codex-text: #ffffff;
+      --codex-text-secondary: rgba(255, 255, 255, .70);
+      --codex-text-tertiary: rgba(255, 255, 255, .50);
+      --codex-border: rgba(255, 255, 255, .08);
+      --codex-border-heavy: rgba(255, 255, 255, .16);
+      --codex-border-light: rgba(255, 255, 255, .04);
+      --codex-hover: rgba(255, 255, 255, .08);
+      --codex-pressed: rgba(255, 255, 255, .12);
+      --shadow: 0 18px 60px rgba(0, 0, 0, .42);
     }
 
     body { background: var(--codex-surface); }
@@ -589,23 +597,24 @@
       box-shadow: none;
       scrollbar-color: var(--codex-border-heavy) transparent;
     }
-    .message { gap: 7px; margin: 14px 0; }
+    .message { gap: 8px; margin: 22px 0; }
     .bubble {
       color: var(--codex-text);
-      font-size: 15px;
-      font-weight: 430;
-      line-height: 1.5;
+      font-size: clamp(15px, 1.25vw, 18px);
+      font-weight: 420;
+      line-height: 1.58;
+      letter-spacing: -.006em;
     }
     .message.assistant .bubble {
-      max-width: 100%;
-      padding: 7px 0;
+      max-width: min(100%, 860px);
+      padding: 5px 0;
       border: 0;
       border-radius: 0;
       background: transparent;
     }
     .message.user .bubble {
-      max-width: min(78%, 610px);
-      padding: 11px 14px;
+      max-width: min(74%, 690px);
+      padding: 13px 17px;
       border: 1px solid var(--codex-border-light);
       border-radius: 18px;
       background: var(--codex-control);
@@ -642,7 +651,7 @@
       font: inherit;
     }
     .work-thread {
-      margin: 28px 0 18px;
+      margin: 38px 0 28px;
       color: var(--codex-text-secondary);
     }
     .work-heading {
@@ -651,7 +660,7 @@
       gap: 8px;
       min-height: 32px;
       color: var(--codex-text-tertiary);
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 500;
     }
     .work-count { margin-left: auto; font-size: 11px; font-weight: 500; }
@@ -663,14 +672,15 @@
       grid-template-columns: 22px minmax(0, 1fr) auto 14px;
       gap: 8px;
       align-items: center;
-      min-height: 38px;
-      padding: 6px 8px 6px 2px;
+      min-height: 42px;
+      padding: 7px 8px 7px 2px;
       color: var(--codex-text-secondary);
-      font-size: 13px;
+      font-size: 14px;
       cursor: pointer;
       list-style: none;
     }
     .work-step > summary:hover { color: var(--codex-text); }
+    .work-step:not(.has-detail) > summary { cursor: default; }
     .work-step > summary::-webkit-details-marker { display: none; }
     .work-step[data-state="running"] .work-icon { animation: work-pulse 1.25s ease-in-out infinite; }
     .work-icon { color: var(--codex-text-tertiary); text-align: center; }
@@ -682,19 +692,49 @@
     @keyframes work-pulse { 50% { opacity: .32; transform: scale(.78); } }
     .openclaw-file-card {
       display: grid;
-      grid-template-columns: 42px minmax(0, 1fr) auto;
+      grid-template-columns: 56px minmax(0, 1fr) auto;
       gap: 10px;
       align-items: center;
       margin: 7px 0;
-      padding: 9px;
+      padding: 10px;
       border: 1px solid var(--codex-border);
       border-radius: 12px;
       background: var(--codex-elevated);
     }
-    .openclaw-file-card img, .openclaw-file-card video { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; }
-    .openclaw-file-name { overflow: hidden; color: var(--codex-text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .openclaw-file-card.user-file { margin-left: auto; max-width: min(680px, 82%); }
+    .openclaw-file-preview { width: 56px; height: 56px; border: 0; border-radius: 9px; overflow: hidden; padding: 0; background: var(--codex-hover); color: var(--codex-text-secondary); }
+    .openclaw-file-preview img, .openclaw-file-preview video { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+    .openclaw-file-preview .file-kind { display: grid; width: 100%; height: 100%; place-items: center; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+    .openclaw-file-name { overflow: hidden; color: var(--codex-text); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
     .openclaw-file-meta { color: var(--codex-text-tertiary); font-size: 10px; }
-    .openclaw-file-card a { color: var(--codex-text); font-size: 11px; }
+    .openclaw-file-actions { display: flex; gap: 4px; }
+    .openclaw-file-actions button, .openclaw-file-actions a { border: 0; border-radius: 8px; padding: 6px 8px; background: transparent; color: var(--codex-text-secondary); font: inherit; font-size: 11px; text-decoration: none; }
+    .openclaw-file-actions button:hover, .openclaw-file-actions a:hover { background: var(--codex-hover); color: var(--codex-text); }
+    .openclaw-file-card > audio { grid-column: 1 / -1; width: 100%; height: 32px; }
+    .openclaw-markdown-preview { grid-column: 1 / -1; max-height: 190px; overflow: auto; border-top: 1px solid var(--codex-border); padding: 10px 2px 2px; color: var(--codex-text-secondary); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+    .openclaw-markdown-preview h1, .openclaw-markdown-preview h2, .openclaw-markdown-preview h3 { margin: 6px 0; color: var(--codex-text); font-size: 13px; }
+    .openclaw-markdown-preview p, .openclaw-markdown-preview ul, .openclaw-markdown-preview pre { margin: 4px 0; }
+    .openclaw-markdown-preview pre { overflow: auto; border-radius: 8px; padding: 8px; background: var(--codex-hover); }
+
+    #pendingAttachments { display: flex; gap: 6px; overflow-x: auto; padding: 0 2px 6px; }
+    #pendingAttachments:empty { display: none; }
+    .pending-attachment { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; max-width: 230px; border: 1px solid var(--codex-border); border-radius: 9px; padding: 6px 8px; background: var(--codex-hover); color: var(--codex-text-secondary); font-size: 11px; }
+    .pending-attachment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pending-attachment button { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; }
+    #attachmentMenu { position: absolute; z-index: 8; left: 8px; bottom: 48px; min-width: 160px; border: 1px solid var(--codex-border); border-radius: 12px; padding: 5px; background: var(--codex-elevated); box-shadow: 0 10px 30px rgba(0,0,0,.15); }
+    #attachmentMenu[hidden] { display: none; }
+    #attachmentMenu button { display: block; width: 100%; border: 0; border-radius: 8px; padding: 8px 10px; background: transparent; color: var(--codex-text); font: inherit; text-align: left; }
+    #attachmentMenu button:hover { background: var(--codex-hover); }
+    #filePreviewDialog, #cameraDialog { width: min(760px, calc(100vw - 48px)); max-height: calc(100vh - 48px); border: 1px solid var(--codex-border); border-radius: 16px; padding: 0; background: var(--codex-elevated); color: var(--codex-text); box-shadow: 0 20px 70px rgba(0,0,0,.3); }
+    #filePreviewDialog::backdrop, #cameraDialog::backdrop { background: rgba(0,0,0,.38); backdrop-filter: blur(4px); }
+    .preview-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--codex-border); }
+    .preview-toolbar strong { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .preview-toolbar button { border: 0; border-radius: 8px; padding: 7px 10px; background: var(--codex-hover); color: var(--codex-text); }
+    #filePreviewBody { display: grid; min-height: 280px; max-height: calc(100vh - 130px); place-items: center; overflow: auto; padding: 16px; }
+    #filePreviewBody img, #filePreviewBody video { max-width: 100%; max-height: calc(100vh - 170px); }
+    #filePreviewBody audio { width: min(560px, 100%); }
+    #filePreviewBody iframe { width: 100%; height: min(70vh, 720px); border: 0; background: white; }
+    #cameraPreview { display: block; width: 100%; max-height: 68vh; background: #111; object-fit: contain; }
 
     #composerShell {
       position: relative;
@@ -754,6 +794,27 @@
       background: rgba(40, 40, 40, .98);
       color: var(--codex-text);
       box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+    }
+
+    .thread-notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      max-width: min(100%, 860px);
+      margin: 18px 0;
+      padding: 3px 0;
+      color: var(--codex-text-tertiary);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .thread-notice::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      flex: 0 0 6px;
+      margin-top: 7px;
+      border-radius: 50%;
+      background: currentColor;
     }
 
     #emptyState {
@@ -945,14 +1006,7 @@
       filter: none;
       transition-delay: 0s;
     }
-    html.chat-mode #topline {
-      z-index: 48;
-      top: 64px;
-      left: 20px;
-      max-width: calc(100vw - 104px);
-      opacity: 1;
-      transform: none;
-    }
+    html.chat-mode #topline { display: none !important; }
     html.chat-mode #rail {
       z-index: 56;
       top: 18px;
@@ -996,12 +1050,12 @@
     html.chat-mode #conversation,
     html.chat-mode #conversation:empty {
       display: block;
-      width: min(760px, calc(100vw - 180px));
+      width: min(920px, calc(100vw - 180px));
       height: auto;
       min-height: 0;
       max-height: none;
       margin: 0 auto;
-      padding: 74px 12px 34px;
+      padding: 82px 16px 38px;
       overflow-x: hidden;
       overflow-y: auto;
       border: 0;
@@ -1024,7 +1078,7 @@
       position: relative;
       z-index: 18;
       align-self: end;
-      width: min(760px, calc(100vw - 180px));
+      width: min(920px, calc(100vw - 180px));
       margin: 0 auto;
       padding: 10px 12px 8px;
       border: 1px solid var(--codex-border-heavy);
@@ -1034,7 +1088,7 @@
       pointer-events: auto;
       transition: opacity 150ms ease;
     }
-    html.chat-mode #composer { min-height: 48px; max-height: 180px; font-size: 15px; }
+    html.chat-mode #composer { min-height: 48px; max-height: 180px; font-size: 16px; }
     html.chat-mode #composerFooter { min-height: 40px; }
     html.chat-mode #recordingChip {
       position: static;
@@ -1068,7 +1122,7 @@
     html.chat-mode.avatar-only-motion #rail,
     html.chat-mode.avatar-only-motion #chatDock { opacity: 1; transform: none; pointer-events: auto; }
     html.chat-mode.avatar-layer-top #stage { cursor: grab; }
-    html.chat-mode.avatar-layer-top.dragging #stage { cursor: ns-resize; }
+    html.chat-mode.avatar-layer-top.position-adjusting #stage { cursor: grabbing; }
     html.chat-mode.thread-layer-top #stage { pointer-events: none; }
     html.chat-mode .round-button[aria-pressed="true"],
     html.chat-mode .round-button[aria-expanded="true"] { color: var(--codex-text); background: var(--codex-pressed); }
@@ -1101,6 +1155,30 @@
     }
     .chat-header-button:hover { background: var(--codex-hover); }
     .chat-header-button svg { width: 18px; height: 18px; fill: currentColor; }
+    #chatHeaderNewButton {
+      min-height: 38px;
+      padding: 0 13px;
+      border-radius: 13px;
+      background: var(--codex-surface-raised);
+      box-shadow: var(--codex-shadow-sm);
+      color: var(--codex-text-secondary);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    #chatHeaderNewButton:hover { color: var(--codex-text); background: var(--codex-hover); }
+    #chatHeaderAvatarModeButton {
+      min-height: 38px;
+      padding: 0 13px;
+      border-radius: 13px;
+      background: var(--codex-surface-raised);
+      box-shadow: var(--codex-shadow-sm);
+      color: var(--codex-text-secondary);
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    #chatHeaderAvatarModeButton:hover { color: var(--codex-text); background: var(--codex-hover); }
+    #chatHeaderThemeButton svg { width: 17px; height: 17px; }
     #chatThreadHeading {
       min-width: 0;
       max-width: min(540px, calc(100vw - 250px));
@@ -1145,12 +1223,20 @@
     .history-panel-header { display: flex; align-items: center; gap: 8px; }
     .history-panel-header strong { flex: 1; padding-left: 4px; font-size: 16px; }
     #newChatButton {
+      min-height: 36px;
       padding: 9px 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--codex-border-heavy) !important;
       border-radius: 11px;
-      background: var(--codex-text);
-      color: var(--codex-surface);
+      background: color-mix(in srgb, var(--codex-editor) 98%, transparent) !important;
+      color: var(--codex-text) !important;
       font-weight: 650;
+      box-shadow: none !important;
     }
+    #newChatButton:hover { background: var(--codex-hover); }
+    #newChatButton svg { width: 15px; height: 15px; flex: 0 0 15px; fill: currentColor; }
     #closeHistoryButton {
       width: 34px;
       height: 34px;
@@ -1159,6 +1245,23 @@
       font-size: 20px;
     }
     #chatHistoryList { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 5px; }
+    .history-panel-footer {
+      display: grid;
+      gap: 6px;
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid var(--codex-line);
+    }
+    .history-panel-action {
+      min-height: 42px;
+      padding: 0 12px;
+      border-radius: 11px;
+      background: transparent;
+      color: var(--codex-text-secondary);
+      text-align: left;
+      font-weight: 600;
+    }
+    .history-panel-action:hover { color: var(--codex-text); background: var(--codex-hover); }
     .history-thread { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
     .history-thread-main {
       min-width: 0;
@@ -1219,7 +1322,7 @@
     <button id="avatarCarouselButton" class="round-button" type="button" aria-label="Switch to next avatar" title="Switch to next avatar">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12a2 2 0 0 1 2 2v12h-2V5H5V3Zm-2 4h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Zm0 2v10h12V9H3Zm2 2h8v6H5v-6Z"/></svg>
     </button>
-    <button id="avatarModeButton" class="round-button chat-only-control" type="button" aria-label="Switch to Avatar mode" title="Switch to Avatar mode">
+    <button id="avatarModeButton" class="round-button chat-only-control" type="button" aria-label="Switch to Avatar mode" title="Avatar mode">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h5v2H5v4H3V4a1 1 0 0 1 1-1Zm11 0h5a1 1 0 0 1 1 1v5h-2V5h-4V3ZM3 15h2v4h4v2H4a1 1 0 0 1-1-1v-5Zm16 0h2v5a1 1 0 0 1-1 1h-5v-2h4v-4ZM12 7a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm-5 10c.35-2.25 2.03-3.5 5-3.5s4.65 1.25 5 3.5H7Z"/></svg>
     </button>
     <button id="motionMenuButton" class="round-button" type="button" aria-expanded="false" aria-controls="motionPicker" aria-label="Choose avatar motion" title="Choose avatar motion">
@@ -1260,16 +1363,27 @@
       <button id="chatHistoryButton" class="chat-header-button" type="button" aria-expanded="false" aria-controls="chatHistoryPanel" aria-label="Open chat history" title="Chat history">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v14h5V5H4Zm7 0v14h9V5h-9ZM5.5 7h2v2h-2V7Zm0 4h2v2h-2v-2Z"/></svg>
       </button>
+      <button id="chatHeaderNewButton" type="button" aria-label="Start a new chat" title="New chat">New chat</button>
+      <button id="chatHeaderAvatarModeButton" type="button" aria-label="Switch to Avatar mode" title="Leave Chat/Talk">Avatar mode</button>
+      <button id="chatHeaderThemeButton" class="chat-header-button" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+      </button>
       <div id="chatThreadHeading">New chat</div>
     </header>
     <div id="chatHistoryScrim" aria-hidden="true"></div>
     <aside id="chatHistoryPanel" aria-label="Chat history" aria-hidden="true" inert>
       <div class="history-panel-header">
         <strong>Chats</strong>
-        <button id="newChatButton" type="button" aria-label="Start a new chat">New chat</button>
+        <button id="newChatButton" type="button" aria-label="Start a new chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5a1 1 0 0 1 2 0v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5Z"/></svg>
+          <span>New chat</span>
+        </button>
         <button id="closeHistoryButton" type="button" aria-label="Close chat history" title="Close">×</button>
       </div>
       <div id="chatHistoryList" role="list"></div>
+      <div class="history-panel-footer">
+        <button id="historySettingsButton" class="history-panel-action" type="button" aria-label="Open Settings">Settings</button>
+      </div>
     </aside>
     <div id="conversation" role="log" aria-live="polite" aria-relevant="additions"></div>
     <div id="selectionActions" role="toolbar" aria-label="Selected response actions" aria-hidden="true" inert>
@@ -1282,10 +1396,21 @@
         <span id="recordingLevel" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
         <span id="recordingClock">0:00.0</span>
       </div>
+      <div id="pendingAttachments" aria-label="Files attached to this message"></div>
       <div id="composerRow">
         <textarea id="composer" rows="1" maxlength="12000" autocomplete="off" dir="auto" aria-label="Message" placeholder="Ask anything…"></textarea>
       </div>
       <div id="composerFooter">
+        <button id="attachButton" class="composer-button" type="button" aria-label="Add files or photos" aria-expanded="false" aria-controls="attachmentMenu" title="Add">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5a1 1 0 0 1 2 0v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5Z"/></svg>
+        </button>
+        <div id="attachmentMenu" role="menu" hidden>
+          <button id="addFilesButton" type="button" role="menuitem">Choose files…</button>
+          <button id="addPhotosButton" type="button" role="menuitem">Choose photos or video…</button>
+          <button id="takePhotoButton" type="button" role="menuitem">Take a photo…</button>
+        </div>
+        <input id="fileInput" type="file" multiple hidden>
+        <input id="photoInput" type="file" accept="image/*,video/*" multiple hidden>
         <button id="pttButton" class="composer-button" type="button" aria-label="Hold to talk" title="Hold to talk · Space">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
         </button>
@@ -1303,6 +1428,25 @@
       </div>
     </div>
   </section>
+
+  <dialog id="filePreviewDialog" aria-labelledby="filePreviewTitle">
+    <div class="preview-toolbar">
+      <strong id="filePreviewTitle">File preview</strong>
+      <button id="filePreviewShare" type="button">Share</button>
+      <button id="filePreviewSave" type="button">Save</button>
+      <button id="filePreviewClose" type="button">Close</button>
+    </div>
+    <div id="filePreviewBody"></div>
+  </dialog>
+
+  <dialog id="cameraDialog" aria-labelledby="cameraDialogTitle">
+    <div class="preview-toolbar">
+      <strong id="cameraDialogTitle">Take a photo</strong>
+      <button id="cameraCaptureButton" type="button">Use photo</button>
+      <button id="cameraCloseButton" type="button">Cancel</button>
+    </div>
+    <video id="cameraPreview" autoplay playsinline muted></video>
+  </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
 
@@ -1352,17 +1496,40 @@
     const settingsButton = document.getElementById('settingsButton');
     const chatDock = document.getElementById('chatDock');
     const chatHistoryButton = document.getElementById('chatHistoryButton');
+    const chatHeaderNewButton = document.getElementById('chatHeaderNewButton');
+    const chatHeaderAvatarModeButton = document.getElementById('chatHeaderAvatarModeButton');
+    const chatHeaderThemeButton = document.getElementById('chatHeaderThemeButton');
     const chatThreadHeading = document.getElementById('chatThreadHeading');
     const chatHistoryScrim = document.getElementById('chatHistoryScrim');
     const chatHistoryPanel = document.getElementById('chatHistoryPanel');
     const chatHistoryList = document.getElementById('chatHistoryList');
     const newChatButton = document.getElementById('newChatButton');
+    const historySettingsButton = document.getElementById('historySettingsButton');
     const closeHistoryButton = document.getElementById('closeHistoryButton');
     const conversation = document.getElementById('conversation');
     const selectionActions = document.getElementById('selectionActions');
     const selectionCopy = document.getElementById('selectionCopy');
     const selectionAskAI = document.getElementById('selectionAskAI');
+    const composerShell = document.getElementById('composerShell');
     const composer = document.getElementById('composer');
+    const pendingAttachmentsNode = document.getElementById('pendingAttachments');
+    const attachButton = document.getElementById('attachButton');
+    const attachmentMenu = document.getElementById('attachmentMenu');
+    const addFilesButton = document.getElementById('addFilesButton');
+    const addPhotosButton = document.getElementById('addPhotosButton');
+    const takePhotoButton = document.getElementById('takePhotoButton');
+    const fileInput = document.getElementById('fileInput');
+    const photoInput = document.getElementById('photoInput');
+    const filePreviewDialog = document.getElementById('filePreviewDialog');
+    const filePreviewTitle = document.getElementById('filePreviewTitle');
+    const filePreviewBody = document.getElementById('filePreviewBody');
+    const filePreviewShare = document.getElementById('filePreviewShare');
+    const filePreviewSave = document.getElementById('filePreviewSave');
+    const filePreviewClose = document.getElementById('filePreviewClose');
+    const cameraDialog = document.getElementById('cameraDialog');
+    const cameraPreview = document.getElementById('cameraPreview');
+    const cameraCaptureButton = document.getElementById('cameraCaptureButton');
+    const cameraCloseButton = document.getElementById('cameraCloseButton');
     const agentModeSelect = document.getElementById('agentModeSelect');
     const sendButton = document.getElementById('sendButton');
     const closeChatButton = document.getElementById('closeChatButton');
@@ -1416,9 +1583,20 @@
     let railFolded = localStorage.getItem('openclam.chat.rail-folded') === '1';
     let avatarMirrored = localStorage.getItem('openclam.chat.avatar-mirrored') === '1';
     let manualMotionKind = null;
+    let manualMotionStartedAt = 0;
+    let chatAvatarOffset = (() => {
+      try {
+        const saved = JSON.parse(localStorage.getItem('openclam.chat.avatar-offset.v1') || '{}');
+        return {
+          x: Number.isFinite(Number(saved.x)) ? Number(saved.x) : 0,
+          y: Number.isFinite(Number(saved.y)) ? Number(saved.y) : 0,
+        };
+      } catch (_) { return { x: 0, y: 0 }; }
+    })();
     let latestAssistantText = '';
-    let opacityGestureValue = null;
     let toastTimer = 0;
+    let threadNoticeTimer = 0;
+    let threadNoticeNode = null;
     let dictationStatusTimer = 0;
     let emailReviewState = null;
     let selectedFeedback = null;
@@ -1426,6 +1604,9 @@
     let turnController = null;
     let thinkingNode = null;
     let openClawSessionID = '';
+    let pendingComposerAttachments = [];
+    let cameraStream = null;
+    let previewResource = null;
     let ptt = null;
     let live = null;
     let audioContext = null;
@@ -1473,13 +1654,14 @@
           elapsedSeconds: Math.max(0, Math.min(86400, Number(value.elapsedSeconds) || 0)), steps };
       }
       if (value.kind === 'attachment' && value.attachment
-          && String(value.attachment.url || '').startsWith('api/openclaw/artifacts/')) {
+          && /^api\/openclaw\/(?:artifacts|uploads)\/[A-Za-z0-9_-]{20,32}$/.test(
+            String(value.attachment.url || ''))) {
         return { kind: 'attachment', attachment: {
           url: boundedText(value.attachment.url, 500),
           name: boundedText(value.attachment.name || 'OpenClaw file', 160),
-          mime_type: boundedText(value.attachment.mime_type, 120),
+          media_type: boundedText(value.attachment.media_type || value.attachment.mime_type, 120),
           byte_count: Math.max(0, Math.min(67108864, Number(value.attachment.byte_count) || 0)),
-        } };
+        }, role: value.role === 'user' ? 'user' : 'assistant' };
       }
       if (value.kind === 'media' && value.card
           && String(value.card.url || '').startsWith('api/generated/')) {
@@ -1554,7 +1736,25 @@
 
     const notify = (text, duration = 4200) => {
       clearTimeout(toastTimer);
-      toast.textContent = String(text || '');
+      clearTimeout(threadNoticeTimer);
+      toast.classList.remove('show');
+      const message = String(text || '').trim();
+      if (root.classList.contains('chat-mode')) {
+        if (!threadNoticeNode || !threadNoticeNode.isConnected) {
+          threadNoticeNode = document.createElement('div');
+          threadNoticeNode.className = 'thread-notice';
+          threadNoticeNode.setAttribute('role', 'status');
+          conversation.appendChild(threadNoticeNode);
+        }
+        threadNoticeNode.textContent = message;
+        conversation.scrollTop = conversation.scrollHeight;
+        threadNoticeTimer = setTimeout(() => {
+          if (threadNoticeNode) threadNoticeNode.remove();
+          threadNoticeNode = null;
+        }, duration);
+        return;
+      }
+      toast.textContent = message;
       toast.classList.add('show');
       toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
     };
@@ -1565,6 +1765,16 @@
         idleDocked = false;
         if (shell && typeof shell.undockPet === 'function') shell.undockPet();
       }
+    };
+
+    const boundedChatAvatarOffset = value => ({
+      x: Math.max(-innerWidth * .55, Math.min(innerWidth * .55, Number(value && value.x) || 0)),
+      y: Math.max(-innerHeight * .45, Math.min(innerHeight * .45, Number(value && value.y) || 0)),
+    });
+
+    const saveChatAvatarOffset = () => {
+      chatAvatarOffset = boundedChatAvatarOffset(chatAvatarOffset);
+      localStorage.setItem('openclam.chat.avatar-offset.v1', JSON.stringify(chatAvatarOffset));
     };
 
     const motionChrome = [statusLine, rail, chatDock, emptyState, toast];
@@ -1642,8 +1852,21 @@
       applyInteractionLayer(interactionLayer);
       applyRailFold(railFolded);
       applyAvatarMirror(avatarMirrored);
+      updateMotionControlsAvailability();
       if (shell && typeof shell.setChatMode === 'function') {
-        try { applyShellState(await shell.setChatMode(true)); } catch (_) { /* renderer still opens safely */ }
+        try {
+          const nextState = await shell.setChatMode(true);
+          applyShellState(nextState);
+          if (!nextState || nextState.chatMode !== true) {
+            // A live Avatar-mode call owns this renderer. Never pretend Chat
+            // mode opened when Electron correctly kept the LiveKit/lip-sync
+            // session on the companion.
+            root.classList.remove('chat-open', 'chat-mode', 'avatar-layer-top', 'thread-layer-top');
+            updateMotionControlsAvailability();
+            reportControlRects(true);
+            return false;
+          }
+        } catch (_) { /* renderer still opens safely */ }
       }
       markActivity();
       if (focus && !avatarOnlyMotion) {
@@ -1651,6 +1874,7 @@
         requestAnimationFrame(() => composer.focus());
       }
       reportControlRects(true);
+      return true;
     };
 
     const closeChat = async () => {
@@ -1663,12 +1887,29 @@
       edgeIdleButton.setAttribute('aria-checked', 'false');
       movesButton.setAttribute('aria-checked', 'false');
       root.classList.remove('chat-open', 'chat-mode', 'avatar-layer-top', 'thread-layer-top');
+      updateMotionControlsAvailability();
       composer.blur();
       if (shell && typeof shell.setChatMode === 'function') {
         try { applyShellState(await shell.setChatMode(false)); } catch (_) { /* compact mode already restored visually */ }
       }
       reportControlRects(true);
     };
+
+    const applyAppTheme = (value, persist = false) => {
+      const theme = value === 'dark' ? 'dark' : 'light';
+      root.dataset.theme = theme;
+      if (persist) {
+        localStorage.setItem('openclam-theme', theme);
+        void postJSON('/api/config', { ui: { theme } }).catch(() => {});
+      }
+      const next = theme === 'dark' ? 'light' : 'dark';
+      chatHeaderThemeButton.setAttribute('aria-label', `Switch to ${next} mode`);
+      chatHeaderThemeButton.title = `Switch to ${next} mode`;
+    };
+    applyAppTheme(root.dataset.theme);
+    addEventListener('storage', event => {
+      if (event.key === 'openclam-theme' && event.newValue) applyAppTheme(event.newValue);
+    });
 
     const safeJSON = async response => {
       const contentType = response.headers.get('content-type') || '';
@@ -1870,11 +2111,14 @@
       for (const [kind, spec] of Object.entries(motionControlSpecs)) {
         const authored = authoredMotion(kind);
         const loaded = Boolean(motion[kind]);
-        spec.button.disabled = !authored;
-        spec.button.textContent = loaded ? spec.label
+        const chatScopedFallback = kind === 'idle' && root.classList.contains('chat-mode');
+        const available = authored || chatScopedFallback;
+        spec.button.disabled = !available;
+        spec.button.textContent = loaded || chatScopedFallback ? spec.label
           : authored ? `${spec.label} · Retry`
             : `${spec.label} · Not built`;
         spec.button.title = loaded ? `Preview ${spec.label}`
+          : chatScopedFallback ? 'Lean at the lower-right edge of this chat window'
           : authored ? `${spec.label} is available; retry loading it`
             : `Build ${spec.label} in Character Studio first`;
       }
@@ -2088,13 +2332,81 @@
         ? Math.max(.42, Math.min(2.4, (Number.isFinite(requestedZoom) ? requestedZoom : .6) / .6))
         : 1;
       const scale = baseScale * chatZoom;
+      const offset = fullChat ? boundedChatAvatarOffset(chatAvatarOffset) : { x: 0, y: 0 };
       return {
         scale,
-        x: innerWidth * .5 - (crop.x + crop.w * .5) * scale,
+        x: innerWidth * .5 - (crop.x + crop.w * .5) * scale + offset.x,
         y: shellState.pet && shellState.pet.roam
-          ? availableHeight - (crop.y + crop.h) * scale
-          : availableHeight * .5 - (crop.y + crop.h * .5) * scale,
+          ? availableHeight - (crop.y + crop.h) * scale + offset.y
+          : availableHeight * .5 - (crop.y + crop.h * .5) * scale + offset.y,
         crop,
+      };
+    };
+
+    const motionTravelAtPhase = (clip, phase) => {
+      const cycleSeconds = Number(clip && clip.cycle_seconds)
+        || Math.max(.1, Number(clip && clip.frames || 1)
+          / Math.max(1, Number(clip && clip.fps || 1)));
+      const cycleDistance = Number(clip && clip.cycle_distance)
+        || Number(clip && clip.ground_speed) * cycleSeconds || 64 * cycleSeconds;
+      const offsets = Array.isArray(clip && clip.travel_offsets)
+        ? clip.travel_offsets.map(Number).filter(Number.isFinite) : [];
+      const wrapped = ((Number(phase) || 0) % 1 + 1) % 1;
+      if (offsets.length < 2) return wrapped * cycleDistance;
+      const position = wrapped * offsets.length;
+      const index = Math.min(offsets.length - 1, Math.floor(position));
+      const fraction = position - index;
+      const current = offsets[index];
+      const next = index + 1 < offsets.length ? offsets[index + 1] : cycleDistance;
+      return current + (next - current) * fraction;
+    };
+
+    const chatWindowMotionFit = (kind, meta, width, height, now, clip = null) => {
+      const crop = viewCrop(meta, width, height, 'full');
+      const composerTop = composerShell && composerShell.getBoundingClientRect().top;
+      const floor = Math.max(190, Number.isFinite(composerTop) && composerTop > 0
+        ? composerTop - 18 : innerHeight - 164);
+      const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
+      const zoom = Math.max(.45, Math.min(2.4,
+        (Number.isFinite(requestedZoom) ? requestedZoom : .6) / .6));
+      const targetHeight = Math.max(150, Math.min(floor * .48, innerHeight * .46));
+      const targetWidth = Math.max(110, innerWidth * .24);
+      const scale = Math.min(targetWidth / crop.w, targetHeight / crop.h) * zoom;
+      const left = 32;
+      const right = Math.max(left, innerWidth - 104 - crop.w * scale);
+      let figureLeft = right;
+      let direction = -1;
+      let phase = null;
+      if (kind === 'idle') {
+        figureLeft = Math.max(left, innerWidth - 3 - crop.w * scale);
+      }
+      if (kind === 'walk') {
+        const motionNow = canvasGesture && canvasGesture.positionAdjusting
+          ? canvasGesture.motionAt : Number(now) || 0;
+        const cycleSeconds = Number(clip && clip.cycle_seconds)
+          || Math.max(.1, Number(clip && clip.frames || 1)
+            / Math.max(1, Number(clip && clip.fps || 1)));
+        const elapsed = Math.max(0, (motionNow - manualMotionStartedAt) / 1000);
+        const completedCycles = Math.floor(elapsed / cycleSeconds);
+        phase = (elapsed / cycleSeconds) % 1;
+        const cycleDistance = Number(clip && clip.cycle_distance)
+          || Number(clip && clip.ground_speed) * cycleSeconds || 64 * cycleSeconds;
+        const travelled = (completedCycles * cycleDistance
+          + motionTravelAtPhase(clip, phase)) * scale;
+        const span = Math.max(1, right - left);
+        const bounced = travelled % (span * 2);
+        direction = bounced <= span ? 1 : -1;
+        figureLeft = left + (bounced <= span ? bounced : span * 2 - bounced);
+      }
+      const offset = boundedChatAvatarOffset(chatAvatarOffset);
+      return {
+        scale,
+        x: figureLeft - crop.x * scale + offset.x,
+        y: floor - (crop.y + crop.h) * scale + offset.y,
+        crop,
+        direction,
+        phase,
+        offset,
       };
     };
 
@@ -2700,23 +3012,38 @@
     const drawMotion = (kind, now, edge = null) => {
       const clip = motion[kind];
       if (!clip) return false;
-      const presentationKey = beginMotionPresentation(kind, edge, clip);
+      const chatScoped = root.classList.contains('chat-mode') && manualMotionKind === kind;
+      const displayEdge = chatScoped && kind === 'idle' ? 'right' : edge;
+      const presentationKey = beginMotionPresentation(kind, displayEdge, clip);
       const width = Number(clip.frame_width) || 720;
       const height = Number(clip.frame_height) || 1088;
-      const fit = cameraFor({ bounds: clip.bounds || [0, 0, width, height] }, width, height, 'full');
-      const direction = Number(roamState.direction) || 1;
+      const metadata = { bounds: clip.bounds || [0, 0, width, height] };
+      const fit = chatScoped && (kind === 'walk' || kind === 'idle')
+        ? chatWindowMotionFit(kind, metadata, width, height, now, clip)
+        : cameraFor(metadata, width, height, 'full');
+      const direction = chatScoped && kind === 'walk'
+        ? fit.direction : Number(roamState.direction) || 1;
       const freeIdle = kind === 'idle' && clip.anchor_mode === 'free';
-      const mirror = kind === 'walk' ? direction < 0 : edge === 'right' && !freeIdle;
-      const phase = kind === 'walk' && roamState.enabled
-        ? motionPhaseAt(roamState, clip, performance.timeOrigin + now) : null;
+      const mirror = kind === 'walk' ? direction < 0 : displayEdge === 'right' && !freeIdle;
+      const phase = chatScoped && kind === 'walk' ? fit.phase
+        : kind === 'walk' && roamState.enabled
+          ? motionPhaseAt(roamState, clip, performance.timeOrigin + now) : null;
       const frame = clip.video ? null : motionFrame(clip, now, phase);
       let x = fit.x;
-      if (kind === 'idle' && edge && !freeIdle) {
+      if (chatScoped && kind === 'idle') {
+        const anchors = clip.edge_anchors || {};
+        const frameAnchors = Array.isArray(anchors.right_frames) ? anchors.right_frames : [];
+        const support = Number(frameAnchors[frame ? frame.index : 0]);
+        const rightSupport = Number.isFinite(support) ? support
+          : Number(anchors.right) || Number(fit.crop.x + fit.crop.w);
+        x = innerWidth - 3 - rightSupport * fit.scale + fit.offset.x;
+      }
+      if (kind === 'idle' && displayEdge && !freeIdle && !chatScoped) {
         const anchors = clip.edge_anchors || {};
         const frameAnchors = Array.isArray(anchors.left_frames) ? anchors.left_frames : [];
         const support = Number(frameAnchors[frame ? frame.index : 0]);
         const leftSupport = Number.isFinite(support) ? support : Number(anchors.left) || 0;
-        x = edge === 'left' ? 3 - leftSupport * fit.scale : innerWidth - 3 - (width - leftSupport) * fit.scale;
+        x = displayEdge === 'left' ? 3 - leftSupport * fit.scale : innerWidth - 3 - (width - leftSupport) * fit.scale;
       }
 
       const frozen = roamState.enabled && roamState.mode === 'stand';
@@ -2789,7 +3116,7 @@
       };
     };
 
-    const drawAvatar = now => {
+    const drawAvatar = (now, presentation = '') => {
       clearStage();
       composeHead(now);
       const hasBody = Boolean(bodyImage && manifest.body);
@@ -2800,7 +3127,9 @@
         bounds: manifest.cutout && manifest.cutout.bounds || [0, 0, width, height],
         alignment: { face_bounds: [width * .2, height * .08, width * .6, height * .64] },
       };
-      const fit = cameraFor(metadata, width, height);
+      const fit = presentation === 'chat-edge-idle'
+        ? chatWindowMotionFit('idle', metadata, width, height, now, null)
+        : cameraFor(metadata, width, height);
       const bounds = metadata.bounds || [0, 0, width, height];
       const pivotX = bounds[0] + bounds[2] * .5;
       const pivotY = bounds[1] + bounds[3];
@@ -2813,7 +3142,7 @@
       context.save();
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * fit.x, pixelRatio * fit.y);
       context.translate(pivotX, pivotY);
-      context.rotate(sway);
+      context.rotate(sway + (presentation === 'chat-edge-idle' ? -.018 : 0));
       context.scale(breathe, 1);
       context.translate(-pivotX, -pivotY);
       context.drawImage(image, 0, 0, width, height);
@@ -2862,6 +3191,12 @@
           : drawPresentedMotion(manualMotionKind, now, side);
         if (rendered) {
           if (root.classList.contains('chat-mode')) setAvatarOnlyMotion(false);
+          return;
+        }
+        if (root.classList.contains('chat-mode') && manualMotionKind === 'idle') {
+          endMotionPresentation();
+          setAvatarOnlyMotion(false);
+          drawAvatar(now, 'chat-edge-idle');
           return;
         }
         manualMotionKind = null;
@@ -2914,6 +3249,11 @@
 
     const frameDelay = now => {
       if (document.hidden || Number(shellState.pet && shellState.pet.opacity) <= .001) return 250;
+      if (manualMotionKind) {
+        const clip = motion[manualMotionKind];
+        if (clip) return motionFrameDelay(clip,
+          Boolean(manualMotionKind === 'move' && clip.video && clip.video.ended));
+      }
       if (roamState.enabled) {
         const kind = roamMotionKind(roamState.mode, roamState.presentationMode);
         const clip = kind && motion[kind];
@@ -3654,6 +3994,12 @@
       const agent = selectedOpenClawAgent();
       composer.placeholder = agent ? 'Message this OpenClaw agent…' : 'Ask anything…';
       setStatus(agent ? 'OpenClaw mode' : 'Ready', agent ? 'busy' : 'good');
+      if (!agent && pendingComposerAttachments.length) {
+        pendingComposerAttachments = [];
+        notify('Attached files were cleared because this chat is now on-device.');
+      }
+      renderPendingAttachments();
+      resizeComposer();
     });
 
     const formatWorkDuration = elapsedSeconds => {
@@ -3740,6 +4086,9 @@
         const detail = document.createElement('div');
         detail.className = 'work-detail';
         root.append(summary, detail);
+        summary.addEventListener('click', event => {
+          if (!root.classList.contains('has-detail')) event.preventDefault();
+        });
         timeline.list.appendChild(root);
         item = { root, icon, title, state, detail, chevron };
         timeline.steps.set(step.step_id, item);
@@ -3771,50 +4120,198 @@
       append('Tool', step.tool);
       const hasDetail = item.detail.childNodes.length > 0;
       item.root.classList.toggle('has-detail', hasDetail);
+      item.detail.hidden = !hasDetail;
       if (!hasDetail) item.root.open = false;
       timeline.count.textContent = `${timeline.steps.size} step${timeline.steps.size === 1 ? '' : 's'} · live`;
       conversation.scrollTop = conversation.scrollHeight;
     };
 
+    const safeFileType = attachment => String(
+      attachment && (attachment.media_type || attachment.mime_type) || 'application/octet-stream'
+    ).toLowerCase().slice(0, 120);
+
+    const downloadResource = resource => {
+      const link = document.createElement('a');
+      link.href = resource.url;
+      link.download = resource.file.name;
+      link.click();
+    };
+
+    const shareResource = async resource => {
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [resource.file] }))) {
+        try {
+          await navigator.share({ files: [resource.file], title: resource.file.name });
+          return;
+        } catch (error) {
+          if (error.name === 'AbortError') return;
+        }
+      }
+      downloadResource(resource);
+      notify('This Mac saved the file because system sharing was unavailable.');
+    };
+
+    const renderSafeMarkdown = text => {
+      const root = document.createElement('div');
+      root.className = 'openclaw-markdown-preview';
+      let code = null;
+      let list = null;
+      for (const raw of String(text || '').split(/\r?\n/).slice(0, 2000)) {
+        const line = raw.slice(0, 4000);
+        if (/^```/.test(line)) {
+          if (code) code = null;
+          else {
+            code = document.createElement('pre');
+            root.appendChild(code);
+          }
+          list = null;
+          continue;
+        }
+        if (code) {
+          code.textContent += `${line}\n`;
+          continue;
+        }
+        const heading = line.match(/^(#{1,3})\s+(.+)$/);
+        if (heading) {
+          const node = document.createElement(`h${heading[1].length}`);
+          node.textContent = heading[2];
+          root.appendChild(node);
+          list = null;
+          continue;
+        }
+        const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+        if (bullet) {
+          if (!list) {
+            list = document.createElement('ul');
+            root.appendChild(list);
+          }
+          const item = document.createElement('li');
+          item.textContent = bullet[1];
+          list.appendChild(item);
+          continue;
+        }
+        list = null;
+        const paragraph = document.createElement('p');
+        paragraph.textContent = line || ' ';
+        root.appendChild(paragraph);
+      }
+      return root;
+    };
+
+    const showFilePreview = async resource => {
+      previewResource = resource;
+      filePreviewTitle.textContent = resource.file.name;
+      filePreviewBody.replaceChildren();
+      const type = resource.file.type;
+      let node;
+      if (type.startsWith('image/')) {
+        node = document.createElement('img');
+        node.src = resource.url;
+        node.alt = resource.file.name;
+      } else if (type.startsWith('video/')) {
+        node = document.createElement('video');
+        node.src = resource.url;
+        node.controls = true;
+        node.autoplay = true;
+      } else if (type.startsWith('audio/')) {
+        node = document.createElement('audio');
+        node.src = resource.url;
+        node.controls = true;
+        node.autoplay = true;
+      } else if (type === 'application/pdf') {
+        node = document.createElement('iframe');
+        node.src = resource.url;
+        node.title = resource.file.name;
+      } else if (type.startsWith('text/') || /\.(?:md|markdown|txt|csv|json)$/i.test(resource.file.name)) {
+        node = renderSafeMarkdown((await resource.file.text()).slice(0, 500000));
+      } else {
+        node = document.createElement('div');
+        node.className = 'openclaw-file-meta';
+        node.textContent = 'This file can be opened in its Mac app, saved, or shared.';
+      }
+      filePreviewBody.appendChild(node);
+      filePreviewDialog.showModal();
+    };
+
     const appendOpenClawAttachment = async (attachment, options = {}) => {
-      if (!attachment || typeof attachment.url !== 'string'
-          || !attachment.url.startsWith('api/openclaw/artifacts/')) return;
-      const response = await fetch(attachment.url, { cache: 'no-store' });
+      const url = String(attachment && attachment.url || '');
+      if (!/^api\/openclaw\/(?:artifacts|uploads)\/[A-Za-z0-9_-]{20,32}$/.test(url)) return;
+      const response = await fetch(url, { cache: 'no-store' });
       if (!response.ok) return;
-      const blob = await response.blob();
-      const objectURL = URL.createObjectURL(blob);
+      const received = await response.blob();
+      const nameText = String(attachment.name || 'OpenClaw file').slice(0, 160);
+      const mediaType = safeFileType(attachment) !== 'application/octet-stream'
+        ? safeFileType(attachment) : (received.type || 'application/octet-stream');
+      const file = new File([received], nameText, { type: mediaType });
+      const objectURL = URL.createObjectURL(file);
+      const resource = { file, url: objectURL };
       const card = document.createElement('div');
-      card.className = 'openclaw-file-card';
+      card.className = `openclaw-file-card${options.role === 'user' ? ' user-file' : ''}`;
+      const previewButton = document.createElement('button');
+      previewButton.className = 'openclaw-file-preview';
+      previewButton.type = 'button';
+      previewButton.ariaLabel = `Open ${nameText}`;
       let preview;
-      if (blob.type.startsWith('image/')) {
+      if (mediaType.startsWith('image/')) {
         preview = document.createElement('img');
         preview.src = objectURL;
-      } else if (blob.type.startsWith('video/')) {
+        preview.alt = '';
+      } else if (mediaType.startsWith('video/')) {
         preview = document.createElement('video');
         preview.src = objectURL;
         preview.muted = true;
       } else {
-        preview = document.createElement('div');
-        preview.textContent = 'FILE';
-        preview.className = 'openclaw-file-meta';
+        preview = document.createElement('span');
+        preview.className = 'file-kind';
+        preview.textContent = mediaType.startsWith('audio/') ? 'AUDIO'
+          : mediaType === 'application/pdf' ? 'PDF'
+          : /markdown/.test(mediaType) || /\.md$/i.test(nameText) ? 'MD' : 'FILE';
       }
+      previewButton.appendChild(preview);
+      previewButton.addEventListener('click', () => showFilePreview(resource));
       const copy = document.createElement('div');
       const name = document.createElement('div');
       name.className = 'openclaw-file-name';
-      name.textContent = String(attachment.name || 'OpenClaw file').slice(0, 160);
+      name.textContent = nameText;
       const meta = document.createElement('div');
       meta.className = 'openclaw-file-meta';
-      const bytes = Number(attachment.byte_count) || blob.size;
-      meta.textContent = `${blob.type || 'File'} · ${Math.max(1, Math.round(bytes / 1024))} KB`;
+      const bytes = Number(attachment.byte_count) || file.size;
+      meta.textContent = `${mediaType} · ${Math.max(1, Math.round(bytes / 1024))} KB`;
       copy.append(name, meta);
-      const open = document.createElement('a');
-      open.href = objectURL;
-      open.download = name.textContent;
-      open.textContent = 'Save';
-      card.append(preview, copy, open);
+      const actions = document.createElement('div');
+      actions.className = 'openclaw-file-actions';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.textContent = 'Open';
+      open.addEventListener('click', () => showFilePreview(resource));
+      const share = document.createElement('button');
+      share.type = 'button';
+      share.textContent = 'Share';
+      share.addEventListener('click', () => shareResource(resource));
+      const save = document.createElement('a');
+      save.href = objectURL;
+      save.download = nameText;
+      save.textContent = 'Save';
+      actions.append(open, share, save);
+      card.append(previewButton, copy, actions);
+      if (mediaType.startsWith('audio/')) {
+        const audio = document.createElement('audio');
+        audio.src = objectURL;
+        audio.controls = true;
+        card.appendChild(audio);
+      } else if ((mediaType.startsWith('text/') || /\.(?:md|markdown|txt)$/i.test(nameText))
+          && file.size <= 500000) {
+        card.appendChild(renderSafeMarkdown(await file.text()));
+      }
       conversation.appendChild(card);
       conversation.scrollTop = conversation.scrollHeight;
-      if (options.persist !== false) recordThreadItem({ kind: 'attachment', attachment });
+      if (options.persist !== false) recordThreadItem({
+        kind: 'attachment', attachment: {
+          url,
+          name: nameText,
+          media_type: mediaType,
+          byte_count: bytes,
+        }, role: options.role === 'user' ? 'user' : 'assistant',
+      });
     };
 
     const restoreChatThread = async thread => {
@@ -3843,7 +4340,10 @@
             for (const step of record.steps) updateWorkTimeline(timeline, step);
             finishWorkTimeline(timeline, record.state);
           } else if (record.kind === 'attachment') {
-            await appendOpenClawAttachment(record.attachment, { persist: false });
+            await appendOpenClawAttachment(record.attachment, {
+              persist: false,
+              role: record.role === 'user' ? 'user' : 'assistant',
+            });
           } else if (record.kind === 'media') {
             await appendMedia([record.card], { persist: false });
           }
@@ -3897,10 +4397,127 @@
       if (deletingActive) await restoreChatThread(activeChatThread());
     };
 
-    async function submitOpenClawTurn(value, agentID) {
+    const renderPendingAttachments = () => {
+      pendingAttachmentsNode.replaceChildren();
+      for (const attachment of pendingComposerAttachments) {
+        const chip = document.createElement('div');
+        chip.className = 'pending-attachment';
+        const label = document.createElement('span');
+        label.textContent = attachment.name;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.ariaLabel = `Remove ${attachment.name}`;
+        remove.addEventListener('click', () => {
+          pendingComposerAttachments = pendingComposerAttachments.filter(
+            candidate => candidate.handle !== attachment.handle);
+          renderPendingAttachments();
+          resizeComposer();
+        });
+        chip.append(label, remove);
+        pendingAttachmentsNode.appendChild(chip);
+      }
+      attachButton.disabled = Boolean(turnController) || Boolean(live)
+        || !selectedOpenClawAgent() || pendingComposerAttachments.length >= 8;
+    };
+
+    const setAttachmentMenuOpen = value => {
+      const next = Boolean(value) && !attachButton.disabled;
+      attachmentMenu.hidden = !next;
+      attachButton.setAttribute('aria-expanded', String(next));
+    };
+
+    const uploadComposerFiles = async files => {
+      const agentID = selectedOpenClawAgent();
+      if (!agentID) {
+        notify('Choose an OpenClaw agent before adding a file.');
+        return;
+      }
+      const candidates = [...(files || [])].slice(0, 8 - pendingComposerAttachments.length);
+      if (!candidates.length) return;
+      if (candidates.some(file => file.size <= 0 || file.size > 32 * 1024 * 1024)
+          || candidates.reduce((sum, file) => sum + file.size, 0) > 64 * 1024 * 1024) {
+        notify('Attach up to 8 files, 32 MB each and 64 MB total.');
+        return;
+      }
+      attachButton.disabled = true;
+      setStatus('Adding files…', 'busy');
+      const form = new FormData();
+      form.set('agent_id', agentID);
+      form.set('session_id', ensureOpenClawSessionID());
+      for (const file of candidates) form.append('files', file, file.name);
+      try {
+        const response = await fetch('/api/openclaw/uploads', {
+          method: 'POST', body: form, cache: 'no-store',
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !Array.isArray(result.attachments)) {
+          throw new Error(result.detail || `Upload failed (${response.status})`);
+        }
+        pendingComposerAttachments.push(...result.attachments);
+        pendingComposerAttachments = pendingComposerAttachments.slice(0, 8);
+        setStatus('Ready', 'good');
+      } catch (error) {
+        notify(String(error.message || error).slice(0, 180));
+        setStatus('Could not add file', '');
+      } finally {
+        renderPendingAttachments();
+        resizeComposer();
+      }
+    };
+
+    const stopCamera = () => {
+      if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
+      cameraStream = null;
+      cameraPreview.srcObject = null;
+      if (cameraDialog.open) cameraDialog.close();
+    };
+
+    const startCamera = async () => {
+      setAttachmentMenuOpen(false);
+      if (!selectedOpenClawAgent()) {
+        notify('Choose an OpenClaw agent before taking a photo.');
+        return;
+      }
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false,
+        });
+        cameraPreview.srcObject = cameraStream;
+        cameraDialog.showModal();
+      } catch (_) {
+        stopCamera();
+        notify('Camera access was not available. Choose a photo instead.');
+      }
+    };
+
+    const captureCameraPhoto = async () => {
+      if (!cameraStream || !cameraPreview.videoWidth || !cameraPreview.videoHeight) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = cameraPreview.videoWidth;
+      canvas.height = cameraPreview.videoHeight;
+      canvas.getContext('2d').drawImage(cameraPreview, 0, 0);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .92));
+      stopCamera();
+      if (!blob) {
+        notify('The camera did not return a photo.');
+        return;
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      await uploadComposerFiles([new File([blob], `OpenClam-photo-${timestamp}.jpg`, {
+        type: 'image/jpeg',
+      })]);
+    };
+
+    async function submitOpenClawTurn(value, agentID, options = {}) {
       stopSpeech();
-      openChat(false);
+      if (!options.keepAvatarMode) await openChat(false);
       addMessage('user', value, { readable: false });
+      const inputAttachments = Array.isArray(options.attachments)
+        ? options.attachments.slice(0, 8) : [];
+      for (const attachment of inputAttachments) {
+        await appendOpenClawAttachment(attachment, { role: 'user' });
+      }
       const work = createWorkTimeline();
       turnController = new AbortController();
       sendButton.disabled = true;
@@ -3913,7 +4530,12 @@
         const response = await fetch('/api/openclaw/turn', {
           method: 'POST',
           headers: { 'Accept': 'application/x-ndjson', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-          body: JSON.stringify({ agent_id: agentID, session_id: ensureOpenClawSessionID(), prompt: value }),
+          body: JSON.stringify({
+            agent_id: agentID,
+            session_id: ensureOpenClawSessionID(),
+            prompt: value,
+            input_handles: inputAttachments.map(attachment => attachment.handle),
+          }),
           signal: turnController.signal,
         });
         if (!response.ok || !response.body) throw new Error(`OpenClaw request failed (${response.status})`);
@@ -3969,16 +4591,20 @@
         if (error.name !== 'AbortError') {
           addMessage('assistant', `OpenClaw is unavailable: ${String(error.message || error).slice(0, 150)}`, { readable: false });
           setStatus('Check OpenClaw', '');
+          if (!pendingComposerAttachments.length && inputAttachments.length) {
+            pendingComposerAttachments = inputAttachments;
+            renderPendingAttachments();
+          }
         }
       } finally {
         turnController = null;
         agentModeSelect.disabled = false;
         pttButton.disabled = Boolean(live);
-        sendButton.disabled = !composer.value.trim();
+        sendButton.disabled = !composer.value.trim() && !pendingComposerAttachments.length;
       }
     }
 
-    async function submitLocalTurn(text) {
+    async function submitLocalTurn(text, options = {}) {
       const value = String(text || '').trim();
       if (!value || turnController || avatarOnlyMotion) return;
       if (live) {
@@ -3986,7 +4612,7 @@
         return;
       }
       stopSpeech();
-      openChat(false);
+      if (!options.keepAvatarMode) await openChat(false);
       addMessage('user', value, { readable: false });
       history.push({ role: 'user', content: value });
       addWorking();
@@ -4014,35 +4640,46 @@
       } finally {
         turnController = null;
         pttButton.disabled = Boolean(live);
-        sendButton.disabled = !composer.value.trim();
+        sendButton.disabled = !composer.value.trim() && !pendingComposerAttachments.length;
       }
     }
 
-    async function submitTurn(text) {
+    async function submitTurn(text, options = {}) {
       const value = String(text || '').trim();
       if (!value || turnController || avatarOnlyMotion) return;
       const agentID = selectedOpenClawAgent();
-      if (agentID) return submitOpenClawTurn(value, agentID);
-      return submitLocalTurn(value);
+      if (agentID) return submitOpenClawTurn(value, agentID, options);
+      if (options.attachments && options.attachments.length) {
+        notify('File messages require an OpenClaw agent.');
+        return;
+      }
+      return submitLocalTurn(value, options);
     }
 
     const submitComposer = () => {
       if (avatarOnlyMotion) return;
-      const value = composer.value.trim();
-      if (!value) return;
+      const typedValue = composer.value.trim();
+      const attachments = pendingComposerAttachments.slice(0, 8);
+      if (!typedValue && !attachments.length) return;
       if (live) {
         notify('Hang up Live Talk before sending a regular chat message.');
         return;
       }
+      const value = typedValue || `Please review the attached file${attachments.length === 1 ? '' : 's'}.`;
       composer.value = '';
+      pendingComposerAttachments = [];
+      renderPendingAttachments();
       resizeComposer();
-      submitTurn(value);
+      submitTurn(value, { attachments });
     };
 
     const resizeComposer = () => {
       composer.style.height = '40px';
       composer.style.height = `${Math.min(112, Math.max(40, composer.scrollHeight))}px`;
-      sendButton.disabled = !composer.value.trim() || Boolean(turnController) || Boolean(live);
+      sendButton.disabled = (!composer.value.trim() && !pendingComposerAttachments.length)
+        || Boolean(turnController) || Boolean(live);
+      attachButton.disabled = Boolean(turnController) || Boolean(live)
+        || !selectedOpenClawAgent() || pendingComposerAttachments.length >= 8;
       reportControlRects(true);
     };
 
@@ -4070,9 +4707,19 @@
     async function startRecording() {
       if (avatarOnlyMotion || ptt || live || turnController) return;
       stopSpeech();
-      openChat(false);
       markActivity();
-      const session = { released: false, chunks: [], started: performance.now(), stream: null, recorder: null, meterContext: null, analyser: null };
+      const session = {
+        released: false,
+        chunks: [],
+        started: performance.now(),
+        stream: null,
+        recorder: null,
+        meterContext: null,
+        analyser: null,
+        // A head-hold in Avatar mode is a voice gesture on the companion,
+        // not an implicit navigation command into the Chat/Talk window.
+        keepAvatarMode: !root.classList.contains('chat-mode'),
+      };
       ptt = session;
       root.classList.add('recording');
       pttButton.classList.add('recording');
@@ -4142,7 +4789,7 @@
         const heard = String(result.text || '').trim();
         if (!heard) throw new Error(result.error || 'I did not catch that');
         setDictationFeedback();
-        await submitTurn(heard);
+        await submitTurn(heard, { keepAvatarMode: Boolean(session.keepAvatarMode) });
       } catch (error) {
         setDictationFeedback(`Could not transcribe: ${String(error.message || error).slice(0, 120)}`, 'error', 5200);
         setStatus('Ready', 'good');
@@ -4461,7 +5108,6 @@
       pttButton.disabled = true;
       sendButton.disabled = true;
       setStatus('Live Talk · connected', 'live');
-      openChat(false);
       if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(true);
     }
 
@@ -4481,7 +5127,6 @@
             session.userTurnOpen = false;
           }
           addMessage(role, text, { readable: role === 'assistant' });
-          openChat(false);
         } else if (role === 'user') {
           setStatus(`Hearing “${text.slice(0, 54)}”`, 'live');
         }
@@ -4581,7 +5226,6 @@
       sendButton.disabled = true;
       setStatus('Calling Live Talk…', 'busy');
       startConnectionSound(session);
-      openChat(false);
       if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(true);
       session.guard = setTimeout(() => {
         if (live === session) {
@@ -4691,6 +5335,7 @@
       if (!await ensureMotion('move')) return;
       if (root.classList.contains('chat-mode')) {
         manualMotionKind = manualMotionKind === 'move' ? null : 'move';
+        manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
         movesButton.setAttribute('aria-checked', String(manualMotionKind === 'move'));
         walkButton.setAttribute('aria-checked', 'false');
         edgeIdleButton.setAttribute('aria-checked', 'false');
@@ -4715,6 +5360,7 @@
       if (!await ensureMotion('walk')) return;
       if (root.classList.contains('chat-mode')) {
         manualMotionKind = manualMotionKind === 'walk' ? null : 'walk';
+        manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
         walkButton.setAttribute('aria-checked', String(manualMotionKind === 'walk'));
         edgeIdleButton.setAttribute('aria-checked', 'false');
         movesButton.setAttribute('aria-checked', 'false');
@@ -4726,8 +5372,10 @@
     };
 
     const toggleEdgeIdle = async () => {
-      if (!await ensureMotion('idle')) return;
+      const chatFallback = root.classList.contains('chat-mode') && !authoredMotion('idle');
+      if (!chatFallback && !await ensureMotion('idle')) return;
       manualMotionKind = manualMotionKind === 'idle' ? null : 'idle';
+      manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
       edgeIdleButton.setAttribute('aria-checked', String(manualMotionKind === 'idle'));
       walkButton.setAttribute('aria-checked', 'false');
       movesButton.setAttribute('aria-checked', 'false');
@@ -4893,20 +5541,19 @@
       canvasGesture = null;
       clearTimeout(gesture && gesture.holdTimer);
       if (!gesture) return;
-      if (gesture.opacityAdjusting) {
+      if (gesture.positionAdjusting) {
         dragging = false;
-        root.classList.remove('dragging');
-        const finalOpacity = Math.max(0, Math.min(1, Number(opacityGestureValue) || 0));
-        opacityGestureValue = null;
-        if (shell && typeof shell.setPetOpacity === 'function') {
-          shell.setPetOpacity(finalOpacity).then(applyShellState).catch(() => {});
+        root.classList.remove('dragging', 'position-adjusting');
+        if (manualMotionKind === 'walk' && manualMotionStartedAt > 0) {
+          manualMotionStartedAt += Math.max(0, performance.now() - gesture.motionAt);
         }
+        saveChatAvatarOffset();
         updateHit(true);
         return;
       }
       if (dragging) {
         dragging = false;
-        root.classList.remove('dragging');
+        root.classList.remove('dragging', 'position-adjusting');
         if (shell && typeof shell.endPetDrag === 'function') shell.endPetDrag();
         updateHit(true);
         return;
@@ -4947,9 +5594,9 @@
         screenY: event.screenY,
         at: performance.now(),
         talking: false,
-        opacityAdjusting: false,
-        startOpacity: Math.max(0, Math.min(1,
-          Number(shellState.pet && shellState.pet.opacity) || 0)),
+        positionAdjusting: false,
+        startOffset: { ...chatAvatarOffset },
+        motionAt: performance.now(),
         holdTimer: 0,
       };
       canvasGesture = gesture;
@@ -4965,19 +5612,20 @@
     canvas.addEventListener('pointermove', event => {
       if (!shell || !canvasGesture || canvasGesture.id !== event.pointerId || canvasGesture.talking) return;
       if (root.classList.contains('chat-mode') && interactionLayer === 'avatar') {
-        if (!canvasGesture.opacityAdjusting
-            && Math.hypot(event.clientX - canvasGesture.x, event.clientY - canvasGesture.y) > 5) {
+        const deltaX = event.clientX - canvasGesture.x;
+        const deltaY = event.clientY - canvasGesture.y;
+        if (!canvasGesture.positionAdjusting && Math.hypot(deltaX, deltaY) > 5) {
           clearTimeout(canvasGesture.holdTimer);
-          canvasGesture.opacityAdjusting = true;
+          canvasGesture.positionAdjusting = true;
+          root.classList.add('position-adjusting');
           dragging = true;
           root.classList.add('dragging');
         }
-        if (canvasGesture.opacityAdjusting) {
-          const travel = (canvasGesture.y - event.clientY) / Math.max(240, innerHeight * .68);
-          opacityGestureValue = Math.max(0, Math.min(1, canvasGesture.startOpacity + travel));
-          canvas.style.opacity = String(opacityGestureValue);
-          avatarOpacityRange.value = String(Math.round(opacityGestureValue * 100));
-          avatarOpacityValue.textContent = `${Math.round(opacityGestureValue * 100)}%`;
+        if (canvasGesture.positionAdjusting) {
+          chatAvatarOffset = boundedChatAvatarOffset({
+            x: canvasGesture.startOffset.x + deltaX,
+            y: canvasGesture.startOffset.y + deltaY,
+          });
           return;
         }
       }
@@ -5016,6 +5664,10 @@
     liveButton.addEventListener('click', toggleLiveTalk);
     avatarCarouselButton.addEventListener('click', cycleAvatar);
     avatarModeButton.addEventListener('click', closeChat);
+    chatHeaderAvatarModeButton.addEventListener('click', closeChat);
+    chatHeaderThemeButton.addEventListener('click', () => {
+      applyAppTheme(root.dataset.theme === 'dark' ? 'light' : 'dark', true);
+    });
     motionMenuButton.addEventListener('click', event => {
       event.stopPropagation();
       const next = motionPicker.hidden;
@@ -5064,11 +5716,50 @@
     chatHistoryScrim.addEventListener('click', () => setHistoryOpen(false));
     closeHistoryButton.addEventListener('click', () => setHistoryOpen(false));
     newChatButton.addEventListener('click', createNewChat);
+    chatHeaderNewButton.addEventListener('click', createNewChat);
+    historySettingsButton.addEventListener('click', () => {
+      setHistoryOpen(false);
+      if (shell) shell.openSettings();
+    });
     settingsButton.addEventListener('click', () => shell && shell.openSettings());
     document.getElementById('emptyChat').addEventListener('click', () => openChat(true));
     document.getElementById('emptySettings').addEventListener('click', () => shell && shell.openSettings());
     closeChatButton.addEventListener('click', closeChat);
     sendButton.addEventListener('click', submitComposer);
+    attachButton.addEventListener('click', event => {
+      event.stopPropagation();
+      setAttachmentMenuOpen(attachmentMenu.hidden);
+    });
+    addFilesButton.addEventListener('click', () => {
+      setAttachmentMenuOpen(false);
+      fileInput.click();
+    });
+    addPhotosButton.addEventListener('click', () => {
+      setAttachmentMenuOpen(false);
+      photoInput.click();
+    });
+    takePhotoButton.addEventListener('click', startCamera);
+    fileInput.addEventListener('change', async () => {
+      await uploadComposerFiles(fileInput.files);
+      fileInput.value = '';
+    });
+    photoInput.addEventListener('change', async () => {
+      await uploadComposerFiles(photoInput.files);
+      photoInput.value = '';
+    });
+    cameraCaptureButton.addEventListener('click', captureCameraPhoto);
+    cameraCloseButton.addEventListener('click', stopCamera);
+    cameraDialog.addEventListener('cancel', event => {
+      event.preventDefault();
+      stopCamera();
+    });
+    filePreviewClose.addEventListener('click', () => filePreviewDialog.close());
+    filePreviewSave.addEventListener('click', () => {
+      if (previewResource) downloadResource(previewResource);
+    });
+    filePreviewShare.addEventListener('click', () => {
+      if (previewResource) void shareResource(previewResource);
+    });
     conversation.addEventListener('pointerdown', event => {
       selectingFeedback = Boolean(event.target && event.target.closest
         && event.target.closest('.message.assistant .bubble'));
@@ -5097,6 +5788,9 @@
       if (!motionPicker.contains(event.target) && event.target !== motionMenuButton
           && !opacityPanel.contains(event.target) && event.target !== opacityButton) {
         closeRailPickers();
+      }
+      if (!attachmentMenu.contains(event.target) && event.target !== attachButton) {
+        setAttachmentMenuOpen(false);
       }
       if (!selectionActions.contains(event.target) && !conversation.contains(event.target)) {
         hideSelectionActions(true);
@@ -5139,7 +5833,10 @@
         return;
       }
       if (event.key === 'Escape') {
-        if (root.classList.contains('history-open')) setHistoryOpen(false);
+        if (cameraDialog.open) stopCamera();
+        else if (filePreviewDialog.open) filePreviewDialog.close();
+        else if (!attachmentMenu.hidden) setAttachmentMenuOpen(false);
+        else if (root.classList.contains('history-open')) setHistoryOpen(false);
         else if (selectionActions.classList.contains('show')) hideSelectionActions(true);
         else if (document.querySelector('.email-review')) closeEmailReview();
         else if (live) stopLiveTalk('ended');
@@ -5167,6 +5864,7 @@
       finishAvatarZoom();
       if (live) stopLiveTalk('ended');
       if (ptt && ptt.stream) ptt.stream.getTracks().forEach(track => track.stop());
+      stopCamera();
       stopSpeech();
       if (shell && typeof shell.setPetControlRects === 'function') shell.setPetControlRects([]);
     });

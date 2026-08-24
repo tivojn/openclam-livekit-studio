@@ -45,6 +45,10 @@ assert.doesNotMatch(desktop, /append\('Output'/);
 assert.match(desktop, /#sendButton\s*\{\s*background:\s*var\(--codex-text\);\s*color:\s*var\(--codex-under\)/);
 assert.match(desktop, /\.message\.assistant \.bubble\s*\{[\s\S]{0,200}background:\s*transparent/);
 assert.match(desktop, /\.message\.user \.bubble\s*\{[\s\S]{0,220}background:\s*var\(--codex-control\)/);
+assert.match(desktop, /#newChatButton\s*\{[\s\S]{0,360}background:\s*color-mix\(in srgb, var\(--codex-editor\) 98%, transparent\) !important;/,
+  'the history New chat action must remain a labelled neutral control, never a blank dark bar');
+assert.match(desktop, /id="newChatButton"[\s\S]{0,300}<span>New chat<\/span>/,
+  'the history New chat control must keep its visible label');
 
 assert.ok(
   settings.indexOf('/* Codex macOS visual contract.') > settings.indexOf('.settings-intro'),
@@ -90,7 +94,7 @@ for (const label of [
   'Bring avatar layer forward', 'Adjust avatar opacity', 'Mirror avatar',
   'Open Character Studio', 'Fold controls', 'Hold to talk', 'Message',
   'Send message', 'Close conversation', 'Open chat history',
-  'Close chat history', 'Start a new chat',
+  'Close chat history', 'Start a new chat', 'Open Settings',
 ]) {
   assert.ok(desktop.includes(`aria-label="${label}"`), `missing desktop AX label: ${label}`);
 }

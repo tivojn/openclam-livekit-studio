@@ -73,7 +73,17 @@ keep their respective model traffic on the Mac.
 Microphone capture starts only while push-to-talk is held or a Live Talk call
 is active. Releasing push-to-talk, hanging up, closing the call, or quitting
 stops the local track. The app does not request System Audio Recording,
-Accessibility, Apple Events automation, or camera access.
+Accessibility, or Apple Events automation.
+
+## Camera and chat files
+
+Camera capture starts only after the user chooses **Take a Photo** in the chat
+composer and stops when the photo is used, the camera sheet is cancelled, or
+the app closes. A chosen or captured file is copied into OpenClam's private
+application data and is supplied only to the OpenClaw agent selected for that
+chat. OpenClam never adds files from the Mac without an explicit composer
+choice. Received and sent chat files remain available to that Mac's chat
+history until their OpenClam application data is removed.
 
 ## AVTR exports
 

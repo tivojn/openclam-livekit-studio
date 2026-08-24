@@ -81,7 +81,7 @@ CSP = ("default-src 'self'; img-src 'self' data: blob: https:; "
        # 'self' does not cover the ws: scheme, and live dictation streams
        # over a local WebSocket to this same server.
        "connect-src 'self' ws://127.0.0.1:* ws://localhost:*{livekit_origins}; "
-       "font-src 'self' data:; object-src 'none'; "
+       "font-src 'self' data:; frame-src 'self' blob:; object-src 'none'; "
        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 
@@ -116,7 +116,7 @@ def _security_headers(response):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
-    response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=(self)"
+    response.headers["Permissions-Policy"] = "camera=(self), geolocation=(), microphone=(self)"
     return response
 
 
@@ -2626,6 +2626,61 @@ class OpenClawTurnRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=64)
     session_id: str = Field(min_length=32, max_length=32)
     prompt: str = Field(min_length=1, max_length=12_000)
+    input_handles: list[str] = Field(default_factory=list, max_length=8)
+
+
+@app.post("/api/openclaw/uploads")
+async def api_openclaw_uploads(
+    agent_id: str = Form(..., min_length=1, max_length=64),
+    session_id: str = Form(..., min_length=32, max_length=32),
+    files: list[UploadFile] = File(...),
+):
+    if not files or len(files) > openclaw_acp.MAX_INPUT_FILES:
+        raise HTTPException(400, "Attach between 1 and 8 files.")
+    os.makedirs(P.DATA_ROOT, mode=0o700, exist_ok=True)
+    staged: list[dict[str, object]] = []
+    total = 0
+    try:
+        for upload in files:
+            temporary = tempfile.NamedTemporaryFile(
+                prefix="openclam-upload-", dir=P.DATA_ROOT, delete=False
+            )
+            temporary_path = temporary.name
+            try:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > openclaw_acp.MAX_INPUT_TOTAL_BYTES:
+                        raise HTTPException(413, "Keep attached files below 64 MB per message.")
+                    temporary.write(chunk)
+                temporary.close()
+                try:
+                    staged.append(await asyncio.to_thread(
+                        openclaw_acp.stage_upload,
+                        temporary_path,
+                        upload.filename or "OpenClam file",
+                        upload.content_type or "application/octet-stream",
+                        agent_id,
+                        session_id,
+                    ))
+                except openclaw_acp.OpenClawACPError as error:
+                    raise HTTPException(400, str(error)) from error
+            finally:
+                temporary.close()
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+                await upload.close()
+    except Exception:
+        for attachment in staged:
+            handle = attachment.get("handle")
+            if isinstance(handle, str):
+                await asyncio.to_thread(openclaw_acp.delete_upload, handle)
+        raise
+    return {"attachments": staged}
 
 
 @app.post("/api/openclaw/turn")
@@ -2636,6 +2691,7 @@ async def api_openclaw_turn(request: OpenClawTurnRequest):
                 request.agent_id,
                 request.session_id,
                 request.prompt,
+                request.input_handles,
             ):
                 yield json.dumps(
                     event, separators=(",", ":"), ensure_ascii=False
@@ -2658,6 +2714,18 @@ async def api_openclaw_artifact(handle: str):
     path = openclaw_acp.artifact_path(handle)
     if not path:
         raise HTTPException(404, "OpenClaw file is no longer available")
+    return FileResponse(
+        path,
+        filename=os.path.basename(path),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/openclaw/uploads/{handle}")
+async def api_openclaw_upload(handle: str):
+    path = openclaw_acp.upload_path(handle)
+    if not path:
+        raise HTTPException(404, "Attached file is no longer available")
     return FileResponse(
         path,
         filename=os.path.basename(path),

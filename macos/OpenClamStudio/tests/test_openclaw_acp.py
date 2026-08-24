@@ -9,10 +9,17 @@ from server import openclaw_acp
 
 class OpenClawACPTests(unittest.TestCase):
     def setUp(self):
+        self.media_directory = tempfile.TemporaryDirectory()
+        self.environment = mock.patch.dict(
+            os.environ, {"OPENCLAM_DATA_DIR": self.media_directory.name}
+        )
+        self.environment.start()
         openclaw_acp._ARTIFACTS.clear()
 
     def tearDown(self):
         openclaw_acp._ARTIFACTS.clear()
+        self.environment.stop()
+        self.media_directory.cleanup()
 
     def test_public_agents_excludes_workspace(self):
         with mock.patch.object(openclaw_acp, "_run_json", return_value=[{
@@ -39,21 +46,23 @@ class OpenClawACPTests(unittest.TestCase):
         kind, step = openclaw_acp.project_update({
             "sessionUpdate": "tool_call",
             "toolCallId": "call-1",
-            "title": "Inspecting the portrait",
-            "kind": "read",
+            "title": "bash: command: /srv/openclaw/ara/private-script --token secret-value",
+            "kind": "execute",
             "status": "in_progress",
             "rawInput": {"Authorization": "Bearer secret-value"},
             "rawOutput": "password=do-not-show",
             "locations": [{"path": "/etc/passwd"}],
         }, workspace, {})
         self.assertEqual(kind, "work")
-        self.assertEqual(step["title"], "Inspecting the portrait")
-        self.assertEqual(step["tool"], "read")
+        self.assertEqual(step["title"], "Ran commands")
+        self.assertEqual(step["tool"], "command")
         self.assertNotIn("path", step)
         encoded = repr(step).lower()
         self.assertNotIn("authorization", encoded)
         self.assertNotIn("password", encoded)
         self.assertNotIn("/etc", encoded)
+        self.assertNotIn("private-script", encoded)
+        self.assertNotIn("secret-value", encoded)
 
     def test_safe_text_redacts_generic_private_paths_and_secret_labels(self):
         value = openclaw_acp._safe_text(
@@ -91,7 +100,12 @@ class OpenClawACPTests(unittest.TestCase):
                 self.assertEqual(attachment["name"], "portrait.png")
                 self.assertNotIn(directory, repr(attachment))
                 handle = str(attachment["url"]).rsplit("/", 1)[-1]
-                self.assertEqual(openclaw_acp.artifact_path(handle), os.path.realpath(output))
+                persisted = openclaw_acp.artifact_path(handle)
+                self.assertIsNotNone(persisted)
+                self.assertNotEqual(persisted, os.path.realpath(output))
+                self.assertEqual(Path(persisted).read_bytes(), b"safe-image")
+                openclaw_acp._ARTIFACTS.clear()
+                self.assertEqual(openclaw_acp.artifact_path(handle), persisted)
                 self.assertIsNone(openclaw_acp._artifact(str(outside), directory))
             finally:
                 outside.unlink(missing_ok=True)
@@ -113,11 +127,52 @@ class OpenClawACPTests(unittest.TestCase):
                 len(openclaw_acp._ARTIFACTS),
                 openclaw_acp.MAX_ARTIFACT_HANDLES,
             )
-            self.assertIsNone(openclaw_acp.artifact_path(handles[0]))
+            # The in-memory lookup stays bounded, while a history card can
+            # rehydrate its private on-disk handle after eviction or restart.
+            self.assertIsNotNone(openclaw_acp.artifact_path(handles[0]))
+            self.assertEqual(len(openclaw_acp._ARTIFACTS), openclaw_acp.MAX_ARTIFACT_HANDLES)
             self.assertEqual(
-                openclaw_acp.artifact_path(handles[-1]),
-                os.path.realpath(paths[-1]),
+                Path(openclaw_acp.artifact_path(handles[-1])).read_text(encoding="utf-8"),
+                paths[-1].read_text(encoding="utf-8"),
             )
+
+    def test_uploaded_file_is_private_durable_and_bound_to_agent_chat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "notes.md"
+            source.write_text("# Private input\nReview this.", encoding="utf-8")
+            attachment = openclaw_acp.stage_upload(
+                str(source), "notes.md", "text/markdown", "ara", "a" * 32
+            )
+            handle = str(attachment["handle"])
+            persisted = openclaw_acp.upload_path(handle)
+            self.assertIsNotNone(persisted)
+            self.assertNotEqual(persisted, os.path.realpath(source))
+            self.assertEqual(Path(persisted).read_text(encoding="utf-8"), source.read_text())
+            self.assertEqual(os.stat(persisted).st_mode & 0o777, 0o600)
+
+            blocks, visible = openclaw_acp._input_blocks([handle], "ara", "a" * 32)
+            self.assertEqual(blocks[0]["type"], "resource_link")
+            self.assertEqual(blocks[0]["name"], "notes.md")
+            self.assertEqual(visible[0]["url"], attachment["url"])
+            with self.assertRaises(openclaw_acp.OpenClawACPError):
+                openclaw_acp._input_blocks([handle], "other", "a" * 32)
+            with self.assertRaises(openclaw_acp.OpenClawACPError):
+                openclaw_acp._input_blocks([handle], "ara", "b" * 32)
+
+            self.assertTrue(openclaw_acp.delete_upload(handle))
+            self.assertIsNone(openclaw_acp.upload_path(handle))
+            self.assertFalse(openclaw_acp.delete_upload(handle))
+            self.assertFalse(openclaw_acp.delete_upload("../outside"))
+
+    def test_upload_rejects_unsupported_or_oversized_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unsupported = Path(directory) / "payload.bin"
+            unsupported.write_bytes(b"not accepted")
+            with self.assertRaises(openclaw_acp.OpenClawACPError):
+                openclaw_acp.stage_upload(
+                    str(unsupported), unsupported.name, "application/octet-stream",
+                    "ara", "a" * 32,
+                )
 
 
 if __name__ == "__main__":

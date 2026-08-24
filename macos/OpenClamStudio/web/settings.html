@@ -76,7 +76,9 @@ nav button.on{background:var(--press);color:var(--ink);font-weight:600}
 .peek:hover{color:var(--ink);background:var(--hover)}
 .peek.on{color:var(--ink);border-color:var(--accent-line)}
 .peek svg{width:17px;height:17px;fill:currentColor}
-.back{color:var(--dim);text-decoration:none;font-size:13px;padding:6px 10px;border-radius:6px}
+.settings-toolbar{display:flex;align-items:center;gap:6px}
+.back{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:13px;
+  padding:6px 10px;border:1px solid transparent;border-radius:6px;background:transparent;cursor:pointer}
 .back:hover{color:var(--ink);background:var(--hover)}
 .theme-toggle{display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--line);
   border-radius:6px;background:none;color:var(--dim);font-size:14px;line-height:1;cursor:pointer}
@@ -742,7 +744,10 @@ body::-webkit-scrollbar-thumb,.rig-panel::-webkit-scrollbar-thumb,
 header{position:fixed;inset:0 auto 0 0;z-index:20;width:232px;display:flex;
   flex-direction:column;align-items:stretch;gap:0;padding:18px 12px 14px;
   background:var(--bg-sub);backdrop-filter:none;border:0;border-right:1px solid var(--line)}
-header h1{padding:8px 10px 17px;font-size:14px;font-weight:600;letter-spacing:-.012em}
+.settings-toolbar{margin:0 2px 12px}
+.settings-toolbar .back{min-height:34px;padding:0 9px;font-size:12.5px;font-weight:500}
+.settings-toolbar .theme-toggle{margin:0}
+header h1{padding:4px 10px 17px;font-size:14px;font-weight:600;letter-spacing:-.012em}
 header h1 span{display:none}
 nav{display:flex;flex-direction:column;gap:2px;margin:0}
 nav button{width:100%;padding:8px 10px;border-radius:var(--codex-radius-md);
@@ -750,7 +755,7 @@ nav button{width:100%;padding:8px 10px;border-radius:var(--codex-radius-md);
 nav button:hover{background:var(--hover);color:var(--ink)}
 nav button.on{background:var(--press);color:var(--ink);font-weight:500}
 header .grow{min-height:18px}
-.theme-toggle{flex:none;width:32px;height:32px;margin:0 9px 6px;border-color:var(--line);
+.theme-toggle{flex:none;width:32px;height:32px;margin:0;border-color:var(--line);
   border-radius:var(--codex-radius-md);background:transparent;color:var(--dim)}
 .theme-toggle:hover{border-color:var(--line-strong);background:var(--hover);color:var(--ink)}
 .back{margin:0 2px;padding:8px 9px;border-radius:var(--codex-radius-md);color:var(--dim);
@@ -878,6 +883,7 @@ button.btn.sm{min-height:30px;padding:5px 9px;font-size:12px}
   nav::-webkit-scrollbar{display:none}
   nav button{width:auto;flex:none;padding:7px 9px;white-space:nowrap}
   header .grow{display:none}
+  .settings-toolbar{margin:0;flex:none}
   .theme-toggle{margin:0}
   .back{margin:0;white-space:nowrap}
   main{margin-left:0;padding:28px 24px 104px}
@@ -897,6 +903,10 @@ button.btn.sm{min-height:30px;padding:5px 9px;font-size:12px}
 document.documentElement.dataset.design='quiet';</script>
 
 <header>
+  <div class="settings-toolbar" aria-label="Settings navigation and appearance">
+    <button class="back" id="settings-back-to-chat" type="button" aria-label="Back to Chat/Talk" title="Back to Chat/Talk">← <span>Chat/Talk</span></button>
+    <button class="theme-toggle" id="theme-toggle" type="button" title="Switch to dark mode" aria-label="Switch to dark mode"><svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="currentColor"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg></button>
+  </div>
   <h1>OpenClam Studio<span>.</span></h1>
   <nav aria-label="Settings sections">
     <button type="button" data-tab="avatar" class="on" aria-current="page">Avatar Studio</button>
@@ -905,9 +915,6 @@ document.documentElement.dataset.design='quiet';</script>
     <button type="button" data-tab="persona">Persona</button>
   </nav>
   <div class="grow"></div>
-  <!-- The same moon the rail wears - one glyph for one switch (#30). -->
-  <button class="theme-toggle" id="theme-toggle" type="button" title="Switch light / dark theme" aria-label="Switch color theme"><svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="currentColor"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg></button>
-  <a class="back" href="/">&larr; Open Chat/Talk</a>
 </header>
 
 <main>
@@ -1794,12 +1801,17 @@ document.addEventListener('click', event => {
 });
 /* Keep every OpenClam Studio window on the same local appearance. */
 function setTheme(value, push) {
-  document.documentElement.dataset.theme = value === 'dark' ? 'dark' : 'light';
-  localStorage.setItem('openclam-theme', value);
+  const theme = value === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem('openclam-theme', theme);
+  const next = theme === 'dark' ? 'light' : 'dark';
+  $('#theme-toggle').title = `Switch to ${next} mode`;
+  $('#theme-toggle').setAttribute('aria-label', `Switch to ${next} mode`);
   if (push) api('/api/config', {method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ui: {theme: value}})}).catch(() => {});
+    body: JSON.stringify({ui: {theme}})}).catch(() => {});
 }
+setTheme(document.documentElement.dataset.theme);
 $('#theme-toggle').onclick = () =>
   setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', true);
 addEventListener('storage', event => {
@@ -1842,7 +1854,9 @@ const STORE_PROGRESS = new Map(), STORE_THUMBNAILS = new Map();
 const STORE_THUMBNAIL_LOADING = new Set();
 
 if (SHELL && SHELL.isElectron) {
-  $('.back').onclick = e => { e.preventDefault(); SHELL.showChat(); };
+  $('#settings-back-to-chat').onclick = () => SHELL.showChat();
+} else {
+  $('#settings-back-to-chat').onclick = () => { location.href = '/'; };
 }
 
 /* ---------------------------------------------------------------- tabs */

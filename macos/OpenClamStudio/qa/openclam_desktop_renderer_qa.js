@@ -6,7 +6,8 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
-const inline = source.match(/<script>\s*([\s\S]*?)\s*<\/script>\s*<\/body>/);
+const inlineScripts = [...source.matchAll(/<script>\s*([\s\S]*?)\s*<\/script>/g)];
+const inline = inlineScripts.at(-1);
 
 assert.ok(inline, 'desktop renderer must contain one inline application script');
 assert.doesNotThrow(() => new Function(inline[1]), 'desktop renderer JavaScript must parse');
@@ -52,6 +53,14 @@ assert.equal((source.match(/id="chatButton"/g) || []).length, 0);
 assert.equal((source.match(/id="emptyChat"/g) || []).length, 1);
 assert.match(source, /aria-label="Switch to next avatar"/);
 assert.match(source, /aria-label="Switch to Avatar mode"/);
+assert.match(source, /#topline \{ display: none !important; \}/,
+  'avatar lifecycle status must not occupy a floating chip in Chat\/Talk');
+assert.match(source, /id="chatHeaderNewButton"[^>]+>New chat<\/button>/,
+  'the window header must expose New chat beside the history control');
+assert.match(source, /id="newChatButton"[^>]+>[\s\S]{0,300}<span>New chat<\/span>[\s\S]{0,40}<\/button>/,
+  'the history drawer must expose a visible New chat label instead of a dark placeholder bar');
+assert.match(source, /id="historySettingsButton"[^>]+>Settings<\/button>/,
+  'the history sidebar must expose Settings');
 assert.match(source, /html:not\(\.chat-mode\) #topline,[\s\S]{0,220}html:not\(\.chat-mode\) #rail,[\s\S]{0,280}display: none !important;/,
   'Avatar mode must be one pure avatar surface without chat status or rail chrome');
 assert.match(source, /Chat &amp; Push to Talk/);
@@ -95,12 +104,22 @@ assert.match(source, /setDictationFeedback\(`Could not transcribe:[\s\S]{0,140}'
   'speech recognition failures must remain inside the composer');
 assert.doesNotMatch(source, /notify\(`Could not transcribe:/,
   'speech recognition failures must not cover the avatar with a global dark toast');
+assert.match(source, /const notify = \(text, duration = 4200\) => \{[\s\S]{0,520}threadNoticeNode\.className = 'thread-notice'/,
+  'chat status must render as a quiet in-thread row instead of a dark global toast');
 assert.match(source, /html\.chat-mode\.avatar-layer-top #stage \{[\s\S]{0,120}z-index:\s*32;/,
   'the avatar layer must actually composite above the thread at full opacity');
 assert.match(source, /html\.chat-mode\.thread-layer-top #stage \{\s*z-index:\s*1;/,
   'thread-first mode must return the avatar beneath the scroll surface');
 assert.match(source, /canvas\.addEventListener\('pointerdown', event => \{[\s\S]{0,300}interactionLayer === 'avatar'[\s\S]{0,180}paintedAvatarAt\(/,
-  'avatar-first vertical gestures must freshly hit-test the visible avatar before starting');
+  'avatar-first drags must freshly hit-test the visible avatar before starting');
+assert.match(source, /canvasGesture\.positionAdjusting = true;[\s\S]{0,100}root\.classList\.add\('position-adjusting'\)/,
+  'a drag in any direction must reposition the front avatar layer');
+assert.doesNotMatch(source, /opacityAdjusting/,
+  'dragging must never be split into a competing vertical opacity gesture');
+assert.match(source, /x: canvasGesture\.startOffset\.x \+ deltaX,[\s\S]{0,80}y: canvasGesture\.startOffset\.y \+ deltaY/,
+  'the avatar must follow both cursor axes directly during drag');
+assert.match(source, /canvas\.addEventListener\('wheel', handleAvatarPinch/,
+  'Standby and every painted motion must share the avatar pinch path');
 assert.match(source, /#conversation \{[\s\S]{0,180}height: min\(64dvh, 680px\);/,
   'Open conversation history must expose a full Work-style scrolling thread');
 assert.match(source, /#chatDock:has\(#conversation:not\(:empty\)\)/,
@@ -161,12 +180,22 @@ assert.doesNotMatch(source, /avatarCarouselButton\.addEventListener\('click',[\s
 for (const route of ['/reply', '/stt', '/say', '/api/livekit/session']) {
   assert.ok(source.includes(`'${route}'`), `missing same-origin route ${route}`);
 }
-for (const route of ['/api/openclaw/agents', '/api/openclaw/turn']) {
+for (const route of ['/api/openclaw/agents', '/api/openclaw/turn', '/api/openclaw/uploads']) {
   assert.ok(source.includes(`'${route}'`), `missing same-origin OpenClaw route ${route}`);
 }
 assert.equal((source.match(/id="agentModeSelect"/g) || []).length, 1);
-assert.match(source, /async function submitTurn\(text\)[\s\S]{0,260}selectedOpenClawAgent\(\)/,
+assert.match(source, /async function submitTurn\(text, options = \{\}\)[\s\S]{0,300}selectedOpenClawAgent\(\)/,
   'the Mac composer must switch between local and OpenClaw agents without changing screens');
+assert.match(source, /keepAvatarMode: !root\.classList\.contains\('chat-mode'\)/,
+  'A head-hold PTT started in Avatar mode must retain that mode');
+assert.match(source, /submitTurn\(heard, \{ keepAvatarMode: Boolean\(session\.keepAvatarMode\) \}\)/,
+  'The completed PTT transcript must preserve its originating Avatar mode');
+const startLiveTalkSource = source.match(
+  /async function startLiveTalk\(\) \{([\s\S]*?)\n    function stopLiveTalk/,
+);
+assert.ok(startLiveTalkSource, 'Live Talk implementation must remain inspectable');
+assert.doesNotMatch(startLiveTalkSource[1], /openChat\(false\)/,
+  'Avatar double-click Live Talk must never navigate into Chat\/Talk mode');
 assert.match(source, /const createWorkTimeline = \(\) =>/);
 assert.match(source, /event\.type === 'work'[\s\S]{0,100}updateWorkTimeline/);
 assert.match(source, /event\.type === 'attachment'[\s\S]{0,120}appendOpenClawAttachment/);
@@ -174,6 +203,10 @@ assert.match(source, /textContent = step\.title/,
   'work details must use text nodes rather than executable markup');
 assert.doesNotMatch(source, /innerHTML\s*=\s*step\./,
   'OpenClaw work updates must never write untrusted HTML');
+assert.match(source, /if \(!root\.classList\.contains\('has-detail'\)\) event\.preventDefault\(\)/,
+  'A status-only work step must not expand into an empty grey detail panel');
+assert.match(source, /item\.detail\.hidden = !hasDetail;/,
+  'Empty work details must be structurally hidden');
 assert.match(source, /new library\.Room\(\{ adaptiveStream: true, dynacast: true \}\)/);
 assert.match(source, /localParticipant\.setMicrophoneEnabled\(true\)/);
 assert.match(source, /RoomEvent\.TranscriptionReceived/);
@@ -375,7 +408,29 @@ assert.match(source, /source\.connect\(graph\.destination\)/,
 // the microphone and speaker. The composer keeps its text for after hang-up.
 assert.match(source, /Hang up Live Talk before sending a regular chat message/);
 assert.match(source, /Hang up Live Talk before playing a separate read-aloud voice/);
-assert.match(source, /sendButton\.disabled = !composer\.value\.trim\(\) \|\| Boolean\(turnController\) \|\| Boolean\(live\)/);
+assert.match(source,
+  /sendButton\.disabled = \(!composer\.value\.trim\(\) && !pendingComposerAttachments\.length\)[\s\S]{0,100}Boolean\(turnController\) \|\| Boolean\(live\)/,
+  'OpenClaw file-only messages must remain sendable while active turns and Live Talk stay exclusive');
+
+// The Mac composer and thread support the same safe local-media workflow as
+// generated OpenClaw files: selected files are privately staged, sent as
+// handles, rendered by type, and exposed through native Open/Share/Save.
+for (const id of [
+  'attachButton', 'attachmentMenu', 'addFilesButton', 'addPhotosButton',
+  'takePhotoButton', 'filePreviewDialog', 'cameraDialog',
+]) assert.match(source, new RegExp(`id=["']${id}["']`), `missing media control ${id}`);
+assert.match(source, /input_handles: inputAttachments\.map\(attachment => attachment\.handle\)/);
+assert.ok(source.includes('/^api\\/openclaw\\/(?:artifacts|uploads)\\/[A-Za-z0-9_-]{20,32}$/'),
+  'thread media URLs must remain limited to authenticated same-origin artifact/upload handles');
+assert.match(source, /document\.createElement\('audio'\)/);
+assert.match(source, /document\.createElement\('video'\)/);
+assert.match(source, /document\.createElement\('iframe'\)/);
+assert.match(source, /renderSafeMarkdown/);
+assert.match(source, /showFilePreview/);
+assert.match(source, /shareResource/);
+assert.match(source, /downloadResource/);
+assert.doesNotMatch(source, /markdown[\s\S]{0,300}innerHTML\s*=/i,
+  'Markdown previews must never execute file content as HTML');
 
 // Agent feedback is first-class Mac text: native selection remains enabled,
 // every complete response exposes whole-entry Copy and Read Aloud, and a
@@ -558,11 +613,24 @@ assert.match(source, /const blink = blinkAmount\(now, reducedMotion\.matches\);/
 assert.match(source, /for \(const kind of \['walk', 'idle', 'move'\]\) await loadMotion\(kind\);/,
   'large motion atlases must load sequentially so one decode spike cannot silently drop Walk');
 assert.match(source, /const ensureMotion = async kind => \{/);
-assert.match(source, /spec\.button\.disabled = !authored;/,
-  'a motion not authored for this avatar must be disabled in its own menu');
+assert.match(source, /const chatScopedFallback = kind === 'idle' && root\.classList\.contains\('chat-mode'\);/);
+assert.match(source, /spec\.button\.disabled = !available;/,
+  'an unauthored motion stays disabled except for the safe Chat\/Talk edge posture');
 assert.match(source, /`\$\{spec\.label\} · Not built`/);
 assert.doesNotMatch(source, /notify\('Build an? (?:Walk|Edge Idle|Moves) clip/,
   'motion capability feedback belongs inside its picker, never in an avatar-covering dark toast');
+assert.match(source, /const chatWindowMotionFit = \(kind, meta, width, height, now, clip = null\) => \{/);
+assert.match(source, /const floor = Math\.max\(190,[\s\S]{0,160}composerTop - 18/,
+  'Chat\/Talk motion must use the composer as its lower window edge');
+assert.match(source, /const motionTravelAtPhase = \(clip, phase\) => \{/);
+assert.match(source, /const travelled = \(completedCycles \* cycleDistance[\s\S]{0,120}motionTravelAtPhase\(clip, phase\)\) \* scale;/,
+  'Horizon Walk screen travel must use the authored gait trajectory rather than a fixed conveyor-belt duration');
+assert.match(source, /const phase = chatScoped && kind === 'walk' \? fit\.phase/,
+  'the traversing body frames and its lower-edge travel must share one gait phase');
+assert.match(source, /anchors\.right_frames[\s\S]{0,260}innerWidth - 3 - rightSupport \* fit\.scale/,
+  'authored Edge Idle must pin its measured support point directly to the chat window side');
+assert.match(source, /drawAvatar\(now, 'chat-edge-idle'\)/,
+  'Edge Idle must fall back to a lower-right standing lean when no authored clip exists');
 assert.match(source, /html\.avatar-only-motion #rail[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
 assert.match(source, /html\.avatar-only-motion #chatDock,[\s\S]{0,220}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
 assert.match(source, /html\.avatar-only-motion #emptyState[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
@@ -664,11 +732,13 @@ const walkMotion = {
 };
 const spritePainter = new Function(
   'motion', 'cameraFor', 'roamState', 'context', 'pixelRatio', 'innerWidth',
-  'motionPhaseAt', 'beginMotionPresentation', 'clearStage',
+  'motionPhaseAt', 'beginMotionPresentation', 'clearStage', 'root',
+  'manualMotionKind', 'chatWindowMotionFit',
   `'use strict'; let paintedMotionKey = ''; ${motionFrameSource[1]}; ${drawMotionSource[1]}; return drawMotion;`,
 )(walkMotion, () => ({ x: 0, y: 0, scale: 1 }),
   { enabled: true, mode: 'walk', direction: 1, phase: 0.5, sampledAt: performance.timeOrigin },
-  paintContext, 1, 200, motionPhaseAt, kind => `${kind}:`, () => {});
+  paintContext, 1, 200, motionPhaseAt, kind => `${kind}:`, () => {},
+  { classList: { contains: () => false } }, null, () => ({ x: 0, y: 0, scale: 1 }));
 assert.equal(spritePainter('walk', 0), true);
 assert.equal(paintedFrames.length, 1);
 assert.deepEqual(paintedFrames[0].slice(1, 5), [0, 30, 20, 30],
@@ -772,13 +842,15 @@ const endedContext = {
 };
 const endedPainter = new Function(
   'motion', 'cameraFor', 'roamState', 'context', 'pixelRatio', 'innerWidth',
-  'motionPhaseAt', 'beginMotionPresentation', 'clearStage',
+  'motionPhaseAt', 'beginMotionPresentation', 'clearStage', 'root',
+  'manualMotionKind', 'chatWindowMotionFit',
   `'use strict'; let paintedMotionKey = ''; ${motionFrameSource[1]}; ${drawMotionSource[1]}; return drawMotion;`,
 )(
   {move: {video: endedVideo, fps: 12, frames: 73, frame_width: 20, frame_height: 30, bounds: [0, 0, 20, 30]}},
   () => ({x: 0, y: 0, scale: 1}),
   {enabled: true, mode: 'idle', direction: 1}, endedContext, 1, 200,
   motionPhaseAt, () => 'move:', () => {},
+  {classList: {contains: () => false}}, null, () => ({x: 0, y: 0, scale: 1}),
 );
 assert.equal(endedPainter('move', 7000), true);
 assert.equal(endedPaints.length, 1, 'the final decoded Move frame must remain visible');

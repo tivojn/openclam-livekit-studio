@@ -1,6 +1,6 @@
 {
   "name": "openclam-livekit-studio",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "author": "OpenClam contributors",
   "license": "MIT",
   "private": true,
@@ -237,7 +237,8 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {
         "LSMinimumSystemVersion": "14.0",
-        "NSMicrophoneUsageDescription": "OpenClam Studio uses the microphone only while you hold push-to-talk or place a Live Talk call; hanging up stops capture."
+        "NSMicrophoneUsageDescription": "OpenClam Studio uses the microphone only while you hold push-to-talk or place a Live Talk call; hanging up stops capture.",
+        "NSCameraUsageDescription": "OpenClam Studio uses the camera only when you choose Take a Photo in the chat composer."
       }
     },
     "dmg": {
