@@ -45,6 +45,29 @@
         }
       },
       "version": 1
+    },
+    {
+      "author": "OpenClam",
+      "id": "cleo",
+      "name": "Cleo",
+      "thumbnail": {
+        "bytes": 1239663,
+        "height": 1024,
+        "mime": "image/png",
+        "sha256": "a191cb5a10eeea538fd1169d85088aa158cce6104a636118c84015f657861a40",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.1/shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png",
+        "width": 1024
+      },
+      "variants": {
+        "ios-light": {
+          "bytes": 14971307,
+          "format": "openclam-avatar",
+          "profile": "ios-light",
+          "sha256": "7ea1299f25a4b0b1d8242b42d70e717c0012a33356ec9b38a2c2cce9addce2a8",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.1/cleo-ios-light.avtr"
+        }
+      },
+      "version": 1
     }
   ],
   "schemaVersion": 1

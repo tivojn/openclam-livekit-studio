@@ -2664,10 +2664,13 @@ function showPetMenu() {
     { name: 'Standby Size', hint: '⌘⇧0', click: standbyCompanionMode },
     { name: companionHold ? 'Restore Previous Size' : 'Close-Up Companion',
       hint: '⌘⇧9', click: deskCompanionMode },
+    { name: 'Resize & Adjust…', hint: 'avatar · animation · opacity %',
+      click: showAppearanceWindow },
     { name: 'Always on Top', type: 'checkbox', checked: state.alwaysOnTop,
       click: () => applyAlwaysOnTop(!state.alwaysOnTop) },
     { type: 'separator' },
     { name: 'Character Studio…', click: openSettings },
+    { name: 'Quit OpenClam', hint: '⌘Q', click: () => app.quit() },
   ], () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const point = screen.getCursorScreenPoint();

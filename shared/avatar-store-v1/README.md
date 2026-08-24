@@ -26,6 +26,11 @@ the protected bundled fallbacks. Only the Store's pinned verification path may
 install these updates; Files import remains collision-blocked, and the bundled
 fallback remains undeletable.
 
+The `avatar-store-v1.0.1` catalog also publishes Cleo as an iOS-light package.
+That package is produced by the reviewed Mac AVTR exporter from the approved
+avatar project; only its public thumbnail is retained in source. The catalog
+pins the release package's exact size and SHA-256 digest.
+
 ## Generic staging layout
 
 `build_release.py` has no production URL, identity, publisher, version, or

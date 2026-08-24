@@ -148,9 +148,14 @@ assert.ok(!closeUpMode[1].includes('state.petZoom = PET_ZOOM_RANGE.max'),
 const avatarMenu = main.match(/function showPetMenu\(\) \{([\s\S]*?)\n\}\n\nfunction createTray/);
 assert.ok(avatarMenu, 'Avatar mode must retain one focused right-click menu');
 for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Moves',
-  'Standby Size', 'Close-Up Companion', 'Always on Top', 'Character Studio…']) {
+  'Standby Size', 'Close-Up Companion', 'Resize & Adjust…', 'Always on Top',
+  'Character Studio…', 'Quit OpenClam']) {
   assert.ok(avatarMenu[1].includes(label), `missing meaningful Avatar menu item: ${label}`);
 }
+assert.match(avatarMenu[1], /name: 'Resize & Adjust…'[\s\S]{0,120}click: showAppearanceWindow/,
+  'Avatar mode must reopen the live size, animation-size, and opacity sliders');
+assert.match(avatarMenu[1], /name: 'Quit OpenClam'[\s\S]{0,100}app\.quit\(\)/,
+  'Avatar mode must expose an explicit application quit command');
 for (const retired of ['React', 'Rest', 'Click-Through Gaps', 'Click Through Empty Space',
   'Lock Position', 'Hide Avatar']) {
   assert.ok(!avatarMenu[1].includes(`name: '${retired}'`),
