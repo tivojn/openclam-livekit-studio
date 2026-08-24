@@ -114,6 +114,10 @@ assert.match(source, /html\.chat-mode\.thread-layer-top #stage \{[^}]*filter:\s*
   'thread-first mode must not alter the opacity slider result with a canvas filter');
 assert.match(source, /html\.chat-mode #chatDock,[\s\S]{0,900}background:\s*transparent;/,
   'thread-first mode must not composite a translucent wash over the avatar canvas');
+assert.match(source, /html\.chat-mode #composerShell \{[^}]*background:\s*color-mix\(in srgb, var\(--codex-editor\) 62%, transparent\);[^}]*backdrop-filter:\s*blur\(6px\)/,
+  'chat composer must remain translucent enough to reveal avatar motion beneath it');
+assert.match(source, /html\.chat-mode \.message\.user \.bubble \{[^}]*background:\s*color-mix\(in srgb, var\(--codex-control\) 56%, transparent\);[^}]*backdrop-filter:\s*blur\(4px\)/,
+  'chat user bubbles must remain translucent enough to reveal avatar motion beneath them');
 assert.match(source, /canvas\.addEventListener\('pointerdown', event => \{[\s\S]{0,300}interactionLayer === 'avatar'[\s\S]{0,180}paintedAvatarAt\(/,
   'avatar-first drags must freshly hit-test the visible avatar before starting');
 assert.match(source, /canvasGesture\.positionAdjusting = true;[\s\S]{0,100}root\.classList\.add\('position-adjusting'\)/,
