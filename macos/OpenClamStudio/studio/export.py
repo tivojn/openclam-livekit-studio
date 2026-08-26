@@ -20,7 +20,7 @@ from . import face, blink, expression, cutout, limbs, rig, build as reg
 # which calibrated runtime controls can be consumed safely.  Keep a runtime
 # bundle with preserved face strips current when its Pet layers are refreshed
 # without source visemes.
-RUNTIME_VERSION = 18
+RUNTIME_VERSION = 20
 
 # runtime viseme name -> studio shape name
 NAME_MAP = {"sil": "closed", "PP": "PP", "FF": "FF", "TH": "TH", "DD": "DD",
@@ -110,6 +110,49 @@ def _validate_current_face_layers(runtime, destination):
                     or box_values[2] <= 0 or box_values[3] <= 0):
                 raise ValueError(f"runtime {label}_{side} box is invalid; cannot migrate to v{RUNTIME_VERSION}")
             _runtime_face_asset(destination, sprite.get("src"), f"{label}_{side}")
+
+    smile = runtime.get("smile")
+    if not isinstance(smile, dict):
+        raise ValueError(
+            f"runtime laughter-mouth layer is missing; cannot migrate to v{RUNTIME_VERSION}")
+    if (not isinstance(smile.get("states"), list) or not smile["states"]
+            or not isinstance(smile.get("visemes"), list) or not smile["visemes"]):
+        raise ValueError(
+            f"runtime laughter-mouth metadata is missing; cannot migrate to v{RUNTIME_VERSION}")
+    box = smile.get("box")
+    try:
+        box_values = [float(value) for value in box]
+    except (TypeError, ValueError):
+        box_values = []
+    if (len(box_values) != 4 or not all(np.isfinite(value) for value in box_values)
+            or box_values[2] <= 0 or box_values[3] <= 0):
+        raise ValueError(
+            f"runtime laughter-mouth box is invalid; cannot migrate to v{RUNTIME_VERSION}")
+    _runtime_face_asset(destination, smile.get("src"), "laughter-mouth")
+
+    emotion_mouth = runtime.get("emotion_mouth")
+    if not isinstance(emotion_mouth, dict):
+        raise ValueError(
+            f"runtime emotion-mouth layer is missing; cannot migrate to v{RUNTIME_VERSION}")
+    if (not isinstance(emotion_mouth.get("states"), list)
+            or not emotion_mouth["states"]
+            or not isinstance(emotion_mouth.get("visemes"), list)
+            or not emotion_mouth["visemes"]
+            or not isinstance(emotion_mouth.get("emotions"), list)
+            or not emotion_mouth["emotions"]):
+        raise ValueError(
+            f"runtime emotion-mouth metadata is missing; cannot migrate to v{RUNTIME_VERSION}")
+    emotion_box = emotion_mouth.get("box")
+    try:
+        emotion_box_values = [float(value) for value in emotion_box]
+    except (TypeError, ValueError):
+        emotion_box_values = []
+    if (len(emotion_box_values) != 4
+            or not all(np.isfinite(value) for value in emotion_box_values)
+            or emotion_box_values[2] <= 0 or emotion_box_values[3] <= 0):
+        raise ValueError(
+            f"runtime emotion-mouth box is invalid; cannot migrate to v{RUNTIME_VERSION}")
+    _runtime_face_asset(destination, emotion_mouth.get("src"), "emotion-mouth")
 
 
 def _runtime_body_metadata(source):
@@ -462,7 +505,7 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         log("  full-body plate published")
     motion_meta = _publish_motion(home, dest, log)
 
-    frames, names = {}, []
+    frames, names, viseme_bank = {}, [], []
     for rt, shape in NAME_MAP.items():
         src = os.path.join(vis, f"v_{shape}.jpg")
         if not os.path.exists(src):
@@ -473,6 +516,28 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         cv2.imwrite(out, img, [cv2.IMWRITE_JPEG_QUALITY, quality])
         frames[rt] = dict(open=f"assets/{rt}_open.jpg")
         names.append(rt)
+        viseme_bank.append((rt, img))
+
+    log("synthesising viseme-safe laughter mouth states")
+    smile = expression.build_smile(key, klm, viseme_bank, log=log)
+    smile_path = os.path.join(dest, "smile.png")
+    cv2.imwrite(smile_path, np.vstack(smile["patches"]),
+                [cv2.IMWRITE_PNG_COMPRESSION, 9])
+    smile_meta = dict(src="assets/smile.png", box=smile["box"],
+                      states=smile["states"], visemes=smile["visemes"])
+    log(f"  smile.png  {len(smile['patches'])} states, "
+        f"{os.path.getsize(smile_path)/1024:.0f} KB")
+    emotion_mouth = expression.build_emotion_mouths(
+        key, klm, viseme_bank, log=log)
+    emotion_mouth_path = os.path.join(dest, "emotion-mouth.png")
+    cv2.imwrite(emotion_mouth_path, np.vstack(emotion_mouth["patches"]),
+                [cv2.IMWRITE_PNG_COMPRESSION, 9])
+    emotion_mouth_meta = dict(
+        src="assets/emotion-mouth.png", box=emotion_mouth["box"],
+        states=emotion_mouth["states"], emotions=emotion_mouth["emotions"],
+        visemes=emotion_mouth["visemes"])
+    log(f"  emotion-mouth.png  {len(emotion_mouth['patches'])} states, "
+        f"{os.path.getsize(emotion_mouth_path)/1024:.0f} KB")
 
     def _strip(layer, prefix, meta):
         for side in blink.SIDES:
@@ -505,7 +570,8 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
     # bundles refresh so their normalized rig profile reaches the renderer.
     manifest = dict(v=RUNTIME_VERSION, w=W, h=H, avatar=dict(slug=slug, name=m["name"]),
                     visemes=names, frames=frames, eyes=eyes, gaze=gaze, brow=brow,
-                    forehead=forehead,
+                    forehead=forehead, smile=smile_meta,
+                    emotion_mouth=emotion_mouth_meta,
                     cheek=cheek, eyebag=eyebag,
                     neck=expression.neck(klm), cutout=cutout_meta,
                     body=body_meta, motion=motion_meta, blink=timing,

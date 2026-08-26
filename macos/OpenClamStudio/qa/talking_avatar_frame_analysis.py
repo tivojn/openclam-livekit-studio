@@ -46,11 +46,14 @@ def _frame_metrics(path: str) -> dict | None:
     right_brow = (float(np.mean(landmarks[[33, 133], 1]))
                   - float(np.mean(landmarks[BROW_R, 1]))) / eye_span
     angles = pose_angles(transform) or (0.0, 0.0, 0.0)
+    lip_midline = .5 * (float(landmarks[0, 1]) + float(landmarks[17, 1]))
+    corner_line = .5 * (float(landmarks[61, 1]) + float(landmarks[291, 1]))
     return {
         "file": os.path.basename(path),
         "eye_span_px": round(eye_span, 4),
         "mouth_aperture": round(_distance(landmarks, 13, 14) / mouth_width, 6),
         "mouth_width": round(mouth_width / eye_span, 6),
+        "smile_corner_lift": round((lip_midline - corner_line) / mouth_width, 6),
         "eye_open": round((left_eye_open + right_eye_open) / 2.0, 6),
         "brow_lift": round((left_brow + right_brow) / 2.0, 6),
         "yaw": round(float(angles[0]), 5),
@@ -86,12 +89,16 @@ def _atlas_spec(manifest: dict, name: str) -> tuple[int, str]:
         return len(block.get("dys") or []) * len(block.get("sqs") or []), "grid"
     if name in {"cheek", "eyebag"}:
         return len(block.get("ups") or []), "states"
+    if name in {"smile", "emotion_mouth"}:
+        emotions = len(block.get("emotions") or ["smile"])
+        return (len(block.get("states") or []) * len(block.get("visemes") or [])
+                * emotions, "viseme-grid")
     raise ValueError(name)
 
 
 def _atlas_metrics(runtime: Path, manifest: dict, name: str, side: str) -> dict:
     block = manifest.get(name) or {}
-    side_block = block.get(side) or {}
+    side_block = block if name in {"smile", "emotion_mouth"} else (block.get(side) or {})
     count, layout = _atlas_spec(manifest, name)
     source = Path(str(side_block.get("src") or "")).name
     image = cv2.imread(str(runtime / source), cv2.IMREAD_UNCHANGED)
@@ -118,7 +125,7 @@ def _atlas_metrics(runtime: Path, manifest: dict, name: str, side: str) -> dict:
     }
 
 
-def analyse(runtime: Path, neutral: str, frames: list[str]) -> dict:
+def analyse(runtime: Path, neutral: str, frames: list[str], expect: str | None = None) -> dict:
     manifest_path = runtime / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     neutral_metrics = _frame_metrics(neutral)
@@ -135,7 +142,7 @@ def analyse(runtime: Path, neutral: str, frames: list[str]) -> dict:
             and neutral_metrics["eye_span_px"] >= maximum_eye_span * 0.72):
         all_rows.insert(0, neutral_metrics)
     metric_names = (
-        "mouth_aperture", "mouth_width", "eye_open", "brow_lift",
+        "mouth_aperture", "mouth_width", "smile_corner_lift", "eye_open", "brow_lift",
         "yaw", "pitch", "roll",
     )
     ranges = {key: round(_range(all_rows, key), 6) for key in metric_names}
@@ -146,11 +153,75 @@ def analyse(runtime: Path, neutral: str, frames: list[str]) -> dict:
                        or ranges["yaw"] >= 0.12
                        or ranges["pitch"] >= 0.12
                        or ranges["roll"] >= 0.12)
+    neutral_width = float((neutral_metrics or {}).get("mouth_width", 0.0))
+    neutral_lift = float((neutral_metrics or {}).get("smile_corner_lift", 0.0))
+    widest = max((float(row["mouth_width"]) for row in analysed_rows), default=0.0)
+    narrowest = min((float(row["mouth_width"]) for row in analysed_rows),
+                    default=neutral_width)
+    highest_corners = max((float(row["smile_corner_lift"]) for row in analysed_rows),
+                          default=neutral_lift)
+    lowest_corners = min((float(row["smile_corner_lift"]) for row in analysed_rows),
+                         default=neutral_lift)
+    neutral_aperture = float((neutral_metrics or {}).get("mouth_aperture", 0.0))
+    widest_aperture = max((float(row["mouth_aperture"]) for row in analysed_rows),
+                          default=neutral_aperture)
+    neutral_brow = float((neutral_metrics or {}).get("brow_lift", 0.0))
+    highest_brow = max((float(row["brow_lift"]) for row in analysed_rows),
+                       default=neutral_brow)
+    lowest_brow = min((float(row["brow_lift"]) for row in analysed_rows),
+                      default=neutral_brow)
+    neutral_eye = float((neutral_metrics or {}).get("eye_open", 0.0))
+    open_eye_floor = (min((float(row["eye_open"]) for row in analysed_rows),
+                          default=0.0) / neutral_eye
+                      if neutral_eye > 1e-6 else 0.0)
+    laughter_landscape = {
+        "mouth_width_gain": round(widest - neutral_width, 6),
+        "corner_lift_gain": round(highest_corners - neutral_lift, 6),
+        "open_eye_floor_ratio": round(open_eye_floor, 6),
+    }
+    laughter_landscape["pass"] = bool(neutral_metrics
+        and laughter_landscape["mouth_width_gain"] >= .015
+        and laughter_landscape["corner_lift_gain"] >= .006
+        and laughter_landscape["open_eye_floor_ratio"] >= .68)
+    sorrow_landscape = {
+        "corner_drop": round(neutral_lift - lowest_corners, 6),
+        "inner_brow_lift": round(highest_brow - neutral_brow, 6),
+    }
+    sorrow_landscape["pass"] = bool(neutral_metrics
+        and sorrow_landscape["corner_drop"] >= .018
+        and sorrow_landscape["inner_brow_lift"] >= .005)
+    horror_landscape = {
+        "aperture_gain": round(widest_aperture - neutral_aperture, 6),
+        "inner_brow_lift": round(highest_brow - neutral_brow, 6),
+        "open_eye_floor_ratio": round(open_eye_floor, 6),
+    }
+    horror_landscape["pass"] = bool(neutral_metrics
+        and horror_landscape["aperture_gain"] >= .055
+        and horror_landscape["inner_brow_lift"] >= .005
+        and horror_landscape["open_eye_floor_ratio"] >= .68)
+    anger_landscape = {
+        "aperture_gain": round(widest_aperture - neutral_aperture, 6),
+        "corner_drop": round(neutral_lift - lowest_corners, 6),
+        "brow_drop": round(neutral_brow - lowest_brow, 6),
+    }
+    anger_landscape["pass"] = bool(neutral_metrics
+        and anger_landscape["aperture_gain"] >= .018
+        and anger_landscape["corner_drop"] >= .012
+        and anger_landscape["brow_drop"] >= .005)
+    expression_landscapes = {
+        "laughter": laughter_landscape,
+        "sorrow": sorrow_landscape,
+        "horror": horror_landscape,
+        "anger": anger_landscape,
+    }
     atlas = {
         name: {side: _atlas_metrics(runtime, manifest, name, side)
                for side in ("l", "r")}
         for name in ("eyes", "gaze", "brow", "forehead", "cheek", "eyebag")
     }
+    atlas["smile"] = {"mouth": _atlas_metrics(runtime, manifest, "smile", "mouth")}
+    atlas["emotion_mouth"] = {
+        "mouth": _atlas_metrics(runtime, manifest, "emotion_mouth", "mouth")}
     atlas_pass = all(
         item["valid"] and item.get("unique_tiles", 0) > 1
         and item.get("max_delta_from_first", 0.0) > 0.00001
@@ -169,6 +240,15 @@ def analyse(runtime: Path, neutral: str, frames: list[str]) -> dict:
         ),
         "cheek_states_per_side": len((manifest.get("cheek") or {}).get("ups") or []),
         "under_eye_states_per_side": len((manifest.get("eyebag") or {}).get("ups") or []),
+        "laughter_mouth_states": (
+            len((manifest.get("smile") or {}).get("states") or [])
+            * len((manifest.get("smile") or {}).get("visemes") or [])
+        ),
+        "emotion_mouth_states": (
+            len((manifest.get("emotion_mouth") or {}).get("states") or [])
+            * len((manifest.get("emotion_mouth") or {}).get("visemes") or [])
+            * len((manifest.get("emotion_mouth") or {}).get("emotions") or [])
+        ),
     }
     return {
         "schema": 1,
@@ -184,12 +264,16 @@ def analyse(runtime: Path, neutral: str, frames: list[str]) -> dict:
             "extrema": extrema,
             "mouth_motion_pass": mouth_pass,
             "upper_face_motion_pass": upper_face_pass,
+            "expression_landscapes": expression_landscapes,
             "sample_metrics": analysed_rows[:8],
         },
         "atlases": atlas,
         "atlas_variation_pass": atlas_pass,
+        "expression_expectation": expect,
         "overall_pass": bool(analysed_rows and neutral_metrics and mouth_pass
-                             and upper_face_pass and atlas_pass),
+                             and upper_face_pass and atlas_pass
+                             and (expect is None
+                                  or expression_landscapes[expect]["pass"])),
     }
 
 
@@ -200,9 +284,11 @@ def main() -> int:
     parser.add_argument("--frames", required=True,
                         help="Glob for captured speaking frames")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--expect", choices=("laughter", "sorrow", "horror", "anger"),
+                        default=None)
     args = parser.parse_args()
     frames = sorted(glob.glob(args.frames))
-    report = analyse(Path(args.runtime), args.neutral, frames)
+    report = analyse(Path(args.runtime), args.neutral, frames, expect=args.expect)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n")

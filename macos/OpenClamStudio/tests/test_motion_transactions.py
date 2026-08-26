@@ -592,7 +592,7 @@ class MotionServerTransactionTests(unittest.TestCase):
 
     @staticmethod
     def _legacy_upper_face_layers(runtime_dir):
-        """Build the minimal preserved sprite contract accepted by v18."""
+        """Build the minimal preserved sprite contract accepted by v20."""
         layers = {}
         for name, positions, values in (
                 ("eyes", "states", [0, 1]),
@@ -609,6 +609,17 @@ class MotionServerTransactionTests(unittest.TestCase):
                     "src": f"assets/{filename}", "box": [0, 0, 1, 1],
                 }
             layers[name] = layer
+        Path(runtime_dir, "smile.png").write_bytes(b"laughter-mouth")
+        layers["smile"] = {
+            "src": "assets/smile.png", "box": [0, 0, 1, 1],
+            "states": [0, 1], "visemes": ["sil"],
+        }
+        Path(runtime_dir, "emotion-mouth.png").write_bytes(b"emotion-mouth")
+        layers["emotion_mouth"] = {
+            "src": "assets/emotion-mouth.png", "box": [0, 0, 1, 1],
+            "states": [0, 1], "visemes": ["sil"],
+            "emotions": ["sorrow", "horror", "anger"],
+        }
         return layers
 
     def test_runtime_only_v16_refresh_migrates_normalized_under_eye_target(self):
@@ -660,7 +671,7 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertFalse(os.path.exists(live + ".previous"))
 
     def test_runtime_only_v16_missing_under_eye_stays_legacy(self):
-        """A preserved bank cannot claim v18 when its under-eye strip is gone."""
+        """A preserved bank cannot claim v20 when its under-eye strip is gone."""
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "missing-under-eye"
             live = os.path.join(avatar_dir, "runtime")
@@ -692,11 +703,11 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
             self.assertFalse(os.path.exists(live + ".previous"))
             self.assertTrue(any(
-                "runtime under-eye layer is missing; cannot migrate to v18" in line
+                "runtime under-eye layer is missing; cannot migrate to v20" in line
                 for line in logs))
 
     def test_runtime_only_v17_missing_forehead_stays_legacy(self):
-        """A v17 bank needs a source rebuild before it can claim v18."""
+        """A v17 bank needs a source rebuild before it can claim v20."""
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "missing-forehead"
             live = os.path.join(avatar_dir, "runtime")
@@ -726,7 +737,7 @@ class MotionServerTransactionTests(unittest.TestCase):
 
             self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
             self.assertTrue(any(
-                "runtime forehead layer is missing; cannot migrate to v18" in line
+                "runtime forehead layer is missing; cannot migrate to v20" in line
                 for line in logs))
 
     def test_settings_resumes_and_tracks_the_reserved_job(self):

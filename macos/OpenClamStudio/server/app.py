@@ -307,7 +307,7 @@ def active_slug():
         return None
 
 
-RUNTIME_VERSION = 18  # v18: coherent brow, forehead, cheek, and under-eye layers
+RUNTIME_VERSION = 20  # v20: viseme-safe emotion mouths plus coherent upper face
 
 
 def ensure_runtime(slug, log=print):

@@ -559,6 +559,8 @@ for (const capability of [
   'assets/manifest.json',
   'manifest.body.face_transform',
   "['eyes', 'gaze', 'brow', 'forehead', 'cheek', 'eyebag']",
+  'manifest.smile',
+  'manifest.emotion_mouth',
   "['walk', 'idle', 'move']",
   'manifest.eyes.states',
   'manifest.gaze.dxs',
@@ -621,18 +623,28 @@ const horrorTarget = expressionEngine.speechExpressionTarget(
 const angerTarget = expressionEngine.speechExpressionTarget(
   angerPlan, emotionSignal, 0.5, 1.2,
 );
-assert.ok(laughterTarget.cheek > 0.72 && laughterTarget.eyeSquint > 0.14
-  && laughterTarget.eyeSquint < 0.3,
-  'laughter must produce a visible cheek lift and a light, non-sleepy smiling eye squint');
-assert.ok(sorrowTarget.brow > 0.62 && sorrowTarget.gazeY > 0.28
-  && sorrowTarget.headPitch > 0.28 && sorrowTarget.cheek < 0.3,
-  'sorrow must raise the brow, lower gaze and head, and suppress smiling cheeks');
+assert.ok(laughterTarget.smile > 0.15 && laughterTarget.smile <= 0.18
+  && laughterTarget.cheek > 0.72
+  && laughterTarget.eyeSquint < 0.02,
+  'laughter must keep a restrained smile, lift cheeks, and retain the normal lash plate');
+assert.ok(sorrowTarget.brow > 0.22 && sorrowTarget.gazeY > 0.22
+  && sorrowTarget.headPitch > 0.15 && sorrowTarget.cheek < 0.3
+  && sorrowTarget.sorrowMouth > 0.5 && sorrowTarget.eyeSquint < 0.02,
+  'sorrow must raise the brow, lower gaze and head, suppress smiling cheeks, and retain normal lashes');
 assert.ok(horrorTarget.brow > 0.78 && horrorTarget.eyeSquint < 0.08
-  && horrorTarget.headPitch < -0.24 && horrorTarget.cheek < 0.3,
-  'horror must hold the eyes open, lift the brow, and recoil the head');
-assert.ok(angerTarget.brow < -0.62 && angerTarget.squeeze > 1.7
-  && angerTarget.eyeSquint > 0.12,
-  'anger must lower and squeeze the brow while narrowing the eyes');
+  && horrorTarget.headPitch < -0.24 && horrorTarget.cheek < 0.3
+  && horrorTarget.squeeze > 0.55 && horrorTarget.horrorMouth > 0.34
+  && horrorTarget.horrorMouth < 0.40,
+  'horror must hold the eyes open, lift and knit the brow, restrain the jaw, and recoil the head');
+assert.ok(angerTarget.brow > 0.72 && angerTarget.squeeze > 1.7
+  && angerTarget.eyeSquint < 0.04
+  && angerTarget.angerMouth > 0.8,
+  'anger must lower and squeeze the brow, widen the frown, and retain the normal open lash plate');
+assert.match(source,
+  /Number\(speechExpressionPlan\.anger \|\| 0\) \* \.86/,
+  'anger must suppress coincidental natural blinks instead of closing both eyes');
+assert.match(source, /const activeBrowTop = laughterDominant \? Math\.min\(browTop, 9\.5\) : browTop;/,
+  'the approved laughter brow range must remain isolated from dramatic emotion expansion');
 const emotionVectors = [laughterTarget, sorrowTarget, horrorTarget, angerTarget]
   .map(target => ['brow', 'squeeze', 'cheek', 'eyeSquint', 'gazeY', 'headPitch']
     .map(key => target[key].toFixed(3)).join(':'));
@@ -657,7 +669,8 @@ const speechExpressionAt = new Function(
     + 'const speechTime = () => 0; '
     + `${speechExpressionSource[1]}; return speechExpressionAt;`,
 )();
-const zeroExpression = { brow: 0, underEye: 0, squeeze: 0, cheek: 0, eyeSquint: 0, asymmetry: 0,
+const zeroExpression = { brow: 0, underEye: 0, squeeze: 0, smile: 0,
+  sorrowMouth: 0, horrorMouth: 0, angerMouth: 0, cheek: 0, eyeSquint: 0, asymmetry: 0,
   gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 };
 const upperFaceState = {
   mode: 'idle', started: 0, duration: 1, nextAt: 0,

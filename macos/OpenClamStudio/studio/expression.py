@@ -24,8 +24,11 @@ that is already in the keyframe:
 
 The forehead, cheek and infraorbital bands are separate feathered tissue layers.
 They bake to small RGBA sprite strips, like the eyelids in blink.py.  Runtime
-interpolates adjacent tissue states instead of snapping between them.  Draw
-order is base -> forehead -> brow -> cheek -> gaze -> under-eye -> lid.
+interpolates adjacent tissue states instead of snapping between them.  A
+viseme-indexed smile strip moves each photographed mouth as one piece, keeping
+the tongue, teeth and lips coherent while laughter pulls both corners outward
+and upward.  Draw order is base -> smile -> forehead -> brow -> cheek -> gaze
+-> under-eye -> lid.
 """
 import numpy as np, cv2
 from . import face
@@ -56,15 +59,21 @@ GAZE_DY = [-3.5, -2.5, -1.5, -0.75, -0.375, 0.0, 0.375, 0.75, 1.5, 2.5, 3.5]
 # raise is ~8-14px at this scale, and the old +3.5px ceiling was measured
 # live (2026-08-01) as imperceptible - the whole upper face read as frozen
 # however hard the runtime gestured.
-BROW_DY = [-3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 1.75, 2.5, 3.5,
-           5.0, 6.5, 8.0, 9.5]
+BROW_DY = [-5.0, -3.5, -2.0, -1.0, 0.0, 0.75, 1.5, 2.5, 4.0, 6.0,
+           8.0, 10.0, 12.0, 14.0]
 # The second brow axis: horizontal set, in px toward the nose. Negative
 # spreads the brows apart, positive squeezes them into a light furrow -
 # so the pair can knit or open independently of the raise.
-BROW_SQ = [-1.8, 0.0, 2.4]
+BROW_SQ = [-3.0, 0.0, 4.0]
 # Cheek raise, in px of lift at the lower lid margin.  Small on purpose - this
 # is the warmth cue that rides under speech, not a smile.
-CHEEK_UP = [0.0, 0.65, 1.3, 2.0, 2.7]
+CHEEK_UP = [0.0, 0.8, 1.6, 2.45, 3.3]
+# Laughter is not an eyelid pose.  These adjacent states add the two dominant
+# lower-face action units: lip-corner pull (AU12) and a modest jaw aperture on
+# visemes that are already open.  Four states are enough because the runtime
+# continuously blends between them and between the old/new TTS viseme rows.
+SMILE_STATES = [0.0, 0.34, 0.68, 1.0]
+EMOTION_MOUTHS = ("sorrow", "horror", "anger")
 
 
 def neck(lm):
@@ -93,6 +102,181 @@ def neck(lm):
 def _smoothstep(a, b, x):
     t = np.clip((x - a) / max(b - a, 1e-6), 0.0, 1.0)
     return t * t * (3 - 2 * t)
+
+
+# ---- laughter mouth -------------------------------------------------------
+
+def _smile_box(shape, lm):
+    """One stable mouth patch shared by every viseme row in the atlas."""
+    H, W = shape[:2]
+    left = np.asarray(lm[face.MOUTH_L], np.float32)
+    right = np.asarray(lm[face.MOUTH_R], np.float32)
+    width = max(float(np.linalg.norm(right - left)), 8.0)
+    centre = 0.5 * (left + right)
+    x0 = max(0, int(np.floor(centre[0] - .82 * width)))
+    x1 = min(W, int(np.ceil(centre[0] + .82 * width)))
+    y0 = max(0, int(np.floor(centre[1] - .43 * width)))
+    y1 = min(H, int(np.ceil(centre[1] + .48 * width)))
+    return [x0, y0, max(1, x1 - x0), max(1, y1 - y0)]
+
+
+def _mouth_warp_patch(image, lm, amount, box, controls):
+    """Apply one coherent four-anchor deformation to a photographed viseme."""
+    x0, y0, bw, bh = [int(v) for v in box]
+    left = np.asarray(lm[face.MOUTH_L], np.float32)
+    right = np.asarray(lm[face.MOUTH_R], np.float32)
+    width = max(float(np.linalg.norm(right - left)), 8.0)
+    centre = 0.5 * (left + right)
+    xs = np.arange(x0, x0 + bw, dtype=np.float32)
+    ys = np.arange(y0, y0 + bh, dtype=np.float32)
+    gx, gy = np.meshgrid(xs, ys)
+    dx = np.zeros((bh, bw), np.float32)
+    dy = np.zeros((bh, bw), np.float32)
+    for point, move_x, move_y, sigma in controls:
+        weight = np.exp(-.5 * (((gx - point[0]) / max(sigma, 1.0)) ** 2
+                               + ((gy - point[1]) / max(sigma, 1.0)) ** 2))
+        dx += weight.astype(np.float32) * float(move_x) * float(amount)
+        dy += weight.astype(np.float32) * float(move_y) * float(amount)
+
+    warped = cv2.remap(
+        image,
+        (gx - dx).astype(np.float32),
+        (gy - dy).astype(np.float32),
+        cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    base = image[y0:y0 + bh, x0:x0 + bw]
+
+    # Full coverage around the lip corners, then a wide photographic feather.
+    # Every strength state, including neutral, owns the same alpha envelope so
+    # adjacent-state interpolation remains true premultiplied RGBA blending.
+    rx = max(.80 * width, 1.0)
+    ry = max(.43 * width, 1.0)
+    radius = np.sqrt(((gx - centre[0]) / rx) ** 2
+                     + ((gy - (centre[1] + .015 * width)) / ry) ** 2)
+    alpha = np.clip(1.0 - _smoothstep(.72, 1.0, radius), 0.0, 1.0)
+    oval = face.hull_mask(image.shape, lm, face.FACE_OVAL)
+    oval = cv2.GaussianBlur(oval, (0, 0), max(1.0, width * .018))
+    alpha *= oval[y0:y0 + bh, x0:x0 + bw].astype(np.float32) / 255.0
+    rgb = np.where(alpha[..., None] > 1e-3, warped, base)
+    return np.dstack([rgb.astype(np.uint8), (alpha * 255).astype(np.uint8)])
+
+
+def _smile_patch(image, lm, amount, box):
+    """Warp one complete photographed viseme into a coherent laughing mouth.
+
+    The displacement field is anchored at both lip corners and the upper/lower
+    mid-lip.  It never substitutes generated pixels: inverse remapping carries
+    the source tongue, teeth, lip texture and adjacent skin together.  Closed
+    visemes get corner pull but no artificial mouth opening; an aperture gate
+    lets vowels open slightly wider without turning PP/sil into a grin-hole.
+    """
+    left = np.asarray(lm[face.MOUTH_L], np.float32)
+    right = np.asarray(lm[face.MOUTH_R], np.float32)
+    upper = np.asarray(lm[0], np.float32)
+    lower = np.asarray(lm[17], np.float32)
+    width = max(float(np.linalg.norm(right - left)), 8.0)
+    aperture = float(np.linalg.norm(lower - upper)) / width
+    open_gate = float(_smoothstep(.025, .115, aperture))
+    # A human laugh is a curved landscape: the corners travel most, away from
+    # the mouth centre and upward into the cheeks.  The mid-lip moves much less
+    # so the result reads as a smile rather than translating the whole mouth.
+    controls = (
+        (left, -0.155 * width, -0.112 * width, .255 * width),
+        (right, 0.155 * width, -0.112 * width, .255 * width),
+        (upper, 0.0, -0.018 * width * open_gate, .205 * width),
+        (lower, 0.0, 0.042 * width * open_gate, .225 * width),
+    )
+    return _mouth_warp_patch(image, lm, amount, box, controls)
+
+
+def _emotion_mouth_patch(image, lm, emotion, amount, box):
+    """Give sorrow, horror and anger distinct lower-face action units."""
+    left = np.asarray(lm[face.MOUTH_L], np.float32)
+    right = np.asarray(lm[face.MOUTH_R], np.float32)
+    upper = np.asarray(lm[0], np.float32)
+    lower = np.asarray(lm[17], np.float32)
+    width = max(float(np.linalg.norm(right - left)), 8.0)
+    aperture = float(np.linalg.norm(lower - upper)) / width
+    open_gate = float(_smoothstep(.025, .115, aperture))
+    if emotion == "sorrow":
+        # AU15 + AU17: corners depress and draw slightly inward while the lower
+        # lip/chin rises. This gives grief a readable frown between phonemes.
+        controls = (
+            (left, .045 * width, .155 * width, .255 * width),
+            (right, -.045 * width, .155 * width, .255 * width),
+            (upper, 0.0, .010 * width, .205 * width),
+            (lower, 0.0, -.034 * width, .225 * width),
+        )
+    elif emotion == "horror":
+        # AU20 + AU26: lips stretch laterally and the jaw drops. The aperture
+        # follows vowels most, but retains a small recoil on closed consonants.
+        jaw_gate = .32 + .68 * open_gate
+        controls = (
+            (left, -.060 * width, .040 * width, .255 * width),
+            (right, .060 * width, .040 * width, .255 * width),
+            (upper, 0.0, -.034 * width * jaw_gate, .205 * width),
+            (lower, 0.0, .115 * width * jaw_gate, .225 * width),
+        )
+    elif emotion == "anger":
+        # AU10/AU15/AU25 snarl: preserve the speaker's normal mouth width while
+        # the corners turn down and the lips part moderately with the source
+        # viseme. This is the midpoint between the pinched and oversized trials.
+        controls = (
+            (left, 0.0, .065 * width, .255 * width),
+            (right, 0.0, .065 * width, .255 * width),
+            (upper, 0.0, -.050 * width, .205 * width),
+            (lower, 0.0, .045 * width * (.35 + .65 * open_gate), .225 * width),
+        )
+    else:
+        raise ValueError(f"unknown emotion mouth: {emotion}")
+    return _mouth_warp_patch(image, lm, amount, box, controls)
+
+
+def build_smile(key, key_lm, visemes, states=None, log=print):
+    """Build a row-major ``viseme x smile-strength`` RGBA mouth atlas.
+
+    ``visemes`` is a sequence of ``(runtime_name, BGR_frame)`` pairs.  The
+    fixed keyframe box makes every row the same size, while per-frame landmarks
+    ensure the deformation follows that viseme's actual lips and jaw.
+    """
+    strengths = list(SMILE_STATES if states is None else states)
+    box = _smile_box(key.shape, key_lm)
+    patches, names = [], []
+    for name, image in visemes:
+        lm, _ = face.detect(image)
+        if lm is None:
+            lm = key_lm
+            log(f"  smile {name}: landmarks unavailable; using registered keyframe geometry")
+        names.append(str(name))
+        patches.extend(_smile_patch(image, lm, strength, box)
+                       for strength in strengths)
+    log(f"  laughter mouth: {len(names)} visemes x {len(strengths)} states, "
+        f"patch {box[2]}x{box[3]}")
+    return dict(states=[round(float(v), 4) for v in strengths],
+                visemes=names, box=box, patches=patches)
+
+
+def build_emotion_mouths(key, key_lm, visemes, states=None, log=print):
+    """Build ``emotion x viseme x strength`` lower-face states."""
+    strengths = list(SMILE_STATES if states is None else states)
+    box = _smile_box(key.shape, key_lm)
+    detected, names = [], []
+    for name, image in visemes:
+        lm, _ = face.detect(image)
+        detected.append((image, key_lm if lm is None else lm))
+        names.append(str(name))
+    patches = [
+        _emotion_mouth_patch(image, lm, emotion, strength, box)
+        for emotion in EMOTION_MOUTHS
+        for image, lm in detected
+        for strength in strengths
+    ]
+    log(f"  emotion mouth: {len(EMOTION_MOUTHS)} emotions x {len(names)} visemes "
+        f"x {len(strengths)} states, patch {box[2]}x{box[3]}")
+    return dict(states=[round(float(v), 4) for v in strengths],
+                emotions=list(EMOTION_MOUTHS), visemes=names,
+                box=box, patches=patches)
 
 
 def _iris(lm, side):

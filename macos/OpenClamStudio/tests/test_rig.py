@@ -372,8 +372,9 @@ class RigProfileTests(unittest.TestCase):
         self.assertGreater(measure.tongue_balance(lateral, landmarks)["offset"], .25)
 
     def test_expression_layers_include_forehead_and_compact_cheek_masks(self):
-        source = open(os.path.join(ROOT, "studio", "expression.py"),
-                      encoding="utf-8").read()
+        with open(os.path.join(ROOT, "studio", "expression.py"),
+                  encoding="utf-8") as source_file:
+            source = source_file.read()
         self.assertIn("def _forehead_weight", source)
         self.assertIn("def forehead_state", source)
         self.assertIn('forehead=dict(dys=bdys, sqs=list(BROW_SQ))', source)
@@ -381,14 +382,94 @@ class RigProfileTests(unittest.TestCase):
         self.assertIn("grief = np.clip", source)
         self.assertIn("medial_lift =", source)
         self.assertIn("medial_pull = (sq if medial_right else -sq) * 2.0", source)
-        renderer = open(os.path.join(ROOT, "web", "index.html"),
-                        encoding="utf-8").read()
+        self.assertIn("(gy - dy * W).astype(np.float32)", source)
+        self.assertIn("(gy - dy * travel * .58).astype(np.float32)", source)
+        with open(os.path.join(ROOT, "web", "index.html"),
+                  encoding="utf-8") as renderer_file:
+            renderer = renderer_file.read()
         self.assertIn("const drawStripState2D =", renderer)
         self.assertIn("'brow', 'forehead', 'cheek'", renderer)
         self.assertLess(renderer.index("if (manifest.gaze) {",
                         renderer.index("const composeHead")),
                         renderer.index("if (manifest.eyebag) {",
                         renderer.index("const composeHead")))
+
+    def test_laughter_mouth_pulls_both_corners_outward_and_upward(self):
+        """A laugh must reshape the mouth, not merely close both eyelids."""
+        from studio import expression
+
+        image = np.full((180, 180, 3), 92, np.uint8)
+        landmarks = np.full((478, 2), (90, 90), np.float32)
+        landmarks[face.MOUTH_L] = (58, 105)
+        landmarks[face.MOUTH_R] = (122, 105)
+        landmarks[0] = (90, 96)
+        landmarks[17] = (90, 115)
+        for index, angle in zip(face.FACE_OVAL,
+                                np.linspace(0, 2 * np.pi, len(face.FACE_OVAL),
+                                            endpoint=False)):
+            landmarks[index] = (90 + np.cos(angle) * 72,
+                                90 + np.sin(angle) * 82)
+        cv2.circle(image, (58, 105), 3, (0, 0, 255), -1)
+        cv2.circle(image, (122, 105), 3, (0, 0, 255), -1)
+
+        box = expression._smile_box(image.shape, landmarks)
+        neutral = expression._smile_patch(image, landmarks, 0.0, box)
+        laugh = expression._smile_patch(image, landmarks, 1.0, box)
+
+        def corners(patch):
+            red = (patch[..., 2] > 180) & (patch[..., 1] < 40)
+            yy, xx = np.where(red)
+            midpoint = patch.shape[1] / 2
+            return ((float(xx[xx < midpoint].mean()), float(yy[xx < midpoint].mean())),
+                    (float(xx[xx >= midpoint].mean()), float(yy[xx >= midpoint].mean())))
+
+        neutral_left, neutral_right = corners(neutral)
+        laugh_left, laugh_right = corners(laugh)
+        self.assertLess(laugh_left[0], neutral_left[0] - 3.0)
+        self.assertGreater(laugh_right[0], neutral_right[0] + 3.0)
+        self.assertLess(laugh_left[1], neutral_left[1] - 2.0)
+        self.assertLess(laugh_right[1], neutral_right[1] - 2.0)
+
+        sorrow = expression._emotion_mouth_patch(
+            image, landmarks, "sorrow", 1.0, box)
+        horror = expression._emotion_mouth_patch(
+            image, landmarks, "horror", 1.0, box)
+        anger = expression._emotion_mouth_patch(
+            image, landmarks, "anger", 1.0, box)
+        sorrow_left, sorrow_right = corners(sorrow)
+        horror_left, horror_right = corners(horror)
+        anger_left, anger_right = corners(anger)
+        self.assertGreater(sorrow_left[1], neutral_left[1] + 3.0)
+        self.assertGreater(sorrow_right[1], neutral_right[1] + 3.0)
+        self.assertGreater(horror_right[0] - horror_left[0],
+                           neutral_right[0] - neutral_left[0] + 3.0)
+        self.assertGreater(anger_left[1], neutral_left[1] + 2.0)
+        self.assertGreater(anger_right[1], neutral_right[1] + 2.0)
+        self.assertGreater(anger_right[0] - anger_left[0],
+                           .90 * (neutral_right[0] - neutral_left[0]))
+        self.assertLess(anger_right[0] - anger_left[0],
+                        1.10 * (neutral_right[0] - neutral_left[0]))
+
+        with open(os.path.join(ROOT, "studio", "export.py"),
+                  encoding="utf-8") as source_file:
+            source = source_file.read()
+        self.assertIn("expression.build_smile", source)
+        self.assertIn('smile=smile_meta', source)
+        self.assertIn("expression.build_emotion_mouths", source)
+        self.assertIn('emotion_mouth=emotion_mouth_meta', source)
+        with open(os.path.join(ROOT, "web", "index.html"),
+                  encoding="utf-8") as renderer_file:
+            renderer = renderer_file.read()
+        self.assertIn("spec.visemes", renderer)
+        self.assertIn("spec.emotions", renderer)
+        self.assertIn("spec: manifest.smile", renderer)
+        self.assertIn("spec: manifest.emotion_mouth", renderer)
+        self.assertIn("expression.smile", renderer)
+        self.assertIn("expression.sorrowMouth", renderer)
+        self.assertIn("expression.horrorMouth", renderer)
+        self.assertIn("expression.angerMouth", renderer)
+        self.assertLess(renderer.index("drawVisemeMouth(dominant.spec"),
+                        renderer.index("if (manifest.forehead)"))
 
     def test_aperture_tolerance_only_covers_landmark_jitter(self):
         self.assertTrue(measure._aperture_within_limit(0.091, 0.09))
@@ -444,7 +525,7 @@ class RigProfileTests(unittest.TestCase):
                               forehead=100, nasolabial=100, nose=100))
         self.assertEqual(rig.CONTROLS["forehead"]["label"], "Forehead")
         from studio import expression
-        self.assertEqual(max(expression.BROW_DY), 9.5)
+        self.assertEqual(max(expression.BROW_DY), 14.0)
         for preset in rig.PRESETS.values():
             self.assertIn("brows", preset)
             self.assertIn("forehead", preset)
@@ -464,7 +545,7 @@ class RigProfileTests(unittest.TestCase):
         self.assertIn("drawStripState2D(faceContext, layers.forehead[key]", renderer)
         self.assertIn("const foreheadGain = rigExpressionGain('forehead'", renderer)
         from studio import expression as expr
-        self.assertEqual(expr.BROW_SQ, [-1.8, 0.0, 2.4])
+        self.assertEqual(expr.BROW_SQ, [-3.0, 0.0, 4.0])
         self.assertIn("brows", rig.REGION_GROUPS)
         rig_source = open(os.path.join(ROOT, "studio", "rig.py"),
                           encoding="utf-8").read()
