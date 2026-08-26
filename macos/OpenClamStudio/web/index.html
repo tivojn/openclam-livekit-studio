@@ -1817,12 +1817,64 @@
         + laughter * .48 + fear * .28 + anger * .34 + surprise * .46
         + Math.min(.2, emphasisMarks * .05) - sadness * .24 - gravity * .08);
       return {
-        warmth: expressionUnit(Math.max(warmth, humor * .74, laughter * .82)),
+        warmth,
         empathy, curiosity, gravity, brightness, humor, laughter, sadness,
         fear, anger, surprise, energy,
         seed: expressionSeed(text),
         duration: Math.max(0, Number(duration) || 0),
       };
+    };
+    const speechExpressionPhrases = value => {
+      const text = String(value || '').slice(0, 12000);
+      if (!text.trim()) return [];
+      const boundaries = new Set([0, text.length]);
+      // Sentence punctuation is authoritative. Discourse transitions add the
+      // missing boundaries inside a long sentence such as “laughs … but feels
+      // sorrow … then becomes terrified … finally gets angry”.
+      for (const match of text.matchAll(/[.!?;:。！？；：\n]+/gu)) {
+        boundaries.add(match.index + match[0].length);
+      }
+      for (const match of text.matchAll(
+        /\b(?:but|however|yet|then|afterwards?|meanwhile|finally|next)\b|(?:但是|不过|然而|然后|随后|与此同时|最后)/giu,
+      )) boundaries.add(match.index);
+      const points = [...boundaries].sort((left, right) => left - right);
+      return points.slice(0, -1).map((start, index) => ({
+        start,
+        end: points[index + 1],
+        text: text.slice(start, points[index + 1]).trim(),
+      })).filter(part => part.text);
+    };
+    const speechExpressionPhraseWeight = phrase => {
+      const spoken = [...String(phrase || '')]
+        .filter(character => /[\p{L}\p{N}]/u.test(character)).length;
+      const pauses = (String(phrase || '').match(/[,.!?;:，。！？；：\n]/gu) || []).length;
+      return Math.max(12, spoken + pauses * 8);
+    };
+    const makeSpeechExpressionTimeline = (value, duration = 0) => {
+      const phrases = speechExpressionPhrases(value);
+      const total = Math.max(0, Number(duration) || 0);
+      if (!phrases.length) return [];
+      const weights = phrases.map(part => speechExpressionPhraseWeight(part.text));
+      const weightTotal = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+      let cursor = 0;
+      return phrases.map((part, index) => {
+        const start = total > 0 ? cursor / weightTotal * total : 0;
+        cursor += weights[index];
+        const end = total > 0 ? cursor / weightTotal * total : Number.POSITIVE_INFINITY;
+        const span = Number.isFinite(end) ? Math.max(0, end - start) : 0;
+        return {
+          start, end, text: part.text,
+          plan: { ...makeSpeechExpressionPlan(part.text, span),
+            startedAt: start, endedAt: end, phraseIndex: index },
+        };
+      });
+    };
+    const speechExpressionPlanAt = (timeline, elapsed, fallback) => {
+      const entries = Array.isArray(timeline) ? timeline : [];
+      if (!entries.length) return fallback || makeSpeechExpressionPlan('');
+      const time = Math.max(0, Number(elapsed) || 0);
+      return (entries.find(entry => time >= Number(entry.start || 0)
+        && time < Number(entry.end)) || entries[entries.length - 1]).plan;
     };
     const speechExpressionTarget = (plan, signal, progress, elapsed) => {
       const intent = plan || makeSpeechExpressionPlan('');
@@ -1836,65 +1888,67 @@
         + intent.seed * Math.PI * 2);
       const slow = Math.sin(elapsed * .72 + intent.seed * 5.3);
       const questionLift = intent.curiosity * expressionSmoothStep((progress - .62) / .34);
-      const warmth = expressionUnit(Math.max(intent.warmth, intent.brightness * .68,
-        intent.humor * .82, intent.laughter * .90));
+      const warmth = expressionUnit(Math.max(intent.warmth, intent.brightness * .68));
+      const mouthSmileIntent = expressionUnit(Math.max(intent.laughter, intent.humor));
+      const dramaticIntent = expressionUnit(Math.max(
+        intent.sadness, intent.fear, intent.anger, intent.surprise));
+      const mouthOnlySmile = mouthSmileIntent > .25 && mouthSmileIntent > dramaticIntent;
+      const upperFaceGain = mouthOnlySmile ? 0 : 1;
+      const upperFace = value => Number(value || 0) * upperFaceGain;
       const tremor = Math.sin(elapsed * 9.1 + intent.seed * 11.3);
-      const smileTarget = expressionUnit((intent.laughter * .96 + intent.humor * .28
-        + intent.brightness * .12 + warmth * .08) * audibleLife
-        * (.90 + beat * .10));
-      // This is a geometry blend, not a percentage of final mouth size. On
-      // Cleo's composed `aa` plate, a .50 blend still widened 161px to ~180px.
-      // The measured .18 cap keeps the mouth near its natural scale (~4%
-      // wider) while the cheeks and brow continue to carry the laugh.
-      const laughterSmile = intent.laughter > .25 ? Math.min(.18, smileTarget) : smileTarget;
+      // Laughter and smile are deliberately the same mouth-only pose. Both
+      // corners rise by the same restrained atlas amount; the viseme keeps its
+      // original width/aperture and the upper face remains photographically neutral.
+      const smileTarget = mouthSmileIntent > .25
+        ? .18 : Math.min(.18, mouthSmileIntent * audibleLife * (.95 + beat * .05));
       return {
-        brow: Math.max(-1, Math.min(1, (.18 + intent.empathy * .24
-          + intent.curiosity * .46 + questionLift * .34 + intent.humor * .30
-          + intent.laughter * .30 + intent.sadness * .20 + intent.fear * .96
+        brow: upperFace(Math.max(-1, Math.min(1, (.18 + intent.empathy * .24
+          + intent.curiosity * .46 + questionLift * .34
+          + intent.sadness * .20 + intent.fear * .96
           + intent.surprise * .92 + intent.energy * .08 + beat * .08
-          + intent.anger * 1.34 - intent.gravity * .46) * audibleLife)),
-        underEye: expressionUnit((.08 + warmth * .32 + intent.empathy * .12
-          + intent.humor * .12 + intent.laughter * .58 + intent.sadness * .56
-          + intent.anger * .18 + voice * .10) * (.80 + beat * .20)),
-        squeeze: Math.max(-3.0, Math.min(4.0,
+          + intent.anger * 1.34 - intent.gravity * .46) * audibleLife))),
+        underEye: upperFace(expressionUnit((.08 + warmth * .32 + intent.empathy * .12
+          + intent.sadness * .56 + intent.anger * .18 + voice * .10)
+          * (.80 + beat * .20))),
+        squeeze: upperFace(Math.max(-3.0, Math.min(4.0,
           intent.gravity * 1.42 + intent.anger * 3.90 + intent.sadness * 1.55
           + intent.fear * 2.35 - intent.surprise * 2.62 - warmth * .34
-          + (centroid - .5) * .14)),
-        smile: laughterSmile,
+          + (centroid - .5) * .14))),
+        smile: smileTarget,
         sorrowMouth: expressionUnit(intent.sadness * .55 * audibleLife),
         // Keep the approved wide-eyed horror landscape, but restrain the
         // lower-face atlas: .58 still made open vowels read oversized on Cleo.
         horrorMouth: expressionUnit(intent.fear * .40 * audibleLife),
         angerMouth: expressionUnit(intent.anger * .98 * audibleLife),
-        cheek: expressionUnit((.05 + warmth * .34 + intent.humor * .12
-          + intent.laughter * .78 + intent.energy * .08 + voice * .08
+        cheek: upperFace(expressionUnit((.05 + warmth * .34
+          + intent.energy * .08 + voice * .08
           - intent.sadness * .32 - intent.fear * .25 - intent.anger * .26)
-          * (.82 + beat * .18)),
-        eyeSquint: expressionUnit((warmth * .035 * (1 - intent.laughter)) * audibleLife
-          - intent.fear * .35 - intent.surprise * .32),
-        asymmetry: Math.max(-.18, Math.min(.18,
+          * (.82 + beat * .18))),
+        eyeSquint: upperFace(expressionUnit(warmth * .035 * audibleLife
+          - intent.fear * .35 - intent.surprise * .32)),
+        asymmetry: upperFace(Math.max(-.18, Math.min(.18,
           (intent.seed - .5) * .12 + slow * (.03 + intent.energy * .02)
-          + intent.sadness * (intent.seed < .5 ? -.045 : .045))),
-        gazeX: Math.max(-1, Math.min(1, slow * (.18 + intent.curiosity * .12
-          + intent.humor * .06) + tremor * intent.fear * .08)),
-        gazeY: Math.max(-1, Math.min(1,
+          + intent.sadness * (intent.seed < .5 ? -.045 : .045)))),
+        gazeX: upperFace(Math.max(-1, Math.min(1,
+          slow * (.18 + intent.curiosity * .12) + tremor * intent.fear * .08))),
+        gazeY: upperFace(Math.max(-1, Math.min(1,
           -questionLift * .20 + intent.sadness * .32 - intent.fear * .18
-          - intent.surprise * .16 + Math.sin(elapsed * .43 + 1.7) * .045)),
-        headYaw: Math.max(-1, Math.min(1, slow * (.20 + intent.energy * .07)
-          + tremor * intent.fear * .09)),
-        headPitch: Math.max(-1, Math.min(1,
+          - intent.surprise * .16 + Math.sin(elapsed * .43 + 1.7) * .045))),
+        headYaw: upperFace(Math.max(-1, Math.min(1,
+          slow * (.20 + intent.energy * .07) + tremor * intent.fear * .09))),
+        headPitch: upperFace(Math.max(-1, Math.min(1,
           questionLift * -.24 + intent.empathy * .10 + intent.sadness * .24
           + intent.anger * .22
           - intent.fear * .36 - intent.surprise * .28
-          + Math.sin(elapsed * 1.35) * voice * .06)),
-        headRoll: Math.max(-1, Math.min(1,
-          (intent.empathy + intent.curiosity + intent.humor * .6
-            + intent.laughter * .7 + intent.sadness * .55)
-          * (intent.seed < .5 ? -.20 : .20) + slow * .05)),
+          + Math.sin(elapsed * 1.35) * voice * .06))),
+        headRoll: upperFace(Math.max(-1, Math.min(1,
+          (intent.empathy + intent.curiosity + intent.sadness * .55)
+          * (intent.seed < .5 ? -.20 : .20) + slow * .05))),
       };
     };
     /* expression-engine:end */
     let speechExpressionPlan = makeSpeechExpressionPlan('');
+    let speechExpressionTimeline = [];
     // Upper-face speech life is deliberately slower than the viseme bank.
     // A held intent-and-prosody target keeps brows and the infraorbital band
     // alive without reading as jitter.
@@ -1909,6 +1963,7 @@
       value: { brow: 0, underEye: 0, squeeze: 0, smile: 0, sorrowMouth: 0,
         horrorMouth: 0, angerMouth: 0, cheek: 0, eyeSquint: 0, asymmetry: 0,
         gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 },
+      planKey: '',
     };
     const gazeState = { x: 0, y: 0, at: 0 };
     const bodyMotionState = { speechBlend: 0, at: 0 };
@@ -2736,7 +2791,10 @@
     };
 
     /* track-stabiliser:start */
-    const XFADE = .070;
+    // Dental rows are rigid photographic geometry. A multi-frame dissolve
+    // shows two sets of teeth at once; hand the viseme texture over in roughly
+    // one 60 Hz display frame instead.
+    const XFADE = .018;
     const STANDBY_MAINTENANCE_MS = 250;
     const STANDBY_GAZE_SETTLE_MS = 420;
     const MIN_POSE = .020;
@@ -2995,6 +3053,7 @@
       if (reduce) {
         state.mode = 'idle';
         state.value = zero;
+        state.planKey = '';
         return zero;
       }
       if (!speaking) {
@@ -3004,6 +3063,7 @@
           state.started = now;
           state.duration = 280;
           state.mode = 'release';
+          state.planKey = '';
         }
         if (state.mode !== 'release') return zero;
         const value = interpolate(state.from, state.to,
@@ -3012,18 +3072,21 @@
         if (now - state.started >= state.duration) state.mode = 'idle';
         return value;
       }
-      if (state.mode !== 'speaking' || now >= state.nextAt) {
+      const planKey = `${Number(plan && plan.seed) || 0}:${Number(plan && plan.startedAt) || 0}`;
+      if (state.mode !== 'speaking' || state.planKey !== planKey || now >= state.nextAt) {
         const elapsed = speechSource ? Math.max(0, speechTime()) : now / 1000;
         const duration = Math.max(.001, Number(plan && plan.duration) || 0);
-        const progress = duration > .001 ? expressionUnit(elapsed / duration) : 0;
+        const phraseElapsed = Math.max(0, elapsed - (Number(plan && plan.startedAt) || 0));
+        const progress = duration > .001 ? expressionUnit(phraseElapsed / duration) : 0;
         state.from = { ...(state.value || zero) };
-        state.to = speechExpressionTarget(plan, signal, progress, elapsed);
+        state.to = speechExpressionTarget(plan, signal, progress, phraseElapsed);
         state.started = now;
         // Expressions follow phrases rather than phonemes. A 360 ms target
         // cadence captures audible emphasis without making the brows chatter.
         state.duration = 360;
         state.nextAt = now + 430;
         state.mode = 'speaking';
+        state.planKey = planKey;
       }
       const value = interpolate(state.from, state.to,
         (now - state.started) / Math.max(1, state.duration));
@@ -3187,6 +3250,19 @@
         live && live.remoteAudioState && live.remoteAudioState.speaking);
       const speaking = Boolean(agentSpeaking || speechSource || liveAudioSpeaking);
       const upperFaceSpeaking = speaking && !reducedMotion.matches;
+      if (speechSource && speechExpressionTimeline.length) {
+        speechExpressionPlan = speechExpressionPlanAt(
+          speechExpressionTimeline, Math.max(0, speechTime()), speechExpressionPlan);
+      }
+      const mouthOnlySmile = upperFaceSpeaking
+        && Math.max(Number(speechExpressionPlan.laughter || 0),
+          Number(speechExpressionPlan.humor || 0)) > .25
+        && Math.max(Number(speechExpressionPlan.laughter || 0),
+          Number(speechExpressionPlan.humor || 0)) > Math.max(
+          Number(speechExpressionPlan.sadness || 0),
+          Number(speechExpressionPlan.fear || 0),
+          Number(speechExpressionPlan.anger || 0),
+          Number(speechExpressionPlan.surprise || 0));
       const expression = speechExpressionAt(now, upperFaceSpeaking,
         speechExpressionState, speechExpressionPlan, audioSignal, reducedMotion.matches);
       // Every explicit emotion owns a viseme-indexed lower-face atlas. Only
@@ -3238,13 +3314,11 @@
         drawVisemeMouth(dominant.spec, dominant.image,
           Number(dominant.amount || 0), dominant.index || 0);
       }
-      // Laughter and anger narrow the eyelids as part of the expression while
-      // fear/surprise leave the neutral plate fully open. Natural blinks still
-      // win whenever they are more closed than the semantic squint.
+      // Smile/laughter never changes the eyelid plate; only the natural blink
+      // remains. Fear/surprise and anger keep their approved open-lash logic.
       // Keep fear and surprise eyes visibly open; a coincidental natural blink
       // otherwise erased the most important part of those expressions in
-      // short utterances. Laughter uses only a light Duchenne-style narrowing
-      // here—full closure read as sleepiness on the photoreal portrait.
+      // short utterances.
       const semanticEyeOpen = upperFaceSpeaking ? Math.max(
         Number(speechExpressionPlan.fear || 0),
         Number(speechExpressionPlan.surprise || 0),
@@ -3336,7 +3410,7 @@
         const values = manifest.eyebag.ups || [0];
         const maximum = Number(values[values.length - 1] || 0);
         const blinkValue = eyelidClosure * maximum * .3;
-        const speechValue = upperFaceSpeaking
+        const speechValue = upperFaceSpeaking && !mouthOnlySmile
           ? (.20 + expression.underEye * .42) * eyebagGain * maximum : 0;
         for (const key of ['l', 'r']) {
           const side = key === 'l' ? 1 - expression.asymmetry : 1 + expression.asymmetry;
@@ -4452,6 +4526,8 @@
       speechTrack = [];
       speechTrackIndex = 0;
       currentViseme = 'sil';
+      speechExpressionTimeline = [];
+      speechExpressionPlan = makeSpeechExpressionPlan('');
       reactiveMouthState.viseme = 'sil';
       reactiveMouthState.audibleUntil = 0;
     };
@@ -4469,7 +4545,9 @@
       source.connect(audioAnalyser);
       source.connect(graph.destination);
       speechSource = source;
-      speechExpressionPlan = makeSpeechExpressionPlan(spokenText, buffer.duration);
+      speechExpressionTimeline = makeSpeechExpressionTimeline(spokenText, buffer.duration);
+      speechExpressionPlan = speechExpressionPlanAt(
+        speechExpressionTimeline, 0, makeSpeechExpressionPlan(spokenText, buffer.duration));
       resumeChatSpeakingPose();
       speechTrack = stabiliseTrack(
         track,
@@ -4483,6 +4561,7 @@
           speechSource = null;
           speechTrack = [];
           currentViseme = 'sil';
+          speechExpressionTimeline = [];
           speechExpressionPlan = makeSpeechExpressionPlan('');
           resumeChatSpeakingPose();
           setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
@@ -5751,7 +5830,9 @@
             session.userTurnOpen = false;
             // A final agent transcript supplies semantic intent while the
             // already-attached audio analyser continues to supply prosody.
-            speechExpressionPlan = makeSpeechExpressionPlan(text);
+            speechExpressionTimeline = makeSpeechExpressionTimeline(text);
+            speechExpressionPlan = speechExpressionPlanAt(
+              speechExpressionTimeline, 0, makeSpeechExpressionPlan(text));
           }
           addMessage(role, text, { readable: role === 'assistant' });
         } else if (role === 'user') {
@@ -5944,6 +6025,7 @@
       agentSpeaking = false;
       resumeChatSpeakingPose();
       currentViseme = 'sil';
+      speechExpressionTimeline = [];
       speechExpressionPlan = makeSpeechExpressionPlan('');
       reactiveMouthState.viseme = 'sil';
       reactiveMouthState.audibleUntil = 0;

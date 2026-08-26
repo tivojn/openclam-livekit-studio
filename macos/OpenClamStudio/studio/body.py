@@ -43,11 +43,16 @@ DEFAULT_BODY_PROMPT = (
     "authority, editorial sensuality, and zero fast-fashion noise. Read only "
     "the subject's visible feminine, masculine, or androgynous presentation; "
     "do not claim a gender identity and never force a gendered shoe or beauty "
-    "code when the presentation is uncertain. Use ultramarine as the single hero colour, plus one restrained accent and "
-    "quiet black, charcoal, taupe, or chocolate neutrals. Never use cobalt. "
+    "code when the presentation is uncertain. Use ultramarine as the single hero "
+    "colour, with zero or one small accent and at most one quiet black, charcoal, "
+    "taupe, or chocolate grounding neutral. Never use cobalt. "
     "Emerald belongs to the broader house palette but must become ultramarine "
-    "on this cutout plate because green damages alpha extraction. Use opaque, "
-    "substantial fabric with believable behaviour and crisp seam "
+    "on this cutout plate because green damages alpha extraction. Let the hero "
+    "or its tonal family dominate visible fabric; use zero or one small accent "
+    "and never divide the figure into three competing colour blocks. Resolve one "
+    "complete outfit with one dominant silhouette and a deliberate uninterrupted "
+    "line from shoulder to shoe. Use opaque, fashionable light-to-midweight "
+    "fabric with clean drape and crisp seam "
     "tension. Keep the silhouette structured, sensual, and polished: no bare "
     "midriff, sheer fabric, or extreme plunging neckline. Keep accessories "
     "minimal and understated, never ornate, layered, stacked, or visually busy. "
@@ -308,12 +313,22 @@ def _prompt(options, view="front"):
         raise ValueError("the full-body direction assigns forbidden gold styling")
     if wardrobe._assigns_excessive_accessories(editable_direction):
         raise ValueError("the full-body direction assigns excessive accessories")
+    if wardrobe._assigns_heavy_styling(editable_direction):
+        raise ValueError(
+            "the full-body direction assigns heavy fabric or throat-covering knitwear")
+    conflicts = wardrobe.aesthetic_conflicts(editable_direction)
+    if conflicts:
+        raise ValueError(
+            "the full-body direction fails aesthetic coherence: "
+            + "; ".join(conflicts))
     # Wardrobe's cached brief ends with deterministic house and rig clauses.
     # This plate wrapper carries those clauses itself, so remove their exact
     # duplicates before adding the view-specific identity/turnaround contract.
     stylised = medium in {"game art", "anime", "illustration", "3d render"}
     repeated_rules = [
-        presentation_rule, wardrobe.ACCESSORY_RULE, wardrobe.STRUCTURAL_RULE,
+        presentation_rule, wardrobe.AESTHETIC_COHERENCE_RULE,
+        wardrobe.FASHION_FABRIC_RULE,
+        wardrobe.ACCESSORY_RULE, wardrobe.STRUCTURAL_RULE,
     ]
     house_section = ""
     if not stylised:
@@ -325,6 +340,8 @@ def _prompt(options, view="front"):
         ]
         house_section = (
             "\n\nHOUSE STYLE — " + selected_color_rule + " "
+            + wardrobe.AESTHETIC_COHERENCE_RULE + " "
+            + wardrobe.FASHION_FABRIC_RULE + " "
             + wardrobe.LUXURY_FINISH_RULE)
     for rule in repeated_rules:
         direction = direction.replace(rule, " ")

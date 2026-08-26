@@ -117,6 +117,41 @@ class WardrobeBanTests(unittest.TestCase):
                 wardrobe.banned_terms(phrase), [],
                 f"{phrase!r} should be allowed")
 
+    def test_heavy_fabric_and_closed_neck_assignments_are_rejected(self):
+        for phrase in (
+            "use substantial wool fabric", "choose a thick fabric",
+            "add heavy layering", "wear a fitted turtleneck",
+            "finish with a roll-neck sweater", "use a mock-neck knit",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(wardrobe._assigns_heavy_styling(phrase))
+        for phrase in (
+            "no thick fabric", "never use heavy layering",
+            "avoid turtlenecks and roll-neck sweaters",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(wardrobe._assigns_heavy_styling(phrase))
+
+    def test_aesthetic_audit_rejects_the_known_fragmented_outfit(self):
+        disaster = (
+            "She wears a sculpted longline waistcoat in scarlet wool crepe over "
+            "a taupe silk top, paired with narrow black cigarette trousers."
+        )
+        self.assertEqual(1, len(wardrobe.aesthetic_conflicts(disaster)))
+        with self.assertRaisesRegex(RuntimeError, "aesthetic coherence"):
+            wardrobe._finalise(disaster, "feminine", "photograph")
+        with self.assertRaisesRegex(ValueError, "aesthetic coherence"):
+            body._prompt({"prompt": disaster, "presentation": "feminine"})
+
+    def test_aesthetic_audit_allows_a_coherent_one_piece_or_short_layer(self):
+        for direction in (
+            "A scarlet coat-dress forms one uninterrupted column with tonal pumps.",
+            "A cropped scarlet waistcoat tops a fine ivory shell and slim trousers.",
+            "Never combine a longline waistcoat with a top and cropped trousers.",
+        ):
+            with self.subTest(direction=direction):
+                self.assertEqual([], wardrobe.aesthetic_conflicts(direction))
+
     def test_system_instruction_states_both_hard_bans(self):
         instruction = wardrobe.SYSTEM.lower()
         self.assertIn("hard ban", instruction)
@@ -125,14 +160,16 @@ class WardrobeBanTests(unittest.TestCase):
         self.assertIn("wide-leg", instruction)
 
     def test_system_instruction_carries_the_new_house_taste_rules(self):
-        instruction = wardrobe.SYSTEM.lower()
+        instruction = f"{wardrobe.SYSTEM} {wardrobe.USER_TEXT}".lower()
         for phrase in (
             "fuchsia", "scarlet", "coral", "ultramarine", "camel",
-            "never use cobalt", "saint laurent", "dior sculpted dresses",
-            "chanel modern tweed", "bottega veneta", "max mara", "at least 90mm",
-            "dior men", "loro piana", "oxfords", "never assign pumps",
+            "never use cobalt", "one coherent design language", "at least 90mm",
+            "oxfords", "never assign pumps", "one complete outfit",
+            "no more than two large colour blocks", "uninterrupted vertical line",
+            "longline sleeveless waistcoat", "three complete looks",
+            "light-to-midweight fabrics", "no turtleneck",
             "gold is forbidden", "omission is preferred",
-            "at most one small, understated accessory choice",
+            "at most one small, understated choice",
             "no statement jewellery", "no layered necklaces",
             "smoky eye or a bold lip", "zero fast-fashion noise",
         ):
@@ -178,7 +215,8 @@ class WardrobeCompositionTests(unittest.TestCase):
             _portrait(directory)
             result = self._tailor(FASHION, directory)
         self.assertEqual(result["source"], "tailored")
-        self.assertIn("CURATED LOOK", result["prompt"])
+        self.assertIn(wardrobe.AESTHETIC_COHERENCE_RULE, result["prompt"])
+        self.assertNotIn("CURATED LOOK", result["prompt"])
         self.assertIn("The single hero colour", result["prompt"])
         self.assertEqual(result["traits"]["presentation"], "feminine")
         self.assertEqual(result["traits"]["medium"], "photograph")
@@ -363,7 +401,8 @@ class WardrobeCompositionTests(unittest.TestCase):
                  mock.patch.object(wardrobe, "_chat", return_value=fenced):
                 result = wardrobe.tailored_prompt(directory)
         self.assertEqual(result["source"], "tailored")
-        self.assertIn("CURATED LOOK", result["prompt"])
+        self.assertIn(wardrobe.AESTHETIC_COHERENCE_RULE, result["prompt"])
+        self.assertNotIn("CURATED LOOK", result["prompt"])
 
 
 class WardrobeFallbackTests(unittest.TestCase):
@@ -476,7 +515,7 @@ class WardrobeCacheTests(unittest.TestCase):
                 self.assertEqual(chat.call_count, 1)
         self.assertIn("armour", refreshed["prompt"])
 
-    def test_refresh_advances_to_a_different_curated_luxury_look(self):
+    def test_refresh_advances_the_seed_without_forcing_it_into_the_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
             _portrait(directory)
             with mock.patch.object(wardrobe, "_llm_route",
@@ -486,7 +525,14 @@ class WardrobeCacheTests(unittest.TestCase):
                 first = wardrobe.tailored_prompt(directory)
                 second = wardrobe.tailored_prompt(directory, refresh=True)
         self.assertNotEqual(first["variation_id"], second["variation_id"])
-        self.assertNotEqual(first["prompt"], second["prompt"])
+        # The mocked model deliberately returns the same audited outfit. The
+        # rotating seed must not override that portrait-aware decision.
+        self.assertEqual(first["prompt"], second["prompt"])
+        self.assertNotIn("CURATED LOOK", first["prompt"])
+        self.assertIn(
+            "not mandatory",
+            wardrobe._variation_instruction(wardrobe.LUXURY_VARIATIONS[0]),
+        )
         self.assertEqual(1, first["prompt"].count("The single hero colour"))
         self.assertEqual(1, second["prompt"].count("The single hero colour"))
 
@@ -797,7 +843,7 @@ class EyewearLockTests(unittest.TestCase):
 
     def test_every_body_plate_enforces_taste_proportion_and_gender_proper_shoes(self):
         profiles = {
-            "feminine": ("Christian Louboutin", "heels of at least 90mm"),
+            "feminine": ("sculpted dress or coat-dress", "heels of at least 90mm"),
             "masculine": ("polished loafers, Oxfords, Derbies", "Never assign pumps"),
             "androgynous": ("polished loafers or sharp ankle boots", "rather than defaulting to heels"),
         }
@@ -1046,8 +1092,7 @@ class EyewearLockTests(unittest.TestCase):
 
     def test_safe_long_manual_prompt_keeps_the_full_editor_budget(self):
         manual = "Tailored scarlet wool with precise seams and clean structure. " * 64
-        self.assertGreater(len(manual), wardrobe.PROMPT_LIMIT)
-        self.assertLessEqual(len(manual), 4000)
+        self.assertLessEqual(len(manual), wardrobe.PROMPT_LIMIT)
         self.assertEqual(manual.strip(), body._direction({"prompt": manual}))
 
     def test_precise_edit_can_remove_gold_but_cannot_add_it_or_clutter(self):

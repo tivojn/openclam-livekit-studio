@@ -62,7 +62,8 @@ class PromptSmith(unittest.TestCase):
         brief = chat.call_args.args[2].lower()
         for phrase in (
             "fuchsia", "never use cobalt", "naturally long legs",
-            "long must never become exaggerated", "dior sculpted dresses",
+            "long must never become exaggerated", "one complete outfit",
+            "light-to-midweight fabrics", "no turtleneck",
             "at least 90mm", "masculine-presenting", "never assign pumps",
             "gold is forbidden", "omission is preferred",
             "no statement jewellery", "smoky eyes or a bold lip",

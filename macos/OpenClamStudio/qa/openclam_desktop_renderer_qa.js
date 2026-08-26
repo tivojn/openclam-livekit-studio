@@ -579,7 +579,8 @@ const expressionEngineSource = inline[1].match(
 );
 assert.ok(expressionEngineSource, 'speech expression planner must remain independently testable');
 const expressionEngine = new Function(
-  `'use strict'; ${expressionEngineSource[1]}; return { makeSpeechExpressionPlan, speechExpressionTarget };`,
+  `'use strict'; ${expressionEngineSource[1]}; return { makeSpeechExpressionPlan, `
+    + 'makeSpeechExpressionTimeline, speechExpressionPlanAt, speechExpressionTarget };',
 )();
 const curiousPlan = expressionEngine.makeSpeechExpressionPlan('Would you like to try this?');
 const warmPlan = expressionEngine.makeSpeechExpressionPlan('Thank you! I am very glad this worked.');
@@ -595,13 +596,36 @@ assert.ok(curiousPlan.curiosity > 0.5, 'questions must produce a clear curiosity
 assert.ok(warmPlan.warmth > 0.5 && warmPlan.energy > curiousPlan.energy,
   'warm emphatic language must brighten the expression plan');
 assert.ok(seriousPlan.gravity > 0.5, 'warnings must produce a restrained serious plan');
-assert.ok(playfulPlan.humor > 0.5 && playfulPlan.warmth > 0.5,
-  'humor and playful speech must visibly engage the expression plan');
+assert.ok(playfulPlan.humor > 0.5,
+  'humor and playful speech must engage the shared smile mouth intent');
 assert.ok(laughterPlan.laughter > 0.8 && sorrowPlan.sadness > 0.8
   && horrorPlan.fear > 0.8 && angerPlan.anger > 0.8 && surprisePlan.surprise > 0.8,
   'the spoken text must classify distinct laughter, sorrow, horror, anger, and surprise intents');
 assert.ok(chineseEmpathyPlan.empathy > 0.5,
   'Chinese empathy language must receive the same local expression treatment');
+const mixedTimeline = expressionEngine.makeSpeechExpressionTimeline(
+  'Haha, this is hilarious, but I am heartbroken with sorrow; then I am terrified '
+    + 'by this nightmare. Finally I am furious and angry.',
+  12,
+);
+assert.ok(mixedTimeline.length >= 4,
+  'a multi-emotion paragraph must be divided into phrase-local expression plans');
+const timelinePlans = mixedTimeline.map(entry => entry.plan);
+assert.ok(timelinePlans[0].laughter > timelinePlans[0].sadness
+  && timelinePlans.some(plan => plan.sadness > plan.laughter)
+  && timelinePlans.some(plan => plan.fear > plan.anger)
+  && timelinePlans.at(-1).anger > timelinePlans.at(-1).laughter,
+  'laughter, sorrow, horror, and anger must each own their spoken phrase');
+for (let index = 1; index < mixedTimeline.length; index += 1) {
+  assert.equal(mixedTimeline[index - 1].end, mixedTimeline[index].start,
+    'expression phrase timing must remain continuous');
+}
+assert.equal(
+  expressionEngine.speechExpressionPlanAt(
+    mixedTimeline, mixedTimeline[0].start + .01, null),
+  mixedTimeline[0].plan,
+  'the expression scheduler must select the plan spoken at the current audio time',
+);
 const voicedTarget = expressionEngine.speechExpressionTarget(
   warmPlan,
   { relative: 0.8, centroid: 0.55 },
@@ -623,10 +647,12 @@ const horrorTarget = expressionEngine.speechExpressionTarget(
 const angerTarget = expressionEngine.speechExpressionTarget(
   angerPlan, emotionSignal, 0.5, 1.2,
 );
-assert.ok(laughterTarget.smile > 0.15 && laughterTarget.smile <= 0.18
-  && laughterTarget.cheek > 0.72
-  && laughterTarget.eyeSquint < 0.02,
-  'laughter must keep a restrained smile, lift cheeks, and retain the normal lash plate');
+assert.ok(laughterTarget.smile === 0.18
+  && laughterTarget.brow === 0 && laughterTarget.underEye === 0
+  && laughterTarget.squeeze === 0 && laughterTarget.cheek === 0
+  && laughterTarget.eyeSquint === 0 && laughterTarget.gazeX === 0
+  && laughterTarget.gazeY === 0,
+  'laughter and smile must share one corner-lift mouth while the upper face stays neutral');
 assert.ok(sorrowTarget.brow > 0.22 && sorrowTarget.gazeY > 0.22
   && sorrowTarget.headPitch > 0.15 && sorrowTarget.cheek < 0.3
   && sorrowTarget.sorrowMouth > 0.5 && sorrowTarget.eyeSquint < 0.02,
@@ -656,7 +682,7 @@ assert.match(source, /playSpeech\(result\.audio, result\.track \|\| \[\], text\)
   'read-aloud speech must pass its words into the expression planner');
 assert.match(source, /playSpeech\(result\.audio, result\.track \|\| \[\], answer\)/,
   'chat replies must pass the final answer into the expression planner');
-assert.match(source, /speechExpressionPlan = makeSpeechExpressionPlan\(text\);/,
+assert.match(source, /speechExpressionTimeline = makeSpeechExpressionTimeline\(text\);/,
   'Live Talk assistant transcripts must update semantic expression intent');
 
 const speechExpressionSource = inline[1].match(
@@ -699,6 +725,24 @@ assert.deepEqual(
   zeroExpression,
   'upper-face speech motion must settle back to a still idle state',
 );
+const phraseState = {
+  mode: 'idle', started: 0, duration: 1, nextAt: 0, planKey: '',
+  from: { ...zeroExpression }, to: { ...zeroExpression }, value: { ...zeroExpression },
+};
+const laughterEntry = mixedTimeline.find(entry => entry.plan.laughter > .8);
+const sorrowEntry = mixedTimeline.find(entry => entry.plan.sadness > .8);
+assert.ok(laughterEntry && sorrowEntry, 'mixed-expression fixture must contain both phrases');
+speechExpressionAt(laughterEntry.start * 1000, true, phraseState, laughterEntry.plan,
+  emotionSignal, false);
+const scheduledLaugh = speechExpressionAt(laughterEntry.start * 1000 + 360, true,
+  phraseState, laughterEntry.plan, emotionSignal, false);
+speechExpressionAt(sorrowEntry.start * 1000, true, phraseState, sorrowEntry.plan,
+  emotionSignal, false);
+const scheduledSorrow = speechExpressionAt(sorrowEntry.start * 1000 + 360, true,
+  phraseState, sorrowEntry.plan, emotionSignal, false);
+assert.ok(scheduledLaugh.smile > .15 && scheduledSorrow.sorrowMouth > .45
+  && scheduledSorrow.smile < .1,
+  'the scheduler must crossfade from laughter into the next phrase-local emotion');
 assert.match(source, /const LIVE_RIG_KEY = 'openclam-live-rig';/,
   'the calibration panel must be able to preview live brow/under-eye targets');
 assert.match(source, /for \(const key of \['brows', 'eyebags'\]\)/);
@@ -1114,7 +1158,7 @@ assert.match(source, /const resumeChatSpeakingPose = \(\) => \{[\s\S]{0,100}mark
   'conversation activity must resume the saved speaking pose from temporary Edge Idle');
 assert.match(source, /const submitComposer = \(\) => \{[\s\S]{0,420}resumeChatSpeakingPose\(\);/,
   'sending a message must retain the selected close-up\/zoom\/drag pose');
-assert.match(source, /speechSource = source;[\s\S]{0,100}resumeChatSpeakingPose\(\);[\s\S]{0,500}source\.onended[\s\S]{0,220}resumeChatSpeakingPose\(\);/,
+assert.match(source, /speechSource = source;[\s\S]{0,520}resumeChatSpeakingPose\(\);[\s\S]{0,700}source\.onended[\s\S]{0,320}resumeChatSpeakingPose\(\);/,
   'TTS start and end must restore the saved pose and restart the idle timer');
 assert.equal(chatStandbyEdge({x: -1}), 'left');
 assert.equal(chatStandbyEdge({x: 0}), 'right');

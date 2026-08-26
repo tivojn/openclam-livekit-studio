@@ -307,7 +307,7 @@ def active_slug():
         return None
 
 
-RUNTIME_VERSION = 20  # v20: viseme-safe emotion mouths plus coherent upper face
+RUNTIME_VERSION = 22  # v22: sharp held smile/laughter plate at exact 18% lift
 
 
 def ensure_runtime(slug, log=print):

@@ -34,8 +34,10 @@ BRIEFS = {
         "Expand the gist into one paragraph under 1,100 characters. Read only "
         "the portrait's visible feminine, masculine, or androgynous styling; "
         "do not claim a gender identity. Use a cutter's language, named fabrics "
-        "with real behaviour, and crisp internal structure. "
+        "with clean drape, and crisp internal structure. "
         f"{wardrobe.COLOR_RULE} {wardrobe.PROPORTION_RULE} "
+        f"{wardrobe.AESTHETIC_COHERENCE_RULE} "
+        f"{wardrobe.FASHION_FABRIC_RULE} "
         f"{wardrobe.FEMININE_RULE} {wardrobe.MASCULINE_RULE} "
         f"{wardrobe.ANDROGYNOUS_RULE} "
         f"{wardrobe.ACCESSORY_RULE} Keep skin luminous and real, "
@@ -43,8 +45,8 @@ BRIEFS = {
         "finished. Evening gets either smoky eyes or a bold lip, never both. "
         "The test is tailored authority, editorial sensuality, and zero "
         "fast-fashion noise. Hard rules: no bare midriff, sheer fabric, extreme "
-        "plunging neckline, "
-        "heavy or bulky layers, no baggy or wide-leg trousers, and nothing "
+        "plunging neckline, thick fabric, heavy or bulky layers, turtlenecks, "
+        "no baggy or wide-leg trousers, and nothing "
         "held in or attached to the hands. " + _SHARED
     ),
     "walk": (

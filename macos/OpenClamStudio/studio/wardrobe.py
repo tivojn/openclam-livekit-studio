@@ -42,9 +42,9 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 
 
 CACHE_NAME = ".wardrobe.json"
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 ANALYSIS_EDGE = 768
-PROMPT_LIMIT = 3900
+PROMPT_LIMIT = 4000
 
 # Garments that break the runtime rig rather than merely look wrong. Kept as
 # whole words so "overcoat" is caught but "coated" is not.
@@ -97,8 +97,11 @@ STRUCTURAL_RULE = f"{PROPORTION_RULE} {SILHOUETTE_RULE} {HANDS_RULE}"
 COLOR_RULE = (
     "Choose exactly one hero colour from fuchsia, scarlet, coral, ultramarine, "
     "or camel; the list order has no priority and camel is never the default. "
-    "Use only that chosen hero with exactly one restrained accent and quiet "
-    "black, charcoal, taupe, or chocolate neutrals. Never use cobalt. Emerald belongs to the house "
+    "Let the hero colour or its tonal family cover roughly 65 to 80 percent of "
+    "the visible fabric. Use zero or one restrained accent covering no more than "
+    "10 percent, plus at most one quiet black, charcoal, taupe, or chocolate "
+    "grounding neutral. Never split the body into three equally strong colour "
+    "blocks. Never use cobalt. Emerald belongs to the house "
     "palette but is unavailable on OpenClam cutout plates because green damages "
     "alpha extraction; substitute ultramarine if emerald is requested."
 )
@@ -119,8 +122,11 @@ def resolved_color_rule(hero):
         hero = "ultramarine"
     return (
         f"The single hero colour for this look is {hero}. Use no other house "
-        "hero colour in the wardrobe. Add exactly one restrained accent and "
-        "quiet black, charcoal, taupe, or chocolate neutrals. Never use cobalt. "
+        "hero colour in the wardrobe. Let that hero or its tonal family cover "
+        "roughly 65 to 80 percent of visible fabric. Use zero or one restrained "
+        "accent covering no more than 10 percent and at most one quiet black, "
+        "charcoal, taupe, or chocolate grounding neutral. Never split the figure "
+        "into three equally strong colour blocks. Never use cobalt. "
         "Emerald is unavailable on OpenClam cutout plates because green damages "
         "alpha extraction; substitute ultramarine if emerald is requested."
     )
@@ -136,7 +142,7 @@ LUXURY_VARIATIONS = (
         "label": "Fuchsia sculpted column",
         "hero": "fuchsia",
         "feminine": "a sculpted midi or column dress with architectural seaming and a clean defined waist",
-        "masculine": "a fitted high-neck fine-gauge knit with narrow evening trousers and a long unbroken line",
+        "masculine": "an open-collar fine-gauge knit with narrow evening trousers and a long unbroken line",
         "androgynous": "a collarless longline tunic over narrow trousers with an architectural tonal column",
     },
     {
@@ -215,61 +221,62 @@ LUXURY_VARIATIONS = (
 
 ACCESSORY_RULE = (
     "Gold is forbidden everywhere in the wardrobe and styling: no gold; no "
-    "gold-tone or gold-plated finishes; no gilded or gilt jewellery, hardware, "
-    "buttons, buckles, zippers, trim, thread, embroidery, footwear, or garment "
-    "accents. "
-    "No yellow, rose, or white gold. Accessories are optional and omission is "
-    "preferred. If used, allow at most one small, understated accessory choice "
-    "in silver, platinum, or a restrained neutral stone; a simple pair of studs "
-    "counts as one choice. No statement jewellery; no layered necklaces or "
-    "chains; no stacked rings, bracelets, or bangles; no multiple-earring "
-    "clusters or ear stacks; no oversized pendants or brooches; no ornate belts, "
-    "decorative body chains, or "
-    "accessory clutter."
+    "gold-tone, gold-plated, gilded, or gilt jewellery, hardware, trim, thread, "
+    "footwear, or garment accents; no yellow, rose, or white gold. Accessories "
+    "are optional and omission is preferred. If used, allow at most one small, "
+    "understated choice in silver, platinum, or a neutral stone. No statement "
+    "jewellery; no layered necklaces, stacked rings or bracelets, multiple-earring "
+    "clusters, oversized pendants, ornate belts, or accessory clutter."
 )
 
 LUXURY_FINISH_RULE = (
     "Keep the silhouette structured, sensual, and polished, never revealing for "
     "its own sake: no bare midriff, sheer fabric, or extreme plunging neckline. "
-    "Preserve the existing hairstyle while giving it a sleek editorial finish; "
-    "use luminous real skin texture, defined brows, and restrained, "
-    "presentation-appropriate grooming. The final test is tailored authority, "
-    "editorial sensuality, and zero fast-fashion noise."
+    "Preserve the existing hairstyle, real skin texture, and presentation-"
+    "appropriate grooming. The final test is tailored authority and zero fast-"
+    "fashion noise."
+)
+
+AESTHETIC_COHERENCE_RULE = (
+    "Resolve one complete outfit, not a collage of fashionable fragments. Use "
+    "one dominant silhouette, no more than two large colour blocks, and no more "
+    "than two visible material families. The footwear must echo either the hero "
+    "colour or darkest grounding tone. Hem, waist, and lower-garment lengths must "
+    "form one uninterrupted vertical line. Never combine a longline sleeveless "
+    "waistcoat with both a contrasting top and cigarette or cropped trousers; "
+    "make it one-piece or choose a shorter layer. Remove anything that sounds "
+    "luxurious but weakens harmony, proportion, or the person."
+)
+
+FASHION_FABRIC_RULE = (
+    "Use fashionable light-to-midweight fabrics with clean drape and precise "
+    "structure. No thick, heavy, substantial, bulky, or stiff fabric; no bulky "
+    "weave or heavy layering; and no turtleneck, roll-neck, mock-neck, or other "
+    "throat-covering knitwear. Clothing stays opaque without looking weighty."
 )
 
 FEMININE_RULE = (
-    "For a feminine-presenting photographic subject, use the design discipline of "
-    "Saint Laurent structure, Dior sculpted dresses and wrap construction, The "
-    "Row or Khaite minimalism, Chanel modern tweed, Bottega Veneta leather, or "
-    "Max Mara precision. Follow the selected look direction: do not default to a "
-    "blazer with trousers when a dress, coat-dress, skirt, waistcoat, knit column, "
-    "leather piece, or jumpsuit is specified. Finish with elegant heels of at least 90mm in the spirit "
-    "of Christian Louboutin, Manolo Blahnik, Gianvito Rossi, or Aquazzura. Keep "
-    "makeup restrained; for evening choose either a smoky eye or a bold lip, never "
-    "both."
+    "For a feminine-presenting photographic subject, choose one coherent design "
+    "language: a sculpted dress or coat-dress, a minimal knit column, a precise "
+    "skirt look, or purposeful tailoring. Do not mix designer signatures or "
+    "default to office separates. Use elegant heels of at least 90mm when they "
+    "serve the line. For evening choose either a smoky eye or a bold lip, never both."
 )
 
 MASCULINE_RULE = (
-    "For a masculine-presenting photographic subject, use the design discipline of "
-    "Saint Laurent or Tom Ford power tailoring, Dior Men precision, The Row "
-    "minimalism, Bottega Veneta leather garments, Zegna or Loro Piana refinement, "
-    "or Max Mara precision. Follow the selected look direction instead of always "
-    "returning a conventional suit. Finish with polished loafers, Oxfords, Derbies, or "
-    "sharp ankle boots in the spirit of Berluti, John Lobb, Edward Green, Saint "
-    "Laurent, or Bottega Veneta. Never assign pumps, stilettos, or high heels to "
-    "this masculine branch. Use polished natural grooming, clean skin texture, "
-    "defined brows, and carefully finished hair or facial hair; never force a "
-    "feminine evening-makeup direction onto the subject."
+    "For a masculine-presenting photographic subject, choose one coherent design "
+    "language: precision tailoring, a refined knit-led column, or a compact "
+    "leather-led look. Do not mix designer signatures or always return a suit. "
+    "Use polished loafers, Oxfords, Derbies, or sharp ankle boots. Never assign "
+    "pumps, stilettos, or high heels; preserve natural grooming."
 )
 
 ANDROGYNOUS_RULE = (
     "For an androgynous or visually ambiguous photographic subject, do not infer a "
-    "gender identity. Preserve the presentation visible in the reference through "
-    "architectural Saint Laurent, Dior, The Row, Khaite, or Bottega Veneta "
-    "construction. Follow the selected look direction instead of defaulting to a "
-    "blazer-and-trouser suit, and finish with polished loafers or sharp ankle boots rather than "
-    "defaulting to heels. Preserve the reference's visible grooming and makeup "
-    "language instead of imposing a feminine or masculine beauty code."
+    "gender identity. Preserve the presentation visible in the reference with one "
+    "architectural minimal language. Do not mix designer signatures or default "
+    "to a blazer-and-trouser suit. Use polished loafers or sharp ankle boots "
+    "rather than defaulting to heels, and preserve the visible grooming."
 )
 
 STYLISED_RULE = (
@@ -304,6 +311,32 @@ EXCESSIVE_ACCESSORY_PATTERN = re.compile(
     r"\b(?:jewell?ery|jewellery|accessory)\s+sets?\b|"
     r"\b(?:necklace|chain|ring|bracelet|bangle)\s+stack\b|"
     r"\baccessory\s+clutter\b",
+    re.IGNORECASE,
+)
+HEAVY_STYLE_PATTERN = re.compile(
+    r"\b(?:substantial|heavy|thick|bulky|stiff)\s+"
+    r"(?:fabric|textile|material|wool|knit|weave|layer(?:ing|s)?)\b|"
+    r"\b(?:turtle[ -]?neck|roll[ -]?neck|mock[ -]?neck)\b|"
+    r"\b(?:high|closed)[ -]?neck\s+(?:knit|sweater|jumper)\b|"
+    r"\bthroat-covering\s+knitwear\b",
+    re.IGNORECASE,
+)
+LONG_WAISTCOAT_PATTERN = re.compile(
+    r"\b(?:longline|long[-\s]+line|thigh[-\s]+length|knee[-\s]+length)\b"
+    r"(?:[^.!?;:]{0,40})\b(?:sleeveless\s+)?(?:waistcoat|vest)\b|"
+    r"\b(?:sleeveless\s+)?(?:waistcoat|vest)\b"
+    r"(?:[^.!?;:]{0,40})\b(?:longline|long[-\s]+line|thigh[-\s]+length|"
+    r"knee[-\s]+length)\b",
+    re.IGNORECASE,
+)
+SEPARATE_TOP_PATTERN = re.compile(
+    r"\b(?:top|shell|blouse|shirt|camisole|sweater|jumper|knit)\b",
+    re.IGNORECASE,
+)
+NARROW_TROUSER_PATTERN = re.compile(
+    r"\b(?:cigarette|cropped|ankle[-\s]+length)\s+(?:pants|trousers)\b|"
+    r"\b(?:pants|trousers)\b(?:[^.!?;:]{0,28})\b(?:cigarette|cropped|"
+    r"ankle[-\s]+length)\b",
     re.IGNORECASE,
 )
 
@@ -362,6 +395,28 @@ def _assigns_excessive_accessories(text):
     return _assigns_forbidden_term(text, EXCESSIVE_ACCESSORY_PATTERN)
 
 
+def _assigns_heavy_styling(text):
+    return _assigns_forbidden_term(text, HEAVY_STYLE_PATTERN)
+
+
+def aesthetic_conflicts(text):
+    """Return pre-generation composition failures in an outfit brief.
+
+    This audit deliberately targets combinations, not individual garments. A
+    waistcoat, shell, or narrow trouser can each work; the long three-piece stack
+    is what creates the chopped, office-uniform silhouette that prompted this
+    policy. Explicit prohibitions remain safe because the assignment helper
+    understands nearby negation.
+    """
+    if (not _assigns_forbidden_term(text, LONG_WAISTCOAT_PATTERN)
+            or not _assigns_forbidden_term(text, SEPARATE_TOP_PATTERN)
+            or not _assigns_forbidden_term(text, NARROW_TROUSER_PATTERN)):
+        return []
+    return [
+        "longline waistcoat/vest + separate top + cigarette/cropped trousers",
+    ]
+
+
 def _assigns_feminine_heels(text):
     """True only for a positive heel assignment, not a prohibition.
 
@@ -394,7 +449,14 @@ SYSTEM = (
     '"register" - three to six words naming the aesthetic, e.g. "fashion-forward "'
     'contemporary womenswear" or "mythic Chinese action-game hero".\n'
     '"profession" - the implied role or profession, or "unspecified".\n'
-    '"palette" - three to five concrete colours read from the portrait.\n'
+    '"look" - three to eight words naming the single resolved outfit.\n'
+    '"hero_color" - exactly one of fuchsia, scarlet, coral, ultramarine, or '
+    'camel for a photograph; for a stylised subject use the dominant existing '
+    'costume colour.\n'
+    '"palette" - two or three final garment colours with their roles and rough '
+    'visible-area percentages, not a menu of possibilities.\n'
+    '"harmony" - one sentence explaining why the colour temperature, garment '
+    'lengths, materials, and footwear form one coherent line.\n'
     '"direction" - the wardrobe and styling brief itself, 90 to 150 words, '
     "written as instructions to an image model.\n\n"
     "RULES FOR \"direction\":\n"
@@ -406,7 +468,7 @@ SYSTEM = (
     "style register. Do not infer gender identity and do not default every "
     "subject to womenswear, menswear, or office separates.\n"
     "3. Match the STYLE already visible, then raise it to couture level. Use a "
-    "cutter's language, substantial fabrics with believable behaviour, crisp "
+    "cutter's language, light-to-midweight fabrics with believable drape, crisp "
     "internal structure, and realistic seam tension. A heroic or fantasy "
     "subject should read powerful through costume detail, armour, weathering, "
     "and ornament rather than literal ready-to-wear.\n"
@@ -418,31 +480,33 @@ SYSTEM = (
     f"   MASCULINE: {MASCULINE_RULE}\n"
     f"   ANDROGYNOUS OR AMBIGUOUS: {ANDROGYNOUS_RULE}\n"
     f"6. GOLD AND ACCESSORIES FOR EVERY MEDIUM: {ACCESSORY_RULE}\n"
-    f"7. PHOTOGRAPHIC LUXURY FINISH: {LUXURY_FINISH_RULE}\n"
-    f"8. BODY PROPORTIONS: {PROPORTION_RULE}\n"
-    "9. HARD BAN: never heavy layering, bulky or padded outerwear, puffers, "
+    f"7. OUTFIT COHERENCE: {AESTHETIC_COHERENCE_RULE} {FASHION_FABRIC_RULE}\n"
+    f"8. PHOTOGRAPHIC LUXURY FINISH: {LUXURY_FINISH_RULE}\n"
+    f"9. BODY PROPORTIONS: {PROPORTION_RULE}\n"
+    "10. HARD BAN: never heavy layering, bulky or padded outerwear, puffers, "
     "parkas, trench coats, capes, cloaks or shawls; and never baggy, slouchy, "
     "wide-leg, cargo, or oversized trousers. Keep trousers, skirts and armour "
     "greaves fitted and the full silhouette readable from shoulder to ankle.\n"
-    "10. HARD BAN: the subject carries NOTHING. Never mention, describe, or imply "
+    "11. HARD BAN: the subject carries NOTHING. Never mention, describe, or imply "
     "a bag, handbag, clutch, purse, tote, backpack, briefcase, phone, cup, "
     "umbrella, weapon, staff, or any other held or carried object, and never "
     "sling a bag or strap over a shoulder, an elbow, or across the body. Both "
     "hands stay empty. Carried props break the pose rig and cannot survive the "
     "front/side/back turnaround.\n"
-    "11. Clothing stays opaque and suitable for public view: no nudity, lingerie, "
+    "12. Clothing stays opaque and suitable for public view: no nudity, lingerie, "
     "bare midriff, sheer fabric, exposed intimate areas, extreme plunging "
     "neckline, or vulgar styling. Allure comes from structure, fit, and "
     "confidence, never exposure.\n"
-    "12. Never redesign the face, hairstyle, skin tone, or identity. Beauty notes "
+    "13. Never redesign the face, hairstyle, skin tone, or identity. Beauty notes "
     "control finish only: keep the existing hair shape, real skin texture, and "
     "eyeglasses exactly as shown. Write wardrobe, materials, palette, accessories, "
     "footwear, and medium-appropriate rendering detail."
 )
 
 USER_TEXT = (
-    "Analyse this reference portrait and write the full-body wardrobe brief for "
-    "this exact subject. Return the strict JSON object only."
+    "Analyse this reference portrait. Privately draft three complete looks, reject "
+    "the two with weaker colour harmony, proportion, or style compatibility, and "
+    "return only the strict JSON object for the strongest complete look."
 )
 
 
@@ -484,14 +548,16 @@ def _select_variation(avatar_dir, digest, refresh=False):
 
 def _variation_instruction(variation):
     return (
-        f"CURATED LOOK FOR THIS DRAFT: {variation['label']}. For a photographic "
-        f"subject, {resolved_color_rule(variation['hero'])} Choose only the "
-        "silhouette below that matches the subject's visible presentation: "
+        f"CREATIVE SEED FOR PRIVATE CONSIDERATION: {variation['label']}. This is "
+        "not mandatory and must never override the portrait. For a photographic "
+        "subject, test the following possibility against the colour, proportion, "
+        "material, and styling-coherence rules, and reject it if it is not the "
+        "strongest of your three candidates: "
         f"feminine — {variation['feminine']}; masculine — "
         f"{variation['masculine']}; androgynous or ambiguous — "
-        f"{variation['androgynous']}. This curated look is mandatory and replaces "
-        "any habitual camel blazer-and-trouser default. For a stylised subject, "
-        "ignore this fashion look and preserve the reference costume register."
+        f"{variation['androgynous']}. You may choose a different hero colour and "
+        "silhouette. For a stylised subject, ignore this seed and preserve the "
+        "reference costume register."
     )
 
 
@@ -686,13 +752,23 @@ def _parse(text):
         "register": _clean(parsed.get("register"), 90),
         "profession": _clean(parsed.get("profession"), 90),
         "palette": _clean(palette, 140),
+        "look": _clean(parsed.get("look"), 90),
+        "hero_color": _clean(parsed.get("hero_color"), 24).lower(),
+        "harmony": _clean(parsed.get("harmony"), 280),
     }
+    if traits["medium"].lower() == "photograph":
+        if traits["hero_color"] not in HERO_COLORS:
+            traits["hero_color"] = (
+                _hero_from_text(direction) or _hero_from_text(palette)
+                or "ultramarine")
+        if not traits["look"]:
+            traits["look"] = "portrait-audited complete look"
     return direction, traits
 
 
 def _finalise(
         direction, presentation="androgynous", medium="photograph",
-        variation=None):
+        variation=None, hero=""):
     """Refuse anything that broke a hard ban, then append the structural rules.
 
     The check runs on the model's own words BEFORE the rules are appended: the
@@ -709,6 +785,14 @@ def _finalise(
         raise RuntimeError("the vision model kept the banned material or colour gold")
     if _assigns_excessive_accessories(direction):
         raise RuntimeError("the vision model kept excessive accessories")
+    if _assigns_heavy_styling(direction):
+        raise RuntimeError(
+            "the vision model kept heavy fabric or throat-covering knitwear")
+    conflicts = aesthetic_conflicts(direction)
+    if conflicts:
+        raise RuntimeError(
+            "the wardrobe brief failed aesthetic coherence: "
+            + "; ".join(conflicts))
     # A missing classifier becomes the presentation-neutral branch. This is a
     # safe fallback for PromptSmith and the static preset: it never defaults an
     # unknown or masculine portrait to feminine heels.
@@ -721,17 +805,16 @@ def _finalise(
     stylised = _clean(medium, 40).lower() in {
         "game art", "anime", "illustration", "3d render",
     }
-    if not stylised and variation:
-        direction = _apply_selected_hero(direction, variation["hero"])
-    hero = (variation or {}).get("hero") or _hero_from_text(direction)
+    hero = hero if hero in HERO_COLORS else _hero_from_text(direction)
+    if not hero and variation:
+        hero = variation.get("hero")
     provider_color_rule = resolved_color_rule(hero)
     suffix_rules = (
         [STYLISED_RULE, ACCESSORY_RULE, STRUCTURAL_RULE]
         if stylised else
-        [provider_color_rule,
-         *([_variation_rule(variation, presentation)] if variation else []),
-         _presentation_rule(presentation, medium),
-         ACCESSORY_RULE, LUXURY_FINISH_RULE, STRUCTURAL_RULE]
+        [provider_color_rule, AESTHETIC_COHERENCE_RULE, FASHION_FABRIC_RULE,
+         _presentation_rule(presentation, medium), ACCESSORY_RULE,
+         LUXURY_FINISH_RULE, STRUCTURAL_RULE]
     )
     suffix = " ".join(suffix_rules)
     # Keep every deterministic house/rig rule intact. The model's prose is the
@@ -746,7 +829,9 @@ def _finalise(
 def preset_prompt():
     from . import body
     return _clean(
-        f"{body.DEFAULT_BODY_PROMPT} {ACCESSORY_RULE} {STRUCTURAL_RULE}",
+        f"{body.DEFAULT_BODY_PROMPT} {AESTHETIC_COHERENCE_RULE} "
+        f"{FASHION_FABRIC_RULE} "
+        f"{ACCESSORY_RULE} {STRUCTURAL_RULE}",
         PROMPT_LIMIT,
     )
 
@@ -864,12 +949,12 @@ def tailored_prompt(avatar_dir, refresh=False, log=None, progress=None):
         direction, traits = _parse(response)
         if _clean(traits.get("medium"), 40).lower() not in {
                 "game art", "anime", "illustration", "3d render"}:
-            traits["look"] = variation["label"]
-            traits["hero_color"] = variation["hero"]
+            if not traits.get("look"):
+                traits["look"] = "portrait-audited complete look"
         stage("composition")
         prompt = _finalise(
             direction, traits.get("presentation"), traits.get("medium"),
-            variation=variation)
+            variation=variation, hero=traits.get("hero_color"))
     except Exception as error:
         note(f"portrait-tailored prompt unavailable, using the preset: {error}")
         stage("fallback")

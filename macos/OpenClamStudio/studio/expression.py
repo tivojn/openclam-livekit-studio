@@ -26,8 +26,8 @@ The forehead, cheek and infraorbital bands are separate feathered tissue layers.
 They bake to small RGBA sprite strips, like the eyelids in blink.py.  Runtime
 interpolates adjacent tissue states instead of snapping between them.  A
 viseme-indexed smile strip moves each photographed mouth as one piece, keeping
-the tongue, teeth and lips coherent while laughter pulls both corners outward
-and upward.  Draw order is base -> smile -> forehead -> brow -> cheek -> gaze
+the tongue, teeth and lips coherent while smile/laughter lifts both corners
+without widening the mouth. Draw order is base -> smile -> forehead -> brow -> cheek -> gaze
 -> under-eye -> lid.
 """
 import numpy as np, cv2
@@ -68,11 +68,13 @@ BROW_SQ = [-3.0, 0.0, 4.0]
 # Cheek raise, in px of lift at the lower lid margin.  Small on purpose - this
 # is the warmth cue that rides under speech, not a smile.
 CHEEK_UP = [0.0, 0.8, 1.6, 2.45, 3.3]
-# Laughter is not an eyelid pose.  These adjacent states add the two dominant
-# lower-face action units: lip-corner pull (AU12) and a modest jaw aperture on
-# visemes that are already open.  Four states are enough because the runtime
-# continuously blends between them and between the old/new TTS viseme rows.
-SMILE_STATES = [0.0, 0.34, 0.68, 1.0]
+# Smile/laughter is not an eyelid or cheek pose. These states add only
+# lip-corner lift (AU12) while preserving each viseme's width and aperture.
+# The spoken smile target is exactly .18. Publish that exact photographic
+# state so a held smile is one sharp plate rather than a permanent cross-fade
+# between neutral and .34 (which ghosts the lip edge and reads as blur).
+SMILE_STATES = [0.0, 0.18, 0.34, 0.68, 1.0]
+EMOTION_MOUTH_STATES = [0.0, 0.34, 0.68, 1.0]
 EMOTION_MOUTHS = ("sorrow", "horror", "anger")
 
 
@@ -163,29 +165,22 @@ def _mouth_warp_patch(image, lm, amount, box, controls):
 
 
 def _smile_patch(image, lm, amount, box):
-    """Warp one complete photographed viseme into a coherent laughing mouth.
+    """Lift both photographed lip corners without changing mouth size.
 
-    The displacement field is anchored at both lip corners and the upper/lower
-    mid-lip.  It never substitutes generated pixels: inverse remapping carries
-    the source tongue, teeth, lip texture and adjacent skin together.  Closed
-    visemes get corner pull but no artificial mouth opening; an aperture gate
-    lets vowels open slightly wider without turning PP/sil into a grin-hole.
+    Smile and laughter intentionally share this one lower-face action.  The
+    mouth keeps the current viseme's width, aperture, teeth and tongue; only
+    the two corners rise.  Brows, cheeks, eyelids and forehead remain runtime-
+    neutral, so a smile never turns into a different whole-face identity.
     """
     left = np.asarray(lm[face.MOUTH_L], np.float32)
     right = np.asarray(lm[face.MOUTH_R], np.float32)
-    upper = np.asarray(lm[0], np.float32)
-    lower = np.asarray(lm[17], np.float32)
     width = max(float(np.linalg.norm(right - left)), 8.0)
-    aperture = float(np.linalg.norm(lower - upper)) / width
-    open_gate = float(_smoothstep(.025, .115, aperture))
-    # A human laugh is a curved landscape: the corners travel most, away from
-    # the mouth centre and upward into the cheeks.  The mid-lip moves much less
-    # so the result reads as a smile rather than translating the whole mouth.
+    # The full-strength atlas has generous travel; the runtime uses a restrained
+    # fractional blend. Zero horizontal and mid-lip displacement is deliberate:
+    # it prevents a spoken vowel from becoming wider or more open during joy.
     controls = (
-        (left, -0.155 * width, -0.112 * width, .255 * width),
-        (right, 0.155 * width, -0.112 * width, .255 * width),
-        (upper, 0.0, -0.018 * width * open_gate, .205 * width),
-        (lower, 0.0, 0.042 * width * open_gate, .225 * width),
+        (left, 0.0, -0.180 * width, .235 * width),
+        (right, 0.0, -0.180 * width, .235 * width),
     )
     return _mouth_warp_patch(image, lm, amount, box, controls)
 
@@ -259,7 +254,7 @@ def build_smile(key, key_lm, visemes, states=None, log=print):
 
 def build_emotion_mouths(key, key_lm, visemes, states=None, log=print):
     """Build ``emotion x viseme x strength`` lower-face states."""
-    strengths = list(SMILE_STATES if states is None else states)
+    strengths = list(EMOTION_MOUTH_STATES if states is None else states)
     box = _smile_box(key.shape, key_lm)
     detected, names = [], []
     for name, image in visemes:

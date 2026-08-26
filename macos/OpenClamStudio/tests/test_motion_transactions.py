@@ -592,7 +592,7 @@ class MotionServerTransactionTests(unittest.TestCase):
 
     @staticmethod
     def _legacy_upper_face_layers(runtime_dir):
-        """Build the minimal preserved sprite contract accepted by v20."""
+        """Build the minimal preserved sprite contract accepted by v22."""
         layers = {}
         for name, positions, values in (
                 ("eyes", "states", [0, 1]),
@@ -671,7 +671,7 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertFalse(os.path.exists(live + ".previous"))
 
     def test_runtime_only_v16_missing_under_eye_stays_legacy(self):
-        """A preserved bank cannot claim v20 when its under-eye strip is gone."""
+        """A preserved bank cannot claim v22 when its under-eye strip is gone."""
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "missing-under-eye"
             live = os.path.join(avatar_dir, "runtime")
@@ -703,11 +703,11 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
             self.assertFalse(os.path.exists(live + ".previous"))
             self.assertTrue(any(
-                "runtime under-eye layer is missing; cannot migrate to v20" in line
+                "runtime under-eye layer is missing; cannot migrate to v22" in line
                 for line in logs))
 
     def test_runtime_only_v17_missing_forehead_stays_legacy(self):
-        """A v17 bank needs a source rebuild before it can claim v20."""
+        """A v17 bank needs a source rebuild before it can claim v22."""
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "missing-forehead"
             live = os.path.join(avatar_dir, "runtime")
@@ -737,7 +737,7 @@ class MotionServerTransactionTests(unittest.TestCase):
 
             self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
             self.assertTrue(any(
-                "runtime forehead layer is missing; cannot migrate to v20" in line
+                "runtime forehead layer is missing; cannot migrate to v22" in line
                 for line in logs))
 
     def test_settings_resumes_and_tracks_the_reserved_job(self):

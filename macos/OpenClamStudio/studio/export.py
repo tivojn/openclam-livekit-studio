@@ -20,7 +20,7 @@ from . import face, blink, expression, cutout, limbs, rig, build as reg
 # which calibrated runtime controls can be consumed safely.  Keep a runtime
 # bundle with preserved face strips current when its Pet layers are refreshed
 # without source visemes.
-RUNTIME_VERSION = 20
+RUNTIME_VERSION = 22
 
 # runtime viseme name -> studio shape name
 NAME_MAP = {"sil": "closed", "PP": "PP", "FF": "FF", "TH": "TH", "DD": "DD",
@@ -417,7 +417,7 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
                 pass
     motion_meta = _publish_motion(directory, destination, log)
     # Face sprites are preserved on this no-viseme road.  Never declare the
-    # bundle current until the legacy bank proves it has every layer that v18
+    # bundle current until the legacy bank proves it has every layer that v22
     # actually drives, especially the forehead and independent under-eye strips.
     if _runtime_version(runtime.get("v")) < RUNTIME_VERSION:
         _validate_current_face_layers(runtime, destination)

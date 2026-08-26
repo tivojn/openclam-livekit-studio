@@ -37,6 +37,9 @@ if (noisy.join(',') !== 'sil,aa,sil') {
   throw new Error(`sub-frame noise was not collapsed: ${noisy.join(',')}`);
 }
 if (MIN_POSE > 0.020001) throw new Error(`MIN_POSE too high: ${MIN_POSE}`);
+if (XFADE > 0.020001) {
+  throw new Error(`mouth texture crossfade can double rigid teeth: ${XFADE * 1000}ms`);
+}
 if (Math.abs(VISUAL_LEAD - XFADE / 2) > 1e-9) {
   throw new Error('crossfade is not centered on its audio event');
 }

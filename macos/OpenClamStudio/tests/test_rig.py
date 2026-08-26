@@ -394,9 +394,12 @@ class RigProfileTests(unittest.TestCase):
                         renderer.index("if (manifest.eyebag) {",
                         renderer.index("const composeHead")))
 
-    def test_laughter_mouth_pulls_both_corners_outward_and_upward(self):
-        """A laugh must reshape the mouth, not merely close both eyelids."""
+    def test_laughter_and_smile_lift_only_both_mouth_corners(self):
+        """Joy keeps mouth size and upper-face identity unchanged."""
         from studio import expression
+
+        self.assertIn(0.18, expression.SMILE_STATES,
+                      "the held smile needs an exact sharp atlas plate")
 
         image = np.full((180, 180, 3), 92, np.uint8)
         landmarks = np.full((478, 2), (90, 90), np.float32)
@@ -425,10 +428,10 @@ class RigProfileTests(unittest.TestCase):
 
         neutral_left, neutral_right = corners(neutral)
         laugh_left, laugh_right = corners(laugh)
-        self.assertLess(laugh_left[0], neutral_left[0] - 3.0)
-        self.assertGreater(laugh_right[0], neutral_right[0] + 3.0)
-        self.assertLess(laugh_left[1], neutral_left[1] - 2.0)
-        self.assertLess(laugh_right[1], neutral_right[1] - 2.0)
+        self.assertAlmostEqual(laugh_left[0], neutral_left[0], delta=1.5)
+        self.assertAlmostEqual(laugh_right[0], neutral_right[0], delta=1.5)
+        self.assertLess(laugh_left[1], neutral_left[1] - 3.0)
+        self.assertLess(laugh_right[1], neutral_right[1] - 3.0)
 
         sorrow = expression._emotion_mouth_patch(
             image, landmarks, "sorrow", 1.0, box)
