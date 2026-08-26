@@ -583,6 +583,11 @@ const curiousPlan = expressionEngine.makeSpeechExpressionPlan('Would you like to
 const warmPlan = expressionEngine.makeSpeechExpressionPlan('Thank you! I am very glad this worked.');
 const seriousPlan = expressionEngine.makeSpeechExpressionPlan('Important warning: you must be careful.');
 const playfulPlan = expressionEngine.makeSpeechExpressionPlan('Haha, I was joking — that was funny!');
+const laughterPlan = expressionEngine.makeSpeechExpressionPlan('Haha, I am laughing so hard at that hilarious joke!');
+const sorrowPlan = expressionEngine.makeSpeechExpressionPlan('I am heartbroken and crying with deep sorrow and grief.');
+const horrorPlan = expressionEngine.makeSpeechExpressionPlan('I am horrified, terrified and afraid — this is a nightmare!');
+const angerPlan = expressionEngine.makeSpeechExpressionPlan('I am furious and angry about this outrage!');
+const surprisePlan = expressionEngine.makeSpeechExpressionPlan('I am shocked, astonished and completely surprised!');
 const chineseEmpathyPlan = expressionEngine.makeSpeechExpressionPlan('抱歉，这确实很难。我理解你的担心。');
 assert.ok(curiousPlan.curiosity > 0.5, 'questions must produce a clear curiosity intent');
 assert.ok(warmPlan.warmth > 0.5 && warmPlan.energy > curiousPlan.energy,
@@ -590,6 +595,9 @@ assert.ok(warmPlan.warmth > 0.5 && warmPlan.energy > curiousPlan.energy,
 assert.ok(seriousPlan.gravity > 0.5, 'warnings must produce a restrained serious plan');
 assert.ok(playfulPlan.humor > 0.5 && playfulPlan.warmth > 0.5,
   'humor and playful speech must visibly engage the expression plan');
+assert.ok(laughterPlan.laughter > 0.8 && sorrowPlan.sadness > 0.8
+  && horrorPlan.fear > 0.8 && angerPlan.anger > 0.8 && surprisePlan.surprise > 0.8,
+  'the spoken text must classify distinct laughter, sorrow, horror, anger, and surprise intents');
 assert.ok(chineseEmpathyPlan.empathy > 0.5,
   'Chinese empathy language must receive the same local expression treatment');
 const voicedTarget = expressionEngine.speechExpressionTarget(
@@ -600,6 +608,36 @@ const voicedTarget = expressionEngine.speechExpressionTarget(
 );
 assert.ok(voicedTarget.brow > 0 && voicedTarget.cheek > 0.35,
   'audible warm speech must engage brows and cheeks');
+const emotionSignal = { relative: 0.82, centroid: 0.52 };
+const laughterTarget = expressionEngine.speechExpressionTarget(
+  laughterPlan, emotionSignal, 0.5, 1.2,
+);
+const sorrowTarget = expressionEngine.speechExpressionTarget(
+  sorrowPlan, emotionSignal, 0.5, 1.2,
+);
+const horrorTarget = expressionEngine.speechExpressionTarget(
+  horrorPlan, emotionSignal, 0.5, 1.2,
+);
+const angerTarget = expressionEngine.speechExpressionTarget(
+  angerPlan, emotionSignal, 0.5, 1.2,
+);
+assert.ok(laughterTarget.cheek > 0.72 && laughterTarget.eyeSquint > 0.14
+  && laughterTarget.eyeSquint < 0.3,
+  'laughter must produce a visible cheek lift and a light, non-sleepy smiling eye squint');
+assert.ok(sorrowTarget.brow > 0.62 && sorrowTarget.gazeY > 0.28
+  && sorrowTarget.headPitch > 0.28 && sorrowTarget.cheek < 0.3,
+  'sorrow must raise the brow, lower gaze and head, and suppress smiling cheeks');
+assert.ok(horrorTarget.brow > 0.78 && horrorTarget.eyeSquint < 0.08
+  && horrorTarget.headPitch < -0.24 && horrorTarget.cheek < 0.3,
+  'horror must hold the eyes open, lift the brow, and recoil the head');
+assert.ok(angerTarget.brow < -0.62 && angerTarget.squeeze > 1.7
+  && angerTarget.eyeSquint > 0.12,
+  'anger must lower and squeeze the brow while narrowing the eyes');
+const emotionVectors = [laughterTarget, sorrowTarget, horrorTarget, angerTarget]
+  .map(target => ['brow', 'squeeze', 'cheek', 'eyeSquint', 'gazeY', 'headPitch']
+    .map(key => target[key].toFixed(3)).join(':'));
+assert.equal(new Set(emotionVectors).size, emotionVectors.length,
+  'every primary emotion must resolve to a distinct rendered channel vector');
 assert.ok(Math.abs(voicedTarget.headYaw) <= 1 && Math.abs(voicedTarget.headRoll) <= 1,
   'all conversational pose channels must remain bounded');
 assert.match(source, /playSpeech\(result\.audio, result\.track \|\| \[\], text\)/,
@@ -619,7 +657,7 @@ const speechExpressionAt = new Function(
     + 'const speechTime = () => 0; '
     + `${speechExpressionSource[1]}; return speechExpressionAt;`,
 )();
-const zeroExpression = { brow: 0, underEye: 0, squeeze: 0, cheek: 0, asymmetry: 0,
+const zeroExpression = { brow: 0, underEye: 0, squeeze: 0, cheek: 0, eyeSquint: 0, asymmetry: 0,
   gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 };
 const upperFaceState = {
   mode: 'idle', started: 0, duration: 1, nextAt: 0,
@@ -653,6 +691,8 @@ assert.match(source, /const LIVE_RIG_KEY = 'openclam-live-rig';/,
 assert.match(source, /for \(const key of \['brows', 'eyebags'\]\)/);
 assert.match(source, /const eyebagGain = rigExpressionGain\('eyebags', 35, 35\);/);
 assert.match(source, /const upperFaceSpeaking = speaking && !reducedMotion\.matches;/);
+assert.match(source, /const semanticEyeOpen = upperFaceSpeaking[\s\S]{0,280}const eyelidClosure = Math\.max\(blink \* \(1 - semanticEyeOpen \* \.92\),/,
+  'fear and surprise must hold the eyes open while other semantic squint uses the eyelid atlas');
 assert.match(source, /const drawStripState2D = /,
   'brow and forehead axes must interpolate instead of snapping');
 assert.match(source, /if \(manifest\.forehead\) \{/,

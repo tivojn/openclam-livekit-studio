@@ -179,6 +179,16 @@ def brow_state(key, lm, side, dy, s, box, alpha, sq=0.0):
         u = 1.0 - u
     if dy >= 0:
         h = 0.55 + 0.45 * np.sin(np.pi * np.clip(u, 0, 1) ** 0.85)   # arch-weighted lift
+        # A raised, knitted brow is the signature of grief: the medial end
+        # rises while the tail stays comparatively quiet.  The old atlas used
+        # the same smooth arch for joy, sorrow and surprise, so all three read
+        # as a generic attentive face even when the runtime selected different
+        # values.  Reuse the positive squeeze axis as a local, image-free
+        # sadness shape; a spread brow (fear/surprise) keeps the open arch.
+        grief = np.clip(sq / max(BROW_SQ[-1], 1e-6), 0.0, 1.0) \
+            * np.clip(dy / max(BROW_DY[-1], 1e-6), 0.0, 1.0)
+        medial_lift = 1.0 - 0.58 * u
+        h = h * (1.0 - grief) + medial_lift * grief
         sway = np.zeros_like(u)
     else:
         h = 1.0 - 0.5 * u                                            # corrugator: medial
@@ -203,7 +213,12 @@ def brow_state(key, lm, side, dy, s, box, alpha, sq=0.0):
     # The squeeze axis: the whole brow slides toward (+) or away from (-)
     # the nose, strongest at the medial end - a knit or an open, fully
     # independent of the raise.
-    medial_pull = (sq if medial_right else -sq) * (1.0 - 0.45 * u)[None, :]
+    # The original 2.4px squeeze was a micro-expression target.  At Chat/Talk
+    # bust scale it became sub-pixel and could not distinguish sorrow/anger
+    # from neutral.  Double the baked tissue travel while preserving the
+    # stable public control grid and interpolation semantics.
+    medial_pull = (sq if medial_right else -sq) * 2.0 \
+        * (1.0 - 0.45 * u)[None, :]
     warped = cv2.remap(key,
                        (gx - (sway[None, :] * v[:, None]) * abs(dy)
                         - medial_pull * v[:, None]).astype(np.float32),

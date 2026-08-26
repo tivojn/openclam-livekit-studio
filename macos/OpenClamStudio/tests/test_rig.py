@@ -378,6 +378,9 @@ class RigProfileTests(unittest.TestCase):
         self.assertIn("def forehead_state", source)
         self.assertIn('forehead=dict(dys=bdys, sqs=list(BROW_SQ))', source)
         self.assertIn("away_from_nose", source)
+        self.assertIn("grief = np.clip", source)
+        self.assertIn("medial_lift =", source)
+        self.assertIn("medial_pull = (sq if medial_right else -sq) * 2.0", source)
         renderer = open(os.path.join(ROOT, "web", "index.html"),
                         encoding="utf-8").read()
         self.assertIn("const drawStripState2D =", renderer)
