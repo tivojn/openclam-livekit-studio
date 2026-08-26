@@ -14,9 +14,11 @@ before the user supplies a key.
 One thing genuinely changes with the provider: LIP-SYNC ACCURACY. Kokoro is a
 StyleTTS2 derivative that predicts a per-phoneme frame count and upsamples by
 it, so its own duration array IS a forced alignment - exact, free, no second
-model. Cloud voices return audio and nothing else. See align.py for what is
-done about that; the honest summary is that local Kokoro is sample-accurate and
-everything else is estimated. The UI says so.
+model. Some cloud voices return audio only; xAI and ElevenLabs return
+character timestamps, while Edge may return word or sentence boundaries. See
+align.py for the explicit degradation ladder. Kokoro remains sample-accurate,
+timestamped providers are tightly timed, and audio-only providers are estimated.
+The UI reports the active tier instead of claiming that all vendors are equal.
 """
 import os, io, json, base64, tempfile, subprocess, threading, asyncio, re, time, hashlib, math
 import numpy as np
@@ -204,6 +206,25 @@ def _xai_oauth_manager():
     except ModuleNotFoundError:
         from server import xai_oauth
     return xai_oauth
+
+
+def _openai_account_manager():
+    """Load the Codex-owned ChatGPT account boundary lazily.
+
+    Provider code never reads a ChatGPT token.  The installed Codex client
+    owns login and refresh and is invoked only when the global OpenAI account
+    mode is explicitly set to ChatGPT.
+    """
+    try:
+        import openai_account
+    except ModuleNotFoundError:
+        from server import openai_account
+    return openai_account
+
+
+def _openai_uses_chatgpt():
+    manager = _openai_account_manager()
+    return manager.auth_mode() == manager.CHATGPT_MODE
 
 
 def _validate_xai_base_override(config):
@@ -723,7 +744,9 @@ PROVIDERS = {
                  "Local and Ollama Cloud models. Refresh lists models already added "
                  "to this Ollama installation, not the full online catalog. Enter "
                  "another tag directly; cloud tags require Ollama sign-in.")),
-        dict(id="openai", label="OpenAI", key=True, base="https://api.openai.com/v1"),
+        dict(id="openai", label="OpenAI", key=True, base="https://api.openai.com/v1",
+             auth_scope="global", auth_modes=["api_key", "chatgpt"],
+             note="Use one shared OpenAI mode: a Platform API key or the ChatGPT account already signed in through Codex."),
         dict(id="anthropic", label="Anthropic", key=True, base="https://api.anthropic.com/v1"),
         dict(id="gemini", label="Google Gemini", key=True,
              base="https://generativelanguage.googleapis.com/v1beta"),
@@ -820,6 +843,7 @@ PROVIDERS = {
     "image": [
         dict(id="openai", label="OpenAI Images", key=True,
              base="https://api.openai.com/v1",
+             auth_scope="global", auth_modes=["api_key", "chatgpt"],
              capabilities={"generation": True, "editing": True},
              auth={
                  "api_key": {
@@ -827,13 +851,13 @@ PROVIDERS = {
                      "label": "API key",
                  },
                  "oauth": {
-                     "supported": False,
-                     "status": "unsupported_by_public_inference_api",
-                     "label": "OAuth sign-in",
+                     "supported": True,
+                     "status": "supported_via_codex_account_boundary",
+                     "label": "ChatGPT sign-in via Codex",
                      "reason": (
-                         "OpenAI's public Images API does not offer an end-user "
-                         "OAuth sign-in flow. Enterprise workload identity is "
-                         "server-side and is not a personal sign-in."
+                         "OpenClam delegates the job to the locally authenticated "
+                         "Codex client. Codex owns the ChatGPT session; OpenClam "
+                         "never reads, copies, or stores its OAuth token."
                      ),
                  },
              },
@@ -856,8 +880,9 @@ PROVIDERS = {
                  "default_quality": "auto",
              },
              note=(
-                 "GPT Image 2 generates and edits images. Reference-image edits "
-                 "always use high input fidelity."
+                 "GPT Image generates and edits images. In ChatGPT mode the "
+                 "installed Codex image tool chooses the available GPT Image "
+                 "contract; API-key mode uses the selected public API model."
              )),
         dict(id="gemini", label="Google Gemini Image", key=True,
              base="https://generativelanguage.googleapis.com/v1beta",
@@ -1083,6 +1108,8 @@ def _direct_route(kind, config):
     if kind == "tts" and config.get("voice"):
         details.append(str(config["voice"]))
     label = provider_spec.get("label") or provider.replace("_", " ").title()
+    if kind == "llm" and provider == "openai" and _openai_uses_chatgpt():
+        label = "OpenAI · ChatGPT via Codex"
     return {
         "provider": provider,
         "model": config.get("model") or "",
@@ -1167,6 +1194,16 @@ async def list_models(kind, c):
     provider_spec = spec(kind, p) or {}
     if not provider_spec:
         raise RuntimeError(f"Choose a direct {kind} provider in OpenClam Settings")
+    if p == "openai" and kind in {"llm", "image"} \
+            and _openai_uses_chatgpt():
+        manager = _openai_account_manager()
+        manager.require_chatgpt()
+        if kind == "llm":
+            # The Codex account chooses the exact serving model. This one
+            # explicit choice avoids promising the public /models catalogue.
+            return ["chatgpt-codex"]
+        if kind == "image":
+            return ["gpt-image-2"]
     if kind == "image":
         # Authentication, exact strict-model selection, and the immutable
         # provider origin are all checked before an HTTP client exists.
@@ -1174,7 +1211,9 @@ async def list_models(kind, c):
     else:
         base = _base(kind, c)
     key = c.get("api_key") or ""
-    if provider_spec.get("key") and p != "xai" and not key:
+    if provider_spec.get("key") and p not in {"xai", "openai"} and not key:
+        raise RuntimeError(f"{provider_spec.get('label', p)} API key is required")
+    if provider_spec.get("key") and p == "openai" and not key:
         raise RuntimeError(f"{provider_spec.get('label', p)} API key is required")
     try:
         if p == "xai":
@@ -1779,6 +1818,12 @@ async def _chat_direct_stream(messages, c, system=""):
         async for snapshot in _xai_chat_direct_stream(messages, c, system):
             yield snapshot
         return
+    if p == "openai" and _openai_uses_chatgpt():
+        text = await _openai_account_manager().chat_async(
+            messages, system, max_tokens=int(c.get("max_tokens", 160)))
+        if text:
+            yield text
+        return
     base, key = _base("llm", c), c.get("api_key") or ""
     model = (c.get("model") or "").strip() or FALLBACK_MODEL.get(p, "")
     temp = float(c.get("temperature", 0.8))
@@ -1877,6 +1922,9 @@ async def _chat_direct(messages, c, system=""):
     p = c.get("provider")
     if p == "xai":
         return await _xai_chat_direct(messages, c, system)
+    if p == "openai" and _openai_uses_chatgpt():
+        return await _openai_account_manager().chat_async(
+            messages, system, max_tokens=int(c.get("max_tokens", 160)))
     base, key = _base("llm", c), c.get("api_key") or ""
     model = (c.get("model") or "").strip() or FALLBACK_MODEL.get(p, "")
     temp = float(c.get("temperature", 0.8))

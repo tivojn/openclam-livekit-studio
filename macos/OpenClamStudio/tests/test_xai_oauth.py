@@ -92,6 +92,40 @@ class XaiOAuthTests(unittest.IsolatedAsyncioTestCase):
             resolved.headers(XO.CLI_PROXY_TARGET)
         self.assertTrue(selected["connected"])
 
+    async def test_unsigned_dev_oauth_is_session_only_and_never_touches_vault(self):
+        mode_file = os.path.join(self.temporary.name, "xai-account.json")
+        credential = XO._OAuthCredential(
+            access_token=ACCESS,
+            refresh_token=REFRESH,
+            expires_at=self.now + 3600,
+            token_type="Bearer",
+            scope=" ".join(XO.SCOPES),
+            client_id=XO.client_id(),
+        )
+        with mock.patch.dict(os.environ, {"OPENCLAM_PACKAGED": "0"}), \
+             mock.patch.object(XO, "DEV_MODE_FILE", mode_file), \
+             mock.patch.object(XO, "_vault_get",
+                               side_effect=XO.XaiOAuthStorageError()), \
+             mock.patch.object(XO, "_vault_put",
+                               side_effect=AssertionError("vault write")), \
+             mock.patch.object(XO, "_vault_clear",
+                               side_effect=AssertionError("vault clear")):
+            selected = XO.set_auth_mode(XO.OAUTH2_MODE)
+            self.assertFalse(selected["connected"])
+            XO._store_credential(credential)
+            current = XO.status()
+            self.assertTrue(current["connected"])
+            resolved = await XO.resolve_auth()
+            self.assertEqual(resolved.mode, XO.OAUTH2_MODE)
+            XO._clear_credential()
+            self.assertFalse(XO.status()["connected"])
+
+        stored = Path(mode_file).read_text(encoding="utf-8")
+        self.assertEqual(json.loads(stored), {"auth_mode": "oauth2"})
+        self.assertNotIn(ACCESS, stored)
+        self.assertNotIn(REFRESH, stored)
+        self.assertEqual(os.stat(mode_file).st_mode & 0o777, 0o600)
+
     async def test_cli_proxy_headers_pin_the_released_grok_build_contract(self):
         self.store_oauth(expires_in=3600)
         resolved = await XO.resolve_auth()

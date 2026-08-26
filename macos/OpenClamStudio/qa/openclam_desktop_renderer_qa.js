@@ -558,7 +558,7 @@ assert.doesNotMatch(askSelectedSource[1], /submitTurn|submitComposer|postJSON|di
 for (const capability of [
   'assets/manifest.json',
   'manifest.body.face_transform',
-  "['eyes', 'gaze', 'brow', 'cheek', 'eyebag']",
+  "['eyes', 'gaze', 'brow', 'forehead', 'cheek', 'eyebag']",
   "['walk', 'idle', 'move']",
   'manifest.eyes.states',
   'manifest.gaze.dxs',
@@ -582,11 +582,14 @@ const expressionEngine = new Function(
 const curiousPlan = expressionEngine.makeSpeechExpressionPlan('Would you like to try this?');
 const warmPlan = expressionEngine.makeSpeechExpressionPlan('Thank you! I am very glad this worked.');
 const seriousPlan = expressionEngine.makeSpeechExpressionPlan('Important warning: you must be careful.');
+const playfulPlan = expressionEngine.makeSpeechExpressionPlan('Haha, I was joking — that was funny!');
 const chineseEmpathyPlan = expressionEngine.makeSpeechExpressionPlan('抱歉，这确实很难。我理解你的担心。');
 assert.ok(curiousPlan.curiosity > 0.5, 'questions must produce a clear curiosity intent');
 assert.ok(warmPlan.warmth > 0.5 && warmPlan.energy > curiousPlan.energy,
   'warm emphatic language must brighten the expression plan');
 assert.ok(seriousPlan.gravity > 0.5, 'warnings must produce a restrained serious plan');
+assert.ok(playfulPlan.humor > 0.5 && playfulPlan.warmth > 0.5,
+  'humor and playful speech must visibly engage the expression plan');
 assert.ok(chineseEmpathyPlan.empathy > 0.5,
   'Chinese empathy language must receive the same local expression treatment');
 const voicedTarget = expressionEngine.speechExpressionTarget(
@@ -650,6 +653,12 @@ assert.match(source, /const LIVE_RIG_KEY = 'openclam-live-rig';/,
 assert.match(source, /for \(const key of \['brows', 'eyebags'\]\)/);
 assert.match(source, /const eyebagGain = rigExpressionGain\('eyebags', 35, 35\);/);
 assert.match(source, /const upperFaceSpeaking = speaking && !reducedMotion\.matches;/);
+assert.match(source, /const drawStripState2D = /,
+  'brow and forehead axes must interpolate instead of snapping');
+assert.match(source, /if \(manifest\.forehead\) \{/,
+  'the runtime must compose a real forehead\/glabella layer');
+assert.ok(source.indexOf('if (manifest.gaze) {') < source.indexOf('if (manifest.eyebag) {'),
+  'under-eye tissue must be composed after gaze so it remains visible');
 
 // Reduced Motion covers the decorative blink path as well as speech targets:
 // otherwise the blink-fed under-eye strip continues animating even though the

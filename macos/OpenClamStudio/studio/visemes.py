@@ -189,7 +189,8 @@ SHAPES = {
  "ah": ("a as in father",
     "Open vowel AH: the jaw eases down into a soft open oval, lips relaxed and neither "
     "spread nor pursed, the edge of the upper front teeth just visible at the top of the "
-    "opening and the tongue lying flat and low inside.",
+    "opening. The tongue is completely hidden below and behind the lower front teeth: "
+    "NO tongue surface, tip, or side may be visible anywhere in the opening.",
     "THIS IS THE WIDEST SHAPE IN THE WHOLE SET AND IT IS STILL SMALL. The lips part by "
     "roughly the THICKNESS OF HER LOWER LIP and NO MORE - the relaxed 'ah' of ordinary "
     "conversation, not a yawn, not a shout, not an open-wide-for-the-doctor mouth. The "
@@ -197,7 +198,8 @@ SHAPES = {
 
  "eh": ("e as in bed",
     "Mid vowel EH: jaw slightly open, lips very slightly spread horizontally, the edge "
-    "of the upper front teeth visible, tongue low and relaxed. Not as open as AH, not as "
+    "of the upper front teeth visible, with the tongue fully hidden behind the lower "
+    "teeth. Not as open as AH, not as "
     "spread as EE.",
     "The lips part by about HALF her lower lip's thickness - roughly half the AH "
     "opening. The spreading is barely perceptible."),

@@ -23,6 +23,11 @@ import providers as P
 class DirectProviderDefaultsTests(unittest.TestCase):
     def setUp(self):
         P._routes.clear()
+        # Provider contracts must not inherit the developer machine's current
+        # OpenAI account choice.  ChatGPT delegation has its own explicit test.
+        self.openai_mode = patch.object(P, "_openai_uses_chatgpt", return_value=False)
+        self.openai_mode.start()
+        self.addCleanup(self.openai_mode.stop)
 
     def test_fresh_install_defaults_to_local_chat_speech_and_transcription(self):
         self.assertEqual(
@@ -48,6 +53,29 @@ class DirectProviderDefaultsTests(unittest.TestCase):
     def test_keyed_provider_refuses_model_listing_before_a_key_exists(self):
         with self.assertRaisesRegex(RuntimeError, "API key is required"):
             asyncio.run(P.list_models("llm", {"provider": "openai", "api_key": ""}))
+
+    def test_openai_chatgpt_mode_delegates_without_a_lane_key(self):
+        class Manager:
+            CHATGPT_MODE = "chatgpt"
+
+            @staticmethod
+            def auth_mode():
+                return "chatgpt"
+
+            @staticmethod
+            async def chat_async(messages, system, max_tokens):
+                self.assertEqual(messages[-1]["content"], "Hello")
+                self.assertEqual(system, "Be concise")
+                self.assertEqual(max_tokens, 99)
+                return "Signed-in answer"
+
+        with (
+                patch.object(P, "_openai_uses_chatgpt", return_value=True),
+                patch.object(P, "_openai_account_manager", return_value=Manager)):
+            answer = asyncio.run(P._chat_direct(
+                [{"role": "user", "content": "Hello"}],
+                {"provider": "openai", "max_tokens": 99}, "Be concise"))
+        self.assertEqual(answer, "Signed-in answer")
 
     def test_unknown_provider_fails_before_any_network_request(self):
         with self.assertRaisesRegex(RuntimeError, "Choose a direct language model"):
@@ -174,6 +202,11 @@ class DirectProviderDefaultsTests(unittest.TestCase):
 
 
 class ImageConfigSecurityTests(unittest.TestCase):
+    def setUp(self):
+        self.openai_mode = patch.object(P, "_openai_uses_chatgpt", return_value=False)
+        self.openai_mode.start()
+        self.addCleanup(self.openai_mode.stop)
+
     def test_legacy_oauth_fields_are_removed_and_the_lane_recovers(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = os.path.join(directory, "config.json")
@@ -355,6 +388,11 @@ class ImageConfigSecurityTests(unittest.TestCase):
 
 
 class ModelCatalogueTests(unittest.TestCase):
+    def setUp(self):
+        self.openai_mode = patch.object(P, "_openai_uses_chatgpt", return_value=False)
+        self.openai_mode.start()
+        self.addCleanup(self.openai_mode.stop)
+
     def test_image_catalog_marks_current_models_and_auth_capabilities(self):
         openai = P.spec("image", "openai")
         xai = P.spec("image", "xai")
@@ -397,11 +435,13 @@ class ModelCatalogueTests(unittest.TestCase):
                     model["generation"] and model["editing"]
                     for model in provider["models"]
                 ))
-        self.assertFalse(openai["auth"]["oauth"]["supported"])
+        self.assertTrue(openai["auth"]["oauth"]["supported"])
         self.assertEqual(
-            "unsupported_by_public_inference_api",
+            "supported_via_codex_account_boundary",
             openai["auth"]["oauth"]["status"],
         )
+        self.assertEqual("global", openai["auth_scope"])
+        self.assertEqual(["api_key", "chatgpt"], openai["auth_modes"])
         self.assertTrue(xai["auth"]["oauth"]["supported"])
         self.assertEqual("supported_via_grok_build_compatibility",
                          xai["auth"]["oauth"]["status"])

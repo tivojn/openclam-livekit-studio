@@ -54,6 +54,16 @@ _TEST_VAULT_FILE = None
 _TEST_NATIVE_KEYCHAIN = None
 
 
+def development_session_only() -> bool:
+    """Whether this backend belongs to the unsigned Electron source host."""
+    return os.environ.get("OPENCLAM_PACKAGED") == "0"
+
+
+def application_data_root(default: str) -> str:
+    """Resolve the non-secret app data directory for sibling auth modules."""
+    return os.path.abspath(os.environ.get("OPENCLAM_DATA_DIR", default))
+
+
 class _MacKeychain:
     """Small ownership-safe binding to Security.framework's SecItem API."""
 
@@ -447,10 +457,25 @@ def materialise(cfg):
             continue
         for field in fields:
             if block.get(field) == MARKER:
-                block[field] = get(f"{block_name}.{field}")
+                try:
+                    block[field] = get(f"{block_name}.{field}")
+                except RuntimeError:
+                    if not development_session_only():
+                        raise
+                    # An unsigned source run cannot always read items created
+                    # by the signed release. Keep development Settings usable
+                    # without copying, prompting for, deleting, or weakening
+                    # that protected item. The lane simply reports unready in
+                    # this source-run process.
+                    block[field] = ""
     keys = cfg.get("keys")
     if isinstance(keys, dict):
         for name, value in keys.items():
             if value == MARKER:
-                keys[name] = get(f"keys.{name}")
+                try:
+                    keys[name] = get(f"keys.{name}")
+                except RuntimeError:
+                    if not development_session_only():
+                        raise
+                    keys[name] = ""
     return cfg

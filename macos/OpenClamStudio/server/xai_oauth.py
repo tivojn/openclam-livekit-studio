@@ -19,8 +19,10 @@ import concurrent.futures
 import datetime
 import json
 import math
+import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -29,7 +31,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
-import credentials
+try:
+    import credentials
+except ModuleNotFoundError:  # package import in tests and embedded runtimes
+    from . import credentials
 
 
 AUTH_ORIGIN = "https://auth.x.ai"
@@ -88,6 +93,9 @@ XAI_CLI_PROXY_BASE = "https://cli-chat-proxy.grok.com/v1"
 OAUTH_CREDENTIAL_ACCOUNT = "xai.oauth2"
 AUTH_MODE_ACCOUNT = "xai.auth_mode"
 API_KEY_ACCOUNT = "keys.xai"
+DATA_ROOT = credentials.application_data_root(
+    os.path.dirname(os.path.dirname(__file__)))
+DEV_MODE_FILE = os.path.join(DATA_ROOT, "xai-account.json")
 
 EARLY_REFRESH_SECONDS = 300
 MAX_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60
@@ -223,6 +231,61 @@ _device_operation_generation = 0
 _TEST_TRANSPORT: httpx.AsyncBaseTransport | None = None
 _TEST_CLOCK = None
 _TEST_CLIENT_ID: str | None = None
+_DEV_SESSION_CREDENTIAL: _OAuthCredential | None = None
+
+
+def _dev_session_only() -> bool:
+    """Unsigned development keeps OAuth solely in this backend process.
+
+    A signed release has a stable Keychain identity and persists its refresh
+    record there. The npm/Electron development host does not: attempting to
+    reuse an item created by another signature returns errSecAuthFailed. Do
+    not weaken or rewrite that item's ACL and never spill OAuth JSON onto
+    disk. Development consent therefore lasts only until the app restarts.
+    """
+    return credentials.development_session_only()
+
+
+def _dev_mode_read() -> str:
+    try:
+        with open(DEV_MODE_FILE, encoding="utf-8") as handle:
+            value = json.load(handle).get("auth_mode")
+    except (OSError, ValueError, TypeError, AttributeError):
+        value = ""
+    return value if value in SELECTABLE_MODES else API_KEY_MODE
+
+
+def _dev_mode_write(mode: str) -> None:
+    directory = os.path.dirname(DEV_MODE_FILE)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".xai-account-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump({"auth_mode": mode}, handle)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, DEV_MODE_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _mode_put(mode: str) -> None:
+    if _dev_session_only():
+        try:
+            _dev_mode_write(mode)
+        except OSError:
+            raise XaiOAuthStorageError() from None
+    else:
+        _vault_put(AUTH_MODE_ACCOUNT, mode)
+
+
+def _clear_credential() -> None:
+    global _DEV_SESSION_CREDENTIAL
+    if _dev_session_only():
+        _DEV_SESSION_CREDENTIAL = None
+    else:
+        _vault_clear(OAUTH_CREDENTIAL_ACCOUNT)
 
 
 def _now() -> float:
@@ -318,6 +381,8 @@ def _serialize_credential(credential: _OAuthCredential) -> str:
 
 
 def _load_credential() -> _OAuthCredential | None:
+    if _dev_session_only():
+        return _DEV_SESSION_CREDENTIAL
     raw = _vault_get(OAUTH_CREDENTIAL_ACCOUNT)
     if not raw:
         return None
@@ -348,12 +413,18 @@ def _load_credential() -> _OAuthCredential | None:
 
 
 def _store_credential(credential: _OAuthCredential) -> None:
+    global _DEV_SESSION_CREDENTIAL
+    if _dev_session_only():
+        _DEV_SESSION_CREDENTIAL = credential
+        return
     # One JSON value is one atomic Keychain item: access and rotating refresh
     # credentials cannot drift into mismatched records.
     _vault_put(OAUTH_CREDENTIAL_ACCOUNT, _serialize_credential(credential))
 
 
 def auth_mode() -> str:
+    if _dev_session_only():
+        return _dev_mode_read()
     value = _vault_get(AUTH_MODE_ACCOUNT)
     if not value:
         return API_KEY_MODE
@@ -377,7 +448,7 @@ def set_auth_mode(mode: str) -> dict:
         _device_operation_generation += 1
         with _pending_lock:
             _pending_flows.clear()
-        _vault_put(AUTH_MODE_ACCOUNT, mode)
+        _mode_put(mode)
     return status()
 
 
@@ -394,7 +465,15 @@ def _iso_time(timestamp: float | None) -> str | None:
 
 def status() -> dict:
     mode = auth_mode()
-    api_key = _vault_get(API_KEY_ACCOUNT)
+    try:
+        api_key = _vault_get(API_KEY_ACCOUNT)
+    except XaiOAuthStorageError:
+        # An unsigned development session may not inspect a Keychain item
+        # owned by the signed release. That says nothing about the OAuth
+        # session held in this process and must not block its status panel.
+        if not _dev_session_only():
+            raise
+        api_key = ""
     has_api_key = bool(api_key)
     try:
         api_key_usable = bool(_valid_token(api_key, required=True))
@@ -739,7 +818,7 @@ async def poll_device_login(flow_id: str) -> dict:
             # another poll cannot retire the flow between the final check and
             # the credential commit.
             _store_credential(credential)
-            _vault_put(AUTH_MODE_ACCOUNT, OAUTH2_MODE)
+            _mode_put(OAUTH2_MODE)
             _pending_flows.pop(flow_id, None)
     connected = status()
     connected["state"] = "connected"
@@ -780,7 +859,7 @@ async def _refresh(credential: _OAuthCredential) -> str:
                 and current.access_token == credential.access_token
                 and current.refresh_token == credential.refresh_token
             ):
-                _vault_clear(OAUTH_CREDENTIAL_ACCOUNT)
+                _clear_credential()
         raise XaiOAuthReconnectRequired()
     if error or not (200 <= status_code < 300):
         raise XaiOAuthTransientError()
@@ -897,11 +976,11 @@ async def logout() -> dict:
         _device_operation_generation += 1
         with _pending_lock:
             _pending_flows.clear()
-        _vault_clear(OAUTH_CREDENTIAL_ACCOUNT)
+        _clear_credential()
         # Logout changes credential state, never the user's explicit routing
         # choice. In particular an OAuth logout must not silently activate an
         # existing pay-as-you-go API key.
-        _vault_put(AUTH_MODE_ACCOUNT, selected_mode)
+        _mode_put(selected_mode)
 
     revoked = False
     token = ""
@@ -950,6 +1029,7 @@ def cancel_device_login() -> dict:
 def _reset_for_tests() -> None:
     """Clear process-only coordination state; never touches the Keychain."""
     global _credential_generation, _device_operation_generation, _refresh_flight
+    global _DEV_SESSION_CREDENTIAL
     with _credential_state_lock:
         _credential_generation = 0
         _device_operation_generation = 0
@@ -957,3 +1037,4 @@ def _reset_for_tests() -> None:
             _pending_flows.clear()
     with _refresh_lock:
         _refresh_flight = None
+    _DEV_SESSION_CREDENTIAL = None

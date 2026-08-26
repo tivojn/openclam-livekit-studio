@@ -327,6 +327,66 @@ class RigProfileTests(unittest.TestCase):
             "oo width 0.96x neutral is outside 0.70-0.94 (target 0.82)",
         )
 
+    def test_hard_articulation_rejection_carries_safe_slider_repair(self):
+        mild = {
+            "name": "TH", "ratio": 0.109, "max_ratio": 0.09,
+            "width_ratio": 0.97, "want_width": 1.0,
+        }
+        broken = dict(mild, ratio=0.13)
+        self.assertEqual(build._hard_articulation_rows([mild]), [])
+        self.assertEqual(build._hard_articulation_rows([broken]), [broken])
+
+        repair = build.articulation_repair(rig.PRESETS["natural"], [broken])
+        self.assertEqual(repair["kind"], "articulation")
+        self.assertEqual(repair["rejected_items"], ["TH"])
+        self.assertEqual(repair["profile"]["preset"], "custom")
+        self.assertEqual(repair["profile"]["jaw"], 63.0)
+        self.assertEqual(repair["profile"]["lips"], 90.0)
+        self.assertEqual(
+            [change["control"] for change in repair["changes"]],
+            ["jaw", "lips"],
+        )
+        for change in repair["changes"]:
+            spec = rig.CONTROLS[change["control"]]
+            self.assertGreaterEqual(change["after"], spec["safe_minimum"])
+            self.assertLessEqual(change["after"], spec["safe_maximum"])
+
+        error = build.CalibrationRejected("unsafe", repair)
+        self.assertIs(error.repair, repair)
+
+    def test_th_tongue_balance_rejects_lateral_not_centred_tissue(self):
+        landmarks = np.zeros((478, 2), np.float32)
+        landmarks[measure.C_L] = (30, 50)
+        landmarks[measure.C_R] = (70, 50)
+        for index, angle in zip(measure.INNER_LIP,
+                                np.linspace(0, 2 * np.pi, len(measure.INNER_LIP),
+                                            endpoint=False)):
+            landmarks[index] = (50 + np.cos(angle) * 20,
+                                50 + np.sin(angle) * 7)
+        centred = np.full((100, 100, 3), 28, np.uint8)
+        lateral = centred.copy()
+        cv2.circle(centred, (50, 50), 4, (80, 100, 180), -1)
+        cv2.circle(lateral, (64, 50), 4, (80, 100, 180), -1)
+        self.assertTrue(measure.tongue_balance(centred, landmarks)["visible"])
+        self.assertLess(abs(measure.tongue_balance(centred, landmarks)["offset"]), .03)
+        self.assertGreater(measure.tongue_balance(lateral, landmarks)["offset"], .25)
+
+    def test_expression_layers_include_forehead_and_compact_cheek_masks(self):
+        source = open(os.path.join(ROOT, "studio", "expression.py"),
+                      encoding="utf-8").read()
+        self.assertIn("def _forehead_weight", source)
+        self.assertIn("def forehead_state", source)
+        self.assertIn('forehead=dict(dys=bdys, sqs=list(BROW_SQ))', source)
+        self.assertIn("away_from_nose", source)
+        renderer = open(os.path.join(ROOT, "web", "index.html"),
+                        encoding="utf-8").read()
+        self.assertIn("const drawStripState2D =", renderer)
+        self.assertIn("'brow', 'forehead', 'cheek'", renderer)
+        self.assertLess(renderer.index("if (manifest.gaze) {",
+                        renderer.index("const composeHead")),
+                        renderer.index("if (manifest.eyebag) {",
+                        renderer.index("const composeHead")))
+
     def test_aperture_tolerance_only_covers_landmark_jitter(self):
         self.assertTrue(measure._aperture_within_limit(0.091, 0.09))
         self.assertFalse(measure._aperture_within_limit(0.093, 0.09))
@@ -396,8 +456,10 @@ class RigProfileTests(unittest.TestCase):
             renderer,
         )
         self.assertIn("microBrow(now, reducedMotion.matches)", renderer)
-        self.assertIn("const squeeze = manifest.brow.sqs || [0]", renderer)
-        self.assertIn("drawStripState(faceContext, layers.brow[key]", renderer)
+        self.assertIn("const squeezeValues = manifest.brow && manifest.brow.sqs || [0]", renderer)
+        self.assertIn("drawStripState2D(faceContext, layers.brow[key]", renderer)
+        self.assertIn("drawStripState2D(faceContext, layers.forehead[key]", renderer)
+        self.assertIn("const foreheadGain = rigExpressionGain('forehead'", renderer)
         from studio import expression as expr
         self.assertEqual(expr.BROW_SQ, [-1.8, 0.0, 2.4])
         self.assertIn("brows", rig.REGION_GROUPS)
@@ -410,6 +472,7 @@ class RigProfileTests(unittest.TestCase):
         export_source = open(os.path.join(ROOT, "studio", "export.py"),
                              encoding="utf-8").read()
         self.assertIn('sqs=expr["brow"].get("sqs"', export_source)
+        self.assertIn('expr["forehead"], "forehead"', export_source)
         app_source = open(os.path.join(ROOT, "server", "app.py"),
                           encoding="utf-8").read()
         self.assertIn('forehead: float = _rig_control_field("forehead")', app_source)
@@ -468,7 +531,7 @@ class RigProfileTests(unittest.TestCase):
         self.assertIn("missing_dental_rows=missing", source)
         self.assertIn("row not visible (lock skipped)", source)
 
-    def test_calibration_gate_warns_on_mild_overshoot_and_stops_broken(self):
+    def test_calibration_gate_warns_on_mild_overshoot_and_repairs_broken(self):
         # The live rejection 2026-08-01: TH at 0.109 against a 0.09 target
         # vetoed the whole rebuild, though the sliders advertise full,
         # deliberately experimental control. Mild overshoot (<=1.35x the
@@ -477,13 +540,17 @@ class RigProfileTests(unittest.TestCase):
         source = open(
             os.path.join(ROOT, "studio", "build.py"), encoding="utf-8").read()
         marker = source.index("def recompose_avatar")
-        window = source[marker:marker + 4200]
+        window = source[marker:marker + 5600]
         self.assertIn("- published with this ", window)
-        # The final contract (2026-08-01, after seven live rejections): a
-        # REBUILD of retained renders never blocks on articulation or
-        # profile-shaped QA, green band or red - everything publishes as
-        # ADVISORY lines naming the suggested green bands.
-        self.assertIn("never blocks on articulation", window)
+        # A near miss remains advisory, while a clearly broken bank keeps the
+        # current published avatar, first applies calculated safe sliders
+        # locally, and returns another editable plan only if that retry fails.
+        self.assertIn("hard_overs = _hard_articulation_rows(over)", window)
+        self.assertIn("raise CalibrationRejected", window)
+        self.assertIn("Applying the safe slider retry locally", window)
+        self.assertIn('profile = repair["profile"]', window)
+        self.assertIn("automatic local articulation repair passed", window)
+        self.assertIn("_stage_safe_consonants", window)
         self.assertIn("soft_overs = list(over)", window)
         self.assertIn("_band_suggestion(experimental)", window)
         self.assertEqual(
@@ -497,6 +564,23 @@ class RigProfileTests(unittest.TestCase):
         # TH at 0.109 vs 0.09: soft (0.109 <= 0.09*1.35+eps). At 0.13: hard.
         self.assertLessEqual(0.109, 0.09 * 1.35 + measure.APERTURE_DETECTOR_EPSILON)
         self.assertGreater(0.13, 0.09 * 1.35 + measure.APERTURE_DETECTOR_EPSILON)
+
+    def test_recompose_restores_recorded_repairs_only_in_private_raw_copy(self):
+        with tempfile.TemporaryDirectory() as raw:
+            target = os.path.join(raw, "v_TH.jpg")
+            donor = os.path.join(raw, "v_FF.jpg")
+            with open(target, "wb") as handle:
+                handle.write(b"malformed generated TH")
+            with open(donor, "wb") as handle:
+                handle.write(b"safe FF plate")
+            messages = []
+            applied = build._apply_recorded_stage_repairs(
+                raw, {"TH": "FF", "ah": "closed", "SS": "unknown"},
+                messages.append)
+            self.assertEqual(applied, {"TH": "FF"})
+            with open(target, "rb") as handle:
+                self.assertEqual(handle.read(), b"safe FF plate")
+            self.assertIn("restoring the published FF safety plate", messages[0])
 
 
 class PublishTransactionTests(unittest.TestCase):

@@ -20,7 +20,7 @@ from . import face, blink, expression, cutout, limbs, rig, build as reg
 # which calibrated runtime controls can be consumed safely.  Keep a runtime
 # bundle with preserved face strips current when its Pet layers are refreshed
 # without source visemes.
-RUNTIME_VERSION = 17
+RUNTIME_VERSION = 18
 
 # runtime viseme name -> studio shape name
 NAME_MAP = {"sil": "closed", "PP": "PP", "FF": "FF", "TH": "TH", "DD": "DD",
@@ -74,17 +74,18 @@ def _runtime_face_asset(destination, reference, label):
         raise ValueError(f"runtime {label} asset is missing")
 
 
-def _validate_v17_face_layers(runtime, destination):
-    """Prove a preserved v16 bank can render every v17 upper-face layer.
+def _validate_current_face_layers(runtime, destination):
+    """Prove a preserved bank can render every current upper-face layer.
 
     ``publish_pet_assets`` intentionally does not regenerate face sprites.  A
-    v16 bank that lacks the under-eye strip must therefore remain legacy (and
-    ask for a source-backed rebuild) instead of being relabelled v17, where the
-    renderer would silently skip its independent target forever.
+    A legacy bank lacking under-eye or forehead strips must therefore remain
+    legacy (and ask for a source-backed rebuild) instead of being relabelled,
+    where the renderer would silently skip its independent targets forever.
     """
     requirements = (
         ("eyes", "states", "eyelid"),
         ("brow", "dys", "brow"),
+        ("forehead", "dys", "forehead"),
         ("eyebag", "ups", "under-eye"),
     )
     for key, positions, label in requirements:
@@ -373,10 +374,10 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
                 pass
     motion_meta = _publish_motion(directory, destination, log)
     # Face sprites are preserved on this no-viseme road.  Never declare the
-    # bundle current until the legacy bank proves it has the layers that v17
-    # actually drives, especially the independent under-eye strip.
+    # bundle current until the legacy bank proves it has every layer that v18
+    # actually drives, especially the forehead and independent under-eye strips.
     if _runtime_version(runtime.get("v")) < RUNTIME_VERSION:
-        _validate_v17_face_layers(runtime, destination)
+        _validate_current_face_layers(runtime, destination)
     runtime.update(
         # This branch preserves a proven face bank when an imported avatar no
         # longer carries source visemes.  It must still cross the current
@@ -431,7 +432,7 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
                 touched, np.abs(v.astype(np.float32) - key.astype(np.float32)).max(2))
     avoid = (touched > 6).astype(np.float32)
 
-    log("synthesising gaze, brow and cheek")
+    log("synthesising gaze, brow, forehead, cheek and under-eye layers")
     klm, _ = face.detect(key)
     expr = expression.build(key, klm, avoid=avoid, log=log)
 
@@ -489,6 +490,10 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
                   dict(dxs=expr["gaze"]["dxs"], dys=expr["gaze"]["dys"]))
     brow = _strip(expr["brow"], "brow", dict(dys=expr["brow"]["dys"],
                                              sqs=expr["brow"].get("sqs", [0.0])))
+    forehead = _strip(
+        expr["forehead"], "forehead",
+        dict(dys=expr["forehead"]["dys"],
+             sqs=expr["forehead"].get("sqs", [0.0])))
     cheek = _strip(expr["cheek"], "cheek", dict(ups=expr["cheek"]["ups"]))
     eyebag = (_strip(expr["eyebag"], "eyebag", dict(ups=expr["eyebag"]["ups"]))
               if expr.get("eyebag") else None)
@@ -500,6 +505,7 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
     # bundles refresh so their normalized rig profile reaches the renderer.
     manifest = dict(v=RUNTIME_VERSION, w=W, h=H, avatar=dict(slug=slug, name=m["name"]),
                     visemes=names, frames=frames, eyes=eyes, gaze=gaze, brow=brow,
+                    forehead=forehead,
                     cheek=cheek, eyebag=eyebag,
                     neck=expression.neck(klm), cutout=cutout_meta,
                     body=body_meta, motion=motion_meta, blink=timing,
@@ -509,7 +515,7 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         json.dump(manifest, f, indent=1)
     log(f"exported {len(names)} visemes, {states} lid states, "
         f"{len(gaze['dxs']) * len(gaze['dys'])} gaze states, "
-        f"{len(brow['dys'])} brow and {len(cheek['ups'])} cheek states "
+        f"{len(brow['dys'])} brow/forehead and {len(cheek['ups'])} cheek states "
         f"per side -> {dest}")
     return manifest
 

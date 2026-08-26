@@ -527,8 +527,15 @@ class DirectRequestSecurityTests(unittest.IsolatedAsyncioTestCase):
             media_gen, "_xai_api_auth",
             new=mock.AsyncMock(return_value=XAI_TEST_AUTH))
         self._xai_auth_patch.start()
+        # These are public Platform API contract tests. Their route must not
+        # depend on whichever shared OpenAI account mode the developer happens
+        # to have selected in the running app beside the test process.
+        self._openai_mode_patch = mock.patch.object(
+            media_gen, "_openai_uses_chatgpt", return_value=False)
+        self._openai_mode_patch.start()
 
     async def asyncTearDown(self):
+        self._openai_mode_patch.stop()
         self._xai_auth_patch.stop()
 
     async def test_provider_rejection_redacts_the_key_and_prints_nothing(self):
@@ -625,8 +632,14 @@ class CurrentImageProviderContractTests(unittest.IsolatedAsyncioTestCase):
             media_gen, "_xai_api_auth",
             new=mock.AsyncMock(return_value=XAI_TEST_AUTH))
         self._xai_auth_patch.start()
+        # These are public Platform API contract tests. Their route must not
+        # depend on the developer's currently selected shared account mode.
+        self._openai_mode_patch = mock.patch.object(
+            media_gen, "_openai_uses_chatgpt", return_value=False)
+        self._openai_mode_patch.start()
 
     async def asyncTearDown(self):
+        self._openai_mode_patch.stop()
         self._xai_auth_patch.stop()
 
     def _response(self, data=PNG_BYTES, mime="image/png"):

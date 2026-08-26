@@ -1,4 +1,4 @@
-"""Micro-expression layers: gaze and brow, synthesised from the keyframe alone.
+"""Micro-expression layers synthesised from the keyframe alone.
 
 A face whose mouth and eyelids move while everything else is frozen does not
 read as alive - it reads as a corpse being puppeteered, and the strongest single
@@ -22,9 +22,10 @@ that is already in the keyframe:
          lowers are weighted to the medial end and pull slightly inward, which
          is what corrugator actually does.
 
-Both bake to small RGBA sprite strips, like the eyelids in blink.py.  Draw order
-is base frame -> brow -> gaze -> lid, which is also the anatomical order: the
-lid occludes the eyeball, so it must be painted last.
+The forehead, cheek and infraorbital bands are separate feathered tissue layers.
+They bake to small RGBA sprite strips, like the eyelids in blink.py.  Runtime
+interpolates adjacent tissue states instead of snapping between them.  Draw
+order is base -> forehead -> brow -> cheek -> gaze -> under-eye -> lid.
 """
 import numpy as np, cv2
 from . import face
@@ -214,6 +215,94 @@ def brow_state(key, lm, side, dy, s, box, alpha, sq=0.0):
     return np.dstack([rgb.astype(np.uint8), (a * 255).astype(np.uint8)])
 
 
+# ---- forehead / glabella ---------------------------------------------------
+
+def _forehead_weight(shape, lm, side, s):
+    """A compact forehead band coupled to one brow, including the glabella.
+
+    The old brow patch ended a few pixels above the brow hair, so a moving brow
+    sat on an entirely frozen forehead.  This band reaches upward without
+    touching hair and overlaps its sibling only through a very soft medial
+    feather.  It is deliberately narrower than half the face: the two patches
+    cannot stamp nose, eye or opposite-cheek pixels over one another.
+    """
+    H, W = shape[:2]
+    b = np.asarray(lm[BROW[side]], np.float32)
+    oval = np.asarray(lm[face.FACE_OVAL], np.float32)
+    nose_x = float(lm[NOSE_X][0])
+    bx0, bx1 = float(b[:, 0].min()), float(b[:, 0].max())
+    btop, bbot = float(b[:, 1].min()), float(b[:, 1].max())
+    span = max(bx1 - bx0, 8.0 * s)
+    crown = float(oval[:, 1].min())
+    ys, xs = np.mgrid[0:H, 0:W].astype(np.float32)
+
+    lateral = bx0 if 0.5 * (bx0 + bx1) < nose_x else bx1
+    left, right = sorted((lateral, nose_x))
+    horizontal = _smoothstep(left - .18 * span, left + .03 * span, xs) * (
+        1.0 - _smoothstep(right - .03 * span, right + .18 * span, xs))
+    top = crown + .16 * max(btop - crown, 1.0)
+    vertical = _smoothstep(top, top + .14 * max(btop - top, 1.0), ys) * (
+        1.0 - _smoothstep(btop - .12 * span, bbot + .22 * span, ys))
+    weight = horizontal * vertical
+    inside = face.hull_mask(shape, lm, face.FACE_OVAL)
+    inside = cv2.erode(inside, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (max(3, int(7 * s) | 1),) * 2))
+    weight *= cv2.GaussianBlur(inside, (0, 0), 4.0 * s).astype(np.float32) / 255.0
+    return np.clip(weight, 0.0, 1.0).astype(np.float32)
+
+
+def forehead_state(key, lm, side, dy, s, box, weight, sq=0.0):
+    """Move forehead tissue with the brow and reveal restrained expression lines."""
+    x0, y0, bw, bh = box
+    b = np.asarray(lm[BROW[side]], np.float32)
+    nose_x = float(lm[NOSE_X][0])
+    btop = float(b[:, 1].min())
+    span = max(float(b[:, 0].max() - b[:, 0].min()), 8.0 * s)
+    xs = np.arange(x0, x0 + bw, dtype=np.float32)
+    ys = np.arange(y0, y0 + bh, dtype=np.float32)
+    gx, gy = np.meshgrid(xs, ys)
+    Wl = weight[y0:y0 + bh, x0:x0 + bw]
+    # Skin nearest the brow follows most; the crown remains almost fixed.
+    proximity = _smoothstep(y0, btop, gy)
+    travel = Wl * (.24 + .76 * proximity)
+    medial = np.exp(-0.5 * ((gx - nose_x) / max(.22 * span, 2.0)) ** 2)
+    direction = 1.0 if 0.5 * (b[:, 0].min() + b[:, 0].max()) < nose_x else -1.0
+    warped = cv2.remap(
+        key,
+        (gx - direction * sq * medial * travel * .42).astype(np.float32),
+        (gy - dy * travel * .58).astype(np.float32),
+        cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE,
+    )
+    # cv2.remap returns the dimensions of its coordinate maps.  ``gx``/``gy``
+    # are already local to this patch, so slicing the result by global face
+    # coordinates produces an empty array whenever the forehead is not at the
+    # image origin.
+    patch = warped.astype(np.float32)
+
+    # Bare forehead skin can move while looking pixel-identical.  Reinforce
+    # only the source's own fine texture and add low-contrast muscle creases;
+    # this is a photographic cue (a few luminance points), not drawn eyebrows.
+    source_patch = key[y0:y0 + bh, x0:x0 + bw].astype(np.float32)
+    detail = source_patch - cv2.GaussianBlur(source_patch, (0, 0), 2.2 * s)
+    activity = min(1.0, abs(float(dy)) / 7.0 + abs(float(sq)) / 3.5)
+    patch += detail * (.18 + .34 * activity) * Wl[..., None]
+    shade = np.zeros((bh, bw), np.float32)
+    if dy > .8:
+        for fraction in (.30, .54, .75):
+            line_y = y0 + fraction * max(btop - y0, 1.0)
+            shade -= np.exp(-0.5 * ((gy - line_y) / max(1.15 * s, .8)) ** 2) \
+                * min(8.0, dy * .82)
+    if sq > .35:
+        for offset in (-.07, .07):
+            line_x = nose_x + offset * span
+            shade -= np.exp(-0.5 * ((gx - line_x) / max(1.1 * s, .8)) ** 2) \
+                * medial * min(9.0, sq * 2.8)
+    patch += shade[..., None] * Wl[..., None]
+    patch = np.clip(patch, 0, 255).astype(np.uint8)
+    alpha = np.clip(Wl * 1.22, 0.0, 1.0)
+    return np.dstack([patch, (alpha * 255).astype(np.uint8)])
+
+
 # ---- cheek -----------------------------------------------------------------
 # A cheek raise is the micro-expression that reads as warmth, and the obvious
 # way to build it - warp the cheek - does not work.  Bare cheek skin has no
@@ -242,7 +331,14 @@ def _cheek_weight(shape, lm, side, s, avoid=None):
     # underneath is never disturbed
     low = lm[LOWER[side]]
     lidy = _line(low, np.clip(xs[0], float(low[:, 0].min()), float(low[:, 0].max())))
-    w = w * _smoothstep(-3.0 * s, 4.0 * s, ys - lidy[None, :])
+    below = ys - lidy[None, :]
+    w = w * _smoothstep(2.0 * s, 9.0 * s, below)
+
+    # Keep the malar patch on its own side of the face and away from the nose.
+    # The previous ellipse reached the alar base and lower eye, which made a
+    # five-state snap look like a detachable cheek pasted over the portrait.
+    away_from_nose = (xs - float(lm[NOSE_X][0])) * lat
+    w *= _smoothstep(.10 * span, .24 * span, away_from_nose)
 
     # and stay clear of whatever the viseme frames repaint, or this stamps
     # keyframe pixels over a moving mouth
@@ -349,6 +445,7 @@ def build(key, lm=None, dxs=None, dys=None, brow_dys=None, ups=None,
 
     out = dict(gaze=dict(dxs=dxs, dys=dys),
                brow=dict(dys=bdys, sqs=list(BROW_SQ)),
+               forehead=dict(dys=bdys, sqs=list(BROW_SQ)),
                cheek=dict(ups=cups),
                eyebag=dict(ups=list(EYEBAG_UP)))
     for side in SIDES:
@@ -370,6 +467,15 @@ def build(key, lm=None, dxs=None, dys=None, brow_dys=None, ups=None,
                      for sq in BROW_SQ for dy in bdys])   # row-major: sq outer
         log(f"  brow {side}: {len(bdys)}x{len(BROW_SQ)} states, "
             f"patch {bbox[2]}x{bbox[3]}")
+
+        fw = _forehead_weight(key.shape, lm, side, s)
+        fbox = _box(fw, int(4 * s), key.shape)
+        out["forehead"][side] = dict(
+            box=[int(v) for v in fbox],
+            patches=[forehead_state(key, lm, side, dy, s, fbox, fw, sq=sq)
+                     for sq in BROW_SQ for dy in bdys])
+        log(f"  forehead {side}: {len(bdys)}x{len(BROW_SQ)} states, "
+            f"patch {fbox[2]}x{fbox[3]}")
 
         cw, lat = _cheek_weight(key.shape, lm, side, s, avoid)
         cbox = _box(cw, int(4 * s), key.shape)

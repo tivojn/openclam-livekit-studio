@@ -369,6 +369,11 @@ body{padding-bottom:84px}
 .rig-preset label{margin:0;flex:none}
 .rig-preset select{width:auto;flex:1}
 .rig-control{padding:6px 0;border-top:1px solid var(--line)}
+.rig-control.repaired{margin:2px -8px;padding:6px 8px;border:1px solid var(--accent-line);
+  border-radius:8px;background:var(--accent-bg)}
+.rig-control.repaired .rig-control-head:after{content:"suggested";color:var(--accent-text);
+  font:700 9px ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;
+  letter-spacing:.06em}
 .rig-control-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
 .rig-control-head label{margin:0;color:var(--ink);font-size:13px;letter-spacing:0;
   text-transform:none}.rig-value{font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -1032,6 +1037,14 @@ document.documentElement.dataset.design='quiet';</script>
       Creating a code safely replaces the previous iPhone pairing and
       restarts the OpenClaw gateway. The code is not saved here. If pairing does not
       finish, create another in this same panel—your agents and other channels stay unchanged.</p>
+  </div>
+
+  <h2 id="openai-account-title">OpenAI Account</h2>
+  <p class="section-note">Choose one OpenAI account mode for the whole app.
+    ChatGPT sign-in is owned by the installed Codex client; OpenClam never
+    reads or stores its OAuth token.</p>
+  <div class="card" id="blk-openai-account" aria-labelledby="openai-account-title">
+    <p class="note" style="margin:0" role="status">Reading the local OpenAI account…</p>
   </div>
 
   <h2 id="xai-account-title">xAI Account</h2>
@@ -1850,6 +1863,7 @@ let CFG = null, CAT = null, ACTIVE = null, COMPANION = null, POLL = null;
 const MEDIA_CLEANUP_NOTES = {image: [], video: []};
 let RIG = null, RIG_SLUG = null, RIG_PROFILE = null, RIG_POSE = 'closed', RIG_WATCH = null;
 let RIG_GAPS = [];
+let RIG_REPAIR = null, RIG_REPAIR_MANUAL = false;
 const WALK_STYLE_IDS = new Set(['office', 'runway', 'stroll', 'power', 'promenade', 'cartwheel', 'custom']);
 const WALK_STYLE_LABELS = {
   office: 'Office walk', runway: 'Runway catwalk', stroll: 'Relaxed stroll',
@@ -2012,6 +2026,43 @@ function xaiWebSearchValue(config) {
 }
 /* qa:xai-account-contract:end */
 
+/* qa:openai-account-contract:start */
+const OPENAI_AUTH_MODE_IDS = Object.freeze(['api_key', 'chatgpt']);
+function normalizeOpenAIAccountStatus(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const oauth = source.oauth && typeof source.oauth === 'object' ? source.oauth : {};
+  const capabilities = source.capabilities && typeof source.capabilities === 'object'
+    ? source.capabilities : {};
+  return {
+    provider: 'openai',
+    auth_mode: OPENAI_AUTH_MODE_IDS.includes(source.auth_mode)
+      ? source.auth_mode : 'api_key',
+    state: source.state === 'connected' ? 'connected' : source.state === 'pending'
+      ? 'pending' : 'disconnected',
+    connected: source.connected === true,
+    has_api_key: source.has_api_key === true,
+    oauth: {available: oauth.available === true, connected: oauth.connected === true,
+      managed_by: oauth.managed_by === 'codex' ? 'codex' : ''},
+    capabilities: {
+      llm: capabilities.llm === true,
+      image_generation: capabilities.image_generation === true,
+      image_editing: capabilities.image_editing === true,
+      video_generation: capabilities.video_generation === true,
+      video_editing: capabilities.video_editing === true,
+    },
+  };
+}
+function openaiLaneUsesGlobalAuth(config, kind='') {
+  return Boolean(config && config.provider === 'openai'
+    && ['llm', 'image'].includes(kind));
+}
+/* qa:openai-account-contract:end */
+
+const OPENAI_ACCOUNT = {
+  status: normalizeOpenAIAccountStatus(null), loading: true, busy: false,
+  error: '', pollTimer: null,
+};
+
 const XAI_ACCOUNT = {
   status: normalizeXaiAuthStatus(null), loading: true, busy: false,
   error: '', flow: null, pollTimer: null, countdownTimer: null,
@@ -2064,7 +2115,7 @@ function avatarMediaProviderDefaults(kind, provider) {
     model: provider && provider.recommended_model || '',
   };
   if (kind === 'image') {
-    if (provider && provider.id !== 'xai') next.auth_method = 'api_key';
+    if (provider && !['xai', 'openai'].includes(provider.id)) next.auth_method = 'api_key';
     if (imageOptions.default_size) next.size = imageOptions.default_size;
     if (imageOptions.default_quality) next.quality = imageOptions.default_quality;
     if (imageOptions.default_aspect_ratio)
@@ -2140,7 +2191,8 @@ function globalXaiLaneRequestConfig(value) {
 function avatarMediaCheckConfig(kind, provider, config) {
   const sanitized = sanitizeApiKeyProviderConfig(config).config;
   if (kind === 'image') sanitized.base_url = '';
-  if (provider && provider.id === 'xai') {
+  if (provider && (provider.id === 'xai'
+      || (kind === 'image' && provider.id === 'openai'))) {
     delete sanitized.api_key;
     delete sanitized.auth_method;
     delete sanitized.credential_type;
@@ -2226,6 +2278,7 @@ function mediaKeyBadge(kind, provider, config) {
 function mediaAuthPanel(provider) {
   if (!provider) return '';
   if (provider.id === 'xai') return xaiLaneAuthPanel('image');
+  if (provider.id === 'openai') return openaiLaneAuthPanel('image');
   if (!provider.auth) return '';
   const capabilities = avatarMediaAuthCapabilities(provider);
   const apiCopy = capabilities.apiKey
@@ -2381,7 +2434,7 @@ function renderMediaDefault(kind) {
       for (const field of Object.keys(config)) delete config[field];
       Object.assign(config, authCleanup.config);
       recordMediaCleanup(kind,
-        'Legacy lane-level OAuth and token fields were removed. xAI sign-in is managed only by the shared xAI Account; other image providers use API keys.');
+        'Legacy lane-level OAuth and token fields were removed. OpenAI and xAI sign-in are managed only by their shared account cards; other image providers use API keys.');
       cleanupChanged = true;
     }
     if (String(config.base_url || '').trim()) {
@@ -2427,9 +2480,10 @@ function renderMediaDefault(kind) {
     ${mediaCleanupNotice(kind)}
     ${kind === 'image' ? mediaProviderSummary(provider) : ''}
     ${provider.id === 'xai' ? xaiLaneAuthPanel(kind)
-      : kind === 'image' ? mediaAuthPanel(provider) : ''}
+      : provider.id === 'openai' ? openaiLaneAuthPanel(kind)
+        : kind === 'image' ? mediaAuthPanel(provider) : ''}
     <div class="row" style="margin-top:14px">
-      ${provider.key === false || provider.id === 'xai' ? '' : `<div class="f"><label for="${kind}-media-api-key">API key ${mediaKeyBadge(kind, provider, config)}</label>
+      ${provider.key === false || ['xai', 'openai'].includes(provider.id) ? '' : `<div class="f"><label for="${kind}-media-api-key">API key ${mediaKeyBadge(kind, provider, config)}</label>
         <div class="keyrow"><input id="${kind}-media-api-key" type="password" data-media-key="${kind}" aria-label="${kind === 'image' ? 'Image provider API key' : 'Video provider API key'}" value="${esc(config.api_key || '')}" placeholder="${
           config.has_key ? '•••••••• leave blank to keep'
             : mediaInherits(provider, config) ? 'using the platform key · paste to override'
@@ -2608,7 +2662,9 @@ function renderBlock(kind) {
 
   const platformId = KEY_ALIAS[provider.id] || provider.id;
   const usesGlobalXai = provider.id === 'xai';
-  const inheritsKey = Boolean(!usesGlobalXai && provider.key && !config.has_key && !config.api_key
+  const usesGlobalOpenAI = provider.id === 'openai' && kind === 'llm';
+  const usesGlobalAccount = usesGlobalXai || usesGlobalOpenAI;
+  const inheritsKey = Boolean(!usesGlobalAccount && provider.key && !config.has_key && !config.api_key
     && (CFG.has_keys || {})[platformId]);
   const platformLabel = inheritsKey
     ? (keyPlatformLabels()[platformId] || provider.label) : '';
@@ -2622,12 +2678,14 @@ function renderBlock(kind) {
     : (state.models.length > 0 && state.models.includes(config.model)));
   const canTest = (!provider.key || state.ready) && modelReady;
   const credentialAvailable = usesGlobalXai ? XAI_ACCOUNT.status.connected
+    : usesGlobalOpenAI ? OPENAI_ACCOUNT.status.connected
     : (!provider.key || config.has_key
       || (CFG.has_keys || {})[KEY_ALIAS[provider.id] || provider.id]);
   element.innerHTML = `${providerField}
       ${usesGlobalXai ? xaiLaneAuthPanel(kind) : ''}
+      ${usesGlobalOpenAI ? openaiLaneAuthPanel(kind) : ''}
       <div class="row" style="margin-top:14px">
-        ${provider.key && !usesGlobalXai ? `<div class="f"><label for="${kind}-api-key">API key ${keyBadge}</label>
+        ${provider.key && !usesGlobalAccount ? `<div class="f"><label for="${kind}-api-key">API key ${keyBadge}</label>
           <div class="keyrow"><input id="${kind}-api-key" type="password" data-api-key="${kind}" value="${esc(config.api_key || '')}" placeholder="${config.has_key ? '•••••••• leave blank to keep' : inheritsKey ? 'using Keychain key · paste to override' : 'paste key'}"><button class="peek" type="button" data-peek="${kind}" title="Show the key" aria-label="Show the key"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4.5-9 7s4 7 9 7 9-4.5 9-7-4-7-9-7zm0 2c3.6 0 6.5 3 7 5-.5 2-3.4 5-7 5s-6.5-3-7-5c.5-2 3.4-5 7-5zm0 1.8A3.2 3.2 0 1 0 12 15.2 3.2 3.2 0 0 0 12 8.8z"/></svg></button>${(CFG.has_keys || {})[platformId] ? `<button class="btn sm" type="button" data-pull-key="${kind}"
             title="Use the ${esc(keyPlatformLabels()[platformId] || platformId)} key already in this Mac’s Keychain"
             >Use Keychain key</button>` : ''}</div></div>` : ''}
@@ -2645,7 +2703,7 @@ function renderBlock(kind) {
         <div style="display:flex;align-items:flex-end;gap:8px">
           <button class="btn sm" data-fetch="${kind}" ${state.loading ? 'disabled' : ''}>
             ${state.loading ? 'Checking…' : state.ready ? '↻ Refresh choices'
-              : usesGlobalXai ? 'Check account & load'
+              : usesGlobalAccount ? 'Check account & load'
                 : provider.key ? 'Validate key & load' : 'Load choices'}
           </button>
           <button class="btn sm" data-test="${kind}" ${canTest ? '' : 'disabled'}>Test</button>
@@ -2653,6 +2711,8 @@ function renderBlock(kind) {
       </div>
       ${provider.key && !state.ready ? `<div class="model-lock">${usesGlobalXai
         ? 'Model and voice menus unlock after the shared xAI Account is connected and choices are ready.'
+        : usesGlobalOpenAI
+          ? 'Model menus unlock after the shared OpenAI Account is connected and choices are ready.'
         : 'Model and voice menus unlock only after the API key is accepted by the provider.'}</div>` : ''}
       ${provider.note ? `<p class="note">${esc(provider.note)}</p>` : ''}
       ${kind === 'tts' ? tierNote(provider.id) : ''}
@@ -5289,6 +5349,43 @@ function paintRigControl(key) {
     badge.textContent = value + '%';
     badge.className = 'rig-value ' + (safe ? 'safe' : 'experimental');
   }
+  const row = document.querySelector(`[data-rig-row="${key}"]`);
+  if (row) row.classList.toggle('repaired', Boolean(RIG_REPAIR &&
+    (RIG_REPAIR.changes || []).some(change => change.control === key)));
+}
+
+function rigApplyLabel() {
+  const button = $('#rig-apply');
+  if (!button) return;
+  button.textContent = RIG_REPAIR
+    ? (RIG_REPAIR_MANUAL ? 'Rebuild adjusted values' : 'Rebuild suggested values')
+    : 'Validate & rebuild';
+}
+
+function rigRepairSummary(repair) {
+  const items = (repair.rejected_items || []).join(', ') || 'the rejected poses';
+  const changes = (repair.changes || []).map(change =>
+    `${change.label || change.control} ${Number(change.before).toFixed(0)}% → ${Number(change.after).toFixed(0)}%`);
+  return `Calibration rejected ${items}. Suggested safe values are staged${changes.length ? ': ' + changes.join(' · ') : ''}. Review them, adjust any slider if you want, then rebuild.`;
+}
+
+function stageRigRepair(repair) {
+  if (!repair || typeof repair !== 'object' || !repair.profile || !RIG) return false;
+  const controls = RIG.schema.controls || {};
+  Object.keys(controls).forEach(key => {
+    const value = Number(repair.profile[key]);
+    if (!Number.isFinite(value)) return;
+    const spec = controls[key];
+    RIG_PROFILE[key] = Math.max(Number(spec.minimum), Math.min(Number(spec.maximum), value));
+  });
+  RIG_PROFILE.preset = 'custom';
+  RIG_REPAIR = repair;
+  RIG_REPAIR_MANUAL = false;
+  $('#rig-preset').value = 'custom';
+  renderRigControls();
+  drawRig();
+  rigApplyLabel();
+  return true;
 }
 
 function formatRigError(detail) {
@@ -5342,7 +5439,7 @@ function renderRigControls() {
     const [safeMinimum, safeMaximum] = rigSafeBounds(spec);
     // One-shot layout: the prose lives in the tooltip, the green band
     // lives on the track itself - a control is one label row + one slider.
-    return `<div class="rig-control" title="${esc(spec.help)} · full control ${spec.minimum}–${spec.maximum}% · green safe ${safeMinimum}–${safeMaximum}%, red experimental beyond">
+    return `<div class="rig-control" data-rig-row="${key}" title="${esc(spec.help)} · full control ${spec.minimum}–${spec.maximum}% · green safe ${safeMinimum}–${safeMaximum}%, red experimental beyond">
       <div class="rig-control-head">
         <label for="rig-${key}">${esc(spec.label)}</label>
         <span class="rig-value" id="rig-value-${key}">${RIG_PROFILE[key]}%</span>
@@ -5358,6 +5455,7 @@ function renderRigControls() {
       const key = event.target.dataset.rigControl;
       RIG_PROFILE[key] = Number(event.target.value);
       RIG_PROFILE.preset = 'custom';
+      if (RIG_REPAIR) RIG_REPAIR_MANUAL = true;
       $('#rig-preset').value = 'custom';
       // These two locally baked expression layers are also live runtime
       // amplitudes. Hand the dragged targets to the desk avatar through the
@@ -5370,6 +5468,7 @@ function renderRigControls() {
       }
       paintRigControl(key);
       drawRig();
+      rigApplyLabel();
       rigStatus();
     };
   });
@@ -5416,6 +5515,9 @@ async function openRig(slug) {
   RIG_SLUG = slug;
   RIG_POSE = 'closed';
   RIG_GAPS = [];
+  RIG_REPAIR = null;
+  RIG_REPAIR_MANUAL = false;
+  rigApplyLabel();
   resetRigBitmaps();
   showManagedModal($('#rig-modal'), $('#rig-close'), closeRig);
   document.body.style.overflow = 'hidden';
@@ -5452,11 +5554,14 @@ async function openRig(slug) {
   renderRigControls();
   renderRigDental();
   renderRigPoses();
-  rigStatus(response.can_recompose ? '' :
-    'Cannot rebuild yet: the original build lost renders for '
-    + RIG_GAPS.join(', ')
-    + '. Press "Generate missing renders" (uses model credits), then rebuild.',
-    response.can_recompose ? '' : 'bad');
+  const stagedRepair = stageRigRepair(response.repair);
+  rigStatus(!response.can_recompose
+    ? 'Cannot rebuild yet: the original build lost renders for '
+      + RIG_GAPS.join(', ')
+      + '. Press "Generate missing renders" (uses model credits), then rebuild.'
+      + (stagedRepair ? '\n' + rigRepairSummary(response.repair) : '')
+    : stagedRepair ? rigRepairSummary(response.repair) : '',
+    (!response.can_recompose || stagedRepair) ? 'bad' : '');
   const image = $('#rig-image');
   image.onload = drawRig;
   image.src = rigImage();
@@ -5482,7 +5587,12 @@ async function watchRig(slug) {
   }
   $('#rig-apply').disabled = false;
   if (job.error) {
-    if (RIG_SLUG === slug) rigStatus('Rebuild rejected: ' + job.error + '\nThe previous avatar is still published.', 'bad');
+    if (RIG_SLUG === slug) {
+      const stagedRepair = stageRigRepair(job.repair);
+      rigStatus(stagedRepair
+        ? rigRepairSummary(job.repair) + '\nThe previous avatar is still published.'
+        : 'Rebuild rejected: ' + job.error + '\nThe previous avatar is still published.', 'bad');
+    }
     note('Calibration failed; the live avatar was not changed.');
   } else {
     const onDesk = ACTIVE === slug;
@@ -5499,6 +5609,9 @@ async function watchRig(slug) {
       resetRigBitmaps();
       $('#rig-image').src = rigImage();
       drawRig();
+      RIG_REPAIR = null;
+      RIG_REPAIR_MANUAL = false;
+      rigApplyLabel();
     }
     if (onDesk && SHELL && SHELL.isElectron) await SHELL.avatarChanged();
     note(onDesk ? 'Calibration passed and the new runtime is active.'
@@ -5962,6 +6075,176 @@ $('#livekit-save').onclick = async () => {
     button.disabled = false;
   }
 };
+
+/* ---------------------------------------------------------------- OpenAI account */
+function openaiModeName(mode) {
+  return mode === 'chatgpt' ? 'ChatGPT via Codex' : 'API key';
+}
+function openaiAccountStatePresentation(status=OPENAI_ACCOUNT.status) {
+  if (OPENAI_ACCOUNT.loading) return {label: 'Checking…', cls: ''};
+  if (status.connected) return {label: openaiModeName(status.auth_mode) + ' · connected', cls: 'ok'};
+  if (status.state === 'pending') return {label: 'ChatGPT · waiting for sign-in', cls: 'warn'};
+  return {label: status.auth_mode === 'chatgpt' ? 'ChatGPT · sign in' : 'API key · needs key', cls: 'warn'};
+}
+function openaiAuthErrorCopy(value) {
+  const code = String(value && typeof value === 'object'
+    ? value.detail || value.error || '' : value || '').trim();
+  const messages = {
+    openai_codex_not_installed: 'Install the Codex CLI on this Mac before using ChatGPT sign-in.',
+    openai_chatgpt_not_connected: 'Finish ChatGPT sign-in in the browser, then return here.',
+    openai_account_storage_unavailable: 'This Mac could not securely store the OpenAI account mode.',
+    openai_login_start_failed: 'Codex could not open ChatGPT sign-in. Try again.',
+    openai_logout_failed: 'Codex could not disconnect the ChatGPT account.',
+    openai_auth_mode_invalid: 'Choose either API key or ChatGPT via Codex.',
+  };
+  return messages[code] || 'The OpenAI account action could not be completed. Try again.';
+}
+function openaiLaneAuthPanel(kind) {
+  const view = openaiAccountStatePresentation();
+  const names = {llm: 'OpenAI chat', image: 'OpenAI image generation and editing'};
+  const copy = `${names[kind] || 'This OpenAI feature'} uses ${openaiModeName(OPENAI_ACCOUNT.status.auth_mode)}. No lane credential or silent fallback is used.`;
+  return `<div class="xai-global-note" role="note">
+    <span class="pill ${view.cls}">${esc(view.label)}</span>
+    <p><strong>Shared OpenAI Account.</strong> ${esc(copy)}</p>
+    <button class="btn sm" type="button" data-manage-openai-account>Manage</button>
+  </div>`;
+}
+async function openaiAccountRequest(path, body) {
+  try {
+    const options = body === undefined ? undefined : {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: body === null ? undefined : JSON.stringify(body),
+    };
+    return await api(path, options);
+  } catch (_error) { return {detail: 'openai_account_unavailable'}; }
+}
+function renderOpenAIAccount() {
+  const box = $('#blk-openai-account');
+  if (!box) return;
+  const oldKey = box.querySelector('[data-openai-account-key]');
+  const keyDraft = oldKey ? oldKey.value : '';
+  const status = OPENAI_ACCOUNT.status;
+  const selected = status.auth_mode;
+  const view = openaiAccountStatePresentation(status);
+  const keyPane = `<div class="xai-account-pane"><div class="row" style="align-items:flex-end">
+    <div class="f"><label for="openai-account-api-key">OpenAI Platform API key ${status.has_api_key ? '<span class="pill ok">stored</span>' : ''}</label>
+      <div class="keyrow"><input id="openai-account-api-key" type="password"
+        data-openai-account-key autocomplete="off" spellcheck="false"
+        placeholder="${status.has_api_key ? 'leave blank to keep the stored key' : 'paste your OpenAI API key'}">
+        <button class="peek" type="button" data-peek="openai-account" title="Show the key" aria-label="Show the OpenAI API key"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4.5-9 7s4 7 9 7 9-4.5 9-7-4-7-9-7zm0 2c3.6 0 6.5 3 7 5-.5 2-3.4 5-7 5s-6.5-3-7-5c.5-2 3.4-5 7-5zm0 1.8A3.2 3.2 0 1 0 12 15.2 3.2 3.2 0 0 0 12 8.8z"/></svg></button>
+      </div><p class="keystate">Write-only: stored as <code>keys.openai</code> in this Mac’s Keychain.</p></div>
+    <div class="xai-account-actions" style="margin-top:0"><button class="btn pri" type="button" data-openai-save-key>${status.has_api_key ? 'Use stored API key' : 'Save & use API key'}</button></div>
+  </div></div>`;
+  const chatgptPane = `<div class="xai-account-pane"><p class="note" style="margin:0">
+    ${status.oauth.connected ? '<span class="pill ok">Codex signed in</span> ChatGPT authentication is available locally. OpenClam delegates jobs to Codex and never receives its token.'
+      : 'Sign in once through the installed Codex client. The browser and Codex own the session.'}</p>
+    <div class="xai-account-actions">
+      <button class="btn pri" type="button" data-openai-login>${status.oauth.connected ? 'Use ChatGPT account' : 'Sign in with ChatGPT'}</button>
+      <button class="btn" type="button" data-openai-refresh>Refresh status</button>
+      ${status.oauth.connected ? '<button class="btn danger" type="button" data-openai-logout>Disconnect Codex account</button>' : ''}
+    </div></div>`;
+  box.innerHTML = `<div class="xai-account-head"><div><h3>One account. One active mode.</h3>
+      <p>Switching here changes OpenAI chat and image lanes together. API-key mode calls the public Platform API. ChatGPT mode stays behind the local Codex boundary.</p></div>
+      <span class="pill xai-account-state ${view.cls}" role="status">${esc(view.label)}</span></div>
+    <div class="xai-coverage"><span class="pill">LLM</span><span class="pill">Image generate + edit</span></div>
+    <fieldset class="xai-mode-set" ${OPENAI_ACCOUNT.busy ? 'disabled' : ''}><legend>Authentication mode</legend>
+      <div class="xai-mode-grid">
+        <label class="xai-mode"><input type="radio" name="openai-auth-mode" value="api_key" ${selected === 'api_key' ? 'checked' : ''}><span class="xai-mode-body"><span class="xai-mode-title">Platform API key</span><span class="xai-mode-copy">Direct OpenAI Platform API traffic for chat and image work.</span></span></label>
+        <label class="xai-mode"><input type="radio" name="openai-auth-mode" value="chatgpt" ${selected === 'chatgpt' ? 'checked' : ''}><span class="xai-mode-body"><span class="xai-mode-title">ChatGPT via Codex</span><span class="xai-mode-copy">Uses the ChatGPT account already owned by the installed Codex client.</span></span></label>
+      </div></fieldset>
+    ${selected === 'chatgpt' ? chatgptPane : keyPane}
+    ${OPENAI_ACCOUNT.error ? `<div class="xai-auth-error" role="alert">${esc(OPENAI_ACCOUNT.error)}</div>` : ''}`;
+  const key = box.querySelector('[data-openai-account-key]');
+  if (key && keyDraft) key.value = keyDraft;
+  box.querySelectorAll('input[name="openai-auth-mode"]').forEach(input => {
+    input.onchange = () => chooseOpenAIAuthMode(input.value);
+  });
+  const save = box.querySelector('[data-openai-save-key]');
+  if (save) save.onclick = () => saveOpenAIKey(save);
+  const login = box.querySelector('[data-openai-login]');
+  if (login) login.onclick = () => startOpenAILogin(login);
+  const refresh = box.querySelector('[data-openai-refresh]');
+  if (refresh) refresh.onclick = () => loadOpenAIAccount(false);
+  const logout = box.querySelector('[data-openai-logout]');
+  if (logout) logout.onclick = () => logoutOpenAI();
+}
+function renderOpenAIDependentViews() {
+  renderOpenAIAccount();
+  if (!CFG) return;
+  for (const kind of ['llm', 'tts', 'stt']) {
+    if (openaiLaneUsesGlobalAuth(CFG[kind], kind)) { resetModelState(kind); renderBlock(kind); }
+  }
+  for (const kind of ['image', 'video']) {
+    if (openaiLaneUsesGlobalAuth(CFG[kind], kind)) renderMediaDefault(kind);
+  }
+}
+async function loadOpenAIAccount(quiet=false) {
+  OPENAI_ACCOUNT.loading = !quiet;
+  if (!quiet) renderOpenAIAccount();
+  const response = await openaiAccountRequest('/api/openai/account/status');
+  OPENAI_ACCOUNT.loading = false;
+  if (!response || response.detail || response.error) {
+    OPENAI_ACCOUNT.error = openaiAuthErrorCopy(response);
+  } else {
+    OPENAI_ACCOUNT.status = normalizeOpenAIAccountStatus(response);
+    OPENAI_ACCOUNT.error = '';
+    if (CFG) { CFG.has_keys = CFG.has_keys || {}; CFG.has_keys.openai = OPENAI_ACCOUNT.status.has_api_key; }
+  }
+  renderOpenAIDependentViews();
+}
+async function chooseOpenAIAuthMode(mode) {
+  if (!OPENAI_AUTH_MODE_IDS.includes(mode)) return;
+  OPENAI_ACCOUNT.busy = true; OPENAI_ACCOUNT.error = ''; renderOpenAIAccount();
+  const response = await openaiAccountRequest('/api/openai/account/mode', {mode});
+  OPENAI_ACCOUNT.busy = false;
+  if (!response || response.detail || response.error) OPENAI_ACCOUNT.error = openaiAuthErrorCopy(response);
+  else OPENAI_ACCOUNT.status = normalizeOpenAIAccountStatus(response);
+  renderOpenAIDependentViews();
+}
+async function saveOpenAIKey() {
+  const field = $('#openai-account-api-key');
+  const typed = String(field && field.value || '').trim();
+  if (!typed && !OPENAI_ACCOUNT.status.has_api_key) {
+    OPENAI_ACCOUNT.error = 'Paste an OpenAI Platform API key first.'; renderOpenAIAccount(); return;
+  }
+  const drafts = captureLaneDrafts(CFG);
+  const saved = await api('/api/config', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({keys: {openai: typed || '__adopt__'}})}).catch(() => null);
+  const refreshed = mergeConfigRefresh(saved, drafts);
+  if (refreshed) CFG = refreshed;
+  await chooseOpenAIAuthMode('api_key');
+  await loadOpenAIAccount(true);
+}
+function scheduleOpenAIAccountPoll() {
+  if (OPENAI_ACCOUNT.pollTimer) clearTimeout(OPENAI_ACCOUNT.pollTimer);
+  OPENAI_ACCOUNT.pollTimer = setTimeout(async () => {
+    await loadOpenAIAccount(true);
+    if (!OPENAI_ACCOUNT.status.oauth.connected) scheduleOpenAIAccountPoll();
+  }, 1800);
+}
+async function startOpenAILogin() {
+  await chooseOpenAIAuthMode('chatgpt');
+  const response = await openaiAccountRequest('/api/openai/account/login', null);
+  if (!response || response.detail || response.error) {
+    OPENAI_ACCOUNT.error = openaiAuthErrorCopy(response); renderOpenAIAccount(); return;
+  }
+  OPENAI_ACCOUNT.status = normalizeOpenAIAccountStatus(response);
+  renderOpenAIDependentViews();
+  if (!OPENAI_ACCOUNT.status.oauth.connected) scheduleOpenAIAccountPoll();
+}
+async function logoutOpenAI() {
+  if (OPENAI_ACCOUNT.pollTimer) clearTimeout(OPENAI_ACCOUNT.pollTimer);
+  const response = await openaiAccountRequest('/api/openai/account/logout', null);
+  if (!response || response.detail || response.error) OPENAI_ACCOUNT.error = openaiAuthErrorCopy(response);
+  else OPENAI_ACCOUNT.status = normalizeOpenAIAccountStatus(response);
+  renderOpenAIDependentViews();
+}
+document.addEventListener('click', event => {
+  const button = event.target.closest && event.target.closest('[data-manage-openai-account]');
+  if (!button) return;
+  const account = $('#blk-openai-account');
+  if (account) account.scrollIntoView({block: 'center'});
+});
 
 /* ---------------------------------------------------------------- xAI account */
 function xaiModeName(mode) {
@@ -6641,6 +6924,8 @@ function captureKeyringDraft(excludeId='') {
     values[select.value] = extra.value;
   const xai = $('#xai-account-api-key');
   if (xai && excludeId !== 'xai' && xai.value.trim()) values.xai = xai.value;
+  const openai = $('#openai-account-api-key');
+  if (openai && excludeId !== 'openai' && openai.value.trim()) values.openai = openai.value;
   return {
     values,
     cleared: [...KEYS_CLEARED].filter(id => id !== excludeId),
@@ -6651,7 +6936,7 @@ function restoreKeyringDraft(draft) {
   KEYS_CLEARED = new Set(draft.cleared || []);
   let waiting = null;
   for (const [id, value] of Object.entries(draft.values || {})) {
-    if (id === 'xai') continue;
+    if (id === 'xai' || id === 'openai') continue;
     const input = document.querySelector(`#blk-keys [data-keyfor="${id}"]`);
     if (input) input.value = value;
     else if (!waiting) waiting = [id, value];
@@ -6662,6 +6947,8 @@ function restoreKeyringDraft(draft) {
   }
   if ((draft.values || {}).xai && $('#xai-account-api-key'))
     $('#xai-account-api-key').value = draft.values.xai;
+  if ((draft.values || {}).openai && $('#openai-account-api-key'))
+    $('#openai-account-api-key').value = draft.values.openai;
   for (const id of KEYS_CLEARED) {
     const input = document.querySelector(`#blk-keys [data-keyfor="${id}"]`);
     const button = document.querySelector(`#blk-keys [data-keyclear="${id}"]`);
@@ -6777,6 +7064,8 @@ function collectKeys() {
     staged[select.value] = value.value.trim();
   const xai = $('#xai-account-api-key');
   if (xai && xai.value.trim()) staged.xai = xai.value.trim();
+  const openai = $('#openai-account-api-key');
+  if (openai && openai.value.trim()) staged.openai = openai.value.trim();
   CFG.keys = staged;
 }
 
@@ -6830,7 +7119,9 @@ $('#save').onclick = async () => {
   ['llm', 'tts', 'stt'].forEach(renderBlock);
   ['image', 'video'].forEach(renderMediaDefault);
   renderKeys();
+  renderOpenAIAccount();
   renderXaiAccount();
+  void loadOpenAIAccount(true);
   void loadXaiAuthStatus(true);
 };
 $('#revert').onclick = () => boot();
@@ -6855,11 +7146,13 @@ async function boot() {
   }).catch(() => {});
   ['llm', 'tts', 'stt'].forEach(resetModelState);
   DIRTY = false;
+  renderOpenAIAccount();
   renderXaiAccount();
   ['llm', 'tts', 'stt'].forEach(renderBlock);
   void renderLiveKitBlock();
   renderKeys();
   ['image', 'video'].forEach(renderMediaDefault);
+  void loadOpenAIAccount(false);
   void loadXaiAuthStatus(false);
   void loadOpenClawPairingStatus();
   CFG.persona = CFG.persona || {};

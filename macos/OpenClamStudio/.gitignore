@@ -2,6 +2,8 @@
 avatars/
 active.json
 config.json
+openai-account.json
+xai-account.json
 .env
 .env.*
 !.env.example

@@ -1575,7 +1575,7 @@
     let headMask = null;
     let cutoutImage = null;
     const visemeImages = new Map();
-    const layers = { eyes: {}, gaze: {}, brow: {}, cheek: {}, eyebag: {} };
+    const layers = { eyes: {}, gaze: {}, brow: {}, forehead: {}, cheek: {}, eyebag: {} };
     const motion = {};
     const motionLoadTasks = {};
     let assetRevision = Date.now();
@@ -1785,16 +1785,21 @@
         'must ', 'cannot', '注意', '危险', '紧急', '重要', '必须', '不能'];
       const brightTerms = ['!', '！', 'congrat', 'amazing', 'excellent', 'fantastic',
         'wow', '恭喜', '太棒', '好极', '真棒', '哇'];
+      const humorTerms = ['haha', 'hehe', 'lol', 'funny', 'joke', 'joking', 'kidding',
+        'playful', 'laugh', 'smile', '哈哈', '呵呵', '好笑', '玩笑', '开玩笑', '笑'];
       const warmth = expressionUnit(.16 + expressionTermScore(text, warmthTerms) * .24);
       const empathy = expressionUnit(expressionTermScore(text, empathyTerms) * .31);
       const curiosity = expressionUnit(expressionTermScore(text, curiosityTerms) * .34);
       const gravity = expressionUnit(expressionTermScore(text, gravityTerms) * .34);
       const brightness = expressionUnit(expressionTermScore(text, brightTerms) * .30);
+      const humor = expressionUnit(expressionTermScore(text, humorTerms) * .34);
       const emphasisMarks = (text.match(/[!！?？]/g) || []).length;
-      const energy = expressionUnit(.22 + brightness * .54 + Math.min(.2, emphasisMarks * .05)
+      const energy = expressionUnit(.24 + brightness * .54 + humor * .34
+        + Math.min(.2, emphasisMarks * .05)
         - gravity * .10);
       return {
-        warmth, empathy, curiosity, gravity, brightness, energy,
+        warmth: expressionUnit(Math.max(warmth, humor * .74)), empathy, curiosity,
+        gravity, brightness, humor, energy,
         seed: expressionSeed(text),
         duration: Math.max(0, Number(duration) || 0),
       };
@@ -1808,27 +1813,31 @@
         + intent.seed * Math.PI * 2);
       const slow = Math.sin(elapsed * .72 + intent.seed * 5.3);
       const questionLift = intent.curiosity * expressionSmoothStep((progress - .62) / .34);
-      const warmth = expressionUnit(Math.max(intent.warmth, intent.brightness * .68));
+      const warmth = expressionUnit(Math.max(intent.warmth, intent.brightness * .68,
+        intent.humor * .82));
       return {
-        brow: expressionUnit((.12 + intent.empathy * .24 + intent.curiosity * .34
-          + questionLift * .32 + intent.energy * .10 + beat * .08) * audibleLife),
-        underEye: expressionUnit((.10 + warmth * .42 + intent.empathy * .12
-          + voice * .18) * (.72 + beat * .28)),
+        brow: Math.max(-1, Math.min(1, (.18 + intent.empathy * .24
+          + intent.curiosity * .46 + questionLift * .34 + intent.humor * .30
+          + intent.energy * .11 + beat * .10 - intent.gravity * .62) * audibleLife)),
+        underEye: expressionUnit((.08 + warmth * .32 + intent.empathy * .12
+          + intent.humor * .16 + voice * .13) * (.78 + beat * .22)),
         squeeze: Math.max(-1.8, Math.min(2.4,
           intent.gravity * 2.15 - warmth * .46 + (centroid - .5) * .18)),
-        cheek: expressionUnit((.08 + warmth * .62 + intent.energy * .15
-          + voice * .14) * (.74 + beat * .26)),
+        cheek: expressionUnit((.06 + warmth * .48 + intent.humor * .22
+          + intent.energy * .12 + voice * .10) * (.80 + beat * .20)),
         asymmetry: Math.max(-.18, Math.min(.18,
           (intent.seed - .5) * .16 + slow * (.035 + intent.energy * .025))),
-        gazeX: Math.max(-1, Math.min(1, slow * (.08 + intent.curiosity * .05))),
+        gazeX: Math.max(-1, Math.min(1, slow * (.18 + intent.curiosity * .12
+          + intent.humor * .06))),
         gazeY: Math.max(-1, Math.min(1,
-          -questionLift * .12 + Math.sin(elapsed * .43 + 1.7) * .025)),
-        headYaw: Math.max(-1, Math.min(1, slow * (.12 + intent.energy * .035))),
+          -questionLift * .20 + Math.sin(elapsed * .43 + 1.7) * .055)),
+        headYaw: Math.max(-1, Math.min(1, slow * (.24 + intent.energy * .08))),
         headPitch: Math.max(-1, Math.min(1,
-          questionLift * -.18 + intent.empathy * .10 + Math.sin(elapsed * 1.35) * voice * .045)),
+          questionLift * -.26 + intent.empathy * .14
+          + Math.sin(elapsed * 1.35) * voice * .075)),
         headRoll: Math.max(-1, Math.min(1,
-          (intent.empathy + intent.curiosity) * (intent.seed < .5 ? -.14 : .14)
-          + slow * .025)),
+          (intent.empathy + intent.curiosity + intent.humor * .8)
+          * (intent.seed < .5 ? -.20 : .20) + slow * .05)),
       };
     };
     /* expression-engine:end */
@@ -2376,7 +2385,7 @@
         }));
 
         const layerJobs = [];
-        for (const kind of ['eyes', 'gaze', 'brow', 'cheek', 'eyebag']) {
+        for (const kind of ['eyes', 'gaze', 'brow', 'forehead', 'cheek', 'eyebag']) {
           const spec = manifest[kind];
           if (!spec) continue;
           for (const key of ['l', 'r']) {
@@ -3002,16 +3011,78 @@
       };
     };
 
-    const drawStripState = (target, image, geometry, values, value, row = 0) => {
+    const stripBlendCanvas = document.createElement('canvas');
+    const stripBlendContext = stripBlendCanvas.getContext('2d', { alpha: true });
+    const stripBracket = (values, target) => {
+      if (!Array.isArray(values) || values.length < 2) return { low: 0, high: 0, mix: 0 };
+      const numeric = values.map(Number);
+      if (target <= numeric[0]) return { low: 0, high: 0, mix: 0 };
+      const last = numeric.length - 1;
+      if (target >= numeric[last]) return { low: last, high: last, mix: 0 };
+      let high = 1;
+      while (high < numeric.length && numeric[high] < target) high += 1;
+      const low = high - 1;
+      return { low, high, mix: Math.max(0, Math.min(1,
+        (target - numeric[low]) / Math.max(.0001, numeric[high] - numeric[low]))) };
+    };
+    const drawStripSamples = (target, image, geometry, states, rows, samples) => {
       if (!target || !image || !geometry || !Array.isArray(geometry.box)) return;
       const box = geometry.box.map(Number);
       const width = box[2];
       const height = box[3];
       if (!(width > 0 && height > 0)) return;
-      const index = nearestIndex(values, value);
-      const states = Math.max(1, values.length);
-      const sourceY = (index + row * states) * height;
-      target.drawImage(image, 0, sourceY, width, height, box[0], box[1], width, height);
+      const valid = samples.filter(sample => sample.weight > .0001);
+      if (!valid.length) return;
+      if (valid.length === 1 && valid[0].weight > .9999) {
+        const sample = valid[0];
+        target.drawImage(image, 0, (sample.state + sample.row * states) * height,
+          width, height, box[0], box[1], width, height);
+        return;
+      }
+      if (stripBlendCanvas.width !== width) stripBlendCanvas.width = width;
+      if (stripBlendCanvas.height !== height) stripBlendCanvas.height = height;
+      stripBlendContext.setTransform(1, 0, 0, 1, 0, 0);
+      stripBlendContext.globalCompositeOperation = 'source-over';
+      stripBlendContext.globalAlpha = 1;
+      stripBlendContext.clearRect(0, 0, width, height);
+      // Lighter adds premultiplied RGBA contributions. The weights sum to one,
+      // producing a true adjacent-state blend instead of repeatedly painting
+      // semi-transparent skin patches over one another.
+      stripBlendContext.globalCompositeOperation = 'lighter';
+      for (const sample of valid) {
+        stripBlendContext.globalAlpha = sample.weight;
+        stripBlendContext.drawImage(image, 0, (sample.state + sample.row * states) * height,
+          width, height, 0, 0, width, height);
+      }
+      stripBlendContext.globalCompositeOperation = 'source-over';
+      stripBlendContext.globalAlpha = 1;
+      target.drawImage(stripBlendCanvas, box[0], box[1], width, height);
+    };
+    const drawStripState = (target, image, geometry, values, value, row = 0,
+                            interpolate = false) => {
+      const states = Math.max(1, Array.isArray(values) ? values.length : 1);
+      if (!interpolate) {
+        drawStripSamples(target, image, geometry, states, row + 1,
+          [{ state: nearestIndex(values, value), row, weight: 1 }]);
+        return;
+      }
+      const state = stripBracket(values, value);
+      drawStripSamples(target, image, geometry, states, row + 1, [
+        { state: state.low, row, weight: 1 - state.mix },
+        { state: state.high, row, weight: state.mix },
+      ]);
+    };
+    const drawStripState2D = (target, image, geometry, xValues, xValue,
+                              yValues, yValue) => {
+      const x = stripBracket(xValues, xValue);
+      const y = stripBracket(yValues, yValue);
+      const states = Math.max(1, xValues.length);
+      drawStripSamples(target, image, geometry, states, yValues.length, [
+        { state: x.low, row: y.low, weight: (1 - x.mix) * (1 - y.mix) },
+        { state: x.high, row: y.low, weight: x.mix * (1 - y.mix) },
+        { state: x.low, row: y.high, weight: (1 - x.mix) * y.mix },
+        { state: x.high, row: y.high, weight: x.mix * y.mix },
+      ]);
     };
 
     const composeHead = now => {
@@ -3057,25 +3128,41 @@
       const expressiveGazeTarget = {
         x: Math.max(-Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
           Math.min(Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
-            gazeTarget.x + expression.gazeX * .72)),
+            gazeTarget.x + expression.gazeX
+              * Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0) * .46)),
         y: Math.max(-Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0),
           Math.min(Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0),
-            gazeTarget.y + expression.gazeY * .42)),
+            gazeTarget.y + expression.gazeY
+              * Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0) * .44)),
       };
       const gaze = smoothCursorGaze(gazeState, expressiveGazeTarget, now, reducedMotion.matches);
       const browGain = rigExpressionGain('brows', 10, 10);
+      const foreheadGain = rigExpressionGain('forehead', 100, 100, 1.2);
       const eyebagGain = rigExpressionGain('eyebags', 35, 35);
-      const browValue = (upperFaceSpeaking
-        ? -(.24 + expression.brow * .48) * browGain
-        : -.18 * microBrow(now, reducedMotion.matches) * browGain) * browTop;
+      const browBottom = Math.abs(Math.min(...browValues.map(Number), 0));
+      const speechBrowValue = expression.brow >= 0
+        ? expression.brow * browTop : expression.brow * browBottom;
+      const browValue = upperFaceSpeaking
+        ? speechBrowValue * browGain
+        : microBrow(now, reducedMotion.matches) * browTop * .22 * browGain;
+      const squeezeValues = manifest.brow && manifest.brow.sqs || [0];
+      const squeezeValue = upperFaceSpeaking ? expression.squeeze : 0;
 
-      if (manifest.brow) {
-        const squeeze = manifest.brow.sqs || [0];
-        const row = nearestIndex(squeeze, upperFaceSpeaking ? expression.squeeze : 0);
+      // Forehead/glabella moves before the hair-bearing brow patch. Its own
+      // calibration target can quiet wrinkles without muting eyebrow travel.
+      if (manifest.forehead) {
         for (const key of ['l', 'r']) {
           const side = key === 'l' ? 1 - expression.asymmetry : 1 + expression.asymmetry;
-          drawStripState(faceContext, layers.brow[key], manifest.brow[key], browValues,
-            browValue * side, row);
+          drawStripState2D(faceContext, layers.forehead[key], manifest.forehead[key],
+            browValues, browValue * side * foreheadGain, squeezeValues, squeezeValue);
+        }
+      }
+
+      if (manifest.brow) {
+        for (const key of ['l', 'r']) {
+          const side = key === 'l' ? 1 - expression.asymmetry : 1 + expression.asymmetry;
+          drawStripState2D(faceContext, layers.brow[key], manifest.brow[key],
+            browValues, browValue * side, squeezeValues, squeezeValue);
         }
       }
       if (manifest.cheek) {
@@ -3085,9 +3172,16 @@
         for (const key of ['l', 'r']) {
           const side = key === 'l' ? 1 - expression.asymmetry * .55 : 1 + expression.asymmetry * .55;
           drawStripState(faceContext, layers.cheek[key], manifest.cheek[key], values,
-            Math.max(0, value * side));
+            Math.max(0, value * side), 0, true);
         }
       }
+      if (manifest.gaze) {
+        const row = nearestIndex(gazeYValues, gaze.y);
+        for (const key of ['l', 'r']) drawStripState(faceContext, layers.gaze[key], manifest.gaze[key], gazeXValues, gaze.x, row);
+      }
+      // Draw the infraorbital band after gaze. Its mask starts below the lash
+      // line, so it cannot cover the iris, while the gaze patch can no longer
+      // erase the speech-coupled lower-eye motion.
       if (manifest.eyebag) {
         const values = manifest.eyebag.ups || [0];
         const maximum = Number(values[values.length - 1] || 0);
@@ -3097,12 +3191,8 @@
         for (const key of ['l', 'r']) {
           const side = key === 'l' ? 1 - expression.asymmetry : 1 + expression.asymmetry;
           drawStripState(faceContext, layers.eyebag[key], manifest.eyebag[key], values,
-            Math.max(blinkValue, speechValue * side));
+            Math.max(blinkValue, speechValue * side), 0, true);
         }
-      }
-      if (manifest.gaze) {
-        const row = nearestIndex(gazeYValues, gaze.y);
-        for (const key of ['l', 'r']) drawStripState(faceContext, layers.gaze[key], manifest.gaze[key], gazeXValues, gaze.x, row);
       }
       if (manifest.eyes && Array.isArray(manifest.eyes.states)) {
         const states = manifest.eyes.states;
@@ -3423,10 +3513,10 @@
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * fit.x, pixelRatio * fit.y);
       context.translate(pivotX, pivotY);
       context.translate(
-        Number(conversationalPose.headYaw || 0) * bounds[2] * .0035,
-        Number(conversationalPose.headPitch || 0) * bounds[3] * .0022,
+        Number(conversationalPose.headYaw || 0) * bounds[2] * .008,
+        Number(conversationalPose.headPitch || 0) * bounds[3] * .0055,
       );
-      context.rotate(sway + Number(conversationalPose.headRoll || 0) * .010
+      context.rotate(sway + Number(conversationalPose.headRoll || 0) * .022
         + (chatIdleEdge === 'left' ? .018 : chatIdleEdge === 'right' ? -.018 : 0));
       context.scale(breathe, 1);
       context.translate(-pivotX, -pivotY);

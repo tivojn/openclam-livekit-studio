@@ -534,9 +534,10 @@ includes('data-xai-copy-code');
 includes('id="xai-web-search" type="checkbox"');
 includes('for="xai-web-search"');
 includes('Lets Grok browse live web pages for current information. Off by default.');
-includes('provider.key && !usesGlobalXai');
-includes("provider.key === false || provider.id === 'xai'");
+includes('provider.key && !usesGlobalAccount');
+includes("provider.key === false || ['xai', 'openai'].includes(provider.id)");
 includes("const credentialAvailable = usesGlobalXai ? XAI_ACCOUNT.status.connected");
+includes('usesGlobalOpenAI ? OPENAI_ACCOUNT.status.connected');
 includes("keys: {xai: typed || '__adopt__'}");
 includes("xaiAuthRequest('/api/xai/oauth/device/start', null)");
 includes("xaiAuthRequest('/api/xai/oauth/device/cancel', null)");
@@ -597,7 +598,7 @@ const mediaCatalogue = {
       ],
       auth: {
         api_key: {supported: true},
-        oauth: {supported: false, reason: 'No personal OAuth for Images.'},
+        oauth: {supported: true, reason: 'Uses the local Codex account boundary.'},
       },
       image_options: {default_size: 'auto', default_quality: 'auto'},
     },
@@ -647,7 +648,8 @@ const openaiImage = mediaCatalogue.image.find(row => row.id === 'openai');
 const xaiImage = mediaCatalogue.image.find(row => row.id === 'xai');
 const openaiDefaults = mediaContext.defaults('image', openaiImage);
 assert.equal(openaiDefaults.model, 'gpt-image-2');
-assert.equal(openaiDefaults.auth_method, 'api_key');
+assert.equal(Object.hasOwn(openaiDefaults, 'auth_method'), false,
+  'OpenAI image defaults must not persist a lane auth mode');
 assert.equal(openaiDefaults.size, 'auto');
 assert.equal(openaiDefaults.quality, 'auto');
 const xaiDefaults = mediaContext.defaults('image', xaiImage);
@@ -669,7 +671,8 @@ const checkedConfig = mediaContext.checkConfig('image', openaiImage, {
   auth: {refresh_token: 'drop-refresh-token'},
 });
 assert.equal(checkedConfig.base_url, '');
-assert.equal(checkedConfig.api_key, 'keep-api-key');
+assert.equal(Object.hasOwn(checkedConfig, 'api_key'), false,
+  'OpenAI model checks must resolve the shared account, not a lane key');
 assert.equal(Object.hasOwn(checkedConfig, 'access_token'), false);
 assert.equal(Object.hasOwn(checkedConfig, 'auth'), false);
 const checkedXaiConfig = mediaContext.checkConfig('image', xaiImage, {
@@ -687,7 +690,7 @@ const switchedConfig = {
 mediaContext.applyProvider('image', switchedConfig, openaiImage);
 assert.equal(switchedConfig.provider, 'openai');
 assert.equal(switchedConfig.model, 'gpt-image-2');
-assert.equal(switchedConfig.auth_method, 'api_key');
+assert.equal(Object.hasOwn(switchedConfig, 'auth_method'), false);
 assert.equal(switchedConfig.size, 'auto');
 assert.equal(switchedConfig.quality, 'auto');
 assert.equal(switchedConfig.legacy.harmless, 'keep-me');
@@ -734,7 +737,7 @@ assert.equal(mediaContext.checkVerdict(
 ).ok, false, 'A local-only catalogue must not claim provider-checked video access');
 const openaiAuth = mediaContext.authCapabilities(openaiImage);
 assert.equal(openaiAuth.apiKey, true);
-assert.equal(openaiAuth.oauth, false);
+assert.equal(openaiAuth.oauth, true);
 assert.ok(openaiAuth.oauthReason);
 const xaiAuth = mediaContext.authCapabilities(xaiImage);
 assert.equal(xaiAuth.apiKey, true);
@@ -752,18 +755,22 @@ excludes(/\+ esc\(\(model\.label \|\| model\.id\) \+ recommended \+ capability\)
 includes("labels.push('Generation')");
 includes("labels.push('Editing')");
 includes('API key supported');
-includes('OAuth sign-in unavailable');
+includes('ChatGPT via Codex');
+includes('data-manage-openai-account');
+includes('/api/openai/account/status');
+includes('/api/openai/account/login');
+includes('never receives its token');
 includes('does not generate, edit, or bill for an image');
 includes('Direct API endpoint');
 includes('Check selected model');
 includes('Checks the exact selected model at the provider’s fixed endpoint.');
 includes('Legacy image settings were cleaned up.');
 includes('Needs save');
-includes('xAI sign-in is managed only by the shared xAI Account');
+includes('OpenAI and xAI sign-in are managed only by their shared account cards');
 includes('body: JSON.stringify({ kind, cfg: checkConfig })');
 excludes(/Check API key &amp; models/,
   'A generic key check must not imply the selected exact model was verified');
-includes("provider.id === 'xai' ? xaiLaneAuthPanel(kind)");
+includes("provider.id === 'openai' ? openaiLaneAuthPanel(kind)");
 for (const [labelFor, controlId] of [
   ['${kind}-media-provider', '${kind}-media-provider'],
   ['${kind}-media-api-key', '${kind}-media-api-key'],

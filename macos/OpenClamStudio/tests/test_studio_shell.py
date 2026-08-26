@@ -76,6 +76,22 @@ class SettingsMarkupTest(unittest.TestCase):
         self.assertIn("'rig-show-blend', 'rig-show-mesh'", self.settings)
         self.assertIn('press "Use this face" to see it live', self.settings)
 
+    def test_rejected_calibration_stages_an_editable_one_click_repair(self):
+        # A non-technical owner should never have to translate "TH aperture"
+        # into rig controls. The structured backend repair immediately moves
+        # only implicated sliders, highlights them, and leaves the same primary
+        # button ready for either the suggested retry or a manual adjustment.
+        self.assertIn("function stageRigRepair(repair)", self.settings)
+        self.assertIn("RIG_PROFILE[key] = Math.max", self.settings)
+        self.assertIn("Rebuild suggested values", self.settings)
+        self.assertIn("Rebuild adjusted values", self.settings)
+        self.assertIn("stageRigRepair(job.repair)", self.settings)
+        self.assertIn("data-rig-row=", self.settings)
+        self.assertIn(".rig-control.repaired", self.settings)
+        app = read("server", "app.py")
+        self.assertIn('getattr(e, "repair", None)', app)
+        self.assertIn('payload["repair"] = manifest.get("rig_repair")', app)
+
     def test_teeth_control_offers_donor_dropdowns_beside_the_sliders(self):
         # Owner request 2026-08-01 (carol): the calibration room exposes the
         # dental lock. Donor dropdowns per row list every candidate frame

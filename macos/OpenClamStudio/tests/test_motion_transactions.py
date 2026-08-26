@@ -592,11 +592,12 @@ class MotionServerTransactionTests(unittest.TestCase):
 
     @staticmethod
     def _legacy_upper_face_layers(runtime_dir):
-        """Build the minimal preserved sprite contract accepted by v17."""
+        """Build the minimal preserved sprite contract accepted by v18."""
         layers = {}
         for name, positions, values in (
                 ("eyes", "states", [0, 1]),
                 ("brow", "dys", [0, 1]),
+                ("forehead", "dys", [0, 1]),
                 ("eyebag", "ups", [0, 1])):
             layer = {positions: values}
             if name == "brow":
@@ -615,8 +616,8 @@ class MotionServerTransactionTests(unittest.TestCase):
 
         Imported/runtime-only avatars legitimately have no retained visemes,
         so the atomic publisher preserves their proven face strips and merely
-        refreshes Pet layers.  That path still needs the v17 control schema so
-        the independent under-eye target reaches the desktop renderer.
+        refreshes Pet layers.  That path still needs the current control schema
+        so forehead and independent under-eye targets reach the renderer.
         """
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "runtime-only"
@@ -659,7 +660,7 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertFalse(os.path.exists(live + ".previous"))
 
     def test_runtime_only_v16_missing_under_eye_stays_legacy(self):
-        """A preserved bank cannot claim v17 when its under-eye strip is gone."""
+        """A preserved bank cannot claim v18 when its under-eye strip is gone."""
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "missing-under-eye"
             live = os.path.join(avatar_dir, "runtime")
@@ -691,7 +692,41 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
             self.assertFalse(os.path.exists(live + ".previous"))
             self.assertTrue(any(
-                "runtime under-eye layer is missing; cannot migrate to v17" in line
+                "runtime under-eye layer is missing; cannot migrate to v18" in line
+                for line in logs))
+
+    def test_runtime_only_v17_missing_forehead_stays_legacy(self):
+        """A v17 bank needs a source rebuild before it can claim v18."""
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "missing-forehead"
+            live = os.path.join(avatar_dir, "runtime")
+            os.makedirs(live)
+            layers = self._legacy_upper_face_layers(live)
+            layers.pop("forehead")
+            Path(live, "manifest.json").write_text(json.dumps({
+                "v": 17,
+                "avatar": {"slug": slug, "name": "Missing forehead"},
+                "motion": None,
+                **layers,
+            }))
+            original = Path(live, "manifest.json").read_bytes()
+            registry = FakeRegistry(avatar_dir, {
+                "slug": slug, "status": "ready", "name": "Missing forehead",
+            })
+            logs = []
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(runtime_export.reg, "adir", return_value=avatar_dir),
+                    mock.patch.object(runtime_export.reg, "read_manifest",
+                                      return_value=registry.manifest),
+                    mock.patch.object(runtime_export.cutout, "render",
+                                      return_value={"image": "assets/cutout.png"}),
+                    mock.patch.object(runtime_export, "_publish_motion", return_value=None)):
+                self.assertEqual(server_app.ensure_runtime(slug, log=logs.append), live)
+
+            self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
+            self.assertTrue(any(
+                "runtime forehead layer is missing; cannot migrate to v18" in line
                 for line in logs))
 
     def test_settings_resumes_and_tracks_the_reserved_job(self):

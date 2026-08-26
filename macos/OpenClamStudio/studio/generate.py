@@ -112,9 +112,11 @@ def generate_head(reference, destination, provider=None, quality="high",
 def generate_one(keyframe, name, out_dir, yaw=None, roll=None,
                  model=None, quality="high", credentials=None,
                  timeout=1800, log=print, overwrite=False,
-                 _provider_config=None):
+                 _provider_config=None, prompt_note=""):
     os.makedirs(out_dir, exist_ok=True)
     prompt = visemes.prompt_for(name, yaw, roll)
+    if prompt_note:
+        prompt += "\n\nQA CORRECTION FROM THE PREVIOUS ATTEMPT:\n" + str(prompt_note)
     if _provider_config is None:
         from . import body
         _provider_config, public = body.image_provider_selection()

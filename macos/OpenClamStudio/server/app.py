@@ -33,6 +33,7 @@ from starlette.background import BackgroundTask
 import providers as P
 import credentials
 import xai_oauth
+import openai_account
 import openclaw_pairing
 import openclaw_acp
 import livekit_bridge as LK
@@ -306,7 +307,7 @@ def active_slug():
         return None
 
 
-RUNTIME_VERSION = 17  # v17: independent under-eye speech target/runtime layer
+RUNTIME_VERSION = 18  # v18: coherent brow, forehead, cheek, and under-eye layers
 
 
 def ensure_runtime(slug, log=print):
@@ -493,6 +494,9 @@ def _recompose_thread(slug, profile):
     except Exception as e:
         with _jlock:
             _jobs[slug]["error"] = str(e)
+            repair = getattr(e, "repair", None)
+            if isinstance(repair, dict):
+                _jobs[slug]["repair"] = repair
         w(f"FAILED: {e}")
     finally:
         with _jlock:
@@ -1449,6 +1453,10 @@ async def api_rig(slug: str = Query(pattern=SLUG_PATTERN)):
     payload["raw_gaps"] = gaps
     payload["can_recompose"] = not gaps
     payload["uses_generation"] = False
+    # A first build can finish with a locally repairable articulation gate.
+    # Hand its structured slider plan to the same calibration room used by a
+    # rejected rebuild; never make the owner decode a build log.
+    payload["repair"] = manifest.get("rig_repair")
     payload["preview_visemes"] = [
         name for name in ("closed", "ah", "eh", "oo")
         if os.path.isfile(os.path.join(
@@ -2741,6 +2749,54 @@ class XaiOAuthModeRequest(BaseModel):
     mode: str = Field(min_length=1, max_length=32)
 
 
+class OpenAIAccountModeRequest(BaseModel):
+    mode: str = Field(min_length=1, max_length=32)
+
+
+def _openai_account_response(payload):
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+def _openai_account_error(error):
+    raise HTTPException(
+        getattr(error, "status_code", 502),
+        getattr(error, "code", "openai_account_failed"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/openai/account/status")
+async def api_openai_account_status():
+    try:
+        return _openai_account_response(openai_account.status())
+    except openai_account.OpenAIAccountError as error:
+        _openai_account_error(error)
+
+
+@app.post("/api/openai/account/mode")
+async def api_openai_account_mode(body: OpenAIAccountModeRequest):
+    try:
+        return _openai_account_response(openai_account.set_auth_mode(body.mode))
+    except openai_account.OpenAIAccountError as error:
+        _openai_account_error(error)
+
+
+@app.post("/api/openai/account/login")
+async def api_openai_account_login():
+    try:
+        return _openai_account_response(openai_account.start_login())
+    except openai_account.OpenAIAccountError as error:
+        _openai_account_error(error)
+
+
+@app.post("/api/openai/account/logout")
+async def api_openai_account_logout():
+    try:
+        return _openai_account_response(openai_account.logout())
+    except openai_account.OpenAIAccountError as error:
+        _openai_account_error(error)
+
+
 def _xai_oauth_error(error):
     raise HTTPException(
         error.status_code,
@@ -3051,16 +3107,33 @@ def _with_explicit_xai_auth(cfg):
     return cfg
 
 
+def _with_explicit_global_auth(kind, cfg):
+    cfg = _with_explicit_xai_auth(cfg)
+    if (kind in {"llm", "image"}
+            and P.platform_of(cfg.get("provider")) == "openai"
+            and openai_account.auth_mode() == openai_account.CHATGPT_MODE):
+        cfg = dict(cfg)
+        cfg.pop("api_key", None)
+    return cfg
+
+
 @app.post("/api/models")
 async def api_models(body: dict):
     kind = body.get("kind", "llm")
     if kind not in ("llm", "tts", "stt", "image", "video"):
         raise HTTPException(400, "unknown model kind")
     cfg = _with_key(kind, body.get("cfg"))
-    is_xai = P.platform_of(cfg.get("provider")) == "xai"
-    cfg = _with_explicit_xai_auth(cfg)
+    platform = P.platform_of(cfg.get("provider"))
+    is_xai = platform == "xai"
+    is_openai_chatgpt = bool(
+        kind in {"llm", "image"}
+        and platform == "openai"
+        and openai_account.auth_mode() == openai_account.CHATGPT_MODE
+    )
+    cfg = _with_explicit_global_auth(kind, cfg)
     provider_spec = P.spec(kind, cfg.get("provider")) or {}
-    if provider_spec.get("key") and not cfg.get("api_key") and not is_xai:
+    if (provider_spec.get("key") and not cfg.get("api_key")
+            and not is_xai and not is_openai_chatgpt):
         return JSONResponse({"error": "Enter an API key before loading models.",
                              "models": [], "voices": [], "ready": False,
                              "validated": False,
@@ -3104,7 +3177,7 @@ async def api_models(body: dict):
 @app.post("/api/test")
 async def api_test(body: dict):
     kind = body.get("kind", "llm")
-    cfg = _with_explicit_xai_auth(_with_key(kind, body.get("cfg")))
+    cfg = _with_explicit_global_auth(kind, _with_key(kind, body.get("cfg")))
     result = await P.test(kind, cfg)
     if kind == "llm":
         result["route"] = P.last_route("llm")

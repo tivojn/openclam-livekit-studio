@@ -239,6 +239,118 @@ def _articulation_failure(row):
             f"{minimum:.2f}-{maximum:.2f} (target {row['want_width']:.2f})")
 
 
+HARD_APERTURE_MULTIPLIER = 1.35
+HARD_WIDTH_ERROR = 0.18
+
+
+class CalibrationRejected(RuntimeError):
+    """A staged calibration failed without touching the published avatar.
+
+    `repair` is deliberately JSON-safe so the server can hand the recovery
+    straight to Facial calibration instead of making a non-technical owner
+    translate an anatomy error back into slider values.
+    """
+
+    def __init__(self, message, repair):
+        super().__init__(message)
+        self.repair = repair
+
+
+def _hard_articulation_rows(rows):
+    """Only reject a clearly broken bank; landmark-scale near misses advise."""
+    result = []
+    for row in rows:
+        aperture_limit = (float(row["max_ratio"]) * HARD_APERTURE_MULTIPLIER
+                          + measure.APERTURE_DETECTOR_EPSILON)
+        width_error = abs(float(row["width_ratio"]) -
+                          float(row["want_width"]))
+        if (float(row["ratio"]) > aperture_limit or
+                width_error > HARD_WIDTH_ERROR):
+            result.append(row)
+    return result
+
+
+def _repair_value(profile, key, wanted):
+    """Clamp an automatic repair to the control's validated green band."""
+    spec = rig.CONTROLS[key]
+    low = float(spec.get("safe_minimum", spec["minimum"]))
+    high = float(spec.get("safe_maximum", spec["maximum"]))
+    step = float(spec.get("step") or 1.0)
+    value = max(low, min(high, float(wanted)))
+    return round(round(value / step) * step, 3)
+
+
+def articulation_repair(profile, rejected):
+    """Turn measured mouth failures into a conservative editable profile.
+
+    Aperture is primarily jaw travel, with a smaller lip contribution. Width
+    belongs to lips and nasolabial motion. The calculation moves only those
+    controls and never crosses their validated bands; the UI shows every
+    change before the owner chooses the one-click retry or edits it manually.
+    """
+    current = rig.normalize(profile)
+    suggested = copy.deepcopy(current)
+    rejected = list(rejected or [])
+    aperture = [row for row in rejected
+                if float(row["ratio"]) > float(row["max_ratio"])
+                + measure.APERTURE_DETECTOR_EPSILON]
+    width = [row for row in rejected
+             if abs(float(row["width_ratio"]) -
+                    float(row["want_width"])) > 0.12]
+
+    if aperture:
+        # Aim a little inside the limit so detector jitter does not immediately
+        # reject the retry. Jaw carries most of vertical opening; lips retain
+        # enough motion to keep consonants readable.
+        factor = min(float(row["max_ratio"]) /
+                     max(float(row["ratio"]), 1e-6) for row in aperture)
+        factor = max(.45, min(.92, factor * .94))
+        suggested["jaw"] = _repair_value(
+            current, "jaw", current["jaw"] * factor)
+        suggested["lips"] = _repair_value(
+            current, "lips", current["lips"] * (.72 + .28 * factor))
+
+    if width:
+        too_wide = [row for row in width
+                    if float(row["width_ratio"]) >
+                    float(row["want_width"]) + .12]
+        too_narrow = [row for row in width
+                      if float(row["width_ratio"]) <
+                      float(row["want_width"]) - .12]
+        if too_wide:
+            factor = min(float(row["want_width"]) /
+                         max(float(row["width_ratio"]), 1e-6)
+                         for row in too_wide)
+            suggested["lips"] = _repair_value(
+                current, "lips", min(suggested["lips"],
+                                     current["lips"] * factor * .96))
+            suggested["nasolabial"] = _repair_value(
+                current, "nasolabial", current["nasolabial"] * factor)
+        if too_narrow and not too_wide:
+            factor = max(float(row["want_width"]) /
+                         max(float(row["width_ratio"]), 1e-6)
+                         for row in too_narrow)
+            suggested["lips"] = _repair_value(
+                current, "lips", current["lips"] * min(1.16, factor))
+            suggested["nasolabial"] = _repair_value(
+                current, "nasolabial",
+                current["nasolabial"] * min(1.12, factor))
+
+    suggested["preset"] = "custom"
+    changes = []
+    reasons = [_articulation_failure(row) for row in rejected]
+    for key in ("jaw", "lips", "nasolabial"):
+        before, after = current[key], suggested[key]
+        if before != after:
+            changes.append(dict(
+                control=key, label=rig.CONTROLS[key]["label"],
+                before=before, after=after))
+    return dict(
+        kind="articulation", profile=suggested, changes=changes,
+        rejected_items=[row["name"] for row in rejected], reasons=reasons,
+    )
+
+
 # A tilted source selfie must not become a tilted avatar: the canonical
 # head is prompted frontal, but providers sometimes keep the source pose
 # (rachel, 2026-08-01: yaw -9.1, pitch 23, roll 18, foreshortening 0.56 -
@@ -284,8 +396,102 @@ def _frontality_score(metrics):
 def raw_render_gaps(slug):
     raw_dir = os.path.join(adir(slug), "raw")
     return [name for name in visemes.ORDER
-            if not any(os.path.exists(os.path.join(raw_dir, f"v_{name}.{ext}"))
-                       for ext in ("png", "jpg"))]
+            if not _raw_render_path(raw_dir, name)]
+
+
+def _raw_render_path(raw_dir, name):
+    for extension in ("png", "jpg"):
+        path = os.path.join(raw_dir, f"v_{name}.{extension}")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _stage_safe_th(raw_dir, emit):
+    """Keep a malformed generated tongue out of a local rebuild.
+
+    Retained generator files remain untouched.  Recomposition works from a
+    private copy and substitutes a centred, hidden-tongue consonant only when
+    the TH-specific pixel/landmark check finds the conspicuous lateral defect.
+    """
+    th_path = _raw_render_path(raw_dir, "TH")
+    issue = measure.th_tongue_issue(th_path)
+    if not issue:
+        return False
+    donor = _raw_render_path(raw_dir, "DD") or _raw_render_path(raw_dir, "SS")
+    if not donor:
+        raise CalibrationRejected(
+            "TH tongue is off-centre and no safe hidden-tongue plate is available",
+            dict(kind="tongue", profile=None, changes=[],
+                 rejected_items=["TH"], reasons=[
+                     f"Tongue offset {issue['offset']:+.2f} mouth widths"
+                 ]),
+        )
+    shutil.copy2(donor, th_path)
+    emit("  TH tongue is off-centre "
+         f"({issue['offset']:+.2f} mouth widths) - using the centred, "
+         "hidden-tongue consonant fallback in this rebuild")
+    return True
+
+
+SAFE_CONSONANT_DONORS = {
+    # These are intentionally nearby mouth families, not arbitrary neutral
+    # frames. They preserve intelligibility while preferring a coherent face
+    # over a conspicuous tongue, gum, or black-cavity generation defect.
+    "TH": ("FF", "RR", "closed"),
+    "DD": ("RR", "ih", "closed"),
+    "nn": ("RR", "ih", "closed"),
+    "kk": ("ih", "RR", "closed"),
+    "CH": ("RR", "FF", "closed"),
+    "SS": ("FF", "RR", "closed"),
+}
+
+
+def _stage_safe_consonants(raw_dir, rejected, emit):
+    """Replace irreparable generated consonants in the private stage only."""
+    unsafe = {str(row.get("name") or "") for row in (rejected or [])}
+    repairs = {}
+    for name in sorted(unsafe):
+        target = _raw_render_path(raw_dir, name)
+        if not target or name not in SAFE_CONSONANT_DONORS:
+            continue
+        donor_name = next((candidate for candidate in SAFE_CONSONANT_DONORS[name]
+                           if candidate not in unsafe
+                           and _raw_render_path(raw_dir, candidate)), None)
+        if not donor_name:
+            continue
+        donor = _raw_render_path(raw_dir, donor_name)
+        shutil.copy2(donor, target)
+        repairs[name] = donor_name
+        emit(f"  {name}: generated anatomy stayed unsafe at minimum calibration "
+             f"- using nearby {donor_name} consonant plate in this rebuild")
+    return repairs
+
+
+def _apply_recorded_stage_repairs(raw_dir, repairs, emit):
+    """Reapply private donor repairs recorded by the last good publish.
+
+    The retained generator outputs remain untouched in the avatar directory.
+    Recomposition starts from a disposable copy, so a previously approved
+    consonant fallback must be restored there before the first articulation
+    audit; otherwise every slider-only rebuild rediscovers the same malformed
+    source plates and needlessly lowers the owner's calibration again.
+    """
+    applied = {}
+    for target_name, donor_name in dict(repairs or {}).items():
+        if target_name not in SAFE_CONSONANT_DONORS:
+            continue
+        if donor_name not in SAFE_CONSONANT_DONORS[target_name]:
+            continue
+        target = _raw_render_path(raw_dir, target_name)
+        donor = _raw_render_path(raw_dir, donor_name)
+        if not target or not donor:
+            continue
+        shutil.copy2(donor, target)
+        applied[target_name] = donor_name
+        emit(f"  {target_name}: restoring the published {donor_name} safety "
+             "plate in this private rebuild")
+    return applied
 
 
 def _remove_artifact(path):
@@ -382,12 +588,18 @@ def recompose_avatar(slug, profile, log=print, progress=None):
         stage_visemes = os.path.join(stage, "visemes")
         stage_diag = os.path.join(stage, "diag")
         stage_runtime = os.path.join(stage, "runtime")
+        stage_raw = os.path.join(stage, "raw")
         stage_keyframe = os.path.join(stage, "keyframe.png")
+        local_viseme_repairs = {}
         shutil.copy2(
             os.path.join(directory, "keyframe.png"), stage_keyframe)
+        shutil.copytree(os.path.join(directory, "raw"), stage_raw)
+        local_viseme_repairs.update(_apply_recorded_stage_repairs(
+            stage_raw, manifest.get("local_viseme_repairs"), emit))
+        _stage_safe_th(stage_raw, emit)
         advance("compose", .08, "Recomposing retained local renders")
         report, key_metrics = compose.compose_all(
-            stage_keyframe, os.path.join(directory, "raw"),
+            stage_keyframe, stage_raw,
             stage_visemes, diag_dir=stage_diag, log=emit,
             profile=profile)
         expected = len(visemes.ORDER)
@@ -398,12 +610,43 @@ def recompose_avatar(slug, profile, log=print, progress=None):
         aperture, over = measure.audit(
             stage_keyframe, stage_visemes, log=emit,
             names=visemes.SPEECH_ORDER)
-        # The user's contract: a REBUILD never blocks on articulation.
-        # These are retained renders re-composed to the user's chosen
-        # profile - green band or red, an overshoot is a look, not a
-        # defect. Everything publishes and reports with the suggested
-        # green bands. (Generation-time audits keep their strict gates -
-        # there a rejected candidate is retried for free.)
+        hard_overs = _hard_articulation_rows(over)
+        if hard_overs:
+            repair = articulation_repair(profile, hard_overs)
+            changed = ", ".join(
+                f"{row['label']} {row['before']:.0f}%->{row['after']:.0f}%"
+                for row in repair["changes"])
+            emit("REJECTED unsafe articulation: " + ", ".join(
+                _articulation_failure(row) for row in hard_overs))
+            emit("Applying the safe slider retry locally: " +
+                 (changed or "review the highlighted controls"))
+            profile = repair["profile"]
+            report, key_metrics = compose.compose_all(
+                stage_keyframe, stage_raw, stage_visemes,
+                diag_dir=stage_diag, log=emit, profile=profile)
+            aperture, over = measure.audit(
+                stage_keyframe, stage_visemes, log=emit,
+                names=visemes.SPEECH_ORDER)
+            hard_overs = _hard_articulation_rows(over)
+            if hard_overs:
+                local_viseme_repairs.update(_stage_safe_consonants(
+                    stage_raw, hard_overs, emit))
+                if local_viseme_repairs:
+                    report, key_metrics = compose.compose_all(
+                        stage_keyframe, stage_raw, stage_visemes,
+                        diag_dir=stage_diag, log=emit, profile=profile)
+                    aperture, over = measure.audit(
+                        stage_keyframe, stage_visemes, log=emit,
+                        names=visemes.SPEECH_ORDER)
+                    hard_overs = _hard_articulation_rows(over)
+            if hard_overs:
+                repair = articulation_repair(profile, hard_overs)
+                raise CalibrationRejected(
+                    "Unsafe mouth articulation remains in " +
+                    ", ".join(row["name"] for row in hard_overs), repair)
+            emit("automatic local articulation repair passed")
+        # Near misses remain advisory: the gate is for clearly broken anatomy,
+        # not a detector wobble or a deliberate personal calibration.
         experimental = anatomy._experimental_keys(profile)
         soft_overs = list(over)
         for row in soft_overs:
@@ -440,6 +683,7 @@ def recompose_avatar(slug, profile, log=print, progress=None):
             rig_profile=profile,
             rig_qa=qa,
             rebuild_mode="local_recompose",
+            local_viseme_repairs=local_viseme_repairs,
             quality=dict(worst_resid_px=worst_residual,
                          worst_off_region_delta=worst_drift,
                          shapes=len(report), missing=[]),
@@ -448,6 +692,7 @@ def recompose_avatar(slug, profile, log=print, progress=None):
             log=lines[-400:],
         )
         next_manifest.pop("error", None)
+        next_manifest.pop("rig_repair", None)
         from . import export
         advance("runtime", .78, "Exporting runtime sprite strips")
         export.export(
@@ -579,6 +824,38 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         if missing:
             emit(f"WARNING: no render for {', '.join(missing)}")
 
+        # TH is the only plate allowed to show a tongue. A provider can follow
+        # the instruction semantically while drawing that tongue visibly off
+        # to one side. Detect the actual oral pixels, retry once with measured
+        # feedback, then fail safe to a hidden-tongue alveolar plate rather
+        # than ever publishing the conspicuous lateral-tongue defect.
+        if "TH" in names and got.get("TH"):
+            tongue_issue = measure.th_tongue_issue(got["TH"])
+            if tongue_issue:
+                emit("  TH tongue is off-centre "
+                     f"({tongue_issue['offset']:+.2f} mouth widths) - regenerating")
+                corrected = generate.generate_one(
+                    key, "TH", raw, yaw=yaw, roll=roll, quality=quality,
+                    log=emit, overwrite=True,
+                    prompt_note=(
+                        "The tongue in the previous TH plate was visibly lateral. "
+                        "Show only a tiny, flat, perfectly centred tongue-tip sliver "
+                        "on the facial midline. No tongue may touch either mouth corner."),
+                )
+                got["TH"] = corrected
+                tongue_issue = measure.th_tongue_issue(corrected)
+                if tongue_issue:
+                    donor = got.get("DD") or got.get("SS")
+                    if not donor or not os.path.isfile(donor):
+                        raise RuntimeError(
+                            "TH tongue remained off-centre and no safe hidden-tongue "
+                            "fallback plate is available")
+                    safe_th = os.path.join(raw, "v_TH.png")
+                    shutil.copy2(donor, safe_th)
+                    got["TH"] = safe_th
+                    emit("  TH retry remained malformed - using the centred, "
+                         "hidden-tongue consonant fallback")
+
         emit("pose-locking and compositing...")
         m["progress"] = dict(done=len(names), total=len(names), stage="compose")
         write_manifest(slug, m)
@@ -590,6 +867,29 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         aperture, over = measure.audit(key, out, log=emit)
         if over:
             emit("over-articulated: " + ", ".join(r["name"] for r in over))
+        hard_overs = _hard_articulation_rows(over)
+        repair = articulation_repair(profile, hard_overs) if hard_overs else None
+        if repair:
+            changed = ", ".join(
+                f"{row['label']} {row['before']:.0f}%->{row['after']:.0f}%"
+                for row in repair["changes"])
+            emit("calibration required before this bank is safe: " +
+                 ", ".join(repair["rejected_items"]))
+            emit("suggested safe slider retry: " +
+                 (changed or "review the highlighted controls"))
+            emit("applying the safe slider plan locally before publication...")
+            profile = repair["profile"]
+            report, kmet = compose.compose_all(
+                key, raw, out, diag_dir=diag, log=emit, profile=profile)
+            aperture, over = measure.audit(key, out, log=emit)
+            hard_overs = _hard_articulation_rows(over)
+            if hard_overs:
+                repair = articulation_repair(profile, hard_overs)
+                raise CalibrationRejected(
+                    "Unsafe mouth articulation remains in "
+                    + ", ".join(row["name"] for row in hard_overs), repair)
+            repair = None
+            emit("automatic local articulation repair passed")
 
         emit("rendering preview...")
         m["progress"] = dict(done=len(names), total=len(names), stage="preview")
@@ -608,12 +908,19 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
                  preview="preview.mp4", sheet="sheet.jpg",
                  quality=dict(worst_resid_px=worst, worst_off_region_delta=drift,
                               shapes=len(report), missing=missing))
+        if repair:
+            m["rig_repair"] = repair
+        else:
+            m.pop("rig_repair", None)
         m["progress"] = dict(done=len(names), total=len(names), stage="done")
     except Exception as e:
         emit("ERROR: " + str(e))
         emit(traceback.format_exc()[-1500:])
         m["status"] = "error"
         m["error"] = str(e)
+        structured_repair = getattr(e, "repair", None)
+        if isinstance(structured_repair, dict):
+            m["rig_repair"] = structured_repair
     write_manifest(slug, m)
     return m
 

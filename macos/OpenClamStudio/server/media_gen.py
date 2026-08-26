@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import mimetypes
 import os
 import re
@@ -146,6 +147,19 @@ def _xai_oauth_manager():
     except (ImportError, ValueError):
         import xai_oauth
     return xai_oauth
+
+
+def _openai_account_manager():
+    try:
+        from . import openai_account
+    except (ImportError, ValueError):
+        import openai_account
+    return openai_account
+
+
+def _openai_uses_chatgpt():
+    manager = _openai_account_manager()
+    return manager.auth_mode() == manager.CHATGPT_MODE
 
 
 async def _xai_api_auth():
@@ -297,10 +311,10 @@ def _require_api_key_auth(provider, config):
     if (any(method != "api_key" for method in declared)
             or contains_token_field(config, root=True)):
         label = provider.replace("_", " ").title()
-        if provider == "xai":
+        if provider in {"xai", "openai"}:
             raise RuntimeError(
-                "xAI authentication is selected globally; remove lane OAuth or "
-                "token fields and choose API key or Grok sign-in in Settings")
+                f"{provider} authentication is selected globally; remove lane OAuth or "
+                "token fields and choose the shared account mode in Settings")
         raise RuntimeError(
             f"{label} image inference supports API-key authentication only")
 
@@ -324,8 +338,10 @@ def _require_lane(kind, config, allowed):
     # xAI's credential comes only from xai_oauth.resolve_auth().  A legacy
     # lane key may still be present in memory after config migration, but is
     # deliberately ignored and can never choose or replace the global mode.
-    key = "" if provider == "xai" else str(config.get("api_key") or "").strip()
-    if spec.get("key") and provider != "xai" and not key:
+    globally_resolved = provider == "xai" or (
+        kind == "image" and provider == "openai" and _openai_uses_chatgpt())
+    key = "" if globally_resolved else str(config.get("api_key") or "").strip()
+    if spec.get("key") and not globally_resolved and not key:
         raise RuntimeError(
             f"{spec.get('label') or provider} needs an API key in OpenClam Settings")
     return provider, key, spec
@@ -860,6 +876,16 @@ def _openai_image_quality(value, model="gpt-image-2"):
     return quality
 
 
+def _aspect_ratio_for_size(value):
+    size = str(value or "auto").strip().lower()
+    match = re.fullmatch(r"([1-9][0-9]{2,3})x([1-9][0-9]{2,3})", size)
+    if not match:
+        return "1:1" if size != "auto" else "auto"
+    width, height = (int(part) for part in match.groups())
+    divisor = math.gcd(width, height)
+    return f"{width // divisor}:{height // divisor}"
+
+
 def _xai_image_options(model, config, aspect_ratio=None):
     aspect = str(
         aspect_ratio or config.get("aspect_ratio") or "auto").strip().lower()
@@ -888,6 +914,11 @@ async def generate_image(prompt, config, output_dir=None, file_name=None):
     model = _model("image", provider, config)
     _require_avatar_model("image", provider, model)
     _require_image_prompt_limit(prompt, provider, model)
+    if provider == "openai" and _openai_uses_chatgpt():
+        data = await _openai_account_manager().generate_image_async(
+            prompt, aspect_ratio=_aspect_ratio_for_size(config.get("size")),
+            quality=config.get("quality") or "high")
+        return _write("image", ".png", data, output_dir, file_name)
     reviewed_options = {}
     if provider == "openai":
         reviewed_options = {
@@ -1018,6 +1049,11 @@ async def generate_image_edit(prompt, references, config, aspect_ratio="1:1",
     if len(paths) > maximum_references:
         raise RuntimeError(
             f"{provider} image editing accepts at most {maximum_references} references")
+    if provider == "openai" and _openai_uses_chatgpt():
+        data = await _openai_account_manager().generate_image_async(
+            prompt, paths, aspect_ratio=aspect_ratio,
+            quality=config.get("quality") or quality)
+        return _write("image", ".png", data, output_dir, file_name)
     image_inputs = [_read_image_input(path) for path in paths]
     reviewed_options = {}
     if provider == "xai":
