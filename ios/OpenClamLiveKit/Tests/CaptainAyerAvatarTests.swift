@@ -97,6 +97,83 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertLessThan(progress, 1)
     }
 
+    func testSpeechExpressionPlannerUnderstandsIntentWithoutAnotherModel() {
+        let curious = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "Would you like to try this?"
+        )
+        let warm = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "Thank you! I am very glad this worked."
+        )
+        let serious = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "Important warning: you must be careful."
+        )
+        let chineseEmpathy = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "抱歉，这确实很难。我理解你的担心。"
+        )
+
+        XCTAssertGreaterThan(curious.curiosity, 0.5)
+        XCTAssertGreaterThan(warm.warmth, 0.5)
+        XCTAssertGreaterThan(warm.energy, curious.energy)
+        XCTAssertGreaterThan(serious.gravity, 0.5)
+        XCTAssertGreaterThan(chineseEmpathy.empathy, 0.5)
+    }
+
+    func testSpeechExpressionUsesExistingRigAndHonorsReducedMotion() {
+        let plan = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "Thank you! Would you like to continue?"
+        )
+        let animated = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: plan,
+            progress: 0.72,
+            elapsed: 1.8
+        )
+        XCTAssertNotNil(animated.leftBrowFrame)
+        XCTAssertNotNil(animated.rightBrowFrame)
+        XCTAssertNotNil(animated.gazeFrame)
+        XCTAssertLessThanOrEqual(abs(animated.headPose.yaw), 1)
+        XCTAssertLessThanOrEqual(abs(animated.headPose.pitch), 1)
+        XCTAssertLessThanOrEqual(abs(animated.headPose.roll), 1)
+
+        let reduced = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: plan,
+            progress: 0.72,
+            elapsed: 1.8,
+            reduceMotion: true
+        )
+        XCTAssertNil(reduced.gazeFrame)
+        XCTAssertNil(reduced.leftEye)
+        XCTAssertNil(reduced.rightEye)
+        XCTAssertEqual(reduced.headPose, .zero)
+        XCTAssertNotNil(reduced.leftBrowFrame)
+    }
+
+    func testInteractiveReactionKeepsPriorityOverSpeechExpression() throws {
+        let eye = CaptainAyerEyeReactionState(
+            lowerFrame: nil,
+            upperFrame: 7,
+            upperOpacity: 1
+        )
+        let interaction = CaptainAyerFaceReactionRenderState(
+            gazeFrame: 42,
+            leftEye: eye,
+            rightEye: nil,
+            leftBrowFrame: nil,
+            rightBrowFrame: nil,
+            wideMouthOpacity: 0,
+            headPose: .zero
+        )
+        let speech = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: CaptainAyerSpeechExpressionPlanner.plan(for: "Wonderful!"),
+            progress: 0.5,
+            elapsed: 1
+        )
+        let merged = interaction.mergingSpeech(speech)
+
+        XCTAssertEqual(merged.gazeFrame, 42)
+        XCTAssertEqual(merged.leftEye, eye)
+        XCTAssertNotNil(merged.leftBrowFrame)
+    }
+
     func testTimelineCrossfadesWithoutPublishingFrames() throws {
         let timeline = CaptainAyerLipSyncTimeline(
             duration: 1,

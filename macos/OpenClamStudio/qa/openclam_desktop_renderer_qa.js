@@ -569,45 +569,80 @@ for (const capability of [
   assert.ok(source.includes(capability), `missing avatar runtime capability: ${capability}`);
 }
 
-// Brows and the infraorbital band must be speech-coupled independently of
-// lip sync. The motion scheduler picks held, eased random targets rather than
-// frame-by-frame noise, and it collapses to a stable face for reduced motion.
+// Speech expression combines bounded semantic intent with the samples already
+// measured for lip sync. It must remain deterministic, multilingual, and
+// independently testable without adding another model or network request.
+const expressionEngineSource = inline[1].match(
+  /\/\* expression-engine:start \*\/([\s\S]*?)\/\* expression-engine:end \*\//,
+);
+assert.ok(expressionEngineSource, 'speech expression planner must remain independently testable');
+const expressionEngine = new Function(
+  `'use strict'; ${expressionEngineSource[1]}; return { makeSpeechExpressionPlan, speechExpressionTarget };`,
+)();
+const curiousPlan = expressionEngine.makeSpeechExpressionPlan('Would you like to try this?');
+const warmPlan = expressionEngine.makeSpeechExpressionPlan('Thank you! I am very glad this worked.');
+const seriousPlan = expressionEngine.makeSpeechExpressionPlan('Important warning: you must be careful.');
+const chineseEmpathyPlan = expressionEngine.makeSpeechExpressionPlan('抱歉，这确实很难。我理解你的担心。');
+assert.ok(curiousPlan.curiosity > 0.5, 'questions must produce a clear curiosity intent');
+assert.ok(warmPlan.warmth > 0.5 && warmPlan.energy > curiousPlan.energy,
+  'warm emphatic language must brighten the expression plan');
+assert.ok(seriousPlan.gravity > 0.5, 'warnings must produce a restrained serious plan');
+assert.ok(chineseEmpathyPlan.empathy > 0.5,
+  'Chinese empathy language must receive the same local expression treatment');
+const voicedTarget = expressionEngine.speechExpressionTarget(
+  warmPlan,
+  { relative: 0.8, centroid: 0.55 },
+  0.5,
+  1.2,
+);
+assert.ok(voicedTarget.brow > 0 && voicedTarget.cheek > 0.35,
+  'audible warm speech must engage brows and cheeks');
+assert.ok(Math.abs(voicedTarget.headYaw) <= 1 && Math.abs(voicedTarget.headRoll) <= 1,
+  'all conversational pose channels must remain bounded');
+assert.match(source, /playSpeech\(result\.audio, result\.track \|\| \[\], text\)/,
+  'read-aloud speech must pass its words into the expression planner');
+assert.match(source, /playSpeech\(result\.audio, result\.track \|\| \[\], answer\)/,
+  'chat replies must pass the final answer into the expression planner');
+assert.match(source, /speechExpressionPlan = makeSpeechExpressionPlan\(text\);/,
+  'Live Talk assistant transcripts must update semantic expression intent');
+
 const speechExpressionSource = inline[1].match(
-  /(const speechExpressionAt = \(now, speaking, state, reduce = false\) => \{[\s\S]*?\n    \};)/,
+  /(const speechExpressionAt = \(now, speaking, state, plan, signal, reduce = false\) => \{[\s\S]*?\n    \};)/,
 );
 assert.ok(speechExpressionSource,
   'upper-face speech scheduler must remain independently testable');
-const randomValues = [.1, .3, .7, .2, .8, .4, .6, .5];
-let randomIndex = 0;
-const deterministicMath = Object.create(Math);
-deterministicMath.random = () => randomValues[randomIndex++ % randomValues.length];
 const speechExpressionAt = new Function(
-  'Math',
-  `'use strict'; ${speechExpressionSource[1]}; return speechExpressionAt;`,
-)(deterministicMath);
+  `'use strict'; ${expressionEngineSource[1]}; const speechSource = null; `
+    + 'const speechTime = () => 0; '
+    + `${speechExpressionSource[1]}; return speechExpressionAt;`,
+)();
+const zeroExpression = { brow: 0, underEye: 0, squeeze: 0, cheek: 0, asymmetry: 0,
+  gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 };
 const upperFaceState = {
   mode: 'idle', started: 0, duration: 1, nextAt: 0,
-  from: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
-  to: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
-  value: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+  from: { ...zeroExpression }, to: { ...zeroExpression }, value: { ...zeroExpression },
 };
 assert.deepEqual(
-  speechExpressionAt(0, true, upperFaceState, true),
-  { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+  speechExpressionAt(0, true, upperFaceState, warmPlan, { relative: .8 }, true),
+  zeroExpression,
   'reduced motion must hold upper-face layers still even during speech',
 );
-speechExpressionAt(0, true, upperFaceState, false);
-const firstUpperFace = speechExpressionAt(420, true, upperFaceState, false);
+speechExpressionAt(0, true, upperFaceState, warmPlan, { relative: .8, centroid: .5 }, false);
+const firstUpperFace = speechExpressionAt(
+  420, true, upperFaceState, warmPlan, { relative: .8, centroid: .5 }, false,
+);
 assert.ok(firstUpperFace.brow > 0 && firstUpperFace.underEye > 0,
   'speech must animate both brow and under-eye targets');
-speechExpressionAt(1100, true, upperFaceState, false);
-const laterUpperFace = speechExpressionAt(1200, true, upperFaceState, false);
+speechExpressionAt(900, true, upperFaceState, warmPlan, { relative: .4, centroid: .3 }, false);
+const laterUpperFace = speechExpressionAt(
+  1200, true, upperFaceState, warmPlan, { relative: .4, centroid: .3 }, false,
+);
 assert.notEqual(laterUpperFace.brow, firstUpperFace.brow,
-  'upper-face phrase targets must vary instead of looping mechanically');
-speechExpressionAt(1600, false, upperFaceState, false);
+  'upper-face phrase targets must follow changing voice energy');
+speechExpressionAt(1600, false, upperFaceState, warmPlan, { relative: 0 }, false);
 assert.deepEqual(
-  speechExpressionAt(2000, false, upperFaceState, false),
-  { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+  speechExpressionAt(2000, false, upperFaceState, warmPlan, { relative: 0 }, false),
+  zeroExpression,
   'upper-face speech motion must settle back to a still idle state',
 );
 assert.match(source, /const LIVE_RIG_KEY = 'openclam-live-rig';/,
@@ -624,6 +659,8 @@ const blinkAmountSource = inline[1].match(
   /(const blinkAmount = \(now, reduce = false\) => \{[\s\S]*?\n    \};)/,
 );
 assert.ok(blinkAmountSource, 'blink helper must expose a reduced-motion gate');
+const deterministicMath = Object.create(Math);
+deterministicMath.random = () => 0.5;
 const blinkProbe = new Function(
   'Math',
   `'use strict'; let blinkStartedAt = 0; let nextBlinkAt = 0; ${blinkAmountSource[1]};`

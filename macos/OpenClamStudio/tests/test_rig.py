@@ -122,7 +122,10 @@ class RigProfileTests(unittest.TestCase):
         self.assertIn("const speechValue = upperFaceSpeaking", renderer)
         self.assertIn("const eyebagGain = rigExpressionGain('eyebags', 35, 35);", renderer)
         self.assertIn("const expression = speechExpressionAt(now, upperFaceSpeaking,", renderer)
-        self.assertIn("speechExpressionState, reducedMotion.matches);", renderer)
+        self.assertIn(
+            "speechExpressionState, speechExpressionPlan, audioSignal, reducedMotion.matches);",
+            renderer,
+        )
         self.assertIn("drawStripState(faceContext, layers.eyebag[key]", renderer)
         settings = open(os.path.join(ROOT, "web", "settings.html"),
                         encoding="utf-8").read()
@@ -388,7 +391,10 @@ class RigProfileTests(unittest.TestCase):
         self.assertIn("const browTop = Math.max(...browValues.map", renderer)
         self.assertIn("const browGain = rigExpressionGain('brows', 10, 10);", renderer)
         self.assertIn("const upperFaceSpeaking = speaking && !reducedMotion.matches;", renderer)
-        self.assertIn("const speechExpressionAt = (now, speaking, state, reduce = false) =>", renderer)
+        self.assertIn(
+            "const speechExpressionAt = (now, speaking, state, plan, signal, reduce = false) =>",
+            renderer,
+        )
         self.assertIn("microBrow(now, reducedMotion.matches)", renderer)
         self.assertIn("const squeeze = manifest.brow.sqs || [0]", renderer)
         self.assertIn("drawStripState(faceContext, layers.brow[key]", renderer)

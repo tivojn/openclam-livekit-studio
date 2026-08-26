@@ -404,6 +404,13 @@ struct OpenClamCatalogAvatarStage: View {
                     ) { context in
                         let mirrorsFace = faceMirror.isCapturing
                         let mirroredExpression = faceMirror.expression
+                        let localReaction = reduceMotion
+                            ? reactions.reducedMotionRenderState(at: context.date)
+                            : reactions.renderState(at: context.date)
+                        let spokenReaction = controller.expressionRenderState(
+                            at: context.date,
+                            reduceMotion: reduceMotion
+                        )
                         OpenClamCatalogAvatarFaceArtwork(
                             avatar: avatar,
                             imageStore: imageStore,
@@ -415,9 +422,7 @@ struct OpenClamCatalogAvatarStage: View {
                                     for: mirroredExpression,
                                     reduceMotion: reduceMotion
                                 )
-                                : (reduceMotion
-                                    ? reactions.reducedMotionRenderState(at: context.date)
-                                    : reactions.renderState(at: context.date)),
+                                : localReaction.mergingSpeech(spokenReaction),
                             showsReactionMouth: !mirrorsFace && !controller.isSpeaking,
                             crop: crop
                         )

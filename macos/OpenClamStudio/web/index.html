@@ -1757,14 +1757,93 @@
     let blinkStartedAt = 0;
     let nextMicroExpression = performance.now() + 2800;
     let microExpression = { value: 0, started: 0, duration: 1 };
+    /* expression-engine:start */
+    const expressionUnit = value => Math.max(0, Math.min(1, Number(value) || 0));
+    const expressionSmoothStep = value => {
+      const amount = expressionUnit(value);
+      return amount * amount * (3 - 2 * amount);
+    };
+    const expressionTermScore = (text, terms) => terms.reduce((score, term) =>
+      score + (text.includes(term) ? 1 : 0), 0);
+    const expressionSeed = text => {
+      let hash = 2166136261;
+      for (const character of String(text || '').slice(0, 2048)) {
+        hash ^= character.codePointAt(0);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0) / 4294967295;
+    };
+    const makeSpeechExpressionPlan = (value, duration = 0) => {
+      const text = String(value || '').toLocaleLowerCase().slice(0, 12000);
+      const warmthTerms = ['thank', 'glad', 'welcome', 'love', 'happy', 'wonderful',
+        'great', 'nice', '谢谢', '感激', '高兴', '开心', '欢迎', '喜欢'];
+      const empathyTerms = ['sorry', 'understand', 'difficult', 'tough', 'worry',
+        'hope', 'care', '抱歉', '对不起', '理解', '难过', '担心', '希望', '辛苦'];
+      const curiosityTerms = ['?', '？', 'how ', 'why ', 'what ', 'would you',
+        'could you', '吗', '呢', '为什么', '怎么', '是否', '哪'];
+      const gravityTerms = ['warning', 'careful', 'danger', 'urgent', 'important',
+        'must ', 'cannot', '注意', '危险', '紧急', '重要', '必须', '不能'];
+      const brightTerms = ['!', '！', 'congrat', 'amazing', 'excellent', 'fantastic',
+        'wow', '恭喜', '太棒', '好极', '真棒', '哇'];
+      const warmth = expressionUnit(.16 + expressionTermScore(text, warmthTerms) * .24);
+      const empathy = expressionUnit(expressionTermScore(text, empathyTerms) * .31);
+      const curiosity = expressionUnit(expressionTermScore(text, curiosityTerms) * .34);
+      const gravity = expressionUnit(expressionTermScore(text, gravityTerms) * .34);
+      const brightness = expressionUnit(expressionTermScore(text, brightTerms) * .30);
+      const emphasisMarks = (text.match(/[!！?？]/g) || []).length;
+      const energy = expressionUnit(.22 + brightness * .54 + Math.min(.2, emphasisMarks * .05)
+        - gravity * .10);
+      return {
+        warmth, empathy, curiosity, gravity, brightness, energy,
+        seed: expressionSeed(text),
+        duration: Math.max(0, Number(duration) || 0),
+      };
+    };
+    const speechExpressionTarget = (plan, signal, progress, elapsed) => {
+      const intent = plan || makeSpeechExpressionPlan('');
+      const voice = expressionUnit(signal && signal.relative);
+      const centroid = expressionUnit(signal && signal.centroid);
+      const audibleLife = .38 + voice * .62;
+      const beat = .5 + .5 * Math.sin(elapsed * (2.1 + intent.energy * .9)
+        + intent.seed * Math.PI * 2);
+      const slow = Math.sin(elapsed * .72 + intent.seed * 5.3);
+      const questionLift = intent.curiosity * expressionSmoothStep((progress - .62) / .34);
+      const warmth = expressionUnit(Math.max(intent.warmth, intent.brightness * .68));
+      return {
+        brow: expressionUnit((.12 + intent.empathy * .24 + intent.curiosity * .34
+          + questionLift * .32 + intent.energy * .10 + beat * .08) * audibleLife),
+        underEye: expressionUnit((.10 + warmth * .42 + intent.empathy * .12
+          + voice * .18) * (.72 + beat * .28)),
+        squeeze: Math.max(-1.8, Math.min(2.4,
+          intent.gravity * 2.15 - warmth * .46 + (centroid - .5) * .18)),
+        cheek: expressionUnit((.08 + warmth * .62 + intent.energy * .15
+          + voice * .14) * (.74 + beat * .26)),
+        asymmetry: Math.max(-.18, Math.min(.18,
+          (intent.seed - .5) * .16 + slow * (.035 + intent.energy * .025))),
+        gazeX: Math.max(-1, Math.min(1, slow * (.08 + intent.curiosity * .05))),
+        gazeY: Math.max(-1, Math.min(1,
+          -questionLift * .12 + Math.sin(elapsed * .43 + 1.7) * .025)),
+        headYaw: Math.max(-1, Math.min(1, slow * (.12 + intent.energy * .035))),
+        headPitch: Math.max(-1, Math.min(1,
+          questionLift * -.18 + intent.empathy * .10 + Math.sin(elapsed * 1.35) * voice * .045)),
+        headRoll: Math.max(-1, Math.min(1,
+          (intent.empathy + intent.curiosity) * (intent.seed < .5 ? -.14 : .14)
+          + slow * .025)),
+      };
+    };
+    /* expression-engine:end */
+    let speechExpressionPlan = makeSpeechExpressionPlan('');
     // Upper-face speech life is deliberately slower than the viseme bank.
-    // A held random target (rather than a new random number each frame) keeps
-    // brows and the infraorbital band alive without reading as jitter.
+    // A held intent-and-prosody target keeps brows and the infraorbital band
+    // alive without reading as jitter.
     const speechExpressionState = {
       mode: 'idle', started: 0, duration: 1, nextAt: 0,
-      from: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
-      to: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
-      value: { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 },
+      from: { brow: 0, underEye: 0, squeeze: 0, cheek: 0, asymmetry: 0,
+        gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 },
+      to: { brow: 0, underEye: 0, squeeze: 0, cheek: 0, asymmetry: 0,
+        gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 },
+      value: { brow: 0, underEye: 0, squeeze: 0, cheek: 0, asymmetry: 0,
+        gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 },
     };
     const gazeState = { x: 0, y: 0, at: 0 };
     const bodyMotionState = { speechBlend: 0, at: 0 };
@@ -2830,8 +2909,9 @@
       return phase > 0 && phase < 1 ? microExpression.value * Math.sin(Math.PI * phase) : 0;
     };
 
-    const speechExpressionAt = (now, speaking, state, reduce = false) => {
-      const zero = { brow: 0, underEye: 0, squeeze: 0, asymmetry: 0 };
+    const speechExpressionAt = (now, speaking, state, plan, signal, reduce = false) => {
+      const zero = { brow: 0, underEye: 0, squeeze: 0, cheek: 0, asymmetry: 0,
+        gazeX: 0, gazeY: 0, headYaw: 0, headPitch: 0, headRoll: 0 };
       const interpolate = (from, to, amount) => {
         const t = Math.max(0, Math.min(1, amount));
         const eased = t * t * (3 - 2 * t);
@@ -2860,18 +2940,16 @@
         return value;
       }
       if (state.mode !== 'speaking' || now >= state.nextAt) {
+        const elapsed = speechSource ? Math.max(0, speechTime()) : now / 1000;
+        const duration = Math.max(.001, Number(plan && plan.duration) || 0);
+        const progress = duration > .001 ? expressionUnit(elapsed / duration) : 0;
         state.from = { ...(state.value || zero) };
-        state.to = {
-          // Tiny semi-random phrases: a soft knit/raise and an under-eye
-          // bunch follow speech together, but never repeat on a metronome.
-          brow: .22 + Math.random() * .48,
-          underEye: .24 + Math.random() * .44,
-          squeeze: Math.random() < .28 ? 1.35 : 0,
-          asymmetry: (Math.random() * 2 - 1) * .14,
-        };
+        state.to = speechExpressionTarget(plan, signal, progress, elapsed);
         state.started = now;
-        state.duration = 480 + Math.random() * 540;
-        state.nextAt = now + state.duration + 120 + Math.random() * 260;
+        // Expressions follow phrases rather than phonemes. A 360 ms target
+        // cadence captures audible emphasis without making the brows chatter.
+        state.duration = 360;
+        state.nextAt = now + 430;
         state.mode = 'speaking';
       }
       const value = interpolate(state.from, state.to,
@@ -2968,7 +3046,6 @@
         x: Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
         y: Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0),
       }, { width: innerWidth, height: innerHeight });
-      const gaze = smoothCursorGaze(gazeState, gazeTarget, now, reducedMotion.matches);
       const browValues = manifest.brow && manifest.brow.dys || [0];
       const browTop = Math.max(...browValues.map(value => Math.abs(Number(value))), 0);
       const liveAudioSpeaking = Boolean(
@@ -2976,7 +3053,16 @@
       const speaking = Boolean(agentSpeaking || speechSource || liveAudioSpeaking);
       const upperFaceSpeaking = speaking && !reducedMotion.matches;
       const expression = speechExpressionAt(now, upperFaceSpeaking,
-        speechExpressionState, reducedMotion.matches);
+        speechExpressionState, speechExpressionPlan, audioSignal, reducedMotion.matches);
+      const expressiveGazeTarget = {
+        x: Math.max(-Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
+          Math.min(Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
+            gazeTarget.x + expression.gazeX * .72)),
+        y: Math.max(-Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0),
+          Math.min(Math.max(...gazeYValues.map(value => Math.abs(Number(value))), 0),
+            gazeTarget.y + expression.gazeY * .42)),
+      };
+      const gaze = smoothCursorGaze(gazeState, expressiveGazeTarget, now, reducedMotion.matches);
       const browGain = rigExpressionGain('brows', 10, 10);
       const eyebagGain = rigExpressionGain('eyebags', 35, 35);
       const browValue = (upperFaceSpeaking
@@ -2994,8 +3080,13 @@
       }
       if (manifest.cheek) {
         const values = manifest.cheek.ups || [0];
-        const value = speaking ? Number(values[values.length - 1] || 0) * .35 : 0;
-        for (const key of ['l', 'r']) drawStripState(faceContext, layers.cheek[key], manifest.cheek[key], values, value);
+        const maximum = Number(values[values.length - 1] || 0);
+        const value = upperFaceSpeaking ? expression.cheek * maximum : 0;
+        for (const key of ['l', 'r']) {
+          const side = key === 'l' ? 1 - expression.asymmetry * .55 : 1 + expression.asymmetry * .55;
+          drawStripState(faceContext, layers.cheek[key], manifest.cheek[key], values,
+            Math.max(0, value * side));
+        }
       }
       if (manifest.eyebag) {
         const values = manifest.eyebag.ups || [0];
@@ -3324,12 +3415,19 @@
       const { sway, breathe } = bodyMotionAt(
         now, Boolean(agentSpeaking || speechSource || liveAudioSpeaking),
         bodyMotionState, reducedMotion.matches);
+      const conversationalPose = reducedMotion.matches
+        ? { headYaw: 0, headPitch: 0, headRoll: 0 }
+        : speechExpressionState.value;
 
       context.save();
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * fit.x, pixelRatio * fit.y);
       context.translate(pivotX, pivotY);
-      context.rotate(sway + (chatIdleEdge === 'left' ? .018
-        : chatIdleEdge === 'right' ? -.018 : 0));
+      context.translate(
+        Number(conversationalPose.headYaw || 0) * bounds[2] * .0035,
+        Number(conversationalPose.headPitch || 0) * bounds[3] * .0022,
+      );
+      context.rotate(sway + Number(conversationalPose.headRoll || 0) * .010
+        + (chatIdleEdge === 'left' ? .018 : chatIdleEdge === 'right' ? -.018 : 0));
       context.scale(breathe, 1);
       context.translate(-pivotX, -pivotY);
       context.drawImage(image, 0, 0, width, height);
@@ -4117,7 +4215,7 @@
       reactiveMouthState.audibleUntil = 0;
     };
 
-    const playSpeech = async (base64, track = []) => {
+    const playSpeech = async (base64, track = [], spokenText = '') => {
       if (!base64) return;
       stopSpeech();
       const graph = ensureAudioGraph();
@@ -4130,6 +4228,7 @@
       source.connect(audioAnalyser);
       source.connect(graph.destination);
       speechSource = source;
+      speechExpressionPlan = makeSpeechExpressionPlan(spokenText, buffer.duration);
       resumeChatSpeakingPose();
       speechTrack = stabiliseTrack(
         track,
@@ -4143,6 +4242,7 @@
           speechSource = null;
           speechTrack = [];
           currentViseme = 'sil';
+          speechExpressionPlan = makeSpeechExpressionPlan('');
           resumeChatSpeakingPose();
           setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
         }
@@ -4159,7 +4259,7 @@
       try {
         setStatus('Preparing voice…', 'busy');
         const result = await postJSON('/say', { text });
-        if (result.audio) await playSpeech(result.audio, result.track || []);
+        if (result.audio) await playSpeech(result.audio, result.track || [], text);
         else throw new Error(result.error || 'No audio was returned');
       } catch (error) {
         notify(`Could not read aloud: ${String(error.message || error).slice(0, 120)}`);
@@ -4908,7 +5008,7 @@
         history.push({ role: 'assistant', content: answer });
         if (history.length > 24) history.splice(0, history.length - 24);
         await appendMedia(result.media);
-        if (result.audio) await playSpeech(result.audio, result.track || []);
+        if (result.audio) await playSpeech(result.audio, result.track || [], answer);
         else setStatus('Ready', 'good');
       } catch (error) {
         removeWorking();
@@ -5408,6 +5508,9 @@
             appendFinalUserTurnSegment(session, text);
           } else {
             session.userTurnOpen = false;
+            // A final agent transcript supplies semantic intent while the
+            // already-attached audio analyser continues to supply prosody.
+            speechExpressionPlan = makeSpeechExpressionPlan(text);
           }
           addMessage(role, text, { readable: role === 'assistant' });
         } else if (role === 'user') {
@@ -5600,6 +5703,7 @@
       agentSpeaking = false;
       resumeChatSpeakingPose();
       currentViseme = 'sil';
+      speechExpressionPlan = makeSpeechExpressionPlan('');
       reactiveMouthState.viseme = 'sil';
       reactiveMouthState.audibleUntil = 0;
       for (const attachment of session.audioAttachments.values()) releaseAgentAudioAttachment(attachment);

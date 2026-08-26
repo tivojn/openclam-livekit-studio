@@ -61,6 +61,13 @@ struct CaptainAyerAvatarStage: View {
             ) { context in
                 let mirrorsFace = faceMirror.isCapturing
                 let mirroredExpression = faceMirror.expression
+                let localReaction = reduceMotion
+                    ? reactions.reducedMotionRenderState(at: context.date)
+                    : reactions.renderState(at: context.date)
+                let spokenReaction = controller.expressionRenderState(
+                    at: context.date,
+                    reduceMotion: reduceMotion
+                )
                 CaptainAyerAvatarArtwork(
                     state: mirrorsFace
                         ? mirroredExpression.mouthRenderState
@@ -70,9 +77,7 @@ struct CaptainAyerAvatarStage: View {
                             for: mirroredExpression,
                             reduceMotion: reduceMotion
                         )
-                        : (reduceMotion
-                            ? reactions.reducedMotionRenderState(at: context.date)
-                            : reactions.renderState(at: context.date)),
+                        : localReaction.mergingSpeech(spokenReaction),
                     showsReactionMouth: !mirrorsFace && !controller.isSpeaking,
                     crop: presentation.crop
                 )
