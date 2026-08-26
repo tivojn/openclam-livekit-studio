@@ -62,6 +62,7 @@ const api = Object.freeze({
   avatarChanged: () => ipcRenderer.invoke('openclam:avatar-changed'),
   companionChanged: () => ipcRenderer.invoke('openclam:companion-changed'),
   restartBackend: () => ipcRenderer.invoke('openclam:restart-backend'),
+  openMotionAsset: (asset) => ipcRenderer.invoke('openclam:open-motion-asset', asset),
   saveMotionAsset: (asset) => ipcRenderer.invoke('openclam:save-motion-asset', asset),
   onState: (callback) => subscribe('openclam:state', callback),
   onPetChat: (callback) => subscribe('openclam:pet-chat', callback),

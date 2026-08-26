@@ -197,6 +197,17 @@
       gap: 1px;
     }
 
+    .response-route {
+      max-width: min(340px, 38vw);
+      margin-right: 5px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .response-action {
       width: 28px;
       height: 28px;
@@ -1656,12 +1667,21 @@
       id: threadID(), title: 'New chat', createdAt: Date.now(), updatedAt: Date.now(),
       openClawSessionID: '', agentMode: 'local', records: [],
     });
+    const normalizeLLMRoute = value => {
+      if (!value || typeof value !== 'object') return null;
+      const provider = boundedText(value.provider, 80).trim();
+      const model = boundedText(value.model, 240).trim();
+      if (!provider || !model) return null;
+      const display = boundedText(value.display || `${provider} · ${model}`, 340).trim();
+      return { provider, model, display, state: value.state === 'success' ? 'success' : '' };
+    };
     const normalizeThreadRecord = value => {
       if (!value || typeof value !== 'object') return null;
       if (value.kind === 'message' && ['user', 'assistant'].includes(value.role)) {
         const text = boundedText(value.text, 32000).trim();
         return text ? { kind: 'message', role: value.role, text,
-          readable: value.readable !== false } : null;
+          readable: value.readable !== false,
+          route: value.role === 'assistant' ? normalizeLLMRoute(value.route) : null } : null;
       }
       if (value.kind === 'work' && ['completed', 'failed'].includes(value.state)) {
         const steps = (Array.isArray(value.steps) ? value.steps : []).slice(0, 64).map(step => ({
@@ -3876,12 +3896,20 @@
       return Math.round(Math.max(0, Math.min(1, value + delta)) * 100) / 100;
     };
 
-    const appendAssistantActions = (row, text) => {
+    const appendAssistantActions = (row, text, route = null) => {
       if (!row || !text || row.querySelector('.response-actions')) return;
         const actions = document.createElement('div');
         actions.className = 'response-actions';
         actions.setAttribute('role', 'group');
         actions.setAttribute('aria-label', 'Response actions');
+        const runtime = normalizeLLMRoute(route);
+        if (runtime) {
+          const receipt = document.createElement('span');
+          receipt.className = 'response-route';
+          receipt.textContent = runtime.display;
+          receipt.title = `Runtime route: ${runtime.display}`;
+          actions.appendChild(receipt);
+        }
         const copy = responseActionButton(
           'Copy this response',
           'Copy response',
@@ -4010,12 +4038,13 @@
       }
       row.appendChild(bubble);
       if (role === 'assistant' && text && options.readable !== false) {
-        appendAssistantActions(row, String(text));
+        appendAssistantActions(row, String(text), options.route);
       }
       conversation.appendChild(row);
       conversation.scrollTop = conversation.scrollHeight;
       if (options.persist !== false && String(text || '').trim()) {
-        recordThreadItem({ kind: 'message', role, text: String(text), readable: options.readable !== false });
+        recordThreadItem({ kind: 'message', role, text: String(text),
+          readable: options.readable !== false, route: options.route });
       }
       return { row, bubble };
     };
@@ -4527,7 +4556,7 @@
         for (const record of thread.records) {
           if (record.kind === 'message') {
             addMessage(record.role, record.text,
-              { readable: record.readable !== false, persist: false });
+              { readable: record.readable !== false, persist: false, route: record.route });
             history.push({ role: record.role, content: record.text });
           } else if (record.kind === 'work') {
             const timeline = createWorkTimeline();
@@ -4870,10 +4899,11 @@
           liveReply.bubble.textContent = answer;
           latestAssistantText = answer;
           liveReply.row.classList.remove('streaming');
-          appendAssistantActions(liveReply.row, answer);
-          recordThreadItem({ kind: 'message', role: 'assistant', text: answer, readable: true });
+          appendAssistantActions(liveReply.row, answer, result.llm_route);
+          recordThreadItem({ kind: 'message', role: 'assistant', text: answer,
+            readable: true, route: result.llm_route });
         } else {
-          addMessage('assistant', answer);
+          addMessage('assistant', answer, { route: result.llm_route });
         }
         history.push({ role: 'assistant', content: answer });
         if (history.length > 24) history.splice(0, history.length - 24);

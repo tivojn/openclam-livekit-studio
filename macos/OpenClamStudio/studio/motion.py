@@ -26,7 +26,7 @@ from . import body, cutout
 # Vision fallback.  Older cuts can contain intact arms in the retained white-
 # plate source but only a faint semantic matte, so they must be re-cut before
 # reuse.  The recovery never borrows colour or geometry from another frame.
-MOTION_VERSION = 13
+MOTION_VERSION = 14
 # Full provider resolution. These were 512x768 - a decoded-atlas memory
 # budget from the traversal era - which threw away almost half the subject
 # pixels the in-place loop pipeline now buys (the portrait plate spends its
@@ -1792,7 +1792,12 @@ def _segment_frames(frames, workspace, log):
             _refine_white_matte(frames[index], segmented[index])
             for index in range(len(segmented))
         ]
-    source_frames = frames if not green_screen and rvm_frames is None else None
+    # Every white-plate path keeps the current decoded source as the authority
+    # for tiny source-supported details and enclosed facial content. RVM's
+    # recurrent matte is an excellent temporal baseline, but it can still fade
+    # pale shoes or classify bright teeth as plate; those local repairs need the
+    # same source evidence as the Vision fallback.
+    source_frames = frames if not green_screen else None
     repaired = _stabilise_segmented(
         segmented, poses, source_frames=source_frames)
     if green_screen:
@@ -1940,11 +1945,80 @@ def _recover_source_ankles(
             & (rows >= point[1] - above)
             & (rows <= point[1] + below)
         )
-    recovered = region & (source_alpha >= 24) & (source_alpha > alpha)
+    source_subject = region & (source_alpha >= 24)
+    if not source_subject.any():
+        return alpha
+    _count, labels = cv2.connectedComponents(
+        source_subject.astype(np.uint8), connectivity=8)
+    seeds = source_subject & (alpha >= 32)
+    kept = np.unique(labels[seeds])
+    kept = kept[kept > 0]
+    if not kept.size:
+        return alpha
+    connected = source_subject & np.isin(labels, kept)
+    recovered = connected & (source_alpha > alpha)
+    if not recovered.any():
+        output = alpha.copy()
+    else:
+        output = alpha.copy()
+        output[recovered] = source_alpha[recovered]
+        current[:, :, :3][recovered] = source[:, :, :3][recovered]
+    # A pale leather shoe may carry only 25–50% white-plate alpha even in its
+    # interior. Once that source component is connected to the tracked ankle,
+    # its one-pixel-or-wider core is subject, not a translucent plate fringe.
+    core = cv2.distanceTransform(
+        connected.astype(np.uint8), cv2.DIST_L2, 3) >= 0.9
+    solid = core & (source_alpha >= 40)
+    output[solid] = 255
+    current[:, :, :3][solid] = source[:, :, :3][solid]
+    return output
+
+
+def _fill_face_alpha_holes(current, alpha, source, pose):
+    """Restore small enclosed mouth/teeth holes inside the tracked face.
+
+    White-plate matting normally treats pure white as definitive background.
+    Teeth are the important exception: when a bright tooth patch is enclosed
+    by the face silhouette, removing it produces a black hole on dark themes.
+    Limit the exception to small child contours between the tracked nose and
+    neck so legitimate hair, arm, and leg negative space stays transparent.
+    """
+    if source is None:
+        return alpha
+    body_height = _pose_height(pose)
+    nose = _pose_point(pose, "nose", 0.20)
+    neck = _pose_point(pose, "neck", 0.20)
+    if body_height is None or nose is None or neck is None:
+        return alpha
+    mask = (alpha >= 24).astype(np.uint8)
+    contours, hierarchy = cv2.findContours(
+        mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:
+        return alpha
+    maximum_area = max(16.0, body_height * body_height * 0.010)
+    horizontal_limit = max(5.0, body_height * 0.075)
+    upper = nose[1] - body_height * 0.018
+    lower = neck[1] + body_height * 0.025
+    candidates = np.zeros(alpha.shape, dtype=np.uint8)
+    for index, contour in enumerate(contours):
+        if hierarchy[0][index][3] < 0:
+            continue
+        area = cv2.contourArea(contour)
+        moments = cv2.moments(contour)
+        if not moments["m00"] or not 2 <= area <= maximum_area:
+            continue
+        center_x = moments["m10"] / moments["m00"]
+        center_y = moments["m01"] / moments["m00"]
+        if (
+                abs(center_x - nose[0]) <= horizontal_limit
+                and upper <= center_y <= lower):
+            cv2.drawContours(
+                candidates, [contour], -1, 1, thickness=cv2.FILLED)
+    recovered = candidates.astype(bool)
     if not recovered.any():
         return alpha
     output = alpha.copy()
-    output[recovered] = source_alpha[recovered]
+    output[recovered] = 255
     current[:, :, :3][recovered] = source[:, :, :3][recovered]
     return output
 
@@ -2389,6 +2463,9 @@ def _stabilise_segmented(segmented, poses=None, source_frames=None):
             current[:, :, :3][recovered] = source[:, :, :3][recovered]
             stable_alpha = _veto_current_white_plate(
                 stable_alpha, source_confidence)
+            stable_alpha = _fill_face_alpha_holes(
+                current, stable_alpha, source,
+                poses[index] if poses else None)
             limb_quality = _source_upper_limb_quality(
                 stable_alpha, source_alpha,
                 poses[index] if poses else None,

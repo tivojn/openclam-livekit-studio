@@ -719,7 +719,10 @@ def redacted(cfg):
 PROVIDERS = {
     "llm": [
         dict(id="ollama", label="Ollama", local=True, key=False,
-             base="http://localhost:11434", note="Local models. Nothing leaves the Mac."),
+             base="http://localhost:11434", note=(
+                 "Local and Ollama Cloud models. Refresh lists models already added "
+                 "to this Ollama installation, not the full online catalog. Enter "
+                 "another tag directly; cloud tags require Ollama sign-in.")),
         dict(id="openai", label="OpenAI", key=True, base="https://api.openai.com/v1"),
         dict(id="anthropic", label="Anthropic", key=True, base="https://api.anthropic.com/v1"),
         dict(id="gemini", label="Google Gemini", key=True,
@@ -1035,6 +1038,34 @@ def _route_finish(kind, state, **details):
         route.update(details)
         route["state"] = state
         route["finished_at"] = time.time()
+        _routes[kind] = route
+
+
+def _route_observe_model(kind, model):
+    """Replace the requested model with a provider-returned runtime receipt.
+
+    Ollama includes the model that actually served every chat response. Keeping
+    that value in the route receipt gives the renderer an authoritative label;
+    the generated prose is never evidence of which model ran.
+    """
+    observed = str(model or "").strip()
+    if not observed:
+        return
+    with _route_lock:
+        route = dict(_routes.get(kind) or {})
+        if not route:
+            return
+        requested = str(route.get("requested_model") or route.get("model") or "").strip()
+        if requested and requested != observed:
+            route["requested_model"] = requested
+        route["model"] = observed
+        provider = route.get("provider") or ""
+        provider_spec = spec(kind, provider) or {}
+        label = provider_spec.get("label") or provider.replace("_", " ").title()
+        if provider == "ollama" and requested.endswith(":cloud"):
+            route["display"] = f"Ollama Cloud · {observed} (requested {requested})"
+        else:
+            route["display"] = " · ".join(value for value in (label, observed) if value)
         _routes[kind] = route
 
 
@@ -1763,6 +1794,7 @@ async def _chat_direct_stream(messages, c, system=""):
                         "options": {"temperature": temp, "num_predict": maxtok}}) as response:
                 response.raise_for_status()
                 async for event in _stream_json_events(response, sse=False):
+                    _route_observe_model("llm", event.get("model"))
                     latest += str((event.get("message") or {}).get("content") or "")
                     if latest:
                         yield latest
@@ -1857,7 +1889,9 @@ async def _chat_direct(messages, c, system=""):
                 "model": model, "messages": msgs, "stream": False, "think": False,
                 "options": {"temperature": temp, "num_predict": maxtok}})
             r.raise_for_status()
-            return (r.json().get("message", {}).get("content") or "").strip()
+            payload = r.json()
+            _route_observe_model("llm", payload.get("model"))
+            return (payload.get("message", {}).get("content") or "").strip()
 
         if p == "anthropic":
             r = await x.post(f"{base}/messages", headers={

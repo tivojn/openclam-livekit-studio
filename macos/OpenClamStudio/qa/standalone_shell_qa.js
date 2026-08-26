@@ -355,6 +355,7 @@ for (const required of [
   'onLiveToggle',
   'setLiveTalk',
   'exportAvatar',
+  'openMotionAsset',
   'saveMotionAsset',
   'setPetOpacity',
   'setPetRoam',

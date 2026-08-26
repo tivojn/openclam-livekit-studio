@@ -233,9 +233,10 @@ button.xai-mode{width:100%;padding:0;border:0;background:none;color:inherit;font
     align-items:stretch}
   #avatars-active .av .thumb{aspect-ratio:auto;height:100%;min-height:340px}
   #avatars-active .av .body{padding:22px 26px;align-self:center}
-  /* Two columns of metrics were right in a narrow card; across a wide one
-     they read as a sparse table, so let them breathe into four. */
-  #avatars-active .metrics{grid-template-columns:repeat(4,minmax(0,1fr));
+  /* The inspector body is only ~560px beside the portrait. Let the metric
+     cells choose two or three columns from their readable minimum instead of
+     forcing four columns and colliding long labels such as foreshortening. */
+  #avatars-active .metrics{grid-template-columns:repeat(auto-fit,minmax(158px,1fr));
     max-width:760px}
 }
 .av h3{margin:0 0 8px;font-size:15px;font-weight:600;display:flex;gap:6px;align-items:center}
@@ -246,8 +247,10 @@ button.xai-mode{width:100%;padding:0;border:0;background:none;color:inherit;font
 .av-name-input{flex:1;min-width:0;padding:3px 8px;border-radius:6px;
   font-size:14px;font-weight:600}
 .metrics{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:12px;margin:10px 0 12px}
-.metrics div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:3px 0}
-.metrics span:first-child{color:var(--dim)}
+.metrics div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;
+  gap:8px;min-width:0;border-bottom:1px solid var(--line);padding:3px 0}
+.metrics span:first-child{min-width:0;color:var(--dim);overflow-wrap:anywhere}
+.metrics span:last-child{white-space:nowrap;font-variant-numeric:tabular-nums}
 .metrics .g{color:var(--ok-text)}.metrics .b{color:var(--bad-text)}.metrics .w{color:var(--warn-text)}
 .acts{display:flex;gap:8px;flex-wrap:wrap}
 .drop{border:1.5px dashed var(--line-strong);border-radius:10px;padding:34px;text-align:center;
@@ -428,8 +431,11 @@ body{padding-bottom:84px}
 .body-view-tabs{position:relative;z-index:3;
   display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:8px;
   background:var(--glass);backdrop-filter:blur(12px);box-shadow:var(--shadow-sm)}
-.body-view-caption{position:relative;z-index:3;grid-row:3;width:100%;
-  color:var(--dim);font-size:11.5px;text-align:center}
+.body-view-meta{position:relative;z-index:3;grid-row:3;display:flex;width:100%;min-width:0;
+  align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+.body-view-caption{min-width:0;color:var(--dim);font-size:11.5px;text-align:center}
+.body-view-actions{display:flex;flex:none;align-items:center;gap:5px}
+.body-view-actions .motion-open,.body-view-actions .motion-save{font-size:10.5px}
 .body-mode-tabs{position:relative;z-index:5;
   display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:8px;
   background:var(--glass);backdrop-filter:blur(14px);box-shadow:var(--shadow-pop)}
@@ -474,9 +480,11 @@ body{padding-bottom:84px}
 .motion-asset-file{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   color:var(--faint);font:9.5px ui-monospace,SFMono-Regular,Menlo,monospace}.motion-asset-foot{display:flex;
   align-items:center;justify-content:space-between;gap:8px;margin-top:9px}.motion-asset-meta{min-width:0;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:9.5px}.motion-save{flex:none;border:1px solid var(--accent-line);
+  text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:9.5px}.motion-asset-actions{display:flex;
+  flex:none;align-items:center;gap:5px}.motion-open,.motion-save{flex:none;border:1px solid var(--accent-line);
   background:var(--accent-bg);color:var(--accent-text);border-radius:6px;padding:5px 9px;font:inherit;font-size:10px;font-weight:600;cursor:pointer}
-.motion-save:hover{filter:brightness(1.04)}.motion-save:disabled{opacity:.5;cursor:wait}.motion-save-status{
+.motion-open{border-color:var(--line-strong);background:var(--panel);color:var(--ink)}
+.motion-open:hover,.motion-save:hover{filter:brightness(1.04)}.motion-open:disabled,.motion-save:disabled{opacity:.5;cursor:wait}.motion-save-status{
   min-height:17px;margin:9px 2px 0;color:var(--dim);font-size:10.5px}.motion-library-empty{display:grid;grid-column:1/-1;place-items:center;
   min-height:300px;padding:26px;border:1px dashed var(--line-strong);border-radius:10px;color:var(--dim);text-align:center;line-height:1.6}
 .body-empty{position:relative;z-index:1;grid-row:2;align-self:center;max-width:390px;
@@ -1255,7 +1263,13 @@ document.documentElement.dataset.design='quiet';</script>
           </div>
         </div>
         <img class="body-preview hidden" id="body-preview" alt="Generated full-body companion">
-        <div class="body-view-caption hidden" id="body-view-caption"></div>
+        <div class="body-view-meta hidden" id="body-view-meta">
+          <div class="body-view-caption" id="body-view-caption"></div>
+          <div class="body-view-actions" aria-label="Full-body image file actions">
+            <button class="motion-open" id="body-view-open" type="button">Open</button>
+            <button class="motion-save" id="body-view-save" type="button">Save As…</button>
+          </div>
+        </div>
         <div class="body-empty" id="body-empty">
           <div class="body-empty-mark"></div>
           <strong style="display:block;color:var(--ink);font-size:16px;margin-bottom:8px">One identity. A complete presence.</strong>
@@ -2518,6 +2532,23 @@ function choiceField(kind, field, label, source, state) {
   const controlId = `${kind}-${field}-choice`;
   const current = CFG[kind][field] || '';
   const choices = state[source] || [];
+  if (kind === 'llm' && field === 'model' && CFG[kind].provider === 'ollama') {
+    const available = choices.length > 0;
+    const options = choices.map(value =>
+      `<option value="${esc(value)}" ${value === current ? 'selected' : ''}>${esc(value)}</option>`
+    ).join('');
+    return `<div class="f"><label for="${esc(controlId)}">${esc(label)}</label>
+      <select id="${esc(controlId)}" data-ollama-choice="${esc(field)}"
+        ${available ? '' : 'disabled'}>
+        <option value="" ${choices.includes(current) ? '' : 'selected'}>${available
+          ? 'Choose a model added to Ollama' : 'Refresh models added to Ollama'}</option>
+        ${options}
+      </select>
+      <label for="${esc(controlId)}-exact" class="note" style="margin-top:7px">Exact model tag</label>
+      <input id="${esc(controlId)}-exact" data-free="${esc(field)}"
+        value="${esc(current)}" placeholder="model:tag or model:cloud"
+        aria-label="Exact Ollama model tag" autocomplete="off"></div>`;
+  }
   const ready = state.ready && choices.length > 0;
   let options = '';
   if (ready) {
@@ -2586,7 +2617,9 @@ function renderBlock(kind) {
     config.has_key ? '<span class="pill ok">stored</span>' :
     inheritsKey ? `<span class="pill ok">using the ${esc(platformLabel)} Keychain key</span>` : '';
   const needsModel = kind !== 'tts' || !['kokoro', 'edge', 'system', 'xai'].includes(provider.id);
-  const modelReady = !needsModel || (state.models.length > 0 && state.models.includes(config.model));
+  const modelReady = !needsModel || (provider.id === 'ollama'
+    ? Boolean(String(config.model || '').trim())
+    : (state.models.length > 0 && state.models.includes(config.model)));
   const canTest = (!provider.key || state.ready) && modelReady;
   const credentialAvailable = usesGlobalXai ? XAI_ACCOUNT.status.connected
     : (!provider.key || config.has_key
@@ -2662,8 +2695,18 @@ function renderBlock(kind) {
     dirty();
     renderBlock(kind);
   });
+  element.querySelectorAll('[data-ollama-choice]').forEach(select => select.onchange = event => {
+    if (!event.target.value) return;
+    config[select.dataset.ollamaChoice] = event.target.value;
+    const exact = element.querySelector(`[data-free="${select.dataset.ollamaChoice}"]`);
+    if (exact) exact.value = event.target.value;
+    dirty();
+  });
   element.querySelectorAll('[data-free]').forEach(input => input.oninput = event => {
     config[input.dataset.free] = event.target.value;
+    const chooser = element.querySelector(`[data-ollama-choice="${input.dataset.free}"]`);
+    if (chooser) chooser.value = [...chooser.options].some(option =>
+      option.value === event.target.value) ? event.target.value : '';
     dirty();
   });
   const webSearch = element.querySelector('[data-xai-web-search]');
@@ -2754,6 +2797,12 @@ async function fetchModels(kind, quiet = false) {
       state.detail || `${count} reviewed choice${count === 1 ? '' : 's'} loaded; use Test to check the exact selected model.`)}`;
     return;
   }
+  if (requestedProvider === 'ollama') {
+    resultBox.innerHTML = `<span class="pill ok">Ollama checked</span> ${count
+      ? `${count} model${count === 1 ? '' : 's'} already added to this installation.`
+      : 'No model has been added to this installation yet.'} Enter another exact tag above and use Test to verify it.`;
+    return;
+  }
   resultBox.innerHTML = `<span class="pill ok">provider checked</span> ${count
     ? `${count} available choice${count === 1 ? '' : 's'} returned by the provider.`
     : 'The provider accepted this account but returned no selectable choices.'}`;
@@ -2771,13 +2820,21 @@ async function testOne(kind, button) {
     body: JSON.stringify({ kind, cfg: config })
   });
   const isXai = CFG[kind].provider === 'xai';
+  const isOllama = CFG[kind].provider === 'ollama';
   let detail = isXai && !response.ok
     ? xaiAuthErrorCopy(response.detail || response.error) : String(response.detail || '');
   if (isXai && kind === 'llm' && response.ok) {
     const selected = String(CFG[kind].model || '').trim();
     detail = `${selected || 'The selected Grok model'} answered the provider check${detail ? ` · ${detail}` : ''}`;
   }
-  const success = response.ok && isXai && kind === 'llm' ? 'provider checked'
+  if (isOllama && kind === 'llm' && response.ok) {
+    const selected = String(CFG[kind].model || '').trim();
+    const route = response.route && typeof response.route === 'object' ? response.route : {};
+    const confirmed = String(route.display || route.model || selected).trim();
+    detail = `${confirmed || 'The selected Ollama model'} answered the provider check${detail ? ` · ${detail}` : ''}`;
+  }
+  const success = response.ok && isOllama && kind === 'llm' ? 'model confirmed'
+    : response.ok && isXai && kind === 'llm' ? 'provider checked'
     : response.ok ? 'works' : 'failed';
   box.innerHTML = `<span class="pill ${response.ok ? 'ok' : 'bad'}">${success}</span> ${esc(detail)}`;
   button.disabled = false;
@@ -3779,6 +3836,8 @@ function setBodyBusy(busy) {
     $('#' + id).disabled = busy || !hasBody || !hasVideoProvider;
   });
   $('#body-remove').disabled = busy;
+  $('#body-view-open').disabled = busy;
+  $('#body-view-save').disabled = busy;
   document.querySelectorAll('[data-walk-style], [data-idle-pose], [data-move-style]').forEach(button => {
     button.disabled = busy;
   });
@@ -3807,7 +3866,8 @@ function stopBodyMotionCycle() {
 }
 
 function bodyMotionAssetUrl(asset) {
-  const parts = ['motion', ...String(asset.relative_path || '').split('/').filter(Boolean)];
+  const scope = asset.scope === 'body' ? 'body' : 'motion';
+  const parts = [scope, ...String(asset.relative_path || '').split('/').filter(Boolean)];
   return `/files/${encodeURIComponent(BODY_SLUG)}/${parts.map(encodeURIComponent).join('/')}`;
 }
 
@@ -3857,6 +3917,7 @@ async function saveBodyMotionAsset(asset, button) {
     if (SHELL && typeof SHELL.saveMotionAsset === 'function') {
       const result = await SHELL.saveMotionAsset({
         slug: BODY_SLUG,
+        scope: asset.scope || 'motion',
         relativePath: asset.relative_path,
         defaultName: asset.name,
       });
@@ -3872,6 +3933,29 @@ async function saveBodyMotionAsset(asset, button) {
     }
   } catch (error) {
     status.textContent = `Could not save ${asset.name}: ${error.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function openBodyMotionAsset(asset, button) {
+  const status = $('#body-motion-save-status');
+  if (button) button.disabled = true;
+  status.textContent = `Opening ${asset.name}…`;
+  try {
+    if (SHELL && typeof SHELL.openMotionAsset === 'function') {
+      const result = await SHELL.openMotionAsset({
+        slug: BODY_SLUG,
+        scope: asset.scope || 'motion',
+        relativePath: asset.relative_path,
+      });
+      status.textContent = result && result.opened ? `Opened ${asset.name}.` : '';
+    } else {
+      window.open(bodyMotionAssetUrl(asset), '_blank', 'noopener');
+      status.textContent = `Opened ${asset.name}.`;
+    }
+  } catch (error) {
+    status.textContent = `Could not open ${asset.name}: ${error.message}`;
   } finally {
     if (button) button.disabled = false;
   }
@@ -3893,12 +3977,35 @@ function renderBodyMotionAssets(kind) {
       <span class="motion-asset-file">${esc(asset.name)}</span>
       <div class="motion-asset-foot">
         <span class="motion-asset-meta">${esc(bodyMotionAssetMeta(asset))}</span>
-        <button class="motion-save" type="button" data-motion-save="${index}">Save As…</button>
+        <span class="motion-asset-actions">
+          <button class="motion-open" type="button" data-motion-open="${index}">Open</button>
+          <button class="motion-save" type="button" data-motion-save="${index}">Save As…</button>
+        </span>
       </div>
     </article>`).join('');
+  grid.querySelectorAll('[data-motion-open]').forEach(button => {
+    button.onclick = () => openBodyMotionAsset(assets[Number(button.dataset.motionOpen)], button);
+  });
   grid.querySelectorAll('[data-motion-save]').forEach(button => {
     button.onclick = () => saveBodyMotionAsset(assets[Number(button.dataset.motionSave)], button);
   });
+}
+
+function currentBodyViewAsset() {
+  if (!BODY_STATE || !BODY_STATE.has_body) return null;
+  const metadata = BODY_STATE.body || {};
+  const records = metadata.views && Object.keys(metadata.views).length
+    ? metadata.views : {front: {image: metadata.image || 'body.png'}};
+  const record = records[BODY_VIEW];
+  if (!record) return null;
+  const relativePath = BODY_VIEW === 'front'
+    ? (record.preview_image || record.image) : record.image;
+  if (!relativePath) return null;
+  return {
+    scope: 'body',
+    relative_path: relativePath,
+    name: String(relativePath).split('/').filter(Boolean).pop() || `${BODY_VIEW}.png`,
+  };
 }
 
 function drawBodyMotionFrame(state) {
@@ -4038,13 +4145,13 @@ function renderBodyPreview() {
   });
   if (!showingBody) {
     $('#body-view-tabs').classList.add('hidden');
-    $('#body-view-caption').classList.add('hidden');
+    $('#body-view-meta').classList.add('hidden');
     renderBodyMotionLibrary();
     return;
   }
   stopBodyMotionCycle();
   $('#body-view-tabs').classList.toggle('hidden', !hasBody || available.length < 2);
-  $('#body-view-caption').classList.toggle('hidden', !hasBody || available.length < 2);
+  $('#body-view-meta').classList.toggle('hidden', !hasBody);
   if (!hasBody) return;
   const record = records[BODY_VIEW];
   const previewImage = BODY_VIEW === 'front'
@@ -4776,6 +4883,14 @@ async function removeBody() {
 }
 
 $('#body-close').onclick = closeBody;
+$('#body-view-open').onclick = () => {
+  const asset = currentBodyViewAsset();
+  if (asset) void openBodyMotionAsset(asset, $('#body-view-open'));
+};
+$('#body-view-save').onclick = () => {
+  const asset = currentBodyViewAsset();
+  if (asset) void saveBodyMotionAsset(asset, $('#body-view-save'));
+};
 $('#body-cancel').onclick = closeBody;
 $('#body-generate').onclick = generateBody;
 $('#body-edit-apply').onclick = editBody;

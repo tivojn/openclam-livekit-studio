@@ -339,6 +339,44 @@ class AlphaAccuracy(unittest.TestCase):
         self.assertEqual((20, 35, 65), tuple(current[144, 108, :3]))
         self.assertEqual(0, int(repaired[144, 94]))
 
+    def test_pose_guided_source_recovery_makes_pale_shoe_core_opaque(self):
+        alpha = np.zeros((180, 160), np.uint8)
+        alpha[55:137, 99:106] = 255
+        alpha[132:141, 91:110] = 255
+        current = np.zeros((180, 160, 4), np.uint8)
+        current[:, :, 3] = alpha
+        current[:, :, :3][alpha > 0] = (70, 90, 120)
+
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[alpha > 0] = (70, 90, 120)
+        source[140:150, 106:111] = (232, 232, 232)
+
+        repaired = motion._recover_source_ankles(
+            current, alpha, source, _pose())
+
+        self.assertEqual(255, int(repaired[145, 108]))
+        self.assertEqual((232, 232, 232), tuple(current[145, 108, :3]))
+        self.assertEqual(0, int(repaired[145, 94]))
+
+    def test_face_hole_repair_restores_teeth_but_not_leg_gap(self):
+        alpha = np.zeros((180, 160), np.uint8)
+        alpha[8:62, 52:105] = 255
+        alpha[62:142, 45:112] = 255
+        alpha[29:35, 73:84] = 0
+        alpha[103:124, 75:82] = 0
+        current = np.zeros((180, 160, 4), np.uint8)
+        current[:, :, 3] = alpha
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[alpha > 0] = (55, 70, 105)
+        source[29:35, 73:84] = (245, 245, 245)
+
+        repaired = motion._fill_face_alpha_holes(
+            current, alpha, source, _pose())
+
+        self.assertTrue(np.all(repaired[29:35, 73:84] == 255))
+        self.assertEqual((245, 245, 245), tuple(current[31, 78, :3]))
+        self.assertTrue(np.all(repaired[103:124, 75:82] == 0))
+
     def test_full_stabiliser_preserves_calf_gap_and_repairs_real_dropout(self):
         alpha = np.zeros((160, 120), np.uint8)
         alpha[10:150, 30:90] = 255
@@ -396,6 +434,38 @@ class AlphaAccuracy(unittest.TestCase):
         self.assertEqual(1, len(repaired))
         self.assertIs(False, render_calls[0]["tight"])
         self.assertEqual(1, decontaminate.call_count)
+
+    def test_segment_frames_keeps_source_authority_with_rvm(self):
+        frame = np.full((64, 48, 3), 255, np.uint8)
+        frame[12:58, 18:30] = (40, 55, 90)
+        rgba = np.dstack((frame, np.where(
+            np.any(frame < 240, axis=2), 255, 0).astype(np.uint8)))
+        pose = _pose(left_ankle=(20, 52), right_ankle=(28, 52))
+
+        def render(_source, destination, **kwargs):
+            cv2.imwrite(destination, rgba)
+            with open(kwargs["pose_destination"], "w") as handle:
+                json.dump(pose, handle)
+            return {"ok": True}
+
+        def stabilise(segmented, poses, source_frames=None):
+            self.assertIs(frame, source_frames[0])
+            return segmented
+
+        with tempfile.TemporaryDirectory() as workspace:
+            with (
+                mock.patch.object(motion, "_is_green_screen", return_value=False),
+                mock.patch.object(motion, "_rvm_matte", return_value=[rgba]),
+                mock.patch.object(motion.cutout, "render", side_effect=render),
+                mock.patch.object(
+                    motion, "_stabilise_segmented", side_effect=stabilise),
+                mock.patch.object(
+                    motion, "_color_fidelity_quality", return_value={"valid": True}),
+            ):
+                _repaired, _poses, method, _quality = motion._segment_frames(
+                    [frame], workspace, lambda _message: None)
+
+        self.assertEqual("robust-video-matting", method)
 
     def test_stabiliser_rejects_mismatched_source_sequence(self):
         rgba = np.zeros((16, 16, 4), np.uint8)

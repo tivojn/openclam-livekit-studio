@@ -829,6 +829,7 @@ class StandaloneRouteTests(unittest.TestCase):
 
     def test_regular_chat_uses_direct_provider_and_keeps_media_contract(self):
         cfg = copy.deepcopy(P.DEFAULTS)
+        cfg["llm"]["model"] = "qwen3.8-uncensored:q8_0"
         spoken = {"text": "Hello", "audio": "", "track": [],
                   "dur": 0.0, "tier": "none"}
         with patch.object(self.application.P, "load", return_value=cfg), \
@@ -842,8 +843,35 @@ class StandaloneRouteTests(unittest.TestCase):
                 self.application.Turn(history=[{"role": "user", "content": "Hi"}])
             ))
         chat.assert_awaited_once()
+        system = chat.await_args.kwargs["system"]
+        self.assertIn("HOST RUNTIME FACT", system)
+        self.assertIn("Ollama", system)
+        self.assertIn("qwen3.8-uncensored:q8_0", system)
+        self.assertIn("Do not substitute a model or product name remembered from training", system)
         self.assertEqual(result["text"], "Hello")
         self.assertEqual(result["media"], [])
+
+    def test_llm_test_returns_the_authoritative_route_receipt(self):
+        receipt = {
+            "provider": "ollama",
+            "model": "qwen3.8-uncensored:q8_0",
+            "display": "Ollama · qwen3.8-uncensored:q8_0",
+            "state": "success",
+        }
+        with patch.object(
+            self.application.P, "load", return_value=copy.deepcopy(P.DEFAULTS)
+        ), patch.object(
+            self.application.P, "test", new=AsyncMock(
+                return_value={"ok": True, "detail": "ok"}
+            )
+        ), patch.object(self.application.P, "last_route", return_value=receipt):
+            result = asyncio.run(self.application.api_test({
+                "kind": "llm",
+                "cfg": {"provider": "ollama", "model": receipt["model"]},
+            }))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(receipt, result["route"])
 
     def test_runtime_sources_contain_no_retired_cross_app_hooks(self):
         banned = (

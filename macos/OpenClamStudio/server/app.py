@@ -3105,7 +3105,10 @@ async def api_models(body: dict):
 async def api_test(body: dict):
     kind = body.get("kind", "llm")
     cfg = _with_explicit_xai_auth(_with_key(kind, body.get("cfg")))
-    return await P.test(kind, cfg)
+    result = await P.test(kind, cfg)
+    if kind == "llm":
+        result["route"] = P.last_route("llm")
+    return result
 
 
 # ---------------------------------------------------------------- chat
@@ -3394,6 +3397,36 @@ def effective_persona(cfg=None):
     return mine or house
 
 
+def _llm_runtime_identity(cfg):
+    """Give the model the host-selected identity without trusting self-report.
+
+    A language model may identify itself as a product seen during training.
+    OpenClam knows the actual route, so questions about the running model must
+    be answered from configuration and the provider receipt instead.
+    """
+    block = (cfg or {}).get("llm") or {}
+    provider = str(block.get("provider") or "").strip()
+    model = str(block.get("model") or P.FALLBACK_MODEL.get(provider, "")).strip()
+    if not provider or not model:
+        return ""
+    safe_provider = re.sub(r"[^A-Za-z0-9._:/@+ -]", "?", provider)[:80]
+    safe_model = re.sub(r"[^A-Za-z0-9._:/@+ -]", "?", model)[:200]
+    label = str((P.spec("llm", provider) or {}).get("label") or safe_provider)
+    return (
+        "\n\nHOST RUNTIME FACT: OpenClam is routing this reply through "
+        f"{label} using the exact model identifier {safe_model}. If asked which "
+        "language model is running, report that provider and identifier exactly. "
+        "Do not substitute a model or product name remembered from training."
+    )
+
+
+def _direct_chat_system(cfg, now=None):
+    now = now or datetime.datetime.now().astimezone()
+    return (effective_persona(cfg) + _OWN_TOOLS + _llm_runtime_identity(cfg)
+            + "\n\nRIGHT NOW it is " + now.strftime("%A %Y-%m-%dT%H:%M %Z")
+            + ". Compute every relative date from this.")
+
+
 _GENERATED_FILES = {}
 _GENERATED_MEDIA_SUFFIXES = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic",
@@ -3426,10 +3459,7 @@ async def reply(t: Turn):
     msgs = list(t.history[-12:])
     # The brain has no clock of its own: without this it books "tomorrow"
     # against its training-time sense of the date (sim, 2026-08-07).
-    now = datetime.datetime.now().astimezone()
-    system = (effective_persona(cfg) + _OWN_TOOLS
-              + "\n\nRIGHT NOW it is " + now.strftime("%A %Y-%m-%dT%H:%M %Z")
-              + ". Compute every relative date from this.")
+    system = _direct_chat_system(cfg)
     try:
         text = await P.chat(msgs, cfg["llm"], system=system)
     except Exception as e:
@@ -3490,10 +3520,7 @@ async def _finish_direct_reply(text, cfg):
 async def reply_stream(t: Turn):
     cfg = P.load()
     msgs = list(t.history[-12:])
-    now = datetime.datetime.now().astimezone()
-    system = (effective_persona(cfg) + _OWN_TOOLS
-              + "\n\nRIGHT NOW it is " + now.strftime("%A %Y-%m-%dT%H:%M %Z")
-              + ". Compute every relative date from this.")
+    system = _direct_chat_system(cfg)
 
     async def events():
         raw_text = ""

@@ -19,6 +19,12 @@ function excludes(pattern, message) {
 }
 
 includes('<title>OpenClam Studio · Settings</title>');
+includes('placeholder="model:tag or model:cloud"');
+includes('data-ollama-choice="${esc(field)}"');
+includes('Choose a model added to Ollama');
+includes('model confirmed');
+includes("provider.id === 'ollama'");
+includes('already added to this installation');
 includes('<html lang="en">');
 includes('Avatar Studio');
 includes('Avatar Store');
@@ -215,6 +221,14 @@ includes("BODY_PROMPT_STAGE === 'analysis'");
 includes('Edits you make while it works will not be overwritten.');
 includes("const promptWasEdited = field.value !== promptAtStart");
 includes('@media (prefers-reduced-motion:reduce)');
+includes('data-motion-open="${index}"');
+includes('data-motion-save="${index}"');
+includes('id="body-view-open"');
+includes('id="body-view-save"');
+includes("scope: 'body'");
+includes("typeof SHELL.openMotionAsset === 'function'");
+includes('repeat(auto-fit,minmax(158px,1fr))');
+includes('grid-template-columns:minmax(0,1fr) auto;align-items:baseline');
 
 // Under-eye motion must survive a calibration round trip as an independent
 // target. It used to borrow the Cheeks value, which hid the target entirely

@@ -1043,6 +1043,66 @@ class DirectRoutingTests(unittest.TestCase):
                 asyncio.run(P.chat([], config))
         self.assertEqual("failed", P.last_route("llm")["state"])
 
+    def test_ollama_chat_sends_exact_selection_and_records_response_model(self):
+        observed = {}
+
+        class Response:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {
+                    "model": "qwen3.8-uncensored:q8_0",
+                    "message": {"content": "hello"},
+                }
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, url, **kwargs):
+                observed["url"] = url
+                observed.update(kwargs)
+                return Response()
+
+        config = {
+            "provider": "ollama", "model": "qwen3.8-uncensored:q8_0",
+            "temperature": 0.2, "max_tokens": 77,
+        }
+        with patch.object(P.httpx, "AsyncClient", return_value=Client()):
+            result = asyncio.run(P.chat(
+                [{"role": "user", "content": "hi"}], config,
+                system="runtime prompt",
+            ))
+
+        self.assertEqual("hello", result)
+        self.assertEqual("http://localhost:11434/api/chat", observed["url"])
+        self.assertEqual("qwen3.8-uncensored:q8_0", observed["json"]["model"])
+        self.assertFalse(observed["json"]["think"])
+        self.assertEqual(77, observed["json"]["options"]["num_predict"])
+        self.assertEqual("qwen3.8-uncensored:q8_0", P.last_route("llm")["model"])
+        self.assertEqual("Ollama · qwen3.8-uncensored:q8_0",
+                         P.last_route("llm")["display"])
+
+    def test_ollama_cloud_receipt_keeps_requested_alias_and_serving_model(self):
+        P._route_begin("llm", P._direct_route("llm", {
+            "provider": "ollama", "model": "glm-5.2:cloud",
+        }))
+        P._route_observe_model("llm", "glm-5.2")
+
+        route = P.last_route("llm")
+        self.assertEqual("glm-5.2:cloud", route["requested_model"])
+        self.assertEqual("glm-5.2", route["model"])
+        self.assertEqual(
+            "Ollama Cloud · glm-5.2 (requested glm-5.2:cloud)",
+            route["display"],
+        )
+
     def test_speech_success_and_failure_update_the_route_receipt(self):
         config = {"provider": "system", "voice": "Samantha", "speed": 1.0}
         output = (np.zeros(240, np.float32), None)

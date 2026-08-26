@@ -190,6 +190,10 @@ for (const route of ['/reply/stream', '/stt', '/say', '/api/livekit/session']) {
 }
 assert.match(source, /fetch\('\/reply\/stream',[\s\S]{0,900}response\.body\.getReader\(\)/,
   'local Mac chat must consume the authenticated incremental reply stream');
+assert.match(source, /appendAssistantActions\(liveReply\.row, answer, result\.llm_route\)/,
+  'a completed local reply must show the authoritative runtime route receipt');
+assert.match(source, /className = 'response-route'[\s\S]{0,180}runtime\.display/,
+  'runtime model identity must come from route metadata rather than generated prose');
 assert.match(source, /liveReply = addMessage\('assistant', '', \{ readable: false, persist: false \}\)/,
   'streamed text must use one ephemeral assistant bubble until completion');
 assert.match(source, /event\.type === 'complete'[\s\S]{0,120}result = event/,
@@ -469,8 +473,8 @@ assert.match(source, /id="composer"[^>]*maxlength="12000"[^>]*dir="auto"/);
 assert.match(source, /id="selectionActions" role="toolbar" aria-label="Selected response actions"/);
 assert.match(source, /id="selectionCopy"[^>]*>Copy<\/button>/);
 assert.match(source, /id="selectionAskAI"[^>]*aria-keyshortcuts="Meta\+Shift\+A Control\+Shift\+A">Ask AI<\/button>/);
-assert.match(source, /const appendAssistantActions = \(row, text\) => \{[\s\S]{0,1500}'Copy this response'[\s\S]{0,1500}'Read this response aloud'/);
-assert.match(source, /role === 'assistant' && text && options\.readable !== false[\s\S]{0,180}appendAssistantActions\(row, String\(text\)\)/);
+assert.match(source, /const appendAssistantActions = \(row, text, route = null\) => \{[\s\S]{0,1900}'Copy this response'[\s\S]{0,1500}'Read this response aloud'/);
+assert.match(source, /role === 'assistant' && text && options\.readable !== false[\s\S]{0,180}appendAssistantActions\(row, String\(text\), options\.route\)/);
 assert.match(source, /conversation\.addEventListener\('contextmenu',[\s\S]{0,220}feedbackSelectionCandidate\(getSelection\(\)\)[\s\S]{0,220}showSelectionActions\(candidate\)/);
 assert.match(source, /navigator\.clipboard[\s\S]{0,180}navigator\.clipboard\.writeText\(text\)/);
 assert.match(source, /document\.execCommand\('copy'\)/,

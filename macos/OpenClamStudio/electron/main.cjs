@@ -203,26 +203,28 @@ function ensureDataRoot() {
   fs.mkdirSync(dataRoot(), { recursive: true, mode: 0o700 });
 }
 
-function resolveMotionAsset(slug, relativePath) {
+function resolveStudioAsset(slug, relativePath, scope = 'motion') {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,62})$/.test(String(slug || ''))) {
     throw new Error('Invalid avatar.');
   }
-  const root = fs.realpathSync(path.join(dataRoot(), 'avatars', slug, 'motion'));
+  const category = String(scope || 'motion');
+  if (!['body', 'motion'].includes(category)) throw new Error('Invalid studio asset.');
+  const root = fs.realpathSync(path.join(dataRoot(), 'avatars', slug, category));
   const requested = String(relativePath || '').split(path.win32.sep).join('/');
-  if (!requested || path.isAbsolute(requested)) throw new Error('Invalid motion asset.');
+  if (!requested || path.isAbsolute(requested)) throw new Error('Invalid studio asset.');
   const source = fs.realpathSync(path.resolve(root, requested));
-  if (!source.startsWith(`${root}${path.sep}`)) throw new Error('Invalid motion asset.');
-  if (!fs.statSync(source).isFile()) throw new Error('Motion asset is unavailable.');
+  if (!source.startsWith(`${root}${path.sep}`)) throw new Error('Invalid studio asset.');
+  if (!fs.statSync(source).isFile()) throw new Error('Studio asset is unavailable.');
   return source;
 }
 
 async function saveMotionAsset(event, asset = {}) {
-  const source = resolveMotionAsset(asset.slug, asset.relativePath);
+  const source = resolveStudioAsset(asset.slug, asset.relativePath, asset.scope);
   const requestedName = path.basename(String(asset.defaultName || path.basename(source)));
   const defaultName = requestedName && requestedName !== '.' ? requestedName : path.basename(source);
   const extension = path.extname(defaultName).slice(1);
   const options = {
-    title: 'Save motion asset',
+    title: 'Save Full Body Studio asset',
     buttonLabel: 'Save',
     defaultPath: path.join(app.getPath('downloads'), defaultName),
     properties: ['createDirectory', 'showOverwriteConfirmation'],
@@ -237,6 +239,13 @@ async function saveMotionAsset(event, asset = {}) {
     await fs.promises.copyFile(source, result.filePath);
   }
   return { saved: true, canceled: false, filePath: result.filePath };
+}
+
+async function openMotionAsset(_event, asset = {}) {
+  const source = resolveStudioAsset(asset.slug, asset.relativePath, asset.scope);
+  const error = await shell.openPath(source);
+  if (error) throw new Error(error);
+  return { opened: true, filePath: source };
 }
 
 function avatarStore() {
@@ -2730,6 +2739,7 @@ function installIpc() {
   ipcMain.handle('openclam:get-state', (event) => (
     isBuddySender(event) ? buddyShellState() : shellState()));
   ipcMain.handle('openclam:copy-settings-text', writeSettingsClipboard);
+  ipcMain.handle('openclam:open-motion-asset', openMotionAsset);
   ipcMain.handle('openclam:save-motion-asset', saveMotionAsset);
   ipcMain.handle('openclam:avatar-store-catalog', avatarStoreCatalog);
   ipcMain.handle('openclam:avatar-store-thumbnail', avatarStoreThumbnail);
