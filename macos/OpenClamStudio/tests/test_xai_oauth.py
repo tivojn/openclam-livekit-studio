@@ -810,7 +810,7 @@ class XaiOAuthRouteTests(unittest.TestCase):
                  new=mock.AsyncMock(return_value={"ok": True}),
              ) as provider_test:
             result = asyncio.run(application.api_test({"kind": "llm"}))
-        self.assertEqual(result, {"ok": True})
+        self.assertEqual(result, {"ok": True, "route": {}})
         self.assertNotIn("api_key", provider_test.await_args.args[1])
 
 
