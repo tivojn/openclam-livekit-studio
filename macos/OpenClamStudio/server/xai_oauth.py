@@ -465,6 +465,7 @@ def _iso_time(timestamp: float | None) -> str | None:
 
 def status() -> dict:
     mode = auth_mode()
+    persistence = "session" if _dev_session_only() else "keychain"
     try:
         api_key = _vault_get(API_KEY_ACCOUNT)
     except XaiOAuthStorageError:
@@ -523,6 +524,10 @@ def status() -> dict:
             "connected": oauth_connected,
             "refreshable": oauth_refreshable,
             "expires_at": _iso_time(credential.expires_at if credential else None),
+            # Public capability metadata only. This lets the renderer explain
+            # why an unsigned source launch requires a fresh consent after a
+            # restart without ever reading or exposing credential material.
+            "persistence": persistence,
         },
         "independent_notice": INDEPENDENCE_NOTICE,
     }

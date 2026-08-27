@@ -12,10 +12,10 @@
     {
       "id": "ara",
       "display_name": "Ara",
-      "source_slug": "ara-2",
-      "source_archive": "Ara-current-macOS.avtr",
-      "package_sha256": "65459a4d60f837ae538d778bc6f85031485aa3b934f392c971d2ba78e9274bb4",
-      "included_bytes": 15150569,
+      "source_slug": "cleo-full-expression-fresh-20260827",
+      "source_archive": "ara-ios-light.avtr",
+      "package_sha256": "3b77c39500fa2c68b1bc4b585896a2f99cf71714961035d2943e9d71c4ca8aa1",
+      "included_bytes": 39235834,
       "rights_basis": "user-confirmed-owned-and-authorized"
     }
   ]

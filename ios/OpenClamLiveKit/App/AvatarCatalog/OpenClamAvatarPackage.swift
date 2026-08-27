@@ -39,8 +39,31 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
     let id: String
     let displayName: String
     let rig: OpenClamAvatarRigGeometry
+    let expression: OpenClamAvatarExpressionGeometry?
     let assets: [String: OpenClamAvatarPackageAsset]
     let motions: [String: OpenClamAvatarPackageMotionAsset]?
+
+    init(
+        format: String,
+        version: Int,
+        variant: String,
+        id: String,
+        displayName: String,
+        rig: OpenClamAvatarRigGeometry,
+        expression: OpenClamAvatarExpressionGeometry? = nil,
+        assets: [String: OpenClamAvatarPackageAsset],
+        motions: [String: OpenClamAvatarPackageMotionAsset]? = nil
+    ) {
+        self.format = format
+        self.version = version
+        self.variant = variant
+        self.id = id
+        self.displayName = displayName
+        self.rig = rig
+        self.expression = expression
+        self.assets = assets
+        self.motions = motions
+    }
 }
 
 enum OpenClamAvatarArchiveEntryKind: Equatable, Sendable {
@@ -99,7 +122,7 @@ enum OpenClamAvatarPackageError: LocalizedError, Equatable {
         case .sourceIsNotARegularFile:
             "That item is not a regular avatar file."
         case .archiveTooLarge:
-            "This avatar package is too large for the iPhone light format."
+            "This avatar package is too large for the iPhone runtime format."
         case .invalidArchive:
             "This file is damaged or is not a valid avatar package."
         case .invalidArchiveEntry:
@@ -107,21 +130,21 @@ enum OpenClamAvatarPackageError: LocalizedError, Equatable {
         case .duplicateArchivePath:
             "This avatar contains duplicate files and cannot be imported safely."
         case .unexpectedArchivePath:
-            "This is not an iPhone-light avatar package because it contains extra files."
+            "This is not a valid iPhone avatar package because it contains extra files."
         case .tooManyFiles:
             "This avatar contains an unexpected number of files."
         case .packageContentsTooLarge:
-            "The expanded avatar is too large for the iPhone light format."
+            "The expanded avatar is too large for the iPhone runtime format."
         case .manifestTooLarge, .invalidManifest:
             "The avatar manifest is invalid."
         case .privateMetadataNotAllowed:
-            "This package contains unsupported private or authoring metadata. Export the iPhone-light version instead."
+            "This package contains unsupported private or authoring metadata. Export the full-expression iPhone version instead."
         case let .unsupportedFormat(format):
-            "Avatar format “\(format)” is not supported. Export an OpenClam iPhone-light avatar."
+            "Avatar format “\(format)” is not supported. Export an OpenClam iPhone avatar."
         case let .unsupportedVersion(version):
-            "Avatar version \(version) is not supported. Export version 2 or 3 for iPhone."
+            "Avatar version \(version) is not supported. Export version 2, 3, or 4 for iPhone."
         case let .unsupportedVariant(variant):
-            "Avatar variant “\(variant)” is not supported. Export the ios-light variant."
+            "Avatar variant “\(variant)” is not supported. Export the full-expression iPhone version."
         case .invalidIdentifier:
             "This avatar has an invalid identifier."
         case .catalogIdentityMismatch:
@@ -168,21 +191,28 @@ enum OpenClamAvatarPackageContract {
     static let canonicalFormat = "openclam-avatar"
     static let legacyVersion = 2
     static let motionVersion = 3
+    static let expressionVersion = 4
     /// Kept for existing v2 exporter/tests; new motion-capable exports use
     /// `motionVersion` explicitly.
     static let version = legacyVersion
-    static let supportedVersions = Set([legacyVersion, motionVersion])
+    static let supportedVersions = Set([legacyVersion, motionVersion, expressionVersion])
     static let variant = "ios-light"
     static let manifestPath = "manifest.json"
 
-    static let maximumArchiveByteCount: UInt64 = 32 * 1_024 * 1_024
-    static let maximumExpandedByteCount: UInt64 = 64 * 1_024 * 1_024
+    static let maximumArchiveByteCount: UInt64 = 64 * 1_024 * 1_024
+    static let maximumExpandedByteCount: UInt64 = 96 * 1_024 * 1_024
+    static let legacyMaximumArchiveByteCount: UInt64 = 32 * 1_024 * 1_024
+    static let legacyMaximumExpandedByteCount: UInt64 = 64 * 1_024 * 1_024
     static let maximumAssetByteCount: UInt64 = 16 * 1_024 * 1_024
     static let maximumManifestByteCount: UInt64 = 128 * 1_024
     static let maximumImageDimension = 8_192
+    static let maximumExpressionTextureDimension = 8_192
     static let maximumDecodedPixelCount: UInt64 = 16 * 1_024 * 1_024
+    static let maximumAggregateDecodedPixelCount: UInt64 = 48 * 1_024 * 1_024
     static let baseFileCount = 19
-    static let maximumFileCount = baseFileCount + OpenClamAvatarMotionKind.allCases.count
+    static let fullExpressionFileCount = 33
+    static let maximumFileCount = fullExpressionFileCount
+        + OpenClamAvatarMotionKind.allCases.count
     static let maximumMotionDimension = 4_096
     static let maximumMotionPixelCount: UInt64 = 16 * 1_024 * 1_024
     static let minimumMotionDurationMilliseconds = 250
@@ -217,7 +247,7 @@ enum OpenClamAvatarPackageContract {
             .init(key: "gaze-left-atlas", role: .gazeLeftAtlas, baseFilename: "gaze-left-atlas", allowsJPEG: false),
             .init(key: "gaze-right-atlas", role: .gazeRightAtlas, baseFilename: "gaze-right-atlas", allowsJPEG: false),
         ]
-        values.append(contentsOf: OpenClamAvatarViseme.allCases.map { viseme in
+        values.append(contentsOf: OpenClamAvatarViseme.legacyCases.map { viseme in
             .init(
                 key: "viseme-\(viseme.rawValue)",
                 role: .viseme(viseme),
@@ -231,6 +261,37 @@ enum OpenClamAvatarPackageContract {
     static let assetSpecificationsByKey = Dictionary(
         uniqueKeysWithValues: assetSpecifications.map { ($0.key, $0) }
     )
+
+    static let expressionAssetSpecifications: [AssetSpecification] = [
+        .init(key: "smile-atlas", role: .smileAtlas, baseFilename: "smile-atlas", allowsJPEG: false),
+        .init(key: "emotion-mouth-atlas", role: .emotionMouthAtlas, baseFilename: "emotion-mouth-atlas", allowsJPEG: false),
+        .init(key: "forehead-left", role: .foreheadLeft, baseFilename: "forehead-left", allowsJPEG: false),
+        .init(key: "forehead-right", role: .foreheadRight, baseFilename: "forehead-right", allowsJPEG: false),
+        .init(key: "cheek-left", role: .cheekLeft, baseFilename: "cheek-left", allowsJPEG: false),
+        .init(key: "cheek-right", role: .cheekRight, baseFilename: "cheek-right", allowsJPEG: false),
+        .init(key: "under-eye-left", role: .underEyeLeft, baseFilename: "under-eye-left", allowsJPEG: false),
+        .init(key: "under-eye-right", role: .underEyeRight, baseFilename: "under-eye-right", allowsJPEG: false),
+    ]
+
+    static let fullExpressionAssetSpecifications: [AssetSpecification] = {
+        let base = assetSpecifications.filter {
+            if case .viseme(_) = $0.role { return false }
+            return true
+        }
+        let visemes = OpenClamAvatarViseme.allCases.map { viseme in
+            AssetSpecification(
+                key: "viseme-\(viseme.rawValue)",
+                role: .viseme(viseme),
+                baseFilename: "viseme-\(viseme.rawValue)",
+                allowsJPEG: true
+            )
+        }
+        return base + visemes + expressionAssetSpecifications
+    }()
+
+    static func assetSpecifications(for version: Int) -> [AssetSpecification] {
+        version == expressionVersion ? fullExpressionAssetSpecifications : assetSpecifications
+    }
 
     struct MotionSpecification: Sendable {
         let kind: OpenClamAvatarMotionKind
@@ -249,7 +310,7 @@ enum OpenClamAvatarPackageContract {
 
     static let allowedArchivePaths: Set<String> = {
         var paths = Set([manifestPath])
-        for specification in assetSpecifications {
+        for specification in fullExpressionAssetSpecifications {
             paths.formUnion(specification.allowedPaths)
         }
         paths.formUnion(motionSpecifications.map(\.path))
@@ -271,11 +332,21 @@ enum OpenClamAvatarPackageContract {
         _ entries: [OpenClamAvatarArchiveEntryMetadata],
         archiveByteCount: UInt64
     ) throws {
-        guard archiveByteCount <= maximumArchiveByteCount else {
-            throw OpenClamAvatarPackageError.archiveTooLarge
-        }
-        guard (baseFileCount ... maximumFileCount).contains(entries.count) else {
+        let isLegacyShape = (baseFileCount ... baseFileCount
+            + OpenClamAvatarMotionKind.allCases.count).contains(entries.count)
+        let isFullExpressionShape = (fullExpressionFileCount ... maximumFileCount)
+            .contains(entries.count)
+        guard isLegacyShape || isFullExpressionShape else {
             throw OpenClamAvatarPackageError.tooManyFiles
+        }
+        let archiveLimit = isFullExpressionShape
+            ? maximumArchiveByteCount
+            : legacyMaximumArchiveByteCount
+        let expandedLimit = isFullExpressionShape
+            ? maximumExpandedByteCount
+            : legacyMaximumExpandedByteCount
+        guard archiveByteCount <= archiveLimit else {
+            throw OpenClamAvatarPackageError.archiveTooLarge
         }
 
         var seen = Set<String>()
@@ -320,8 +391,8 @@ enum OpenClamAvatarPackageContract {
             totalExpanded = expandedResult.partialValue
         }
 
-        guard totalCompressed <= maximumArchiveByteCount,
-              totalExpanded <= maximumExpandedByteCount,
+        guard totalCompressed <= archiveLimit,
+              totalExpanded <= expandedLimit,
               seen.contains(manifestPath) else {
             throw OpenClamAvatarPackageError.packageContentsTooLarge
         }
@@ -1010,6 +1081,9 @@ struct OpenClamAvatarPackageStore: Sendable {
             throw OpenClamAvatarPackageError.invalidManifest
         }
         try validateManifestContract(manifest)
+        let assetSpecifications = OpenClamAvatarPackageContract.assetSpecifications(
+            for: manifest.version
+        )
         let declaredPaths = Set(manifest.assets.values.map(\.path))
             .union(manifest.motions?.values.map(\.path) ?? [])
         guard installedAssetPaths == declaredPaths else {
@@ -1019,7 +1093,7 @@ struct OpenClamAvatarPackageStore: Sendable {
         var references: [OpenClamAvatarAssetRole: OpenClamAvatarAssetReference] = [:]
         var motionReferences: [OpenClamAvatarMotionKind: OpenClamAvatarMotionAsset] = [:]
         var includedByteCount = 0
-        for specification in OpenClamAvatarPackageContract.assetSpecifications {
+        for specification in assetSpecifications {
             guard let asset = manifest.assets[specification.key] else {
                 throw OpenClamAvatarPackageError.missingAsset(specification.key)
             }
@@ -1029,6 +1103,11 @@ struct OpenClamAvatarPackageStore: Sendable {
                 roleKey: specification.key,
                 role: specification.role,
                 rig: manifest.rig,
+                expression: manifest.expression,
+                maximumImageDimension: manifest.version
+                    == OpenClamAvatarPackageContract.expressionVersion
+                    ? OpenClamAvatarPackageContract.maximumExpressionTextureDimension
+                    : OpenClamAvatarPackageContract.maximumImageDimension,
                 fileURL: fileURL
             )
             let sum = includedByteCount.addingReportingOverflow(asset.byteCount)
@@ -1073,7 +1152,10 @@ struct OpenClamAvatarPackageStore: Sendable {
             sourceRelativeRuntimePath: "Application Support/OpenClam/Avatars/v2/\(manifest.id)",
             includedByteCount: includedByteCount,
             geometry: manifest.rig,
-            compatibility: .iosLight,
+            expressionGeometry: manifest.expression,
+            compatibility: manifest.version == OpenClamAvatarPackageContract.expressionVersion
+                ? .iosFullExpression
+                : .iosLight,
             assets: references,
             motions: motionReferences
         )
@@ -1116,7 +1198,8 @@ struct OpenClamAvatarPackageStore: Sendable {
             options: []
         )
         let minimumAssetItemCount = OpenClamAvatarPackageContract.assetSpecifications.count
-        let maximumAssetItemCount = minimumAssetItemCount
+        let maximumAssetItemCount = OpenClamAvatarPackageContract
+            .fullExpressionAssetSpecifications.count
             + OpenClamAvatarMotionKind.allCases.count
         guard (minimumAssetItemCount ... maximumAssetItemCount).contains(assetItems.count) else {
             throw OpenClamAvatarPackageError.tooManyFiles
@@ -1150,13 +1233,20 @@ struct OpenClamAvatarPackageStore: Sendable {
         }
         if version == OpenClamAvatarPackageContract.legacyVersion {
             try requireExactKeys(root, baseKeys)
+        } else if version == OpenClamAvatarPackageContract.expressionVersion {
+            var keys = baseKeys.union(["expression"])
+            if root["motions"] != nil { keys.insert("motions") }
+            try requireExactKeys(root, keys)
         } else if root["motions"] != nil {
             try requireExactKeys(root, baseKeys.union(["motions"]))
         } else {
             try requireExactKeys(root, baseKeys)
         }
+        let expectedSpecifications = OpenClamAvatarPackageContract.assetSpecifications(
+            for: version
+        )
         guard let assets = root["assets"] as? [String: Any],
-              Set(assets.keys) == Set(OpenClamAvatarPackageContract.assetSpecificationsByKey.keys),
+              Set(assets.keys) == Set(expectedSpecifications.map(\.key)),
               let rig = root["rig"] as? [String: Any] else {
             throw OpenClamAvatarPackageError.privateMetadataNotAllowed
         }
@@ -1170,7 +1260,10 @@ struct OpenClamAvatarPackageStore: Sendable {
             )
         }
         if let rawMotions = root["motions"] {
-            guard version == OpenClamAvatarPackageContract.motionVersion,
+            guard [
+                OpenClamAvatarPackageContract.motionVersion,
+                OpenClamAvatarPackageContract.expressionVersion,
+            ].contains(version),
                   let motions = rawMotions as? [String: Any],
                   !motions.isEmpty,
                   Set(motions.keys).isSubset(
@@ -1216,6 +1309,34 @@ struct OpenClamAvatarPackageStore: Sendable {
                 ["x", "y", "width", "height"]
             )
         }
+        if version == OpenClamAvatarPackageContract.expressionVersion {
+            guard let expression = root["expression"] as? [String: Any] else {
+                throw OpenClamAvatarPackageError.invalidManifest
+            }
+            try requireExactKeys(
+                expression,
+                [
+                    "smile", "emotionMouth", "leftForehead", "rightForehead",
+                    "leftCheek", "rightCheek", "leftUnderEye", "rightUnderEye",
+                    "browOffsets", "browSqueezeOffsets", "smileStrengths",
+                    "smileVisemes", "emotionMouthStrengths",
+                    "emotionMouthEmotions", "emotionMouthVisemes",
+                    "cheekOffsets", "underEyeOffsets", "browGain",
+                    "foreheadGain", "underEyeGain",
+                ]
+            )
+            for key in [
+                "smile", "emotionMouth", "leftForehead", "rightForehead",
+                "leftCheek", "rightCheek", "leftUnderEye", "rightUnderEye",
+            ] {
+                let sprite = try object(expression, key)
+                try requireExactKeys(sprite, ["box", "columns", "rows", "storage"])
+                try requireExactKeys(
+                    try object(sprite, "box"),
+                    ["x", "y", "width", "height"]
+                )
+            }
+        }
     }
 
     private func validateManifestContract(_ manifest: OpenClamAvatarPackageManifest) throws {
@@ -1240,8 +1361,10 @@ struct OpenClamAvatarPackageStore: Sendable {
               !normalizedName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw OpenClamAvatarPackageError.invalidDisplayName
         }
-        guard Set(manifest.assets.keys)
-                == Set(OpenClamAvatarPackageContract.assetSpecificationsByKey.keys) else {
+        let assetSpecifications = OpenClamAvatarPackageContract.assetSpecifications(
+            for: manifest.version
+        )
+        guard Set(manifest.assets.keys) == Set(assetSpecifications.map(\.key)) else {
             throw OpenClamAvatarPackageError.privateMetadataNotAllowed
         }
         if manifest.version == OpenClamAvatarPackageContract.legacyVersion,
@@ -1249,7 +1372,10 @@ struct OpenClamAvatarPackageStore: Sendable {
             throw OpenClamAvatarPackageError.privateMetadataNotAllowed
         }
         if let motions = manifest.motions {
-            guard manifest.version == OpenClamAvatarPackageContract.motionVersion,
+            guard [
+                OpenClamAvatarPackageContract.motionVersion,
+                OpenClamAvatarPackageContract.expressionVersion,
+            ].contains(manifest.version),
                   !motions.isEmpty,
                   motions.count <= OpenClamAvatarMotionKind.allCases.count,
                   Set(motions.keys).isSubset(
@@ -1259,10 +1385,19 @@ struct OpenClamAvatarPackageStore: Sendable {
             }
         }
         try validateRig(manifest.rig)
+        if manifest.version == OpenClamAvatarPackageContract.expressionVersion {
+            guard let expression = manifest.expression else {
+                throw OpenClamAvatarPackageError.invalidRig
+            }
+            try validateExpression(expression)
+        } else if manifest.expression != nil {
+            throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+        }
 
         var paths = Set<String>()
         var declaredTotal: UInt64 = 0
-        for specification in OpenClamAvatarPackageContract.assetSpecifications {
+        var declaredDecodedPixels: UInt64 = 0
+        for specification in assetSpecifications {
             guard let asset = manifest.assets[specification.key] else {
                 throw OpenClamAvatarPackageError.missingAsset(specification.key)
             }
@@ -1286,6 +1421,27 @@ struct OpenClamAvatarPackageStore: Sendable {
                   asset.mediaType == expectedMediaType else {
                 throw OpenClamAvatarPackageError.mimeTypeMismatch(specification.key)
             }
+            let maximumImageDimension = manifest.version
+                == OpenClamAvatarPackageContract.expressionVersion
+                ? OpenClamAvatarPackageContract.maximumExpressionTextureDimension
+                : OpenClamAvatarPackageContract.maximumImageDimension
+            guard validDecodedImageSize(
+                width: asset.width,
+                height: asset.height,
+                maximumDimension: maximumImageDimension
+            ) else {
+                throw OpenClamAvatarPackageError.dimensionMismatch(specification.key)
+            }
+            let decodedPixels = UInt64(asset.width) * UInt64(asset.height)
+            let decodedAddition = declaredDecodedPixels.addingReportingOverflow(
+                decodedPixels
+            )
+            guard !decodedAddition.overflow,
+                  decodedAddition.partialValue
+                    <= OpenClamAvatarPackageContract.maximumAggregateDecodedPixelCount else {
+                throw OpenClamAvatarPackageError.packageContentsTooLarge
+            }
+            declaredDecodedPixels = decodedAddition.partialValue
             let addition = declaredTotal.addingReportingOverflow(UInt64(asset.byteCount))
             guard !addition.overflow else {
                 throw OpenClamAvatarPackageError.packageContentsTooLarge
@@ -1368,7 +1524,8 @@ struct OpenClamAvatarPackageStore: Sendable {
             let spriteSize = try spritePixelSize(sprite)
             guard validDecodedImageSize(
                 width: spriteSize.width,
-                height: spriteSize.height
+                height: spriteSize.height,
+                maximumDimension: 8_192
             ) else {
                 throw OpenClamAvatarPackageError.invalidRig
             }
@@ -1384,11 +1541,82 @@ struct OpenClamAvatarPackageStore: Sendable {
         }
     }
 
+    private func validateExpression(
+        _ expression: OpenClamAvatarExpressionGeometry
+    ) throws {
+        let canonical = OpenClamAvatarViseme.allCases
+        guard expression.browOffsets
+                == OpenClamAvatarExpressionGeometry.canonicalBrowOffsets,
+              expression.browSqueezeOffsets
+                == OpenClamAvatarExpressionGeometry.canonicalBrowSqueezeOffsets,
+              expression.smileStrengths
+                == OpenClamAvatarExpressionGeometry.canonicalSmileStrengths,
+              expression.emotionMouthStrengths
+                == OpenClamAvatarExpressionGeometry.canonicalEmotionMouthStrengths,
+              expression.smileVisemes == canonical,
+              expression.emotionMouthVisemes == canonical,
+              expression.emotionMouthEmotions == ["sorrow", "horror", "anger"],
+              expression.cheekOffsets
+                == OpenClamAvatarExpressionGeometry.canonicalCheekOffsets,
+              expression.underEyeOffsets
+                == OpenClamAvatarExpressionGeometry.canonicalUnderEyeOffsets,
+              expression.browGain.isFinite,
+              (0 ... 1.35).contains(expression.browGain),
+              expression.foreheadGain.isFinite,
+              (0 ... 1.2).contains(expression.foreheadGain),
+              expression.underEyeGain.isFinite,
+              (0 ... 1.35).contains(expression.underEyeGain) else {
+            throw OpenClamAvatarPackageError.invalidRig
+        }
+
+        let expected: [(
+            OpenClamAvatarSpriteGeometry, Int, Int, OpenClamAvatarSpriteStorage
+        )] = [
+            (
+                expression.smile,
+                expression.smileStrengths.count,
+                canonical.count,
+                .gridAtlas
+            ),
+            (
+                expression.emotionMouth,
+                expression.emotionMouthStrengths.count,
+                canonical.count * expression.emotionMouthEmotions.count,
+                .gridAtlas
+            ),
+            (expression.leftForehead, 14, 3, .verticalStrip),
+            (expression.rightForehead, 14, 3, .verticalStrip),
+            (expression.leftCheek, 1, expression.cheekOffsets.count, .verticalStrip),
+            (expression.rightCheek, 1, expression.cheekOffsets.count, .verticalStrip),
+            (expression.leftUnderEye, 1, expression.underEyeOffsets.count, .verticalStrip),
+            (expression.rightUnderEye, 1, expression.underEyeOffsets.count, .verticalStrip),
+        ]
+        for (sprite, columns, rows, storage) in expected {
+            guard sprite.columns == columns,
+                  sprite.rows == rows,
+                  sprite.storage == storage,
+                  validRect(sprite.box, containingSize: .faceSource) else {
+                throw OpenClamAvatarPackageError.invalidRig
+            }
+            let size = try spritePixelSize(sprite)
+            guard validDecodedImageSize(
+                width: size.width,
+                height: size.height,
+                maximumDimension: OpenClamAvatarPackageContract
+                    .maximumExpressionTextureDimension
+            ) else {
+                throw OpenClamAvatarPackageError.invalidRig
+            }
+        }
+    }
+
     private func validateAsset(
         _ asset: OpenClamAvatarPackageAsset,
         roleKey: String,
         role: OpenClamAvatarAssetRole,
         rig: OpenClamAvatarRigGeometry,
+        expression: OpenClamAvatarExpressionGeometry?,
+        maximumImageDimension: Int,
         fileURL: URL
     ) throws {
         let values: URLResourceValues
@@ -1433,7 +1661,11 @@ struct OpenClamAvatarPackageStore: Sendable {
               let height = properties[kCGImagePropertyPixelHeight] as? Int else {
             throw OpenClamAvatarPackageError.invalidAssetImage(roleKey)
         }
-        guard validDecodedImageSize(width: width, height: height),
+        guard validDecodedImageSize(
+                width: width,
+                height: height,
+                maximumDimension: maximumImageDimension
+              ),
               width == asset.width,
               height == asset.height else {
             throw OpenClamAvatarPackageError.dimensionMismatch(roleKey)
@@ -1445,7 +1677,11 @@ struct OpenClamAvatarPackageStore: Sendable {
                 throw OpenClamAvatarPackageError.dimensionMismatch(roleKey)
             }
         } else {
-            let expected = try expectedPixelSize(for: role, rig: rig)
+            let expected = try expectedPixelSize(
+                for: role,
+                rig: rig,
+                expression: expression
+            )
             guard width == expected.width, height == expected.height else {
                 throw OpenClamAvatarPackageError.dimensionMismatch(roleKey)
             }
@@ -1542,7 +1778,8 @@ struct OpenClamAvatarPackageStore: Sendable {
 
     private func expectedPixelSize(
         for role: OpenClamAvatarAssetRole,
-        rig: OpenClamAvatarRigGeometry
+        rig: OpenClamAvatarRigGeometry,
+        expression: OpenClamAvatarExpressionGeometry?
     ) throws -> (width: Int, height: Int) {
         switch role {
         case .thumbnail:
@@ -1563,6 +1800,30 @@ struct OpenClamAvatarPackageStore: Sendable {
             return try spritePixelSize(rig.leftGaze)
         case .gazeRightAtlas:
             return try spritePixelSize(rig.rightGaze)
+        case .smileAtlas:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.smile)
+        case .emotionMouthAtlas:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.emotionMouth)
+        case .foreheadLeft:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.leftForehead)
+        case .foreheadRight:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.rightForehead)
+        case .cheekLeft:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.leftCheek)
+        case .cheekRight:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.rightCheek)
+        case .underEyeLeft:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.leftUnderEye)
+        case .underEyeRight:
+            guard let expression else { throw OpenClamAvatarPackageError.invalidRig }
+            return try spritePixelSize(expression.rightUnderEye)
         }
     }
 
@@ -1627,9 +1888,13 @@ struct OpenClamAvatarPackageStore: Sendable {
             && determinant > 0
     }
 
-    private func validDecodedImageSize(width: Int, height: Int) -> Bool {
-        guard (1 ... OpenClamAvatarPackageContract.maximumImageDimension).contains(width),
-              (1 ... OpenClamAvatarPackageContract.maximumImageDimension).contains(height) else {
+    private func validDecodedImageSize(
+        width: Int,
+        height: Int,
+        maximumDimension: Int = OpenClamAvatarPackageContract.maximumImageDimension
+    ) -> Bool {
+        guard (1 ... maximumDimension).contains(width),
+              (1 ... maximumDimension).contains(height) else {
             return false
         }
         return UInt64(width) * UInt64(height)
@@ -1745,6 +2010,15 @@ struct OpenClamAvatarPackageStore: Sendable {
 
 private extension OpenClamAvatarRigCompatibility {
     static let iosLight = Self(
+        canonicalVisemeCount: OpenClamAvatarViseme.legacyCases.count,
+        eyeStateCount: 8,
+        browVerticalStateCount: 14,
+        browSqueezeStateCount: 3,
+        gazeHorizontalStateCount: 25,
+        gazeVerticalStateCount: 11
+    )
+
+    static let iosFullExpression = Self(
         canonicalVisemeCount: OpenClamAvatarViseme.allCases.count,
         eyeStateCount: 8,
         browVerticalStateCount: 14,

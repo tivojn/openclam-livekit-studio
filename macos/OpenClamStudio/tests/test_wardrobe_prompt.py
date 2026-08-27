@@ -26,15 +26,13 @@ FASHION = {
     "register": "fashion-forward contemporary womenswear",
     "profession": "creative director", "palette": ["ivory", "scarlet", "platinum"],
     "direction": (
-        "Dress her in a precisely tailored scarlet single-breasted blazer worn "
-        "over an ivory silk shell, with slim cropped cigarette trousers that hold "
-        "a clean line from hip to ankle. Fabrics read as real wool crepe and "
-        "washed silk with visible weave. Keep the palette to scarlet as the hero, "
-        "platinum grey as the restrained accent, and ivory as the neutral "
-        "foundation. Omit jewellery and keep the styling visually quiet. Finish "
-        "with pointed leather pumps at ninety "
-        "millimetres. Everything stays opaque and impeccably fitted so the "
-        "silhouette reads cleanly at full length."
+        "Dress her in one precisely cut scarlet lightweight silk-crepe office sheath "
+        "with a modest bateau neckline, clean defined waist, professional ease, and "
+        "a crisp hem 6cm above the knee. Keep scarlet as the vivid single hero and use only black "
+        "as the quiet grounding tone. Omit jewellery and keep the styling visually "
+        "clean. Finish with sleek pointed black killer stilettos at 110 millimetres "
+        "with a fine heel shaft. Everything stays opaque, fluid, and impeccably "
+        "fitted so the supermodel silhouette reads cleanly at full length."
     ),
 }
 
@@ -57,13 +55,13 @@ HERO = {
 MENSWEAR = {
     "presentation": "masculine", "age_band": "adult", "medium": "photograph",
     "register": "minimal luxury menswear", "profession": "architect",
-    "palette": ["ultramarine", "charcoal", "platinum"],
+    "palette": ["scarlet", "charcoal", "platinum"],
     "direction": (
-        "Dress him in a precisely cut ultramarine double-breasted wool suit "
+        "Dress him in a precisely cut scarlet lightweight double-breasted suit "
         "with a sculpted shoulder, controlled waist, slim straight trousers, "
-        "and a charcoal fine-gauge knit. Keep ultramarine as the single hero "
+        "and a charcoal fine-gauge knit. Keep scarlet as the single hero "
         "colour, platinum as the restrained accent, and charcoal as the neutral. "
-        "Use realistic double-faced wool with crisp lapels and clean seam tension. "
+        "Use lightweight opaque stretch crepe with crisp lapels and clean seam tension. "
         "Choose one slim platinum watch and no other accessories. Finish "
         "with polished black leather Oxfords. Keep every line opaque, fitted, and "
         "editorially refined from shoulder to ankle."
@@ -73,13 +71,13 @@ MENSWEAR = {
 ANDROGYNOUS = {
     "presentation": "androgynous", "age_band": "young adult",
     "medium": "photograph", "register": "architectural minimal tailoring",
-    "profession": "designer", "palette": ["camel", "black", "silver"],
+    "profession": "designer", "palette": ["coral", "black", "silver"],
     "direction": (
-        "Build a close-cut camel wool jacket with architectural seaming over a "
-        "black silk-knit column and slim tailored trousers. Camel is the single "
+        "Build a close-cut coral lightweight crepe jacket with architectural seaming over a "
+        "black silk-knit column and slim tailored trousers. Coral is the single "
         "hero colour, brushed silver is the restrained accent, and black is the "
         "neutral foundation. Keep the line elongated and clean with believable "
-        "wool structure and silk-knit drape. Use one slim silver cuff with no "
+        "lightweight structure and silk-knit drape. Use one slim silver cuff with no "
         "other accessories and polished black ankle boots. The result stays "
         "opaque, poised, minimal, and presentation-neutral."
     ),
@@ -122,12 +120,17 @@ class WardrobeBanTests(unittest.TestCase):
             "use substantial wool fabric", "choose a thick fabric",
             "add heavy layering", "wear a fitted turtleneck",
             "finish with a roll-neck sweater", "use a mock-neck knit",
+            "choose a modern tweed jacket", "use a boucle skirt suit",
+            "finish the dress in velvet", "use coat-weight cloth",
+            "choose midweight silk-crepe", "use medium weight satin",
         ):
             with self.subTest(phrase=phrase):
                 self.assertTrue(wardrobe._assigns_heavy_styling(phrase))
         for phrase in (
             "no thick fabric", "never use heavy layering",
             "avoid turtlenecks and roll-neck sweaters",
+            "never use tweed, boucle, or velvet",
+            "never use midweight or medium-weight fabric",
         ):
             with self.subTest(phrase=phrase):
                 self.assertFalse(wardrobe._assigns_heavy_styling(phrase))
@@ -138,9 +141,9 @@ class WardrobeBanTests(unittest.TestCase):
             "a taupe silk top, paired with narrow black cigarette trousers."
         )
         self.assertEqual(1, len(wardrobe.aesthetic_conflicts(disaster)))
-        with self.assertRaisesRegex(RuntimeError, "aesthetic coherence"):
+        with self.assertRaisesRegex(RuntimeError, "(?:aesthetic coherence|hem at or below)"):
             wardrobe._finalise(disaster, "feminine", "photograph")
-        with self.assertRaisesRegex(ValueError, "aesthetic coherence"):
+        with self.assertRaisesRegex(ValueError, "(?:aesthetic coherence|hem at or below)"):
             body._prompt({"prompt": disaster, "presentation": "feminine"})
 
     def test_aesthetic_audit_allows_a_coherent_one_piece_or_short_layer(self):
@@ -162,28 +165,49 @@ class WardrobeBanTests(unittest.TestCase):
     def test_system_instruction_carries_the_new_house_taste_rules(self):
         instruction = f"{wardrobe.SYSTEM} {wardrobe.USER_TEXT}".lower()
         for phrase in (
-            "fuchsia", "scarlet", "coral", "ultramarine", "camel",
-            "never use cobalt", "one coherent design language", "at least 90mm",
-            "oxfords", "never assign pumps", "one complete outfit",
+            "fuchsia", "scarlet", "coral", "blue-family colour",
+            "one coherent office design language", "105–120mm",
+            "oxfords", "never assign a dress", "pumps, stilettos, or heels",
+            "do not infer a gender identity", "one complete outfit",
             "no more than two large colour blocks", "uninterrupted vertical line",
             "longline sleeveless waistcoat", "three complete looks",
-            "light-to-midweight fabrics", "no turtleneck",
+            "exclusively lightweight opaque fabrics", "no turtleneck",
+            "never use tweed", "coat-weight cloth",
             "gold is forbidden", "omission is preferred",
             "at most one small, understated choice",
             "no statement jewellery", "no layered necklaces",
-            "smoky eye or a bold lip", "zero fast-fashion noise",
+            "5–8cm above the knee", "modest symmetrical",
+            "no one-shoulder", "no bodycon", "office-appropriate",
+            "zero fast-fashion noise",
         ):
             self.assertIn(phrase, instruction)
         self.assertIn("not a claim about the person's gender identity", instruction)
         self.assertIn("no yellow, rose, or white gold", instruction)
         self.assertNotIn("real-looking gold", instruction)
+        self.assertNotIn("sensual", instruction)
 
-    def test_emerald_is_disclosed_but_safely_substituted_for_cutout(self):
+    def test_blue_and_green_are_replaced_with_bright_safe_colours(self):
         rule = wardrobe.COLOR_RULE.lower()
-        self.assertIn("emerald belongs to the house palette", rule)
-        self.assertIn("green damages alpha extraction", rule)
-        self.assertIn("substitute ultramarine", rule)
-        self.assertIn("camel is never the default", rule)
+        self.assertIn("ban the entire blue family", rule)
+        self.assertIn("green is also unavailable", rule)
+        self.assertIn("substitute vivid fuchsia, scarlet, or coral", rule)
+        self.assertNotIn("camel", wardrobe.HERO_COLORS)
+        for assigned in ("ultramarine dress", "navy suit", "teal skirt"):
+            self.assertTrue(wardrobe._assigns_blue(assigned))
+        self.assertFalse(wardrobe._assigns_blue(
+            "ban blue, cobalt, ultramarine, navy, teal, and cyan"))
+        self.assertFalse(wardrobe._assigns_blue(
+            "preserve her exact blue eyes and blonde hair"))
+        self.assertTrue(wardrobe._assigns_blue(
+            "No navy, but use cobalt for the dress"))
+        for assigned in ("emerald dress", "jade suit", "olive skirt"):
+            self.assertTrue(wardrobe._assigns_green(assigned))
+        self.assertFalse(wardrobe._assigns_green(
+            "no green, emerald, jade, olive, mint, or sage"))
+        self.assertFalse(wardrobe._assigns_green(
+            "preserve his natural green eyes"))
+        self.assertTrue(wardrobe._assigns_green(
+            "Avoid olive but use emerald for the skirt"))
 
     def test_preset_prompt_carries_the_silhouette_rule(self):
         preset = wardrobe.preset_prompt()
@@ -191,15 +215,27 @@ class WardrobeBanTests(unittest.TestCase):
         self.assertIn("baggy", preset.lower())
         self.assertIn("opaque", preset.lower())
         self.assertIn(wardrobe.PROPORTION_RULE, preset)
-        self.assertIn("naturally long legs", preset.lower())
-        self.assertIn("never use cobalt", preset.lower())
+        self.assertIn("runway-supermodel", preset.lower())
+        self.assertIn("ban every blue-family", preset.lower())
+        self.assertIn("clear, bright, saturated", preset.lower())
         self.assertIn("never force a gendered shoe", preset.lower())
         self.assertIn(wardrobe.ACCESSORY_RULE, preset)
         self.assertIn("gold is forbidden", preset.lower())
         self.assertIn("omission is preferred", preset.lower())
         self.assertNotIn("real-looking gold", preset.lower())
         self.assertNotIn("christian louboutin", preset.lower())
-        self.assertNotIn("heels of at least 90mm", preset.lower())
+        self.assertNotIn("105–120mm", preset)
+
+    def test_curated_variations_never_reintroduce_weighty_fabrics(self):
+        serialized = " ".join(
+            str(value)
+            for variation in wardrobe.LUXURY_VARIATIONS
+            for value in variation.values()
+        )
+        self.assertFalse(wardrobe._assigns_heavy_styling(serialized))
+        self.assertNotIn("fuchsia-tweed", {
+            variation["id"] for variation in wardrobe.LUXURY_VARIATIONS
+        })
 
 
 class WardrobeCompositionTests(unittest.TestCase):
@@ -217,7 +253,7 @@ class WardrobeCompositionTests(unittest.TestCase):
         self.assertEqual(result["source"], "tailored")
         self.assertIn(wardrobe.AESTHETIC_COHERENCE_RULE, result["prompt"])
         self.assertNotIn("CURATED LOOK", result["prompt"])
-        self.assertIn("The single hero colour", result["prompt"])
+        self.assertIn("The single vivid hero colour", result["prompt"])
         self.assertEqual(result["traits"]["presentation"], "feminine")
         self.assertEqual(result["traits"]["medium"], "photograph")
         self.assertIn("look", result["traits"])
@@ -225,7 +261,7 @@ class WardrobeCompositionTests(unittest.TestCase):
         self.assertIn("scarlet", result["traits"]["palette"])
         self.assertNotIn(body.DEFAULT_BODY_PROMPT, result["prompt"])
         self.assertIn(wardrobe.FEMININE_RULE, result["prompt"])
-        self.assertIn("at least 90mm", result["prompt"])
+        self.assertIn("105–120mm", result["prompt"])
 
     def test_masculine_photo_gets_luxury_menswear_and_never_feminine_heels(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -234,9 +270,24 @@ class WardrobeCompositionTests(unittest.TestCase):
         self.assertEqual("tailored", result["source"])
         self.assertEqual("masculine", result["traits"]["presentation"])
         self.assertIn(wardrobe.MASCULINE_RULE, result["prompt"])
-        self.assertIn("polished loafers, Oxfords, Derbies", result["prompt"])
+        self.assertIn("polished loafers, Oxfords, or Derbies", result["prompt"])
         self.assertNotIn("Christian Louboutin", result["prompt"])
-        self.assertNotIn("heels of at least 90mm", result["prompt"])
+        self.assertNotIn("105–120mm", result["prompt"])
+
+    def test_source_presentation_aliases_route_without_inferring_identity(self):
+        expected = {
+            "female": "feminine",
+            "male": "masculine",
+            "ambiguous": "androgynous",
+            "neutral": "androgynous",
+            "": "androgynous",
+        }
+        for source_presentation, branch in expected.items():
+            with self.subTest(source_presentation=source_presentation):
+                self.assertEqual(
+                    branch,
+                    wardrobe._normalise_presentation(source_presentation),
+                )
 
     def test_androgynous_photo_preserves_presentation_without_defaulting_to_heels(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -246,7 +297,7 @@ class WardrobeCompositionTests(unittest.TestCase):
         self.assertEqual("androgynous", result["traits"]["presentation"])
         self.assertIn(wardrobe.ANDROGYNOUS_RULE, result["prompt"])
         self.assertIn("do not infer a gender identity", result["prompt"])
-        self.assertNotIn("heels of at least 90mm", result["prompt"])
+        self.assertNotIn("105–120mm", result["prompt"])
 
     def test_game_hero_gets_costume_direction_not_office_separates(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -276,13 +327,14 @@ class WardrobeCompositionTests(unittest.TestCase):
                 self.assertIn(wardrobe.STYLISED_RULE, result["prompt"])
                 self.assertNotIn(wardrobe.COLOR_RULE, result["prompt"])
             else:
-                self.assertIn("The single hero colour", result["prompt"])
+                self.assertIn("The single vivid hero colour", result["prompt"])
                 self.assertNotIn(wardrobe.COLOR_RULE, result["prompt"])
 
     def test_gold_in_model_direction_falls_back_to_safe_preset(self):
         rogue = dict(FASHION)
-        rogue["direction"] = FASHION["direction"].replace(
-            "platinum grey", "warm gold")
+        rogue["direction"] = (
+            FASHION["direction"] + " Add warm gold buttons and gold-tone trim."
+        )
         with tempfile.TemporaryDirectory() as directory:
             _portrait(directory)
             result = self._tailor(rogue, directory)
@@ -304,7 +356,7 @@ class WardrobeCompositionTests(unittest.TestCase):
 
     def test_explicit_gold_and_accessory_prohibitions_are_allowed(self):
         direction = (
-            "Tailor a fitted ultramarine wool suit with slim trousers, crisp "
+            "Tailor a fitted scarlet lightweight crepe suit with slim trousers, crisp "
             "seams, and polished black Oxfords. Use no gold and no layered "
             "necklaces or stacked bracelets; omit accessories entirely. Keep "
             "the complete line opaque, refined, and readable from shoulder to ankle."
@@ -338,12 +390,12 @@ class WardrobeCompositionTests(unittest.TestCase):
     def test_cobalt_in_model_direction_falls_back_to_safe_preset(self):
         rogue = dict(MENSWEAR)
         rogue["direction"] = MENSWEAR["direction"].replace(
-            "ultramarine", "cobalt")
+            "scarlet", "cobalt")
         with tempfile.TemporaryDirectory() as directory:
             _portrait(directory)
             result = self._tailor(rogue, directory)
         self.assertEqual("preset", result["source"])
-        self.assertIn("banned colour cobalt", result["error"])
+        self.assertIn("banned blue-family colour", result["error"])
 
     def test_masculine_subject_with_feminine_heels_falls_back(self):
         rogue = dict(MENSWEAR)
@@ -356,10 +408,42 @@ class WardrobeCompositionTests(unittest.TestCase):
         self.assertEqual("preset", result["source"])
         self.assertIn("feminine heels", result["error"])
 
+    def test_masculine_subject_with_feminine_garment_falls_back(self):
+        rogue = dict(MENSWEAR)
+        rogue["direction"] = (
+            "Give him a lightweight scarlet office sheath dress with a modest "
+            "neckline and polished black Oxfords."
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            _portrait(directory)
+            result = self._tailor(rogue, directory)
+        self.assertEqual("preset", result["source"])
+        self.assertIn("feminine garment", result["error"])
+
+    def test_non_feminine_garment_guard_catches_silhouettes_but_allows_dress_shirts(self):
+        self.assertTrue(wardrobe._assigns_feminine_garment(
+            "Give the masculine subject feminine silhouettes."))
+        self.assertTrue(wardrobe._assigns_feminine_garment(
+            "Use a coral skirt with polished loafers."))
+        self.assertFalse(wardrobe._assigns_feminine_garment(
+            "Use a scarlet lightweight dress shirt with slim trousers."))
+        self.assertFalse(wardrobe._assigns_feminine_garment(
+            "Never assign a dress, skirt, or feminine silhouette."))
+        plate = body._prompt({
+            "presentation": "male",
+            "medium": "photograph",
+            "prompt": (
+                "Use a scarlet lightweight dress shirt with a precise office "
+                "jacket, slim straight trousers, and polished black Oxfords."
+            ),
+        })
+        self.assertIn("dress shirt", plate)
+        self.assertIn(wardrobe.MASCULINE_RULE, plate)
+
     def test_masculine_heel_guard_covers_generic_heel_language(self):
         for footwear in ("kitten heels", "pointed pumps", "d'Orsay shoes"):
             direction = (
-                "A precisely tailored ultramarine wool suit with slim trousers, "
+                "A precisely tailored scarlet lightweight crepe suit with slim trousers, "
                 "one platinum watch, restrained charcoal knitwear, and " + footwear
                 + ", finished with immaculate seams and an opaque fitted line."
             )
@@ -369,7 +453,7 @@ class WardrobeCompositionTests(unittest.TestCase):
 
     def test_masculine_heel_guard_accepts_explicit_prohibitions(self):
         direction = (
-            "A precisely tailored ultramarine wool suit with slim trousers, "
+            "A precisely tailored scarlet lightweight crepe suit with slim trousers, "
             "one platinum watch, restrained charcoal knitwear, and polished "
             "Oxfords; never use high heels or pumps. Keep the line opaque, "
             "structured, and impeccably finished."
@@ -533,8 +617,8 @@ class WardrobeCacheTests(unittest.TestCase):
             "not mandatory",
             wardrobe._variation_instruction(wardrobe.LUXURY_VARIATIONS[0]),
         )
-        self.assertEqual(1, first["prompt"].count("The single hero colour"))
-        self.assertEqual(1, second["prompt"].count("The single hero colour"))
+        self.assertEqual(1, first["prompt"].count("The single vivid hero colour"))
+        self.assertEqual(1, second["prompt"].count("The single vivid hero colour"))
 
     def test_tailored_prompt_reports_real_bounded_work_stages(self):
         stages = []
@@ -555,17 +639,36 @@ class WardrobeCacheTests(unittest.TestCase):
         ])
         self.assertEqual(cached_stages, ["portrait", "cache", "complete"])
 
-    def test_curated_looks_are_gender_aware_and_camel_is_not_the_default(self):
+    def test_curated_looks_are_gender_aware_lightweight_and_bright(self):
         self.assertGreaterEqual(len(wardrobe.LUXURY_VARIATIONS), 10)
         counts = {
             color: sum(item["hero"] == color
                        for item in wardrobe.LUXURY_VARIATIONS)
             for color in wardrobe.HERO_COLORS
         }
-        self.assertEqual({color: 2 for color in wardrobe.HERO_COLORS}, counts)
+        self.assertEqual(len(wardrobe.LUXURY_VARIATIONS), sum(counts.values()))
+        self.assertGreaterEqual(min(counts.values()), 3)
+        self.assertLessEqual(max(counts.values()) - min(counts.values()), 1)
         for item in wardrobe.LUXURY_VARIATIONS:
             masculine = wardrobe._variation_rule(item, "masculine")
+            androgynous = wardrobe._variation_rule(item, "androgynous")
+            feminine = wardrobe._variation_rule(item, "feminine")
             self.assertNotRegex(masculine.lower(), r"\b(?:pump|stiletto|heel)s?\b")
+            self.assertIn("lightweight", masculine.lower())
+            self.assertIn("office", masculine.lower())
+            self.assertFalse(wardrobe._assigns_feminine_garment(masculine))
+            self.assertIn("lightweight", androgynous.lower())
+            self.assertIn("office", androgynous.lower())
+            self.assertFalse(wardrobe._assigns_feminine_garment(androgynous))
+            self.assertIn("above the knee", feminine.lower())
+            self.assertRegex(feminine.lower(), r"\b(?:5–8|6)cm\b")
+            self.assertIn("lightweight", feminine.lower())
+            self.assertFalse(wardrobe._assigns_blue(feminine))
+            self.assertFalse(wardrobe._assigns_green(feminine))
+            self.assertFalse(wardrobe._assigns_heavy_styling(feminine))
+            self.assertFalse(wardrobe._assigns_long_feminine_hem(feminine))
+            self.assertFalse(wardrobe._assigns_too_short_feminine_hem(feminine))
+            self.assertFalse(wardrobe._assigns_immodest_office_style(feminine))
             self.assertTrue(item["feminine"])
             self.assertTrue(item["masculine"])
             self.assertTrue(item["androgynous"])
@@ -841,11 +944,52 @@ class EyewearLockTests(unittest.TestCase):
             self.assertIn("no white shoes", plate)
             self.assertIn("clearly non-white, non-green color", plate)
 
+    def test_body_validation_rejects_the_new_aesthetic_failures_before_generation(self):
+        failures = (
+            ("a cobalt lightweight office sheath", "blue-family"),
+            ("an emerald lightweight office sheath", "green-family"),
+            ("a scarlet midweight silk-crepe office sheath", "heavy fabric"),
+            ("a scarlet lightweight midi dress", "hem at or below"),
+            ("a scarlet lightweight office sheath with ankle boots", "non-stiletto"),
+            ("a scarlet lightweight upper-thigh micro-mini", "upper-thigh or mini"),
+            ("a scarlet lightweight strapless office sheath", "non-office"),
+            ("a scarlet lightweight bodycon partywear dress", "non-office"),
+        )
+        for prompt, error in failures:
+            with self.subTest(prompt=prompt), self.assertRaisesRegex(
+                    ValueError, error):
+                body._prompt({
+                    "prompt": prompt,
+                    "presentation": "feminine",
+                    "medium": "photograph",
+                })
+
+    def test_body_validation_allows_identity_colour_and_long_negative_lists(self):
+        prompt = (
+            "Preserve the exact woman's blue eyes and blonde hair. Dress her in "
+            "a vivid fuchsia lightweight silk-crepe office sheath with a modest "
+            "bateau neckline, professional ease, a hem 6cm above the knee, and "
+            "pointed black killer stiletto pumps at 112mm. "
+            "Never use midweight, stiff, bulky, layered, or coat-like fabric. "
+            "No trousers, blazer, coat, longline layer, knitwear, turtleneck, "
+            "midi, maxi, cobalt, blue, navy, ultramarine, teal, cyan, green, "
+            "white wardrobe, boots, platforms, or fast-fashion details."
+        )
+        for view in body.BODY_VIEWS:
+            plate = body._prompt({
+                "prompt": prompt,
+                "presentation": "feminine",
+                "medium": "photograph",
+            }, view=view)
+            self.assertLessEqual(
+                len(plate.encode("utf-8")), body.FULL_BODY_PROMPT_MAX_BYTES)
+            self.assertIn("blue eyes", plate)
+
     def test_every_body_plate_enforces_taste_proportion_and_gender_proper_shoes(self):
         profiles = {
-            "feminine": ("sculpted dress or coat-dress", "heels of at least 90mm"),
-            "masculine": ("polished loafers, Oxfords, Derbies", "Never assign pumps"),
-            "androgynous": ("polished loafers or sharp ankle boots", "rather than defaulting to heels"),
+            "feminine": ("5–8cm above the knee", "fine 105–120mm heels"),
+            "masculine": ("polished loafers, Oxfords, or Derbies", "Never assign a dress"),
+            "androgynous": ("polished loafers, Oxfords, or Derbies", "Never default to a dress"),
         }
         for presentation, expected in profiles.items():
             for view in body.BODY_VIEWS:
@@ -854,9 +998,10 @@ class EyewearLockTests(unittest.TestCase):
                     view=view,
                 )
                 self.assertIn("PROPORTION TARGET", plate)
-                self.assertIn("supermodel-calibre editorial silhouette", plate)
-                self.assertIn("naturally long legs", plate)
-                self.assertIn("Long must never become exaggerated", plate)
+                self.assertIn("runway-supermodel silhouette", plate)
+                self.assertIn("roughly 7.5 to 8 heads tall", plate)
+                self.assertIn("long sculpted legs", plate)
+                self.assertIn("Reject stretched limbs", plate)
                 self.assertIn("PRESENTATION AND FOOTWEAR", plate)
                 self.assertIn("NO GOLD AND MINIMAL ACCESSORIES", plate)
                 self.assertIn(wardrobe.ACCESSORY_RULE, plate)
@@ -865,9 +1010,12 @@ class EyewearLockTests(unittest.TestCase):
                     self.assertIn(phrase, plate)
                 if presentation != "feminine":
                     self.assertNotIn("Christian Louboutin", plate)
-                    self.assertNotIn("heels of at least 90mm", plate)
+                    self.assertNotIn("105–120mm", plate)
                 self.assertIn("NO COBALT", plate)
-                self.assertIn("substitute ultramarine", plate)
+                self.assertIn("Substitute vivid fuchsia, scarlet, or coral", plate)
+                self.assertIn(
+                    "White touches every outsole edge, both sides of each heel stem",
+                    plate)
                 self.assertIn("no bare midriff", plate)
                 self.assertIn("extreme plunging neckline", plate)
 
@@ -885,7 +1033,7 @@ class EyewearLockTests(unittest.TestCase):
 
     def test_long_tailored_prompts_fit_the_xai_utf8_budget_without_losing_rules(self):
         verbose = (
-            "Tailor an editorial fuchsia wool look with precise sculpted seams, "
+            "Tailor an editorial fuchsia lightweight silk-crepe office sheath with a modest bateau neckline, a hem 6cm above the knee, precise sculpted seams, "
             "a restrained silver accent, luminous real skin, and polished finish. "
         ) * 80
         tailored = wardrobe._finalise(verbose, "feminine", "photograph")
@@ -912,6 +1060,39 @@ class EyewearLockTests(unittest.TestCase):
             self.assertIn("NO COBALT", plate)
             self.assertIn("NO GREEN", plate)
             self.assertIn("NO WHITE WARDROBE", plate)
+
+    def test_every_turnaround_branch_leaves_real_editable_prompt_budget(self):
+        """Side/back contracts must not crowd the art direction out of 8 KiB."""
+        marker = "EDITABLE ART DIRECTION — "
+        prompts = {
+            "feminine": (
+                "scarlet lightweight silk-crepe office sheath with a modest "
+                "bateau neckline and a hem 6cm above the knee"
+            ),
+            "masculine": (
+                "scarlet lightweight tailored office suit with slim straight "
+                "trousers and polished black Oxfords"
+            ),
+            "androgynous": (
+                "coral lightweight architectural office jacket with slim "
+                "trousers and polished black loafers"
+            ),
+        }
+        for view in body.BODY_VIEWS:
+            for presentation in ("feminine", "masculine", "androgynous"):
+                plate = body._prompt({
+                    "prompt": prompts[presentation],
+                    "presentation": presentation,
+                    "medium": "photograph",
+                }, view=view)
+                start = plate.index(marker) + len(marker)
+                end = plate.index("\n\n", start)
+                fixed = len((plate[:start] + plate[end:]).encode("utf-8"))
+                self.assertGreaterEqual(
+                    body.FULL_BODY_PROMPT_MAX_BYTES - fixed,
+                    1_500,
+                    f"{view}/{presentation} leaves too little editable budget",
+                )
 
     def test_multibyte_direction_is_byte_bounded_and_keeps_owner_note(self):
         plate = body._prompt({
@@ -1043,6 +1224,43 @@ class EyewearLockTests(unittest.TestCase):
                 ),
             })
 
+    def test_male_and_ambiguous_plates_reject_feminine_garments(self):
+        for presentation in ("male", "ambiguous", "neutral"):
+            with self.subTest(presentation=presentation), self.assertRaisesRegex(
+                    ValueError, "non-feminine presentation"):
+                body._prompt({
+                    "presentation": presentation,
+                    "medium": "photograph",
+                    "prompt": (
+                        "A scarlet lightweight tailored office sheath dress "
+                        "with a modest neckline and polished black Oxfords."
+                    ),
+                })
+
+    def test_female_male_and_ambiguous_plates_use_only_the_safe_branch(self):
+        cases = {
+            "female": (wardrobe.FEMININE_RULE, "105–120mm"),
+            "male": (wardrobe.MASCULINE_RULE, "polished loafers"),
+            "ambiguous": (wardrobe.ANDROGYNOUS_RULE, "do not infer a gender identity"),
+        }
+        all_rules = {
+            wardrobe.FEMININE_RULE,
+            wardrobe.MASCULINE_RULE,
+            wardrobe.ANDROGYNOUS_RULE,
+        }
+        for source_presentation, (expected_rule, marker) in cases.items():
+            with self.subTest(source_presentation=source_presentation):
+                plate = body._prompt({
+                    "presentation": source_presentation,
+                    "medium": "photograph",
+                })
+                self.assertIn(expected_rule, plate)
+                self.assertIn(marker, plate)
+                for other_rule in all_rules - {expected_rule}:
+                    self.assertNotIn(other_rule, plate)
+                if source_presentation != "female":
+                    self.assertNotIn("105–120mm", plate)
+
     def test_manual_prompt_and_keep_note_cannot_reintroduce_gold_or_clutter(self):
         with self.assertRaisesRegex(ValueError, "forbidden gold styling"):
             body._prompt({
@@ -1089,6 +1307,7 @@ class EyewearLockTests(unittest.TestCase):
         direction = body._direction({})
         self.assertIn(body.DEFAULT_BODY_PROMPT, direction)
         self.assertIn(wardrobe.ACCESSORY_RULE, direction)
+        self.assertNotIn("sensual", direction.lower())
 
     def test_safe_long_manual_prompt_keeps_the_full_editor_budget(self):
         manual = "Tailored scarlet wool with precise seams and clean structure. " * 64

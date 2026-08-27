@@ -3,26 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>destination</key>
-	<string>export</string>
+	<string>upload</string>
 	<key>manageAppVersionAndBuildNumber</key>
 	<false/>
 	<key>method</key>
 	<string>app-store-connect</string>
-	<key>provisioningProfiles</key>
-	<dict>
-		<key>com.lionheart.openclam.livekitpilot</key>
-		<string>OpenClam LiveKit Pilot App Store Main</string>
-		<key>com.lionheart.openclam.livekitpilot.keyboard</key>
-		<string>OpenClam LiveKit Pilot App Store Keyboard</string>
-		<key>com.lionheart.openclam.livekitpilot.screen-context-share</key>
-		<string>OpenClam LiveKit Pilot App Store Share</string>
-		<key>com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget</key>
-		<string>OpenClam LiveKit Pilot App Store Widget</string>
-	</dict>
-	<key>signingCertificate</key>
-	<string>Apple Distribution</string>
 	<key>signingStyle</key>
-	<string>manual</string>
+	<string>automatic</string>
 	<key>stripSwiftSymbols</key>
 	<true/>
 	<key>teamID</key>

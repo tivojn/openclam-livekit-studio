@@ -19,7 +19,7 @@ try:
 except ModuleNotFoundError:  # package-style test/import outside server/app.py
     from server import media_gen
 
-from . import cutout, face
+from . import body_alpha, body_proportion, cutout, face
 
 
 STYLES = {"photorealistic", "editorial", "illustrated", "anime", "soft-3d"}
@@ -40,20 +40,24 @@ _MIN_GENERATED_FACE_HEIGHT_RATIO = 0.065
 _MIN_GENERATED_FACE_AXIS_FRACTION = 0.90
 DEFAULT_BODY_PROMPT = (
     "Create a photorealistic couture-level full-body wardrobe with tailored "
-    "authority, editorial sensuality, and zero fast-fashion noise. Read only "
+    "authority, professional editorial polish, and zero fast-fashion noise. Read only "
     "the subject's visible feminine, masculine, or androgynous presentation; "
     "do not claim a gender identity and never force a gendered shoe or beauty "
-    "code when the presentation is uncertain. Use ultramarine as the single hero "
-    "colour, with zero or one small accent and at most one quiet black, charcoal, "
-    "taupe, or chocolate grounding neutral. Never use cobalt. "
-    "Emerald belongs to the broader house palette but must become ultramarine "
-    "on this cutout plate because green damages alpha extraction. Let the hero "
+    "code when the presentation is uncertain. Use vivid fuchsia as the single "
+    "hero colour, with at most one quiet black, charcoal, taupe, or chocolate "
+    "grounding neutral. Keep the hero clear, bright, saturated, and luminous, "
+    "never dusty, muddy, muted, greyed, or near-black. Ban every blue-family colour from wardrobe, footwear, accessories, props, backdrop, and light cast, including cobalt, "
+    "ultramarine, navy, royal blue, sapphire, azure, cerulean, indigo, cyan, "
+    "teal, turquoise, aqua, and periwinkle. Green is also unavailable in those "
+    "styling and scene elements because it damages alpha extraction. Preserve "
+    "natural eye and hair colour. Substitute vivid fuchsia, scarlet, or coral. "
+    "Let the hero "
     "or its tonal family dominate visible fabric; use zero or one small accent "
     "and never divide the figure into three competing colour blocks. Resolve one "
     "complete outfit with one dominant silhouette and a deliberate uninterrupted "
-    "line from shoulder to shoe. Use opaque, fashionable light-to-midweight "
-    "fabric with clean drape and crisp seam "
-    "tension. Keep the silhouette structured, sensual, and polished: no bare "
+    "line from shoulder to shoe. Use only opaque, fashionable lightweight "
+    "fabric, never midweight or medium-weight, with fluid drape and crisp seam "
+    "tension. Keep the silhouette structured, authoritative, and polished: no bare "
     "midriff, sheer fabric, or extreme plunging neckline. Keep accessories "
     "minimal and understated, never ornate, layered, stacked, or visually busy. "
     "Preserve the existing hairstyle with a sleek finish, luminous real skin "
@@ -67,6 +71,14 @@ DEFAULT_BODY_PROMPT = (
 
 class GeneratedBodyIdentityError(RuntimeError):
     """A generated plate that cannot safely receive the calibrated identity."""
+
+
+class GeneratedBodyAlphaError(RuntimeError):
+    """A generated plate that cannot produce a safe transparent runtime body."""
+
+
+class GeneratedBodyProportionError(RuntimeError):
+    """A generated body that misses an explicitly requested fashion proportion."""
 
 
 def _clean(value, maximum=800):
@@ -299,15 +311,33 @@ def _prompt(options, view="front"):
     presentation, medium, presentation_rule = _presentation_context(
         options, style)
     from . import wardrobe
-    # Cached house prompts carry the exact fixed accessory clause. Remove that
-    # known negative rule before checking the owner's/model's editable prose for
-    # contradictory positive assignments.
-    editable_direction = direction.replace(wardrobe.ACCESSORY_RULE, " ").replace(
-        presentation_rule, " ")
+    # Cached house prompts carry deterministic negative clauses which must name
+    # every forbidden item. Remove those exact app-authored rules before checking
+    # only the owner's/model's editable prose for contradictory assignments.
+    editable_direction = direction
+    fixed_rules = (
+        wardrobe.ACCESSORY_RULE,
+        wardrobe.AESTHETIC_COHERENCE_RULE,
+        wardrobe.FASHION_FABRIC_RULE,
+        wardrobe.STRUCTURAL_RULE,
+        wardrobe.LUXURY_FINISH_RULE,
+        wardrobe.COLOR_RULE,
+        wardrobe.STYLISED_RULE,
+        presentation_rule,
+    ) + tuple(
+        wardrobe.resolved_color_rule(hero) for hero in wardrobe.HERO_COLORS
+    )
+    for fixed_rule in fixed_rules:
+        editable_direction = editable_direction.replace(fixed_rule, " ")
     if presentation != "feminine" and wardrobe._assigns_feminine_heels(
             editable_direction):
         raise ValueError(
             "the full-body direction assigns feminine heels to a "
+            "non-feminine presentation")
+    if presentation != "feminine" and wardrobe._assigns_feminine_garment(
+            editable_direction):
+        raise ValueError(
+            "the full-body direction assigns a feminine garment to a "
             "non-feminine presentation")
     if wardrobe._assigns_gold(editable_direction):
         raise ValueError("the full-body direction assigns forbidden gold styling")
@@ -316,6 +346,25 @@ def _prompt(options, view="front"):
     if wardrobe._assigns_heavy_styling(editable_direction):
         raise ValueError(
             "the full-body direction assigns heavy fabric or throat-covering knitwear")
+    if wardrobe._assigns_blue(editable_direction):
+        raise ValueError(
+            "the full-body direction assigns a forbidden blue-family colour")
+    if wardrobe._assigns_green(editable_direction):
+        raise ValueError(
+            "the full-body direction assigns a forbidden green-family colour")
+    if presentation == "feminine":
+        if wardrobe._assigns_long_feminine_hem(editable_direction):
+            raise ValueError(
+                "the full-body direction assigns a feminine hem at or below the knee")
+        if wardrobe._assigns_too_short_feminine_hem(editable_direction):
+            raise ValueError(
+                "the full-body direction assigns an upper-thigh or mini feminine hem")
+        if wardrobe._assigns_immodest_office_style(editable_direction):
+            raise ValueError(
+                "the full-body direction assigns non-office feminine styling")
+        if wardrobe._assigns_non_killer_feminine_footwear(editable_direction):
+            raise ValueError(
+                "the full-body direction assigns non-stiletto feminine footwear")
     conflicts = wardrobe.aesthetic_conflicts(editable_direction)
     if conflicts:
         raise ValueError(
@@ -373,32 +422,36 @@ def _prompt(options, view="front"):
         "side": (
             "Create the canonical RIGHT-SIDE view. The nose, chest, knees, and toes point "
             "exactly camera-right in a true 90-degree profile; do not drift toward front or "
-            "three-quarter. Reference 1, the canonical HD head, is the identity authority. "
-            "Reference 2, the approved front body plate, is the absolute authority for "
+            "three-quarter. Reference 1 owns identity. Reference 2, the approved front, owns "
             "wardrobe, body proportions, materials, color, accessories, and garment length."
         ),
         "back": (
             "Create the canonical BACK view. The back of the head, shoulders, spine, hips, "
             "knees, and heels face the camera while the face remains completely out of view; "
-            "do not turn the head over a shoulder. Reference 1, the canonical HD head, is the "
-            "identity and hair authority. Reference 2, the approved front body plate, is the "
-            "absolute authority for wardrobe, body proportions, materials, color, "
+            "do not turn the head over a shoulder. Reference 1 owns identity and hair. "
+            "Reference 2, the approved front, owns wardrobe, body proportions, materials, color, "
             "accessories, and garment length."
         ),
     }[view]
-    prompt = f"""Create one vertical 3:4 full-body {view}-view character plate of the exact same adult person.
+    # Keep the deterministic contract compact. xAI Imagine enforces an 8 KiB
+    # request ceiling, and side/back view instructions are longer than front.
+    # Repeating the same ban in several paragraphs used to leave under 256
+    # bytes for the owner's actual art direction and made a valid three-view
+    # build fail before reaching the provider. Each non-negotiable now appears
+    # once, leaving a useful editable budget for every view/presentation branch.
+    prompt = f"""Create one vertical 3:4 full-body {view}-view plate of the exact same adult person.
 
-TURNAROUND CONTRACT — this is one member of a matched FRONT / RIGHT-SIDE / BACK full-body set. Return exactly one complete figure for this {view} plate, never a triptych, contact sheet, split screen, duplicate person, inset, or labeled diagram. Treat the camera as rotating around one stationary person: preserve the same posture, shoulder level, arm placement, hand state, leg spacing, weight distribution, outfit, body scale, and camera height across all three plates.
+TURNAROUND — matched FRONT / RIGHT-SIDE / BACK. One complete figure only—no triptych, split screen, duplicate, inset, or diagram. Keep one stationary pose, limbs, outfit, scale, and camera height; rotate only the camera.
 
-IDENTITY LOCK — preserve the reference person's facial identity, skull proportions, skin tone, hairline, hairstyle, eyebrows, eye shape and color, nose, lips, ears, and apparent age wherever those features are visible. If the reference head wears eyeglasses, keep that exact pair on the face in every plate — same frame shape, thickness, color and position — and never remove them; if the reference wears none, do not add any. Keep a neutral closed mouth. Do not beautify, de-age, or redesign the person.
+IDENTITY LOCK — preserve the face, skull, skin, hair, brows, eyes, nose, lips, ears, and apparent age. If eyeglasses are present, preserve them exactly; never remove them. If absent, add none. Use a neutral closed mouth; never beautify, de-age, or redesign.
 
 VIEW — {view_text}
 
-COMPOSITION — show the complete figure from the top of the hair through both feet with 7% clear margin around the silhouette. Camera at waist height, long portrait lens, minimal perspective distortion. Use a {pose_text}. Both hands, both legs, and all footwear must be complete and anatomically correct; no crop, no props, no furniture, no text.
+COMPOSITION — complete figure, hair through both feet, with 7% clear margin. Camera at waist height, long portrait lens, minimal perspective distortion. Use a {pose_text}. Hands, legs, and footwear are complete and anatomical; no crop, props, furniture, or text.
 
-PROPORTION TARGET — give the adult figure a believable supermodel-calibre editorial silhouette: tall, poised, and sculpted, with naturally long legs and a balanced torso-to-leg ratio. Long must never become exaggerated. Reject stretched femurs or shins, a tiny torso, pinched waist, warped hips, knees, or ankles, impossible height, or fashion-illustration anatomy. Preserve any body characteristics clearly visible in the reference and keep adult anatomy realistic.
+PROPORTION TARGET — unmistakable high-fashion runway-supermodel silhouette, roughly 7.5 to 8 heads tall. Never copy the oversized head scale of the close-up identity reference. Crown-to-chin is 12.5 to 13.3 percent of standing height. Keep hair inside that head envelope, shoulders adult-width, long sculpted legs just over half-height, and the torso compact. Reject stretched limbs, a head-heavy silhouette, or warped anatomy.
 
-CARRY NOTHING — both hands are completely empty and clearly visible. Do NOT place a bag, handbag, clutch, purse, tote, shopping bag, backpack, briefcase, portfolio, folder, book, paper, phone, cup, glass, umbrella, weapon, staff, or any other object in either hand, and do NOT sling a bag, strap, or pouch over a shoulder, hook one on an elbow, or wear one across the body. Nothing is held, carried, hooked, or leaned against the figure in any plate of the turnaround.
+CARRY NOTHING — both hands are completely empty and visible. No bag, handbag, clutch, purse, tote, backpack, briefcase, phone, cup, umbrella, weapon, staff, or other held object; no strap or pouch on shoulder, elbow, or body.
 
 NO GOLD AND MINIMAL ACCESSORIES — {wardrobe.ACCESSORY_RULE}
 
@@ -406,17 +459,17 @@ EDITABLE ART DIRECTION — {direction}{house_section}
 
 PRESENTATION AND FOOTWEAR — this plate uses only the {presentation} branch inferred from the reference; it is visible styling, not a claim about gender identity. {presentation_rule}
 
-DECENCY FLOOR — regardless of the editable direction, use tasteful opaque clothing suitable for an adult in public. No nudity, lingerie, bare midriff, sheer or transparent fabric, exposed intimate areas, extreme plunging neckline, or sexually provocative styling. The result must read as structured, sensual, polished, proper, and intentionally fashionable.
+DECENCY FLOOR — tasteful opaque public clothing: no nudity, lingerie, bare midriff, sheer fabric, exposed intimate areas, extreme plunging neckline, or vulgar styling. Read as professional, polished, proper, and fashionable.
 
-STYLE — {style_text}. Match the reference head's lighting direction, color temperature, realism, and photographic texture. Avoid airbrushed skin, plastic fabric, exaggerated anatomy, or game-interface styling.
+STYLE — {style_text}. Match the head's lighting, colour temperature, realism, and texture. Avoid airbrushed skin, plastic fabric, exaggerated anatomy, or game UI styling.
 
-NO COBALT — cobalt is forbidden in clothing, footwear, jewellery, backdrop, and lighting. If the editable art direction requests cobalt, substitute ultramarine and keep the rest of the direction unchanged.
+NO BLUE / NO COBALT — forbid every blue-family colour in wardrobe, footwear, accessories, props, backdrop, and light cast, including cobalt, ultramarine, navy, royal blue, sapphire, azure, cerulean, indigo, cyan, teal, turquoise, aqua, periwinkle, and blue-violet. Preserve natural eye and hair colour. Substitute vivid fuchsia, scarlet, or coral.
 
-NO GREEN — ban the color green everywhere in the image: no green clothing, garment parts, or accessories, no green props or jewelry stones, no green background, backdrop tint, or green cast in the lighting. If the editable art direction asks for green, substitute a different color and keep everything else of that direction. Downstream alpha keying misreads green as background, so any green in the plate corrupts the cutout.
+NO GREEN — never green or green-tinted: no green clothing, props, backdrop, or light cast; substitute a different color. Green corrupts alpha.
 
-NO WHITE WARDROBE — ban white and off-white in everything worn: no white or off-white tops, shirts, dresses, trousers, skirts, jackets, or outerwear, and absolutely no white shoes, sneakers, heels, or soles. The figure is cut out from a light studio backdrop, and white wardrobe dissolves into it and shreds the silhouette. If the editable art direction asks for white, substitute a clearly non-white, non-green color and keep everything else of that direction.
+NO WHITE WARDROBE — no white/off-white garments and absolutely no white shoes or soles. They dissolve into the light cutout backdrop. Substitute a clearly non-white, non-green color.
 
-BACKGROUND — simple clean studio backdrop with strong person/background separation, never green or green-tinted. The application will remove the background locally, so preserve fine hair edges and do not add smoke, veils, loose particles, or cast shadows behind the figure."""
+SOURCE PLATE—Uniform RGB-255 white continues behind and beneath the figure. Flat frontal light; the figure casts nothing. White touches every outsole edge, both sides of each heel stem, and every body/clothing gap. Return only figure and white."""
     return _fit_full_body_prompt(prompt)
 
 
@@ -467,6 +520,287 @@ def _face_transform(keyframe, body_image):
         "scale": round(scale, 5),
         "face_bounds": [int(x), int(y), int(width), int(height)],
     }, key_landmarks
+
+
+def _body_proportion_report(body_rgba, face_bounds, options, log=print):
+    """Measure and enforce an explicitly requested editorial/runway ratio."""
+    report = body_proportion.assess(body_rgba, face_bounds, options)
+    failure = body_proportion.failure(report)
+    if failure:
+        raise GeneratedBodyProportionError(failure)
+    if report.get("measurable"):
+        log(
+            "  body proportion ready: "
+            f"{report['apparent_heads_tall']:.2f} apparent heads tall")
+    return report
+
+
+def _archive_rejected_body_alpha(
+        avatar_dir, source, refined_rgba, report, view):
+    """Retain private alpha evidence without publishing a rejected plate.
+
+    Provider sources normally live in ``.body-cache``, which is deliberately
+    invalidated after any failed preflight.  Losing the exact rejected image
+    made repeated side-view failures impossible to distinguish from a false
+    positive.  Keep a bounded, owner-local diagnostic copy under ``diag``;
+    nothing in the runtime/body installer reads this directory.
+    """
+    if view not in BODY_VIEWS:
+        raise RuntimeError(f"unknown generated body view: {view}")
+    if not os.path.isfile(source):
+        raise RuntimeError(f"generated {view} body source is missing")
+    if (refined_rgba is None or refined_rgba.ndim != 3
+            or refined_rgba.shape[2] != 4):
+        raise RuntimeError(
+            f"generated {view} body diagnostic is not an RGBA plate")
+
+    rejected_root = os.path.join(avatar_dir, "diag", "body-rejections")
+    os.makedirs(rejected_root, mode=0o700, exist_ok=True)
+    os.chmod(rejected_root, 0o700)
+    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    destination = os.path.join(rejected_root, f"{stamp}-{view}-alpha")
+    stage = tempfile.mkdtemp(prefix=".rejected-body-", dir=rejected_root)
+    try:
+        extension = os.path.splitext(source)[1].lower()
+        if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+            extension = ".bin"
+        archived_source = os.path.join(stage, f"source{extension}")
+        shutil.copyfile(source, archived_source)
+        os.chmod(archived_source, 0o600)
+
+        refined_path = os.path.join(stage, "refined.png")
+        if not cv2.imwrite(refined_path, refined_rgba):
+            raise RuntimeError("could not write rejected body RGBA diagnostic")
+        os.chmod(refined_path, 0o600)
+
+        source_digest = hashlib.sha256()
+        with open(source, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                source_digest.update(chunk)
+        manifest = {
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            "view": view,
+            "source_file": os.path.basename(archived_source),
+            "source_sha256": source_digest.hexdigest(),
+            "refined_file": "refined.png",
+            "installed": False,
+            "alpha_quality": report,
+        }
+        report_path = os.path.join(stage, "report.json")
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.chmod(report_path, 0o600)
+        os.chmod(stage, 0o700)
+        os.replace(stage, destination)
+        stage = ""
+
+        # Diagnostics are evidence, not a second asset library.  Retain only
+        # the newest twelve complete attempts to keep provider retries bounded.
+        attempts = sorted(
+            entry for entry in os.listdir(rejected_root)
+            if not entry.startswith(".")
+            and os.path.isdir(os.path.join(rejected_root, entry)))
+        for stale in attempts[:-12]:
+            shutil.rmtree(os.path.join(rejected_root, stale), ignore_errors=True)
+        return destination
+    finally:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def _archive_rejected_body_proportion(
+        avatar_dir, source, report, alignment=None, refined_rgba=None,
+        alpha_quality=None):
+    """Retain private evidence for a front plate rejected on proportions.
+
+    The front proportion gate runs before side/back generation, while its
+    provider source is still held only in the disposable body cache.  Preserve
+    the exact source plus the JSON-safe measurement/alignment metadata so a
+    rejected head/body ratio can be audited after that cache is invalidated.
+    Rejected evidence is diagnostic-only and is never read by the body
+    installer or runtime.
+    """
+    if not os.path.isfile(source):
+        raise RuntimeError("generated front body source is missing")
+    if refined_rgba is not None and (
+            refined_rgba.ndim != 3 or refined_rgba.shape[2] != 4):
+        raise RuntimeError(
+            "generated front body diagnostic is not an RGBA plate")
+
+    rejected_root = os.path.join(avatar_dir, "diag", "body-rejections")
+    os.makedirs(rejected_root, mode=0o700, exist_ok=True)
+    os.chmod(rejected_root, 0o700)
+    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    destination = os.path.join(
+        rejected_root, f"{stamp}-front-proportion")
+    stage = tempfile.mkdtemp(prefix=".rejected-body-", dir=rejected_root)
+    try:
+        extension = os.path.splitext(source)[1].lower()
+        if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+            extension = ".bin"
+        archived_source = os.path.join(stage, f"source{extension}")
+        shutil.copyfile(source, archived_source)
+        os.chmod(archived_source, 0o600)
+
+        refined_name = None
+        if refined_rgba is not None:
+            refined_name = "refined.png"
+            refined_path = os.path.join(stage, refined_name)
+            if not cv2.imwrite(refined_path, refined_rgba):
+                raise RuntimeError(
+                    "could not write rejected body RGBA diagnostic")
+            os.chmod(refined_path, 0o600)
+
+        source_digest = hashlib.sha256()
+        with open(source, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                source_digest.update(chunk)
+        manifest = {
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            "view": "front",
+            "rejection_kind": "body-proportion",
+            "source_file": os.path.basename(archived_source),
+            "source_sha256": source_digest.hexdigest(),
+            "refined_file": refined_name,
+            "installed": False,
+            "proportion_quality": report,
+            "alignment": alignment if isinstance(alignment, dict) else None,
+            "alpha_quality": (
+                alpha_quality if isinstance(alpha_quality, dict) else None),
+        }
+        report_path = os.path.join(stage, "report.json")
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.chmod(report_path, 0o600)
+        os.chmod(stage, 0o700)
+        os.replace(stage, destination)
+        stage = ""
+
+        attempts = sorted(
+            entry for entry in os.listdir(rejected_root)
+            if not entry.startswith(".")
+            and os.path.isdir(os.path.join(rejected_root, entry)))
+        for stale in attempts[:-12]:
+            shutil.rmtree(os.path.join(rejected_root, stale), ignore_errors=True)
+        return destination
+    finally:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def _preflight_front_source(avatar_dir, source, options, log=print):
+    """Reject an unsafe/head-heavy front before paying for side and back.
+
+    The authoritative install repeats these checks after all three views exist.
+    This early pass is a provider-cost guard: side and back inherit the front's
+    scale, so generating them after a failed front can never rescue the set.
+    """
+    keyframe = cv2.imread(os.path.join(avatar_dir, "keyframe.png"))
+    source_bgr = cv2.imread(source, cv2.IMREAD_COLOR)
+    if keyframe is None:
+        raise RuntimeError("avatar keyframe is missing")
+    if source_bgr is None:
+        raise RuntimeError("generated front body source could not be decoded")
+    stage = tempfile.mkdtemp(prefix=".body-front-preflight-", dir=avatar_dir)
+    try:
+        cutout_path = os.path.join(stage, "front.png")
+        if not cutout.render(source, cutout_path, log=log, tight=True):
+            raise RuntimeError("local person cutout failed for the front view")
+        body_rgba = cv2.imread(cutout_path, cv2.IMREAD_UNCHANGED)
+        if (body_rgba is None or body_rgba.ndim != 3
+                or body_rgba.shape[2] != 4):
+            raise RuntimeError(
+                "generated front body did not produce an RGBA plate")
+        body_rgba, alpha_quality = body_alpha.refine(source_bgr, body_rgba)
+        if not alpha_quality["valid"]:
+            try:
+                archived = _archive_rejected_body_alpha(
+                    avatar_dir, source, body_rgba, alpha_quality, "front")
+                log(f"  archived rejected front alpha diagnostic at {archived}")
+            except Exception as diagnostic_error:
+                # Diagnostic retention must never replace the real QA failure.
+                log(
+                    "  could not archive rejected front alpha diagnostic: "
+                    f"{diagnostic_error}")
+            raise GeneratedBodyAlphaError(
+                "generated front body failed alpha QA: "
+                f"{alpha_quality['reason']}")
+        _transform, alignment, _landmarks = _face_transform(
+            keyframe, body_rgba[:, :, :3])
+        proportion_quality = body_proportion.assess(
+            body_rgba, alignment.get("face_bounds"), options)
+        proportion_failure = body_proportion.failure(proportion_quality)
+        if proportion_failure:
+            try:
+                archived = _archive_rejected_body_proportion(
+                    avatar_dir, source, proportion_quality,
+                    alignment=alignment, refined_rgba=body_rgba,
+                    alpha_quality=alpha_quality)
+                log(
+                    "  archived rejected front proportion diagnostic at "
+                    f"{archived}")
+            except Exception as diagnostic_error:
+                # Diagnostic retention cannot replace or obscure the hard gate.
+                log(
+                    "  could not archive rejected front proportion "
+                    f"diagnostic: {diagnostic_error}")
+            raise GeneratedBodyProportionError(proportion_failure)
+        if proportion_quality.get("measurable"):
+            log(
+                "  body proportion ready: "
+                f"{proportion_quality['apparent_heads_tall']:.2f} "
+                "apparent heads tall")
+        return proportion_quality
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def _preflight_alpha_source(avatar_dir, source, view, log=print):
+    """Reject an unsafe generated view before requesting the next plate.
+
+    Front has a stronger identity/proportion preflight.  Side and back still
+    need the same source-authoritative alpha gate before the coherent
+    turnaround proceeds; the authoritative installer repeats the gate for all
+    three views before it atomically replaces the installed body.
+    """
+    if view not in BODY_VIEWS:
+        raise RuntimeError(f"unknown generated body view: {view}")
+    source_bgr = cv2.imread(source, cv2.IMREAD_COLOR)
+    if source_bgr is None:
+        raise RuntimeError(f"generated {view} body source could not be decoded")
+    stage = tempfile.mkdtemp(
+        prefix=f".body-{view}-alpha-preflight-", dir=avatar_dir)
+    try:
+        cutout_path = os.path.join(stage, f"{view}.png")
+        if not cutout.render(source, cutout_path, log=log, tight=True):
+            raise RuntimeError(f"local person cutout failed for the {view} view")
+        body_rgba = cv2.imread(cutout_path, cv2.IMREAD_UNCHANGED)
+        if (body_rgba is None or body_rgba.ndim != 3
+                or body_rgba.shape[2] != 4):
+            raise RuntimeError(
+                f"generated {view} body did not produce an RGBA plate")
+        refined, alpha_quality = body_alpha.refine(source_bgr, body_rgba)
+        if not alpha_quality["valid"]:
+            try:
+                archived = _archive_rejected_body_alpha(
+                    avatar_dir, source, refined, alpha_quality, view)
+                log(
+                    f"  archived rejected {view} alpha diagnostic at "
+                    f"{archived}")
+            except Exception as diagnostic_error:
+                # A full disk or diagnostic encoding problem cannot turn an
+                # unsafe source into a pass or obscure the hard-gate reason.
+                log(
+                    f"  could not archive rejected {view} alpha diagnostic: "
+                    f"{diagnostic_error}")
+            raise GeneratedBodyAlphaError(
+                f"generated {view} body failed alpha QA: "
+                f"{alpha_quality['reason']}")
+        return alpha_quality
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
 
 def _head_mask(cutout_image, landmarks, destination):
@@ -711,6 +1045,75 @@ def _cached_view_source(cache_dir, view):
     ), None)
 
 
+def _discard_cached_view_source(cache_dir, view):
+    """Remove one rejected provider plate without invalidating accepted views."""
+    if view not in BODY_VIEWS or not os.path.isdir(cache_dir):
+        return
+    prefix = f"source-{view}."
+    for name in os.listdir(cache_dir):
+        path = os.path.join(cache_dir, name)
+        if name.startswith(prefix) and os.path.isfile(path):
+            os.remove(path)
+
+
+def _alpha_retry_remediation(reason, view):
+    """Return one concise, failure-specific provider correction.
+
+    This is an internal one-shot repair instruction.  It never mutates the
+    owner's saved art direction or weakens the unchanged local alpha gate.
+    """
+    if view not in {"side", "back"}:
+        raise ValueError(f"alpha provider retry is unavailable for {view}")
+    lowered = str(reason or "").lower()
+    corrections = []
+    if view == "side":
+        corrections.append(
+            "Reproduce the approved front footwear's exact colour and "
+            "material continuously through every outsole and the complete "
+            "heel stem; never invent pale or metallic heel hardware, trim, "
+            "undersoles, support pieces, specular fragments, or detached "
+            "material.")
+    if any(term in lowered for term in (
+            "shadow", "floor", "wall", "contact", "ambient-occlusion")):
+        corrections.append(
+            "Remove every floor, wall, contact, cast, and ambient-occlusion "
+            "shadow; RGB-255 white must touch every outsole and both sides "
+            "of each heel stem.")
+    if any(term in lowered for term in (
+            "near-white", "near white", "off-white", "white/off-white",
+            "plate contamination", "ambiguous against the plate",
+            "preblended with white", "source-plate white")):
+        corrections.append(
+            "Replace plate-like white or off-white subject detail with a "
+            "clearly non-white material and leave every silhouette gap pure "
+            "white, crisp, and halo-free.")
+    if any(term in lowered for term in (
+            "shoe", "footwear", "heel", "sole", "reflection", "reflective",
+            "highlight", "white/off-white", "ambiguous against the plate")):
+        corrections.append(
+            "Keep footwear dark, matte, and non-reflective with no pale trim "
+            "or white specular patch; preserve complete soles and fine heel "
+            "stems.")
+    if not corrections:
+        corrections.append(
+            "Return one complete figure on a perfectly uniform RGB-255 white "
+            "plate with clean transparent-ready gaps and no halo or scenery.")
+    continuity = (
+        "the exact approved front reference" if view == "side" else
+        "the exact approved front and already matched side continuity")
+    return (
+        f"ALPHA QA RETRY — Regenerate only this {view} plate. Preserve "
+        f"{continuity}, pose, proportions, outfit, and camera. "
+        + " ".join(corrections)
+    )
+
+
+def _alpha_retry_prompt(prompt, reason, view):
+    """Append retry remediation while retaining the provider byte ceiling."""
+    remediation = _alpha_retry_remediation(reason, view)
+    return _fit_full_body_prompt(f"{prompt}\n\n{remediation}")
+
+
 def supports_xai_edit(provider):
     """Whether this public provider descriptor may edit an existing body."""
     return bool(
@@ -805,7 +1208,7 @@ EDIT CONTRACT — Apply only the requested visual change, then preserve everythi
 
 IDENTITY LOCK — Use the identity-head reference only to preserve identity and hair. Never paste a floating portrait, enlarge the head, alter facial anatomy, beautify, de-age, or change eyewear.
 
-LOCAL CUTOUT CONTRACT — Keep the backdrop simple and high-contrast for local background removal. No green or green cast anywhere. No white or off-white wardrobe or footwear. Never use cobalt; substitute ultramarine. Preserve fine hair edges without smoke, veils, particles, shadows, furniture, or scenery.
+LOCAL CUTOUT CONTRACT — Uniform RGB-255 white continues behind and beneath the figure. Flat frontal light; the figure casts nothing. White touches every outsole edge, both sides of each heel stem, and every body/clothing gap. Return only figure and white. No green or green cast; no blue/green styling. No white or off-white wardrobe or footwear. Preserve fine hair and heel edges without smoke, veils, particles, reflections, halo, gray fringe, furniture, or scenery.
 
 GOLD AND ACCESSORIES — {wardrobe.ACCESSORY_RULE}
 
@@ -856,6 +1259,19 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             body_rgba = cv2.imread(body_path, cv2.IMREAD_UNCHANGED)
             if body_rgba is None or body_rgba.ndim != 3 or body_rgba.shape[2] != 4:
                 raise RuntimeError(f"generated {view} body did not produce an RGBA plate")
+            source_bgr = cv2.imread(staged_sources[view], cv2.IMREAD_COLOR)
+            if source_bgr is None:
+                raise RuntimeError(f"generated {view} body source could not be decoded")
+            body_rgba, alpha_quality = body_alpha.refine(source_bgr, body_rgba)
+            if not alpha_quality["valid"]:
+                raise GeneratedBodyAlphaError(
+                    f"generated {view} body failed alpha QA: "
+                    f"{alpha_quality['reason']}")
+            if not cv2.imwrite(body_path, body_rgba):
+                raise RuntimeError(f"refined {view} body alpha could not be written")
+            log(
+                f"  {view} body alpha ready: "
+                f"{alpha_quality['removed_plate_pixels']} proven plate pixels removed")
             height, width = body_rgba.shape[:2]
             view_images[view] = body_rgba
             view_metadata[view] = {
@@ -865,6 +1281,7 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                 "height": int(height),
                 "bounds": _alpha_bounds(body_rgba),
                 "purpose": purposes[view],
+                "alpha_quality": alpha_quality,
             }
         shutil.copy2(os.path.join(stage, "body-front.png"), os.path.join(stage, "body.png"))
 
@@ -872,6 +1289,31 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         _emit(progress, "identity", .80, "Locking the calibrated face to the front view")
         transform, alignment, key_landmarks = _face_transform(
             keyframe, view_images["front"][:, :, :3])
+        proportion_quality = body_proportion.assess(
+            view_images["front"], alignment.get("face_bounds"), options)
+        proportion_failure = body_proportion.failure(proportion_quality)
+        if proportion_failure:
+            try:
+                archived = _archive_rejected_body_proportion(
+                    avatar_dir, staged_sources["front"], proportion_quality,
+                    alignment=alignment,
+                    refined_rgba=view_images["front"],
+                    alpha_quality=view_metadata["front"]["alpha_quality"])
+                log(
+                    "  archived rejected front proportion diagnostic at "
+                    f"{archived}")
+            except Exception as diagnostic_error:
+                # Retention remains subordinate to the authoritative hard gate.
+                log(
+                    "  could not archive rejected front proportion "
+                    f"diagnostic: {diagnostic_error}")
+            raise GeneratedBodyProportionError(proportion_failure)
+        if proportion_quality.get("measurable"):
+            log(
+                "  body proportion ready: "
+                f"{proportion_quality['apparent_heads_tall']:.2f} "
+                "apparent heads tall")
+        alignment["body_proportion"] = proportion_quality
         portrait_cutout_path = os.path.join(stage, "portrait-cutout.png")
         if not cutout.render(keyframe_path, portrait_cutout_path, log=lambda _message: None):
             raise RuntimeError("could not build the identity overlay mask")
@@ -907,6 +1349,10 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         view_metadata["front"]["alignment"] = alignment
         if preview_name:
             view_metadata["front"]["preview_image"] = preview_name
+        stored_style = options.get("style") \
+            if options.get("style") in STYLES else "photorealistic"
+        stored_presentation, stored_medium, _stored_rule = \
+            _presentation_context(options, stored_style)
         metadata = {
             "v": 3,
             "image": "body.png",
@@ -929,11 +1375,17 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             },
             "provider": provider,
             "options": {
-                "style": options.get("style", "photorealistic"),
+                "style": stored_style,
                 "pose": options.get("pose", "relaxed"),
                 "prompt": _direction(options),
                 "outfit": _clean(options.get("outfit"), 500),
                 "notes": _clean(options.get("notes"), 600),
+                # Persist the exact visible-presentation branch that produced
+                # this turnaround.  Without it, a later edit/regeneration fell
+                # back to neutral and could lose the male/no-heels contract or
+                # reject an already-approved feminine office brief.
+                "presentation": stored_presentation,
+                "medium": stored_medium,
             },
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
         }
@@ -995,6 +1447,27 @@ def build(avatar_dir, options, log=print, progress=None):
     try:
         log(f"using OpenClam image provider: {provider['title']}")
         sources = {}
+
+        def generate_view(view, prompt, retry=False):
+            label = f"{view}-alpha-retry" if retry else view
+            provider_dir = os.path.join(provider_stage, label)
+            os.makedirs(provider_dir, mode=0o700)
+            references = [identity_reference]
+            if view != "front":
+                references.append(sources["front"])
+            generated_source = media_gen.generate_image_edit_sync(
+                prompt, references, provider_config,
+                aspect_ratio="3:4", quality="high",
+                output_dir=provider_dir,
+                file_name=(
+                    f"body-source-{view}-alpha-retry" if retry else
+                    f"body-source-{view}"))
+            extension = os.path.splitext(generated_source)[1].lower() or ".png"
+            _discard_cached_view_source(cache_dir, view)
+            cached_path = os.path.join(cache_dir, f"source-{view}{extension}")
+            shutil.copy2(generated_source, cached_path)
+            return cached_path
+
         for view_index, view in enumerate(BODY_VIEWS):
             generated = cached[view]
             if generated:
@@ -1004,26 +1477,67 @@ def build(avatar_dir, options, log=print, progress=None):
                     progress, "generation", .14 + view_index * .18,
                     f"Generating {view} full-body view")
                 log(f"generating {view} full body from the canonical HD head")
-                references = [identity_reference]
-                if view != "front":
-                    references.append(sources["front"])
-                provider_dir = os.path.join(provider_stage, view)
-                os.makedirs(provider_dir, mode=0o700)
-                generated = media_gen.generate_image_edit_sync(
-                    prompts[view], references, provider_config,
-                    aspect_ratio="3:4", quality="high",
-                    output_dir=provider_dir,
-                    file_name=f"body-source-{view}")
-                extension = os.path.splitext(generated)[1].lower() or ".png"
-                cached_path = os.path.join(cache_dir, f"source-{view}{extension}")
-                shutil.copy2(generated, cached_path)
-                generated = cached_path
+                generated = generate_view(view, prompts[view])
             sources[view] = generated
+            try:
+                if view == "front":
+                    _preflight_front_source(
+                        avatar_dir, generated, options, log=log)
+                else:
+                    _preflight_alpha_source(
+                        avatar_dir, generated, view, log=log)
+            except GeneratedBodyAlphaError as alpha_error:
+                if view == "front":
+                    shutil.rmtree(cache_dir, ignore_errors=True)
+                    log(
+                        "discarded the rejected generated front; the next try "
+                        "will render a fresh turnaround")
+                    raise
+                # A side/back alpha defect does not invalidate the exact front
+                # (or an already accepted side). Retry only the rejected view,
+                # once, against the same coherent references and signature.
+                _discard_cached_view_source(cache_dir, view)
+                _emit(
+                    progress, "generation", .14 + view_index * .18,
+                    f"Repairing {view} full-body alpha plate")
+                log(
+                    f"generated {view} failed alpha QA; regenerating only "
+                    "that view once with a targeted correction")
+                retry_prompt = _alpha_retry_prompt(
+                    prompts[view], str(alpha_error), view)
+                try:
+                    generated = generate_view(view, retry_prompt, retry=True)
+                    sources[view] = generated
+                    _preflight_alpha_source(
+                        avatar_dir, generated, view, log=log)
+                except Exception:
+                    # Never leave a rejected retry eligible for cache reuse.
+                    # The earlier accepted members and signature remain exact,
+                    # so the next same-intent build can resume coherently.
+                    _discard_cached_view_source(cache_dir, view)
+                    log(
+                        f"discarded the second rejected generated {view}; "
+                        "retained the accepted earlier turnaround views")
+                    raise
+            except RuntimeError:
+                # Every plate belongs to one coherent generated turnaround.
+                # Reusing any of it after a preflight rejection can reproduce
+                # the unsafe view or mismatch a freshly generated replacement.
+                # Plain decode/cutout RuntimeErrors invalidate it as well as the
+                # typed alpha, identity, and proportion failures.
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                log(
+                    f"discarded the rejected generated {view}; the next try "
+                    "will render a fresh turnaround")
+                raise
         try:
             metadata = _install_sources(
                 avatar_dir, sources, provider, options, log=log,
                 progress=progress)
-        except GeneratedBodyIdentityError:
+        except (
+                GeneratedBodyIdentityError,
+                GeneratedBodyAlphaError,
+                GeneratedBodyProportionError):
             # Side/back plates are generated from the rejected front plate. A
             # retry must therefore render one fresh coherent turnaround instead
             # of reusing the same doomed cache indefinitely.

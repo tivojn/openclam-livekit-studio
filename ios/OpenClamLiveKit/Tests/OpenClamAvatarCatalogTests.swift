@@ -1,3 +1,4 @@
+import CryptoKit
 import ImageIO
 import XCTest
 @testable import OpenClamLiveKit
@@ -25,20 +26,22 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
     }
 
     func testPackAverageMatchesTheTwoAuthorizedBundledAvatars() {
-        XCTAssertEqual(OpenClamAvatarCatalog.averageIncludedByteCount, 13_046_499)
-        XCTAssertLessThan(OpenClamAvatarCatalog.averageIncludedByteCount, 14_000_000)
+        XCTAssertGreaterThan(OpenClamAvatarCatalog.averageIncludedByteCount, 24_000_000)
+        XCTAssertLessThan(OpenClamAvatarCatalog.averageIncludedByteCount, 32_000_000)
     }
 
     @MainActor
-    func testAraOffersOnlyItsValidatedEdgeIdleAndMovesClips() throws {
+    func testAraOffersItsThreeValidatedFullExpressionClips() throws {
         let ara = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "ara"))
-        XCTAssertEqual(Set(ara.motions.keys), [.edgeIdle, .moves])
-        XCTAssertNil(ara.motion(.walk))
+        XCTAssertEqual(Set(ara.motions.keys), [.walk, .edgeIdle, .moves])
+        XCTAssertTrue(ara.compatibility.supportsMacV22ExpressionParity)
+        XCTAssertNotNil(ara.expressionGeometry)
 
-        for kind in [OpenClamAvatarMotionKind.edgeIdle, .moves] {
+        for kind in OpenClamAvatarMotionKind.allCases {
             let motion = try XCTUnwrap(ara.motion(kind))
             XCTAssertEqual(motion.pixelSize, OpenClamAvatarSize(width: 720, height: 1_088))
-            XCTAssertEqual(motion.durationMilliseconds, 6_083)
+            XCTAssertGreaterThanOrEqual(motion.durationMilliseconds, 250)
+            XCTAssertLessThanOrEqual(motion.durationMilliseconds, 12_000)
             let url = try XCTUnwrap(
                 OpenClamAvatarAssetStore.shared.resourceURL(for: motion)
             )
@@ -63,12 +66,30 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
 
         for avatar in OpenClamAvatarCatalog.avatars {
             XCTAssertTrue(avatar.compatibility.supportsFullLocalStage, avatar.displayName)
-            XCTAssertEqual(Set(avatar.assets.keys), expectedRoles, avatar.displayName)
+            XCTAssertTrue(
+                expectedRoles.isSubset(of: Set(avatar.assets.keys)),
+                avatar.displayName
+            )
             XCTAssertEqual(avatar.geometry.leftEye.storage, .verticalStrip)
             XCTAssertEqual(avatar.geometry.leftBrow.storage, .verticalStrip)
             XCTAssertEqual(avatar.geometry.leftGaze.storage, .gridAtlas)
             XCTAssertEqual(avatar.geometry.rightGaze.storage, .gridAtlas)
         }
+
+        let ara = OpenClamAvatarCatalog.avatar(id: "ara")
+        XCTAssertEqual(
+            Set(ara?.assets.keys.map { $0 } ?? []),
+            expectedRoles.union([
+                .smileAtlas,
+                .emotionMouthAtlas,
+                .foreheadLeft,
+                .foreheadRight,
+                .cheekLeft,
+                .cheekRight,
+                .underEyeLeft,
+                .underEyeRight,
+            ])
+        )
     }
 
     @MainActor
@@ -140,11 +161,100 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
                     bundle: bundle
                 )
             }
+            if let expression = avatar.expressionGeometry {
+                try assertAtlas(
+                    role: .smileAtlas,
+                    geometry: expression.smile,
+                    avatar: avatar,
+                    bundle: bundle
+                )
+                try assertAtlas(
+                    role: .emotionMouthAtlas,
+                    geometry: expression.emotionMouth,
+                    avatar: avatar,
+                    bundle: bundle
+                )
+                for (role, geometry) in [
+                    (OpenClamAvatarAssetRole.foreheadLeft, expression.leftForehead),
+                    (.foreheadRight, expression.rightForehead),
+                    (.cheekLeft, expression.leftCheek),
+                    (.cheekRight, expression.rightCheek),
+                    (.underEyeLeft, expression.leftUnderEye),
+                    (.underEyeRight, expression.rightUnderEye),
+                ] {
+                    try assertStrip(
+                        role: role,
+                        geometry: geometry,
+                        avatar: avatar,
+                        bundle: bundle
+                    )
+                }
+            }
         }
     }
 
     @MainActor
-    func testShippingBundleContainsNoSourceManifestsOrSensitiveBuildMetadata() throws {
+    func testBundledAraIsTheHashPinnedFullExpressionPackagePayload() throws {
+        let bundle = try XCTUnwrap(
+            OpenClamAvatarAssetStore.findCatalogBundle(in: .main)
+        )
+        let directoryURL = bundle.bundleURL.appendingPathComponent(
+            "ara",
+            isDirectory: true
+        )
+        let manifestURL = directoryURL.appendingPathComponent("manifest.json")
+        let manifest = try JSONDecoder().decode(
+            OpenClamAvatarPackageManifest.self,
+            from: Data(contentsOf: manifestURL)
+        )
+        XCTAssertEqual(manifest.format, "openclam-avatar")
+        XCTAssertEqual(manifest.version, 4)
+        XCTAssertEqual(manifest.variant, "ios-light")
+        XCTAssertEqual(manifest.id, "ara")
+        XCTAssertEqual(manifest.displayName, "Ara")
+        XCTAssertNotNil(manifest.expression)
+        XCTAssertEqual(Set(manifest.motions?.keys.map { $0 } ?? []), [
+            "walk", "edgeIdle", "moves",
+        ])
+
+        let declared = Array(manifest.assets.values) + Array(
+            manifest.motions?.values.map {
+                OpenClamAvatarPackageAsset(
+                    path: $0.path,
+                    sha256: $0.sha256,
+                    byteCount: $0.byteCount,
+                    mediaType: $0.mediaType,
+                    width: $0.width,
+                    height: $0.height
+                )
+            } ?? []
+        )
+        let expectedNames = Set(
+            declared.map { URL(fileURLWithPath: $0.path).lastPathComponent }
+                + ["manifest.json"]
+        )
+        XCTAssertEqual(
+            Set(try FileManager.default.contentsOfDirectory(atPath: directoryURL.path)),
+            expectedNames
+        )
+        for record in declared {
+            let url = directoryURL.appendingPathComponent(
+                URL(fileURLWithPath: record.path).lastPathComponent
+            )
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            XCTAssertEqual(data.count, record.byteCount, record.path)
+            XCTAssertEqual(
+                SHA256.hash(data: data)
+                    .map { String(format: "%02x", $0) }
+                    .joined(),
+                record.sha256,
+                record.path
+            )
+        }
+    }
+
+    @MainActor
+    func testShippingBundleContainsOnlyPublicRuntimeManifestAndNoSensitiveBuildMetadata() throws {
         let bundle = try XCTUnwrap(OpenClamAvatarAssetStore.findCatalogBundle(in: .main))
         let files = try FileManager.default.contentsOfDirectory(
             at: bundle.bundleURL,
@@ -169,7 +279,22 @@ final class OpenClamAvatarCatalogTests: XCTestCase {
                 isDirectory: true
             )
             let names = try FileManager.default.contentsOfDirectory(atPath: directoryURL.path)
-            XCTAssertFalse(names.contains { $0.localizedCaseInsensitiveContains("manifest") })
+            XCTAssertEqual(
+                names.filter { $0.localizedCaseInsensitiveContains("manifest") },
+                ["manifest.json"]
+            )
+            let manifest = try String(
+                contentsOf: directoryURL.appendingPathComponent("manifest.json"),
+                encoding: .utf8
+            )
+            for forbidden in [
+                "/Users/", "provider", "prompt", "persona", "credential", "token",
+            ] {
+                XCTAssertFalse(
+                    manifest.localizedCaseInsensitiveContains(forbidden),
+                    forbidden
+                )
+            }
         }
     }
 

@@ -28,46 +28,46 @@
       "id": "ara",
       "name": "Ara",
       "thumbnail": {
-        "bytes": 1210708,
+        "bytes": 1394221,
         "height": 1024,
         "mime": "image/png",
-        "sha256": "7eb7ec65799715cdca9b52bad64d664fe2404b072a6f0a5b6af0368f4393217f",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.0/shared/avatar-store-v1/catalog/v1/ara-thumbnail.png",
+        "sha256": "d7e7ca507994e8fc50221f5331afdfc91621a0f0e62fb6d90c9158703a1708c8",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.2/shared/avatar-store-v1/catalog/v1/ara-thumbnail.png",
         "width": 1024
       },
       "variants": {
         "ios-light": {
-          "bytes": 15063000,
+          "bytes": 39085220,
           "format": "openclam-avatar",
           "profile": "ios-light",
-          "sha256": "3713c746302511ec54d70c6c8a870d9c4b7e4ad87165b1bce921ad9d448a4a4e",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.0/ara-ios-light.avtr"
+          "sha256": "3b77c39500fa2c68b1bc4b585896a2f99cf71714961035d2943e9d71c4ca8aa1",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.2/ara-ios-light.avtr"
         }
       },
-      "version": 1
+      "version": 2
     },
     {
       "author": "OpenClam",
       "id": "cleo",
       "name": "Cleo",
       "thumbnail": {
-        "bytes": 1239663,
+        "bytes": 1514552,
         "height": 1024,
         "mime": "image/png",
-        "sha256": "a191cb5a10eeea538fd1169d85088aa158cce6104a636118c84015f657861a40",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.1/shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png",
+        "sha256": "3fc29765d3de9fc039a67bec6775a4c963cafb4125d03cba4701cea5c17becf8",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.2/shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png",
         "width": 1024
       },
       "variants": {
         "ios-light": {
-          "bytes": 14971307,
+          "bytes": 43028246,
           "format": "openclam-avatar",
           "profile": "ios-light",
-          "sha256": "7ea1299f25a4b0b1d8242b42d70e717c0012a33356ec9b38a2c2cce9addce2a8",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.1/cleo-ios-light.avtr"
+          "sha256": "3cfea3d606526a81ff85f2adbcf966700a0ea0991ccbc90bd41cb9449bf46f15",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.2/cleo-ios-light.avtr"
         }
       },
-      "version": 1
+      "version": 2
     }
   ],
   "schemaVersion": 1

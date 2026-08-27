@@ -9,8 +9,9 @@ This module reads the uploaded portrait through OpenClam's selected direct
 vision LLM and writes the art direction FOR THAT SUBJECT - medium,
 presentation, apparent age, implied profession, and existing style register
 all steer the brief. A photoreal fashion subject gets silhouette, palette and
-jewellery discipline; a game or fantasy character gets costume, armour,
-material and lighting detail instead.
+jewellery discipline; a game or fantasy character gets costume, armour, and
+material detail instead. Lighting remains a separate shadowless-plate concern
+and never belongs in a wardrobe receipt.
 
 Four rules are structural rather than stylistic, so they are enforced in code
 after the model writes: BELIEVABLE LONG-LEG EDITORIAL PROPORTIONS, NO HEAVY
@@ -42,7 +43,7 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 
 
 CACHE_NAME = ".wardrobe.json"
-CACHE_VERSION = 6
+CACHE_VERSION = 9
 ANALYSIS_EDGE = 768
 PROMPT_LIMIT = 4000
 
@@ -72,10 +73,12 @@ SILHOUETTE_RULE = (
 )
 
 PROPORTION_RULE = (
-    "Give the adult figure believable supermodel-calibre editorial proportions: "
-    "tall, poised, and sculpted, with naturally long legs and a balanced "
-    "torso-to-leg ratio. Long must never become exaggerated: no stretched limbs, "
-    "tiny torso, pinched waist, warped hips, knees, or ankles, or impossible height."
+    "Give the adult figure unmistakable high-fashion runway-supermodel "
+    "proportions: roughly 7.5 to 8 heads tall, with long sculpted legs forming "
+    "slightly more than half the visible height, a poised compact torso, and a "
+    "clean defined waist. Keep the anatomy human and coherent: no stretched "
+    "limbs, tiny torso, pinched waist, warped hips, knees, ankles, or impossible "
+    "height."
 )
 
 HANDS_RULE = (
@@ -89,24 +92,27 @@ HANDS_RULE = (
 # name the very garments and props they forbid.
 STRUCTURAL_RULE = f"{PROPORTION_RULE} {SILHOUETTE_RULE} {HANDS_RULE}"
 
-# OpenClam's full-body plate currently has a hard no-green contract because the
-# downstream alpha pass can erase green wardrobe. Emerald remains part of the
-# owner's broader house palette, but the plate prompt has to substitute it until
-# that extraction contract changes. This is explicit instead of silently
-# turning the requested emerald into some arbitrary colour.
+# OpenClam's full-body plate has a hard no-green contract because the downstream
+# alpha pass can erase green wardrobe. Blue is also excluded by the current
+# house direction. Both families are named explicitly so a model result can be
+# rejected before any expensive turnaround generation starts.
 COLOR_RULE = (
-    "Choose exactly one hero colour from fuchsia, scarlet, coral, ultramarine, "
-    "or camel; the list order has no priority and camel is never the default. "
-    "Let the hero colour or its tonal family cover roughly 65 to 80 percent of "
-    "the visible fabric. Use zero or one restrained accent covering no more than "
-    "10 percent, plus at most one quiet black, charcoal, taupe, or chocolate "
-    "grounding neutral. Never split the body into three equally strong colour "
-    "blocks. Never use cobalt. Emerald belongs to the house "
-    "palette but is unavailable on OpenClam cutout plates because green damages "
-    "alpha extraction; substitute ultramarine if emerald is requested."
+    "Choose exactly one vivid hero colour from fuchsia, scarlet, or coral. Let "
+    "that bright hero cover roughly 75 to 90 percent of visible fabric, with at "
+    "most one quiet black, charcoal, taupe, or chocolate grounding neutral. "
+    "Keep the hero clear, luminous, and saturated rather than dusty, muddy, "
+    "muted, greyed, or near-black. "
+    "Never split the body into competing colour blocks. Ban the entire blue "
+    "family from wardrobe, footwear, accessories, props, backdrop, and light "
+    "cast, including cobalt, ultramarine, navy, royal blue, sapphire, azure, "
+    "cerulean, indigo, cyan, teal, turquoise, aqua, periwinkle, and blue-violet. "
+    "Green is also unavailable in those styling and scene elements because it "
+    "damages alpha extraction. Preserve the person's natural eye and hair colour. "
+    "If a blue or green styling colour is requested, substitute vivid fuchsia, "
+    "scarlet, or coral."
 )
 
-HERO_COLORS = ("fuchsia", "scarlet", "coral", "ultramarine", "camel")
+HERO_COLORS = ("fuchsia", "scarlet", "coral")
 
 
 def resolved_color_rule(hero):
@@ -119,16 +125,17 @@ def resolved_color_rule(hero):
     """
     hero = _clean(hero, 24).lower()
     if hero not in HERO_COLORS:
-        hero = "ultramarine"
+        hero = "fuchsia"
     return (
-        f"The single hero colour for this look is {hero}. Use no other house "
-        "hero colour in the wardrobe. Let that hero or its tonal family cover "
-        "roughly 65 to 80 percent of visible fabric. Use zero or one restrained "
-        "accent covering no more than 10 percent and at most one quiet black, "
-        "charcoal, taupe, or chocolate grounding neutral. Never split the figure "
-        "into three equally strong colour blocks. Never use cobalt. "
-        "Emerald is unavailable on OpenClam cutout plates because green damages "
-        "alpha extraction; substitute ultramarine if emerald is requested."
+        f"The single vivid hero colour for this look is {hero}. Use no other house "
+        "hero colour in the wardrobe. Keep it vivid and bright, never dusty, "
+        "muddy, muted, or near-black. Let "
+        "that hero or its tonal family cover "
+        "roughly 75 to 90 percent of visible fabric and use at most one quiet "
+        "black, charcoal, taupe, or chocolate grounding neutral. Never split the "
+        "figure into competing colour blocks. Ban all blue and green from styling "
+        "and scene; preserve natural eye and hair colour. Substitute "
+        "vivid fuchsia, scarlet, or coral if either family is requested for styling."
     )
 
 
@@ -138,84 +145,84 @@ def resolved_color_rule(hero):
 # Only the matching presentation branch is ever included in the final prompt.
 LUXURY_VARIATIONS = (
     {
-        "id": "fuchsia-column",
-        "label": "Fuchsia sculpted column",
+        "id": "fuchsia-office-sheath",
+        "label": "Fuchsia tailored office precision",
         "hero": "fuchsia",
-        "feminine": "a sculpted midi or column dress with architectural seaming and a clean defined waist",
-        "masculine": "an open-collar fine-gauge knit with narrow evening trousers and a long unbroken line",
-        "androgynous": "a collarless longline tunic over narrow trousers with an architectural tonal column",
+        "feminine": "a lightweight tailored office sheath with princess seams, a modest bateau neckline, a clean defined waist, and a hem 6cm above the knee",
+        "masculine": "a lightweight single-breasted office suit with precise shoulders, a fine-gauge open-collar layer, and slim straight trousers",
+        "androgynous": "a lightweight collarless office jacket over a fine-gauge top and slim straight trousers with architectural seaming",
     },
     {
-        "id": "scarlet-wrap",
-        "label": "Scarlet wrap precision",
+        "id": "scarlet-office-precision",
+        "label": "Scarlet office precision",
         "hero": "scarlet",
-        "feminine": "a precise wrap-front coat-dress with a controlled knee or midi hem and sculpted shoulders",
-        "masculine": "a sharply waisted dinner jacket with narrow straight trousers and a clean collar line",
-        "androgynous": "an asymmetric wrap-front longline jacket with narrow trousers and disciplined geometry",
+        "feminine": "a lightweight tailored office sheath with cap sleeves, a modest shallow-V neckline, a clean waist, and a hem 5–8cm above the knee",
+        "masculine": "a lightweight double-breasted office suit with a controlled waist, clean collar line, and slim straight trousers",
+        "androgynous": "a lightweight wrap-front office jacket with disciplined geometry and slim straight trousers",
     },
     {
-        "id": "coral-leather",
-        "label": "Coral leather sculpture",
+        "id": "coral-office-sheath",
+        "label": "Coral silk-crepe office structure",
         "hero": "coral",
-        "feminine": "a close-cut matte leather midi dress or leather pencil skirt with a compact fine-gauge knit",
-        "masculine": "a close-cut collarless leather jacket over a fine-gauge knit with narrow tailored trousers",
-        "androgynous": "a compact collarless leather shell over a slim tonal column with minimal hardware",
+        "feminine": "a lightweight silk-crepe office sheath with a modest jewel neckline, precise waist darts, and a hem 5–8cm above the knee",
+        "masculine": "a close-cut lightweight collarless office shirt-jacket with slim tailored trousers",
+        "androgynous": "a compact lightweight collarless office jacket over a fine-gauge top and slim trousers with minimal hardware",
     },
     {
-        "id": "ultramarine-evening",
-        "label": "Ultramarine modern evening",
-        "hero": "ultramarine",
-        "feminine": "an asymmetric draped midi dress with controlled structure and one clean sculptural line",
-        "masculine": "a precise double-breasted evening suit with a sculpted shoulder and narrow straight trousers",
-        "androgynous": "a sharply cut sleeved jumpsuit with a defined waist and narrow full-length leg",
-    },
-    {
-        "id": "camel-knit",
-        "label": "Camel quiet knit",
-        "hero": "camel",
-        "feminine": "a fine-gauge knit midi dress with a disciplined neckline, defined waist, and clean column hem",
-        "masculine": "a refined fitted knit polo with narrow tailored trousers and quiet Loro Piana restraint",
-        "androgynous": "a fitted rib-knit tunic and narrow trousers forming one minimal uninterrupted silhouette",
-    },
-    {
-        "id": "fuchsia-tweed",
-        "label": "Fuchsia modern tweed",
+        "id": "fuchsia-office-column",
+        "label": "Fuchsia modern office column",
         "hero": "fuchsia",
-        "feminine": "a collarless modern tweed jacket with a fitted pencil skirt, clean edges, and no decorative clutter",
-        "masculine": "a compact collarless textured jacket with narrow trousers and a precise monochrome base",
-        "androgynous": "a cropped architectural tweed jacket over a slim skirt or narrow trouser chosen from the visible presentation",
+        "feminine": "a lightweight short-sleeve office sheath with a modest square neckline, clean vertical seaming, and a hem 5–8cm above the knee",
+        "masculine": "a precise lightweight double-breasted office suit with a sculpted shoulder and slim straight trousers",
+        "androgynous": "a sharply cut lightweight office jacket with a defined waist and slim full-length trousers",
     },
     {
-        "id": "scarlet-waistcoat",
-        "label": "Scarlet waistcoat tailoring",
+        "id": "scarlet-silk-office",
+        "label": "Scarlet silk-crepe office line",
         "hero": "scarlet",
-        "feminine": "a sculpted longline waistcoat with a pencil skirt or narrow cigarette trouser and no conventional blazer",
-        "masculine": "a sharply fitted waistcoat with a fine-gauge base and narrow dinner trousers, without a blazer",
-        "androgynous": "vest-led architectural tailoring with a longline waistcoat and a narrow lower silhouette",
+        "feminine": "a lightweight silk-crepe office sheath with a modest bateau neckline, defined waist, and a hem 5–8cm above the knee",
+        "masculine": "a refined lightweight fine-gauge polo with slim tailored office trousers and a compact jacket",
+        "androgynous": "a lightweight fine-gauge top and slim tailored office trousers forming one minimal uninterrupted silhouette",
+    },
+    {
+        "id": "fuchsia-office-drape",
+        "label": "Fuchsia fluid office precision",
+        "hero": "fuchsia",
+        "feminine": "a lightweight silk-crepe office sheath with a modest shallow-V neckline, restrained side drape, and a hem 5–8cm above the knee",
+        "masculine": "an open-collar lightweight silk-crepe office shirt with a compact jacket and slim tailored trousers",
+        "androgynous": "a lightweight collarless office jacket with a defined waist and slim full-length trousers",
+    },
+    {
+        "id": "scarlet-sculpted-office",
+        "label": "Scarlet sculpted office tailoring",
+        "hero": "scarlet",
+        "feminine": "a one-piece lightweight sleeveless office sheath with a modest jewel neckline, defined waist, and a hem 5–8cm above the knee",
+        "masculine": "a sharply fitted lightweight office waistcoat with a fine-gauge base and slim tailored trousers",
+        "androgynous": "lightweight vest-led office tailoring with a compact waistcoat, fine-gauge base, and slim trousers",
     },
     {
         "id": "coral-minimal",
         "label": "Coral soft structure",
         "hero": "coral",
-        "feminine": "a softly structured boat-neck midi dress with controlled drape and a sharply resolved waist",
-        "masculine": "a close-cut silk-wool shirt jacket with narrow trousers and restrained Bottega material finish",
-        "androgynous": "a minimal silk-wool top and narrow tonal lower silhouette with crisp asymmetric seaming",
+        "feminine": "a lightweight boat-neck office sheath with controlled drape, a sharply resolved waist, and a hem 5–8cm above the knee",
+        "masculine": "a close-cut lightweight office shirt-jacket with slim trousers and restrained material finish",
+        "androgynous": "a minimal lightweight office top and slim tonal trousers with crisp architectural seaming",
     },
     {
-        "id": "ultramarine-velvet",
-        "label": "Ultramarine velvet line",
-        "hero": "ultramarine",
-        "feminine": "a close-cut velvet midi dress with a clean square neckline and long uninterrupted seam lines",
-        "masculine": "a lean velvet evening jacket over a matte fine-gauge base with narrow straight trousers",
-        "androgynous": "an asymmetric velvet tunic over a narrow matte lower silhouette with minimal visible fastening",
+        "id": "scarlet-crepe-office",
+        "label": "Scarlet crepe office structure",
+        "hero": "scarlet",
+        "feminine": "a lightweight stretch-crepe office sheath with a modest square neckline, professional ease, and a hem 5–8cm above the knee",
+        "masculine": "a lean lightweight office shirt-jacket with a matte fine-gauge base and slim straight trousers",
+        "androgynous": "a lightweight architectural office jacket over a fine-gauge base and slim tonal trousers",
     },
     {
-        "id": "camel-coat-dress",
-        "label": "Camel architectural coat-dress",
-        "hero": "camel",
-        "feminine": "a close-cut sleeveless coat-dress with architectural seams, a defined waist, and a controlled midi hem",
-        "masculine": "a fitted collarless wool overshirt with narrow tailored trousers and quiet Max Mara material discipline",
-        "androgynous": "a collarless architectural wool shirt-jacket over a narrow tonal column, with no conventional lapels",
+        "id": "coral-twill-office",
+        "label": "Coral fluid office tailoring",
+        "hero": "coral",
+        "feminine": "a lightweight fine-twill office sheath with architectural seams, a modest bateau neckline, and a hem 5–8cm above the knee",
+        "masculine": "a fitted lightweight open-collar office shirt with slim tailored trousers and a compact jacket",
+        "androgynous": "a lightweight collarless office jacket and slim tonal trousers with one crisp architectural seam",
     },
 )
 
@@ -230,7 +237,7 @@ ACCESSORY_RULE = (
 )
 
 LUXURY_FINISH_RULE = (
-    "Keep the silhouette structured, sensual, and polished, never revealing for "
+    "Keep the silhouette structured, authoritative, and polished, never revealing for "
     "its own sake: no bare midriff, sheer fabric, or extreme plunging neckline. "
     "Preserve the existing hairstyle, real skin texture, and presentation-"
     "appropriate grooming. The final test is tailored authority and zero fast-"
@@ -249,34 +256,39 @@ AESTHETIC_COHERENCE_RULE = (
 )
 
 FASHION_FABRIC_RULE = (
-    "Use fashionable light-to-midweight fabrics with clean drape and precise "
-    "structure. No thick, heavy, substantial, bulky, or stiff fabric; no bulky "
-    "weave or heavy layering; and no turtleneck, roll-neck, mock-neck, or other "
-    "throat-covering knitwear. Clothing stays opaque without looking weighty."
+    "Use only fashionable lightweight opaque fabrics with fluid drape and "
+    "precise seam control. Never describe fabric as midweight or medium-weight. "
+    "No thick, heavy, substantial, bulky, padded, stiff, or coarse fabric; no "
+    "bulky weave or heavy layering; never use tweed, boucle, felted wool, velvet, "
+    "coat-weight cloth, or heavy leather; and no turtleneck, roll-neck, mock-neck, "
+    "or other throat-covering knitwear. The silhouette must look light and agile."
 )
 
 FEMININE_RULE = (
-    "For a feminine-presenting photographic subject, choose one coherent design "
-    "language: a sculpted dress or coat-dress, a minimal knit column, a precise "
-    "skirt look, or purposeful tailoring. Do not mix designer signatures or "
-    "default to office separates. Use elegant heels of at least 90mm when they "
-    "serve the line. For evening choose either a smoky eye or a bold lip, never both."
+    "Feminine photograph: use an office-appropriate opaque lightweight tailored "
+    "sheath or equivalent with professional "
+    "coverage. Hem: 5–8cm above the knee only—never knee/below or "
+    "upper-thigh/mini/micro-mini. Modest symmetrical jewel, bateau, "
+    "square, or shallow-V neck. No one-shoulder, strapless, cutout, halter, "
+    "bandeau, bustier, corset, or deep plunge. No bodycon, clubwear, partywear, cocktail "
+    "styling, trousers, boots, flats, loafers, sneakers, or block heels. Use "
+    "killer stilettos/stiletto pumps with fine 105–120mm heels."
 )
 
 MASCULINE_RULE = (
-    "For a masculine-presenting photographic subject, choose one coherent design "
-    "language: precision tailoring, a refined knit-led column, or a compact "
-    "leather-led look. Do not mix designer signatures or always return a suit. "
-    "Use polished loafers, Oxfords, Derbies, or sharp ankle boots. Never assign "
-    "pumps, stilettos, or high heels; preserve natural grooming."
+    "Masculine-presenting photograph: use one coherent office design language with bright "
+    "lightweight precision tailoring, slim straight trousers, professional "
+    "coverage, and natural grooming. Never assign a dress, skirt, sheath, gown, "
+    "feminine silhouette, pumps, stilettos, or heels. Use polished loafers, "
+    "Oxfords, or Derbies."
 )
 
 ANDROGYNOUS_RULE = (
-    "For an androgynous or visually ambiguous photographic subject, do not infer a "
-    "gender identity. Preserve the presentation visible in the reference with one "
-    "architectural minimal language. Do not mix designer signatures or default "
-    "to a blazer-and-trouser suit. Use polished loafers or sharp ankle boots "
-    "rather than defaulting to heels, and preserve the visible grooming."
+    "Androgynous or ambiguous photograph: do not infer a gender identity. Preserve "
+    "the visible presentation with bright lightweight architectural office "
+    "tailoring, professional coverage, slim trousers, and natural grooming. Never "
+    "default to a dress, skirt, sheath, gown, feminine silhouette, pumps, "
+    "stilettos, or heels. Use polished loafers, Oxfords, or Derbies."
 )
 
 STYLISED_RULE = (
@@ -290,6 +302,19 @@ STYLISED_RULE = (
     "costume element and shoe presentation-appropriate."
 )
 
+BLUE_PATTERN = re.compile(
+    r"\b(?:blue|cobalt|ultramarine|navy|sapphire|azure|cerulean|indigo|cyan|"
+    r"teal|turquoise|aqua|periwinkle|cornflower|blue[-\s]?violet|petrol[-\s]?"
+    r"blue|midnight[-\s]?blue|royal[-\s]?blue|electric[-\s]?blue|sky[-\s]?"
+    r"blue)\b",
+    re.IGNORECASE,
+)
+GREEN_PATTERN = re.compile(
+    r"\b(?:green|emerald|jade|olive|lime|chartreuse|mint|sage|moss|forest|"
+    r"hunter[-\s]?green|bottle[-\s]?green|seafoam|viridian|malachite)\b",
+    re.IGNORECASE,
+)
+# Compatibility name for callers/tests that only need to identify cobalt.
 COBALT_PATTERN = re.compile(r"\bcobalt\b", re.IGNORECASE)
 GOLD_PATTERN = re.compile(
     r"\b(?:gold|gilded|gilt)\b|"
@@ -316,9 +341,36 @@ EXCESSIVE_ACCESSORY_PATTERN = re.compile(
 HEAVY_STYLE_PATTERN = re.compile(
     r"\b(?:substantial|heavy|thick|bulky|stiff)\s+"
     r"(?:fabric|textile|material|wool|knit|weave|layer(?:ing|s)?)\b|"
+    r"\b(?:mid[-\s]?weight|medium[-\s]?weight)\b|"
+    r"\b(?:tweed|boucl[eé]|felted\s+wool|velvet|heavy\s+leather|coat[-\s]?weight\s+"
+    r"(?:cloth|fabric)|upholstery[-\s]?like\s+weave)\b|"
     r"\b(?:turtle[ -]?neck|roll[ -]?neck|mock[ -]?neck)\b|"
     r"\b(?:high|closed)[ -]?neck\s+(?:knit|sweater|jumper)\b|"
     r"\bthroat-covering\s+knitwear\b",
+    re.IGNORECASE,
+)
+LONG_FEMININE_HEM_PATTERN = re.compile(
+    r"\b(?:knee[-\s]?length|midi|mid[-\s]?calf|calf[-\s]?length|"
+    r"below[-\s]?(?:the[-\s]?)?knee|ankle[-\s]?length|maxi|floor[-\s]?"
+    r"length|longline|coat[-\s]?dress)\b",
+    re.IGNORECASE,
+)
+TOO_SHORT_FEMININE_HEM_PATTERN = re.compile(
+    r"\b(?:mini|micro[-\s]?mini|ultra[-\s]?mini|upper[-\s]?thigh|"
+    r"high[-\s]?thigh|pelvic[-\s]?length)\b",
+    re.IGNORECASE,
+)
+IMMODEST_OFFICE_STYLE_PATTERN = re.compile(
+    r"\b(?:one[-\s]?shoulder|single[-\s]?shoulder|strapless|cut[-\s]?out|"
+    r"halter(?:neck)?|bandeau|bustier|corset(?:ed)?|body[-\s]?con|club[-\s]?wear|"
+    r"party[-\s]?wear|nightclub|cocktail\s+dress|deep[-\s]?v(?:[-\s]?neck)?|"
+    r"plunging\s+neckline)\b",
+    re.IGNORECASE,
+)
+NON_KILLER_FEMININE_SHOE_PATTERN = re.compile(
+    r"\b(?:ankle\s+boots?|boots?|booties|flats?|loafers?|oxfords?|derbies|"
+    r"sneakers?|trainers?|ballet\s+flats?|kitten\s+heels?|block\s+heels?|"
+    r"wedges?|mules?)\b",
     re.IGNORECASE,
 )
 LONG_WAISTCOAT_PATTERN = re.compile(
@@ -360,23 +412,48 @@ MASCULINE_HEEL_PATTERN = re.compile(
     r"\d{2,3}\s*mm\s*heels?)\b",
     re.IGNORECASE,
 )
+FEMININE_GARMENT_PATTERN = re.compile(
+    r"\b(?:skirts?|sheaths?|gowns?)\b|"
+    r"\bdress(?:es)?\b"
+    r"(?!\s+(?:him|her|them|the\s+(?:subject|person)|this\s+person|"
+    r"shirts?|shoes?|trousers?|pants?|code)\b)|"
+    r"\bfeminine[-\s]+(?:silhouettes?|styling|styles?|looks?|womenswear)\b",
+    re.IGNORECASE,
+)
+NEGATION_SCOPE_PATTERN = re.compile(
+    r"(?:\bno\b|\bnever(?:\s+(?:assign|use|wear|add|include|choose))?\b|"
+    r"\bwithout\b|\bavoid\b|\bban(?:ned)?\b|\bforbid(?:den)?\b|"
+    r"\b(?:remove|eliminate|delete|replace|simplify)\b|"
+    r"\bdo\s+not\s+(?:assign|use|wear|add|include|choose)\b)"
+    r"(?P<scope>[^.!?;:]{0,1100})$",
+    re.IGNORECASE,
+)
+POSITIVE_TURN_PATTERN = re.compile(
+    r"\b(?:but|instead|however|yet|assign|use|wear|add|include|choose|"
+    r"finish(?:ed)?\s+with)\b",
+    re.IGNORECASE,
+)
+
+
+def _negated_in_prefix(prefix):
+    match = NEGATION_SCOPE_PATTERN.search(prefix or "")
+    return bool(match and not POSITIVE_TURN_PATTERN.search(match.group("scope")))
 
 
 def _assigns_forbidden_term(text, pattern):
     """True when a matched styling term is assigned rather than prohibited."""
     text = text or ""
     for match in pattern.finditer(text):
-        prefix = text[max(0, match.start() - 64):match.start()].lower()
+        # Long comma-separated safety lists are common in provider prompts.
+        # Keep enough same-sentence context for the final item to inherit the
+        # opening "no"/"never", while punctuation and contrastive clauses still
+        # prevent that negation from masking a later positive assignment.
+        prefix = text[max(0, match.start() - 1200):match.start()].lower()
         suffix = text[match.end():match.end() + 48].lower()
         if re.search(r"\bnon[-\s]?$", prefix) or re.match(
                 r"[-\s]+free\b", suffix):
             continue
-        if re.search(
-                r"(?:\bno\b|\bnever\b|\bwithout\b|\bavoid\b|\bban(?:ned)?\b|"
-                r"\b(?:remove|eliminate|delete|replace|simplify)\b|"
-                r"\bdo\s+not\s+(?:assign|use|wear|add|include)\b)"
-                r"(?:[^.!?;:]|,(?!\s*(?:but|instead))){0,46}$",
-                prefix):
+        if _negated_in_prefix(prefix):
             continue
         if re.match(
                 r"\s+(?:is|are|remains?|must\s+be)\s+"
@@ -397,6 +474,65 @@ def _assigns_excessive_accessories(text):
 
 def _assigns_heavy_styling(text):
     return _assigns_forbidden_term(text, HEAVY_STYLE_PATTERN)
+
+
+def _assigns_blue(text):
+    return _assigns_colour_family(text, BLUE_PATTERN)
+
+
+def _assigns_green(text):
+    return _assigns_colour_family(text, GREEN_PATTERN)
+
+
+def _assigns_colour_family(text, pattern):
+    text = text or ""
+    for match in pattern.finditer(text):
+        prefix_near = text[max(0, match.start() - 36):match.start()].lower()
+        suffix_near = text[match.end():match.end() + 36].lower()
+        if (re.match(r"[-\s]+(?:eyes?|irises?)\b", suffix_near)
+                or re.search(
+                    r"\b(?:eyes?|irises?|eye\s+colou?r)"
+                    r"(?:\s+(?:stay|stays|remain|remains|are|is))?\s*$",
+                    prefix_near)):
+            # Natural eye colour is identity, not wardrobe palette. A blue- or
+            # green-eyed portrait must not be recoloured by a fashion policy.
+            continue
+        # Colour contracts intentionally enumerate the forbidden family. Keep
+        # a wider same-sentence window than the generic garment helper so the
+        # last colour in "ban blue, cobalt, ... periwinkle" cannot self-reject.
+        boundary = max(
+            text.rfind(".", 0, match.start()),
+            text.rfind("!", 0, match.start()),
+            text.rfind("?", 0, match.start()),
+            text.rfind(";", 0, match.start()),
+        )
+        prefix = text[max(boundary + 1, match.start() - 1200):match.start()].lower()
+        suffix = text[match.end():match.end() + 56].lower()
+        if _negated_in_prefix(prefix):
+            continue
+        if re.match(
+                r"\s+(?:is|are|remains?|must\s+be)\s+(?:also\s+)?"
+                r"(?:forbidden|banned|excluded|unavailable|not\s+allowed)\b",
+                suffix):
+            continue
+        return True
+    return False
+
+
+def _assigns_long_feminine_hem(text):
+    return _assigns_forbidden_term(text, LONG_FEMININE_HEM_PATTERN)
+
+
+def _assigns_too_short_feminine_hem(text):
+    return _assigns_forbidden_term(text, TOO_SHORT_FEMININE_HEM_PATTERN)
+
+
+def _assigns_immodest_office_style(text):
+    return _assigns_forbidden_term(text, IMMODEST_OFFICE_STYLE_PATTERN)
+
+
+def _assigns_non_killer_feminine_footwear(text):
+    return _assigns_forbidden_term(text, NON_KILLER_FEMININE_SHOE_PATTERN)
 
 
 def aesthetic_conflicts(text):
@@ -436,6 +572,10 @@ def _assigns_feminine_heels(text):
         return True
     return False
 
+
+def _assigns_feminine_garment(text):
+    return _assigns_forbidden_term(text, FEMININE_GARMENT_PATTERN)
+
 SYSTEM = (
     "You are a senior costume designer and fashion director. You look at one "
     "reference portrait and write the wardrobe brief for a full-body character "
@@ -450,8 +590,8 @@ SYSTEM = (
     'contemporary womenswear" or "mythic Chinese action-game hero".\n'
     '"profession" - the implied role or profession, or "unspecified".\n'
     '"look" - three to eight words naming the single resolved outfit.\n'
-    '"hero_color" - exactly one of fuchsia, scarlet, coral, ultramarine, or '
-    'camel for a photograph; for a stylised subject use the dominant existing '
+    '"hero_color" - exactly one of fuchsia, scarlet, or coral for a photograph; '
+    'for a stylised subject use the dominant existing '
     'costume colour.\n'
     '"palette" - two or three final garment colours with their roles and rough '
     'visible-area percentages, not a menu of possibilities.\n'
@@ -462,18 +602,19 @@ SYSTEM = (
     "RULES FOR \"direction\":\n"
     "1. Match the MEDIUM. A photograph gets real fabrics, tailoring and "
     "photographic realism. Game art, anime, or 3d art gets high-detail costume, "
-    "armour, ornament, material breakdown, and dramatic practical or rim lighting "
-    "instead of everyday clothing.\n"
+    "armour, ornament, and material breakdown instead of everyday clothing. "
+    "Never prescribe lighting or shadows in a wardrobe direction.\n"
     "2. Match the PERSON'S VISIBLE PRESENTATION, apparent age, and existing "
     "style register. Do not infer gender identity and do not default every "
     "subject to womenswear, menswear, or office separates.\n"
     "3. Match the STYLE already visible, then raise it to couture level. Use a "
-    "cutter's language, light-to-midweight fabrics with believable drape, crisp "
+    "cutter's language, exclusively lightweight opaque fabrics with believable "
+    "drape, crisp "
     "internal structure, and realistic seam tension. A heroic or fantasy "
     "subject should read powerful through costume detail, armour, weathering, "
     "and ornament rather than literal ready-to-wear.\n"
     f"4. PHOTOGRAPHIC COLOUR: {COLOR_RULE} For a stylised subject, preserve "
-    "the reference costume's palette hierarchy instead; never use cobalt.\n"
+    "the reference costume's palette hierarchy instead; never use any blue-family colour.\n"
     "5. PHOTOGRAPHIC FASHION BRANCHES: choose exactly ONE branch from the "
     "visible presentation. Do not mix their footwear rules.\n"
     f"   FEMININE: {FEMININE_RULE}\n"
@@ -483,7 +624,9 @@ SYSTEM = (
     f"7. OUTFIT COHERENCE: {AESTHETIC_COHERENCE_RULE} {FASHION_FABRIC_RULE}\n"
     f"8. PHOTOGRAPHIC LUXURY FINISH: {LUXURY_FINISH_RULE}\n"
     f"9. BODY PROPORTIONS: {PROPORTION_RULE}\n"
-    "10. HARD BAN: never heavy layering, bulky or padded outerwear, puffers, "
+    "10. HARD BAN: use lightweight fabric only; never midweight, medium-weight, "
+    "tweed, boucle, felted wool, velvet, heavy leather, coat-weight cloth, heavy "
+    "layering, bulky or padded outerwear, puffers, "
     "parkas, trench coats, capes, cloaks or shawls; and never baggy, slouchy, "
     "wide-leg, cargo, or oversized trousers. Keep trousers, skirts and armour "
     "greaves fitted and the full silhouette readable from shoulder to ankle.\n"
@@ -495,7 +638,7 @@ SYSTEM = (
     "front/side/back turnaround.\n"
     "12. Clothing stays opaque and suitable for public view: no nudity, lingerie, "
     "bare midriff, sheer fabric, exposed intimate areas, extreme plunging "
-    "neckline, or vulgar styling. Allure comes from structure, fit, and "
+    "neckline, or vulgar styling. Presence comes from structure, fit, and "
     "confidence, never exposure.\n"
     "13. Never redesign the face, hairstyle, skin tone, or identity. Beauty notes "
     "control finish only: keep the existing hair shape, real skin texture, and "
@@ -574,7 +717,7 @@ def _hero_from_text(text):
     text = str(text or "")
     explicit = re.search(
         r"single hero colou?r(?: for this look)? is\s+"
-        r"(fuchsia|scarlet|coral|ultramarine|camel)\b",
+        r"(fuchsia|scarlet|coral)\b",
         text,
         re.IGNORECASE,
     )
@@ -589,7 +732,7 @@ def _hero_from_text(text):
 
 def _apply_selected_hero(direction, hero):
     """Make the chosen lane authoritative even if the model falls into habit."""
-    hero = hero if hero in HERO_COLORS else "ultramarine"
+    hero = hero if hero in HERO_COLORS else "fuchsia"
     pattern = re.compile(
         r"\b(?:" + "|".join(map(re.escape, HERO_COLORS)) + r")\b",
         re.IGNORECASE,
@@ -760,7 +903,7 @@ def _parse(text):
         if traits["hero_color"] not in HERO_COLORS:
             traits["hero_color"] = (
                 _hero_from_text(direction) or _hero_from_text(palette)
-                or "ultramarine")
+                or "fuchsia")
         if not traits["look"]:
             traits["look"] = "portrait-audited complete look"
     return direction, traits
@@ -779,8 +922,10 @@ def _finalise(
     if violations:
         raise RuntimeError(
             "the vision model kept a banned garment: " + ", ".join(violations))
-    if COBALT_PATTERN.search(direction or ""):
-        raise RuntimeError("the vision model kept the banned colour cobalt")
+    if _assigns_blue(direction):
+        raise RuntimeError("the vision model kept a banned blue-family colour")
+    if _assigns_green(direction):
+        raise RuntimeError("the vision model kept a banned green-family colour")
     if _assigns_gold(direction):
         raise RuntimeError("the vision model kept the banned material or colour gold")
     if _assigns_excessive_accessories(direction):
@@ -797,10 +942,26 @@ def _finalise(
     # safe fallback for PromptSmith and the static preset: it never defaults an
     # unknown or masculine portrait to feminine heels.
     presentation = _normalise_presentation(presentation)
-    if presentation in {"masculine", "androgynous"} and \
-            _assigns_feminine_heels(direction):
-        raise RuntimeError(
-            "the vision model assigned feminine heels to a non-feminine subject")
+    if presentation in {"masculine", "androgynous"}:
+        if _assigns_feminine_heels(direction):
+            raise RuntimeError(
+                "the vision model assigned feminine heels to a non-feminine subject")
+        if _assigns_feminine_garment(direction):
+            raise RuntimeError(
+                "the vision model assigned a feminine garment to a non-feminine subject")
+    if presentation == "feminine":
+        if _assigns_long_feminine_hem(direction):
+            raise RuntimeError(
+                "the vision model kept a feminine hem at or below the knee")
+        if _assigns_too_short_feminine_hem(direction):
+            raise RuntimeError(
+                "the vision model kept an upper-thigh or mini feminine hem")
+        if _assigns_immodest_office_style(direction):
+            raise RuntimeError(
+                "the vision model kept non-office feminine styling")
+        if _assigns_non_killer_feminine_footwear(direction):
+            raise RuntimeError(
+                "the vision model kept non-stiletto feminine footwear")
 
     stylised = _clean(medium, 40).lower() in {
         "game art", "anime", "illustration", "3d render",
@@ -828,12 +989,13 @@ def _finalise(
 
 def preset_prompt():
     from . import body
-    return _clean(
-        f"{body.DEFAULT_BODY_PROMPT} {AESTHETIC_COHERENCE_RULE} "
-        f"{FASHION_FABRIC_RULE} "
-        f"{ACCESSORY_RULE} {STRUCTURAL_RULE}",
-        PROMPT_LIMIT,
+    suffix = (
+        f"{AESTHETIC_COHERENCE_RULE} {FASHION_FABRIC_RULE} "
+        f"{ACCESSORY_RULE} {STRUCTURAL_RULE}"
     )
+    room = max(60, PROMPT_LIMIT - len(suffix) - 2)
+    direction = _clean(body.DEFAULT_BODY_PROMPT, room)
+    return _clean(f"{direction} {suffix}", PROMPT_LIMIT)
 
 
 def _identity_reference(avatar_dir):

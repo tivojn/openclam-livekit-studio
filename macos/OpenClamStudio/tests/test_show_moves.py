@@ -83,15 +83,21 @@ class MoveStyles(unittest.TestCase):
 
 class WhitePlateMatte(unittest.TestCase):
     def test_refinement_cuts_plate_pockets_and_keeps_cream_wardrobe(self):
-        """Verified against the real defect 2026-07-31: a plate pocket at a
-        hair-shoulder gap shipped opaque and flashed white; cream shoes
-        measured whiteness <=0.68 vs plate 1.0."""
+        """Keep the 2026-07-31 pocket regression under today's contract.
+
+        The current body authoring contract bans white/off-white shoes and
+        soles because a compressed floor shadow is visually equivalent matte
+        evidence. The legacy test name stays stable, but its assertions now
+        require that unsafe cream be treated as plate and that compliant
+        scarlet footwear survive unchanged.
+        """
         import numpy as np
         from studio import motion
         height, width = 200, 200
         source = np.full((height, width, 3), 255, np.uint8)     # pure plate
         source[40:160, 60:140] = (30, 30, 190)                  # red dress
-        source[150:196, 90:112] = (225, 236, 245)               # cream shoe
+        source[150:196, 90:108] = (225, 236, 245)  # unsafe cream shoe
+        source[150:196, 116:134] = (45, 55, 210)   # scarlet shoe
         source[70:100, 120:138] = 255                           # plate pocket
         source[70:80, 138:200] = 255                            # gap to plate
         alpha = np.zeros((height, width), np.uint8)
@@ -101,7 +107,8 @@ class WhitePlateMatte(unittest.TestCase):
         out = refined[:, :, 3]
         self.assertLess(int(out[85, 130]), 40)      # pocket removed
         self.assertEqual(255, int(out[100, 100]))   # dress kept
-        self.assertGreater(int(out[170, 100]), 200)  # cream shoe kept
+        self.assertLess(int(out[170, 100]), 40)     # cream treated as plate
+        self.assertGreater(int(out[170, 124]), 200)  # scarlet shoe kept
 
     def test_refinement_runs_before_temporal_repair_on_white_takes(self):
         source = (ROOT / "studio" / "motion.py").read_text()

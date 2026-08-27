@@ -208,7 +208,7 @@ struct AvatarAgentSettingsView: View {
             } header: {
                 Text("Avatar library")
             } footer: {
-                Text("Import an .avtr file exported as version 2 · ios-light. OpenClam accepts only the lightweight render images—never raw photos, prompts, histories, or API keys.")
+                Text("Import a full-expression iPhone .avtr export. OpenClam accepts only verified runtime images—never raw photos, prompts, histories, or API keys. Existing version 2 and 3 avatars remain compatible.")
             }
 
             Section {

@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreGraphics
 import Foundation
 import ImageIO
 import XCTest
@@ -53,6 +54,28 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         XCTAssertTrue(reloaded.first?.motions.isEmpty == true)
     }
 
+    func testLegacyNineVisemePackageAliasesEveryNewProductionShape() throws {
+        let root = try temporaryDirectory()
+        let descriptor = try OpenClamAvatarPackageStore(storageRoot: root)
+            .installArchive(at: goldenFixtureURL)
+
+        XCTAssertNil(descriptor.expressionGeometry)
+        for viseme in OpenClamAvatarViseme.allCases {
+            XCTAssertNotNil(
+                descriptor.asset(.viseme(viseme)),
+                "Legacy v2/v3 avatars must keep speaking for \(viseme.rawValue)"
+            )
+        }
+        XCTAssertEqual(
+            descriptor.asset(.viseme(.bilabial)),
+            descriptor.asset(.viseme(.labiodental))
+        )
+        XCTAssertEqual(
+            descriptor.asset(.viseme(.openRounded)),
+            descriptor.asset(.viseme(.rounded))
+        )
+    }
+
     func testMotionV3FixtureImportsValidatedOptionalClipsAndReloads() throws {
         let root = try temporaryDirectory()
         let store = OpenClamAvatarPackageStore(storageRoot: root)
@@ -75,6 +98,143 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         let reloaded = try XCTUnwrap(store.loadInstalledDescriptors().first)
         XCTAssertEqual(reloaded.id, descriptor.id)
         XCTAssertEqual(Set(reloaded.motions.keys), [.edgeIdle, .moves])
+    }
+
+    func testFullExpressionV4ImportsEveryFaceBankAndReloads() throws {
+        let root = try temporaryDirectory()
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        let descriptor = try store.installArchive(
+            at: fullExpressionV4Archive()
+        )
+
+        let expression = try XCTUnwrap(descriptor.expressionGeometry)
+        XCTAssertEqual(descriptor.id, "full-expression-guide")
+        XCTAssertTrue(descriptor.compatibility.supportsMacV22ExpressionParity)
+        XCTAssertEqual(expression.smileVisemes, OpenClamAvatarViseme.allCases)
+        XCTAssertEqual(expression.emotionMouthVisemes, OpenClamAvatarViseme.allCases)
+        XCTAssertEqual(
+            expression.emotionMouthEmotions,
+            ["sorrow", "horror", "anger"]
+        )
+        XCTAssertEqual(Set(descriptor.assets.keys), fullExpressionAssetRoles)
+        XCTAssertEqual(Set(descriptor.motions.keys), [.edgeIdle, .moves])
+        for viseme in OpenClamAvatarViseme.allCases {
+            XCTAssertNotNil(
+                descriptor.assets[.viseme(viseme)],
+                "v4 must contain a real production plate for \(viseme.rawValue), not a legacy alias"
+            )
+        }
+
+        let reloaded = try XCTUnwrap(store.loadInstalledDescriptors().first)
+        XCTAssertEqual(reloaded.id, descriptor.id)
+        XCTAssertEqual(reloaded.expressionGeometry, expression)
+        XCTAssertEqual(expression.smile.storage, .gridAtlas)
+        XCTAssertEqual(expression.emotionMouth.storage, .gridAtlas)
+        XCTAssertEqual(expression.browGain, 1)
+        XCTAssertEqual(expression.foreheadGain, 1)
+        XCTAssertEqual(expression.underEyeGain, 1)
+        XCTAssertEqual(Set(reloaded.assets.keys), fullExpressionAssetRoles)
+        XCTAssertEqual(Set(reloaded.motions.keys), [.edgeIdle, .moves])
+        XCTAssertTrue(reloaded.compatibility.supportsMacV22ExpressionParity)
+    }
+
+    func testFullExpressionV4RejectsWrongExpressionAtlasGeometry() throws {
+        let archive = try fullExpressionV4Archive { manifest in
+            var expression = try XCTUnwrap(
+                manifest["expression"] as? [String: Any]
+            )
+            var smile = try XCTUnwrap(expression["smile"] as? [String: Any])
+            var box = try XCTUnwrap(smile["box"] as? [String: Any])
+            box["width"] = 5
+            smile["box"] = box
+            expression["smile"] = smile
+            manifest["expression"] = expression
+        }
+
+        try assertImportError(
+            .dimensionMismatch("smile-atlas"),
+            archive: archive
+        )
+    }
+
+    func testFullExpressionV4RejectsOutOfRangeCalibrationGains() throws {
+        for (key, value) in [
+            ("browGain", 1.351),
+            ("foreheadGain", -0.001),
+            ("underEyeGain", 1.351),
+        ] {
+            let archive = try fullExpressionV4Archive { manifest in
+                var expression = try XCTUnwrap(
+                    manifest["expression"] as? [String: Any]
+                )
+                expression[key] = value
+                manifest["expression"] = expression
+            }
+            try assertImportError(.invalidRig, archive: archive)
+        }
+    }
+
+    func testPythonExporterGoldenV4ImportsThroughSwiftContract() throws {
+        let data = try XCTUnwrap(
+            Data(
+                base64Encoded: Self.pythonExporterV4GoldenBase64,
+                options: .ignoreUnknownCharacters
+            )
+        )
+        XCTAssertEqual(
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            "79c21dedb5c93b126e04b38df09e41aabd8375d7048cbcc3e5be39186f5545a3",
+            "The fixture must remain the byte-exact output of avatar_package.py"
+        )
+        let archive = try temporaryDirectory()
+            .appendingPathComponent("python-v4-golden.avtr")
+        try data.write(to: archive, options: .atomic)
+        let root = try temporaryDirectory()
+        let descriptor = try OpenClamAvatarPackageStore(storageRoot: root)
+            .installArchive(at: archive)
+
+        XCTAssertEqual(descriptor.id, "python-v4-guide")
+        XCTAssertEqual(
+            descriptor.compatibility.canonicalVisemeCount,
+            OpenClamAvatarViseme.allCases.count
+        )
+        XCTAssertTrue(descriptor.compatibility.supportsMacV22ExpressionParity)
+        XCTAssertEqual(
+            descriptor.expressionGeometry?.smileVisemes,
+            OpenClamAvatarViseme.allCases
+        )
+        XCTAssertEqual(Set(descriptor.assets.keys), fullExpressionAssetRoles)
+    }
+
+    func testFullExpressionV4RejectsAggregateDecodedPixelBudget() throws {
+        let archive = try fullExpressionV4Archive { manifest in
+            var assets = try XCTUnwrap(manifest["assets"] as? [String: Any])
+            for role in ["viseme-sil", "viseme-PP", "viseme-FF", "viseme-TH"] {
+                var record = try XCTUnwrap(assets[role] as? [String: Any])
+                record["width"] = 4_096
+                record["height"] = 4_096
+                assets[role] = record
+            }
+            manifest["assets"] = assets
+        }
+        try assertImportError(.packageContentsTooLarge, archive: archive)
+    }
+
+    func testFullExpressionV4RejectsTextureDimensionAbove8192() throws {
+        let archive = try fullExpressionV4Archive { manifest in
+            var assets = try XCTUnwrap(manifest["assets"] as? [String: Any])
+            var emotion = try XCTUnwrap(
+                assets["emotion-mouth-atlas"] as? [String: Any]
+            )
+            emotion["width"] = 8_193
+            emotion["height"] = 1
+            assets["emotion-mouth-atlas"] = emotion
+            manifest["assets"] = assets
+        }
+        try assertImportError(
+            .dimensionMismatch("emotion-mouth-atlas"),
+            archive: archive
+        )
     }
 
     func testAuthorizedAraV3HandoffPassesValidationBeforeBundledIDGate() throws {
@@ -115,11 +275,28 @@ final class OpenClamAvatarPackageTests: XCTestCase {
 
         let releaseRoot = URL(fileURLWithPath: stagingPath, isDirectory: true)
             .appendingPathComponent("release-assets", isDirectory: true)
-        for id in ["captain-ayer", "ara"] {
-            let storageRoot = try temporaryDirectory()
-            let packageURL = releaseRoot.appendingPathComponent(
-                "\(id)-ios-light.avtr"
+        let packageURLs = try FileManager.default.contentsOfDirectory(
+            at: releaseRoot,
+            includingPropertiesForKeys: nil
+        )
+            .filter { $0.pathExtension == "avtr" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        XCTAssertFalse(
+            packageURLs.isEmpty,
+            "Production staging must contain at least one release AVTR."
+        )
+
+        for packageURL in packageURLs {
+            let packageStem = packageURL.deletingPathExtension().lastPathComponent
+            let variantSuffix = "-ios-light"
+            XCTAssertTrue(
+                packageStem.hasSuffix(variantSuffix),
+                "Unexpected production package name: \(packageURL.lastPathComponent)"
             )
+            let id = String(packageStem.dropLast(variantSuffix.count))
+            XCTAssertFalse(id.isEmpty)
+
+            let storageRoot = try temporaryDirectory()
             let descriptor = try OpenClamAvatarPackageStore(
                 storageRoot: storageRoot
             ).installArchive(
@@ -1081,6 +1258,18 @@ final class OpenClamAvatarPackageTests: XCTestCase {
             [
                 .thumbnail, .body, .headMask, .eyeLeft, .eyeRight,
                 .browLeft, .browRight, .gazeLeftAtlas, .gazeRightAtlas,
+            ] + OpenClamAvatarViseme.legacyCases.map(OpenClamAvatarAssetRole.viseme)
+        )
+    }
+
+    private var fullExpressionAssetRoles: Set<OpenClamAvatarAssetRole> {
+        Set(
+            [
+                .thumbnail, .body, .headMask, .eyeLeft, .eyeRight,
+                .browLeft, .browRight, .gazeLeftAtlas, .gazeRightAtlas,
+                .smileAtlas, .emotionMouthAtlas, .foreheadLeft,
+                .foreheadRight, .cheekLeft, .cheekRight,
+                .underEyeLeft, .underEyeRight,
             ] + OpenClamAvatarViseme.allCases.map(OpenClamAvatarAssetRole.viseme)
         )
     }
@@ -1166,6 +1355,395 @@ final class OpenClamAvatarPackageTests: XCTestCase {
             return FixtureEntry(path: entry.path, type: entry.type, data: data)
         }
     }
+
+    private func fullExpressionV4Archive(
+        mutateManifest: ((inout [String: Any]) throws -> Void)? = nil
+    ) throws -> URL {
+        var entries = try fixtureEntries(from: motionFixtureURL)
+        let manifestIndex = try XCTUnwrap(
+            entries.firstIndex(where: { $0.path == "manifest.json" })
+        )
+        var manifest = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: entries[manifestIndex].data)
+                as? [String: Any]
+        )
+        manifest["version"] = OpenClamAvatarPackageContract.expressionVersion
+        manifest["id"] = "full-expression-guide"
+        manifest["displayName"] = "Full Expression Guide"
+
+        var assets = try XCTUnwrap(manifest["assets"] as? [String: Any])
+        let legacyFallbacks = [
+            "PP": "FF",
+            "DD": "nn",
+            "kk": "nn",
+            "CH": "ih",
+            "SS": "ih",
+            "oh": "ou",
+        ]
+        for (viseme, fallback) in legacyFallbacks {
+            let sourcePath = "assets/viseme-\(fallback).png"
+            let destinationPath = "assets/viseme-\(viseme).png"
+            let source = try XCTUnwrap(
+                entries.first(where: { $0.path == sourcePath })
+            )
+            entries.append(
+                FixtureEntry(
+                    path: destinationPath,
+                    type: .file,
+                    data: source.data
+                )
+            )
+            var record = try XCTUnwrap(
+                assets["viseme-\(fallback)"] as? [String: Any]
+            )
+            record["path"] = destinationPath
+            assets["viseme-\(viseme)"] = record
+        }
+
+        let expressionImages: [(
+            key: String, path: String, width: Int, height: Int
+        )] = [
+            ("smile-atlas", "assets/smile-atlas.png", 20, 60),
+            ("emotion-mouth-atlas", "assets/emotion-mouth-atlas.png", 16, 180),
+            ("forehead-left", "assets/forehead-left.png", 4, 168),
+            ("forehead-right", "assets/forehead-right.png", 4, 168),
+            ("cheek-left", "assets/cheek-left.png", 4, 20),
+            ("cheek-right", "assets/cheek-right.png", 4, 20),
+            ("under-eye-left", "assets/under-eye-left.png", 4, 20),
+            ("under-eye-right", "assets/under-eye-right.png", 4, 20),
+        ]
+        for (index, image) in expressionImages.enumerated() {
+            let data = try expressionPNGData(
+                width: image.width,
+                height: image.height,
+                shade: CGFloat(index + 1) / CGFloat(expressionImages.count + 1)
+            )
+            entries.append(
+                FixtureEntry(path: image.path, type: .file, data: data)
+            )
+            assets[image.key] = [
+                "path": image.path,
+                "sha256": SHA256.hash(data: data)
+                    .map { String(format: "%02x", $0) }
+                    .joined(),
+                "byteCount": data.count,
+                "mediaType": "image/png",
+                "width": image.width,
+                "height": image.height,
+            ]
+        }
+        manifest["assets"] = assets
+
+        func sprite(
+            x: Int,
+            y: Int,
+            columns: Int,
+            rows: Int,
+            storage: String = "verticalStrip"
+        ) -> [String: Any] {
+            [
+                "box": ["x": x, "y": y, "width": 4, "height": 4],
+                "columns": columns,
+                "rows": rows,
+                "storage": storage,
+            ]
+        }
+
+        let visemes = OpenClamAvatarViseme.allCases.map(\.rawValue)
+        manifest["expression"] = [
+            "smile": sprite(
+                x: 500,
+                y: 650,
+                columns: 5,
+                rows: 15,
+                storage: "gridAtlas"
+            ),
+            "emotionMouth": sprite(
+                x: 500,
+                y: 650,
+                columns: 4,
+                rows: 45,
+                storage: "gridAtlas"
+            ),
+            "leftForehead": sprite(x: 560, y: 400, columns: 14, rows: 3),
+            "rightForehead": sprite(x: 456, y: 400, columns: 14, rows: 3),
+            "leftCheek": sprite(x: 560, y: 560, columns: 1, rows: 5),
+            "rightCheek": sprite(x: 456, y: 560, columns: 1, rows: 5),
+            "leftUnderEye": sprite(x: 560, y: 510, columns: 1, rows: 5),
+            "rightUnderEye": sprite(x: 456, y: 510, columns: 1, rows: 5),
+            "browOffsets": OpenClamAvatarExpressionGeometry.canonicalBrowOffsets,
+            "browSqueezeOffsets": OpenClamAvatarExpressionGeometry
+                .canonicalBrowSqueezeOffsets,
+            "smileStrengths": OpenClamAvatarExpressionGeometry
+                .canonicalSmileStrengths,
+            "smileVisemes": visemes,
+            "emotionMouthStrengths": OpenClamAvatarExpressionGeometry
+                .canonicalEmotionMouthStrengths,
+            "emotionMouthEmotions": ["sorrow", "horror", "anger"],
+            "emotionMouthVisemes": visemes,
+            "cheekOffsets": OpenClamAvatarExpressionGeometry.canonicalCheekOffsets,
+            "underEyeOffsets": OpenClamAvatarExpressionGeometry
+                .canonicalUnderEyeOffsets,
+            "browGain": 1.0,
+            "foreheadGain": 1.0,
+            "underEyeGain": 1.0,
+        ]
+
+        try mutateManifest?(&manifest)
+        entries[manifestIndex].data = try JSONSerialization.data(
+            withJSONObject: manifest,
+            options: [.sortedKeys]
+        )
+        return try makeArchive(entries)
+    }
+
+    private func expressionPNGData(
+        width: Int,
+        height: Int,
+        shade: CGFloat
+    ) throws -> Data {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(
+            CGColor(
+                colorSpace: colorSpace,
+                components: [shade, 0.35, 0.65, 0.85]
+            )!
+        )
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let output = NSMutableData()
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithData(
+                output,
+                "public.png" as CFString,
+                1,
+                nil
+            )
+        )
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return output as Data
+    }
+
+    /// Byte-exact compact fixture produced by the macOS Python v4 exporter,
+    /// not synthesized by Swift. Keeping the golden bytes here proves that
+    /// exporter role names, paths, geometry, hashes, and image dimensions are
+    /// accepted by the independent iOS decoder on every test run.
+    private static let pythonExporterV4GoldenBase64 = """
+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
+"""
 
     private func archiveByMutatingMotionManifest(
         _ mutate: (inout [String: Any]) throws -> Void

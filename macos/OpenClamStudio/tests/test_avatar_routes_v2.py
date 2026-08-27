@@ -69,9 +69,18 @@ class AvatarRouteV2Tests(unittest.IsolatedAsyncioTestCase):
     async def test_ios_export_publishes_runtime_then_uses_light_profile(self):
         calls = {}
 
-        def export(identifier, name, authoring, runtime, destination):
+        def export(
+            identifier,
+            name,
+            authoring,
+            runtime,
+            destination,
+            *,
+            require_full_expression=False,
+        ):
             calls.update(identifier=identifier, name=name, authoring=authoring,
-                         runtime=runtime)
+                         runtime=runtime,
+                         require_full_expression=require_full_expression)
             with open(destination, "wb") as output:
                 output.write(b"ios-light")
 
@@ -91,6 +100,7 @@ class AvatarRouteV2Tests(unittest.IsolatedAsyncioTestCase):
             "name": "Captain Ayer",
             "authoring": "/private/openclam-test-avatars/captain-ayer",
             "runtime": "/private/runtime",
+            "require_full_expression": True,
         })
         await response.background()
 

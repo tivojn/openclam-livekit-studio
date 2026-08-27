@@ -26,10 +26,10 @@ the protected bundled fallbacks. Only the Store's pinned verification path may
 install these updates; Files import remains collision-blocked, and the bundled
 fallback remains undeletable.
 
-The `avatar-store-v1.0.1` catalog also publishes Cleo as an iOS-light package.
-That package is produced by the reviewed Mac AVTR exporter from the approved
-avatar project; only its public thumbnail is retained in source. The catalog
-pins the release package's exact size and SHA-256 digest.
+The `avatar-store-v1.0.2` catalog publishes full-expression iOS packages for
+Ara and Cleo. Each package is produced by the reviewed Mac AVTR exporter from
+an approved avatar project; only its public thumbnail is retained in source.
+The catalog pins every release package's exact size and SHA-256 digest.
 
 ## Generic staging layout
 
@@ -42,8 +42,6 @@ it produces this unpublished staging layout:
 release-assets/
   fixture-avatar-ios-light.avtr
   fixture-avatar-ios-light.avtr.sha256
-  fixture-avatar-macos-full.avtr
-  fixture-avatar-macos-full.avtr.sha256
 catalog/v1/
   catalog.json
   catalog.json.sha256
@@ -51,6 +49,11 @@ catalog/v1/
   fixture-avatar-thumbnail.png
   fixture-avatar-thumbnail.png.sha256
 ```
+
+iOS-only is the safe default. `--include-macos-full` explicitly adds the Mac
+archive and its checksum only when a separately reviewed Mac authoring package
+is intended for publication; that archive's own ID and display name must match
+the public Store entry.
 
 The builder performs no network operation and never publishes. Its explicit
 URLs only populate the staged catalog; approving media, selecting a repository,
@@ -76,3 +79,23 @@ name, must be `ready`, and must provide head, full body, walk, edge idle, and
 moves. Existing output is rejected rather than overwritten. ZIP order,
 timestamps, permissions, and compression are normalized so identical source
 bytes and arguments reproduce identical archives and checksums.
+
+The validator remains compatible with iOS AVTR v2 and motion-capable v3. A
+protected Ara or Cleo Store update is stricter: its public package and catalog
+identity must be exactly `ara` / `Ara` or `cleo` / `Cleo`, while
+`--source-identifier` and `--source-display-name` may name the reviewed local
+authoring project. It also requires all of the following:
+
+- `--base-catalog` pointing to the reviewed catalog that already contains
+  Captain Ayer, Ara, and Cleo. The builder replaces only the selected avatar
+  and verifies that both other rows remain equivalent as JSON data.
+- A monotonically higher entry version.
+- `--release-tag avatar-store-vX.Y.Z`, with the same immutable tag present in
+  the catalog, thumbnail, and GitHub release URLs.
+- A full-expression iOS AVTR v4 containing exactly `walk`, `edgeIdle`, and
+  `moves` motion roles.
+- Two independent normalized exports with byte-for-byte identical results.
+
+These checks only produce a local staging directory. They do not create a Git
+tag, upload a release asset, change the checked-in production catalog, or
+enable a client URL.

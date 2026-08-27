@@ -91,9 +91,17 @@ class MatteMechanicsTests(unittest.TestCase):
         self.assertEqual(80, int(cleaned[7, 20, 3]))
 
     def test_white_plate_refinement_cuts_pockets_and_keeps_cream_wardrobe(self):
+        """Legacy test id: off-white is now deliberately a plate colour.
+
+        Body authoring forbids white/off-white garments, shoes, and soles. A
+        matte cannot safely distinguish that wardrobe from a compressed white
+        floor shadow, so the hard exterior-plate gate must reject it while a
+        clearly non-white wardrobe colour remains intact.
+        """
         source = np.full((200, 200, 3), 255, np.uint8)
         source[40:160, 60:140] = (30, 30, 190)
-        source[150:196, 90:112] = (225, 236, 245)
+        source[150:196, 90:108] = (225, 236, 245)
+        source[150:196, 116:134] = (45, 55, 210)
         source[70:100, 120:138] = 255
         source[70:80, 138:200] = 255
         alpha = np.zeros((200, 200), np.uint8)
@@ -102,7 +110,8 @@ class MatteMechanicsTests(unittest.TestCase):
         output = refined[:, :, 3]
         self.assertLess(int(output[85, 130]), 40)
         self.assertEqual(255, int(output[100, 100]))
-        self.assertGreater(int(output[170, 100]), 200)
+        self.assertLess(int(output[170, 100]), 40)
+        self.assertGreater(int(output[170, 124]), 200)
 
     def test_normalised_frames_preserve_transparency_and_never_upscale(self):
         frame = np.zeros((240, 180, 4), np.uint8)

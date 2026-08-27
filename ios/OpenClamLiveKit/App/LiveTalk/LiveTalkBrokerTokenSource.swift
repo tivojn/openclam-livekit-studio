@@ -335,9 +335,20 @@ final class LiveTalkBrokerTokenSource: TokenSourceFixed, @unchecked Sendable {
             throw LiveTalkBrokerError.connectionFailed
         }
         guard data.count <= 16_384,
-              let http = response as? HTTPURLResponse,
-              http.statusCode == 201 else {
-            throw LiveTalkBrokerError.sessionRejected
+              let http = response as? HTTPURLResponse else {
+            throw LiveTalkBrokerError.invalidResponse
+        }
+        guard http.statusCode == 201 else {
+            switch http.statusCode {
+            case 401, 403:
+                throw LiveTalkBrokerError.accessRejected
+            case 429:
+                throw LiveTalkBrokerError.rateLimited
+            case 500 ... 599:
+                throw LiveTalkBrokerError.serviceUnavailable
+            default:
+                throw LiveTalkBrokerError.sessionRejected
+            }
         }
         do {
             let value = try JSONDecoder().decode(SessionResponse.self, from: data)
@@ -421,13 +432,16 @@ enum LiveTalkBrokerError: LocalizedError, Equatable {
     case missingCredential(LiveTalkStage, AIProviderID)
     case requestAlreadyUsed
     case connectionFailed
+    case accessRejected
+    case rateLimited
+    case serviceUnavailable
     case sessionRejected
     case invalidResponse
 
     var errorDescription: String? {
         switch self {
         case .notConfigured:
-            "Live Talk is not configured in this build."
+            "This build is missing its Live Talk access setup. Install a newer pilot build or contact the pilot owner."
         case .invalidProfile:
             "This avatar's Live Talk choices are invalid. Choose them again."
         case let .missingCredential(stage, provider):
@@ -435,9 +449,15 @@ enum LiveTalkBrokerError: LocalizedError, Equatable {
         case .requestAlreadyUsed:
             "This one-time Live Talk request has already been used. Start a new session."
         case .connectionFailed:
-            "OpenClam could not reach the Live Talk service."
+            "OpenClam could not reach the Live Talk service. Check your internet connection and try again."
+        case .accessRejected:
+            "This build's Live Talk access was rejected. Install the current pilot build or contact the pilot owner."
+        case .rateLimited:
+            "Live Talk is temporarily busy. Wait a moment, then try again."
+        case .serviceUnavailable:
+            "The Live Talk service is temporarily unavailable. Try again shortly."
         case .sessionRejected:
-            "The Live Talk service could not start this session."
+            "The Live Talk service could not start this session. Check the avatar's Live Talk choices and try again."
         case .invalidResponse:
             "The Live Talk service returned an invalid connection response."
         }

@@ -198,9 +198,16 @@ final class CloudVoiceServiceTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(avatar.phase, .idle)
+        XCTAssertEqual(
+            avatar.phase,
+            .releasing,
+            "The face eases back to neutral after the final audio part instead of snapping."
+        )
+        XCTAssertFalse(avatar.isSpeaking)
+        XCTAssertTrue(avatar.isExpressionAnimating)
         XCTAssertEqual(releaseCount, 1)
         XCTAssertFalse(lifecycle.finish(generation))
+        avatar.cancelAll()
     }
 
     @MainActor

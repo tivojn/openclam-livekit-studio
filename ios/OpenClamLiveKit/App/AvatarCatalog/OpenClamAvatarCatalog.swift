@@ -26,6 +26,15 @@ enum OpenClamAvatarCatalog {
         gazeVerticalStateCount: 11
     )
 
+    private static let fullExpressionCompatibility = OpenClamAvatarRigCompatibility(
+        canonicalVisemeCount: OpenClamAvatarViseme.allCases.count,
+        eyeStateCount: 8,
+        browVerticalStateCount: 14,
+        browSqueezeStateCount: 3,
+        gazeHorizontalStateCount: 25,
+        gazeVerticalStateCount: 11
+    )
+
     private static let captainAyer = OpenClamAvatarDescriptor(
         avatarID: .captainAyer,
         displayName: "Captain Ayer",
@@ -51,48 +60,109 @@ enum OpenClamAvatarCatalog {
         assets: captainAyerAssets()
     )
 
-    private static let ara = OpenClamAvatarDescriptor(
-        avatarID: .ara,
-        displayName: "Ara",
-        sourceSlug: "ara-2",
-        sourceRelativeRuntimePath: "bundled/ara",
-        includedByteCount: 15_150_569,
-        geometry: rig(
-            body: size(864, 1_152),
-            transform: transform(
-                a: 0.1832646, b: -0.0058198,
-                c: 0.0058198, d: 0.1832646,
-                tx: 337.4508185, ty: 6.4314091
-            ),
-            faceBounds: rect(391, 68, 85, 111),
-            leftEye: rect(555, 494, 169, 106),
-            rightEye: rect(333, 485, 178, 105),
-            leftBrow: rect(561, 439, 195, 112),
-            rightBrow: rect(293, 424, 231, 122),
-            leftGaze: rect(584, 525, 106, 57),
-            rightGaze: rect(366, 516, 116, 57)
-        ),
-        compatibility: standardCompatibility,
-        assets: bundledAssets(directory: "ara"),
-        motions: [
-            .edgeIdle: OpenClamAvatarMotionAsset(
-                reference: .catalogBundle(
-                    directory: "ara",
-                    filename: "motion-edge-idle.mov"
-                ),
-                pixelSize: size(720, 1_088),
-                durationMilliseconds: 6_083
-            ),
-            .moves: OpenClamAvatarMotionAsset(
-                reference: .catalogBundle(
-                    directory: "ara",
-                    filename: "motion-moves.mov"
-                ),
-                pixelSize: size(720, 1_088),
-                durationMilliseconds: 6_083
-            ),
-        ]
+    private static let ara = bundledPackageAvatar(
+        directory: "ara",
+        expectedID: .ara,
+        expectedName: "Ara",
+        sourceSlug: "cleo-full-expression-fresh-20260827"
     )
+
+    /// The bundled Ara files are the byte-exact contents of the reviewed AVTR
+    /// v4 Store package. Decode its small manifest instead of duplicating the
+    /// calibrated face geometry in Swift, so the app fallback and Store update
+    /// cannot silently drift apart when Ara is rebuilt.
+    private static func bundledPackageAvatar(
+        directory: String,
+        expectedID: OpenClamAvatarID,
+        expectedName: String,
+        sourceSlug: String
+    ) -> OpenClamAvatarDescriptor {
+        let mainBundle = Bundle.main
+        let bundleURL = mainBundle.url(
+            forResource: "AvatarCatalogAssets",
+            withExtension: "bundle"
+        ) ?? mainBundle.resourceURL?.appendingPathComponent(
+            "AvatarCatalogAssets.bundle",
+            isDirectory: true
+        )
+        guard let bundleURL,
+              let catalogBundle = Bundle(url: bundleURL) else {
+            preconditionFailure("AvatarCatalogAssets.bundle is missing")
+        }
+        let manifestURL = catalogBundle.bundleURL
+            .appendingPathComponent(directory, isDirectory: true)
+            .appendingPathComponent("manifest.json", isDirectory: false)
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? JSONDecoder().decode(
+                OpenClamAvatarPackageManifest.self,
+                from: data
+              ),
+              manifest.format == OpenClamAvatarPackageContract.canonicalFormat,
+              manifest.version == OpenClamAvatarPackageContract.expressionVersion,
+              manifest.variant == OpenClamAvatarPackageContract.variant,
+              manifest.id == expectedID.rawValue,
+              manifest.displayName == expectedName,
+              manifest.expression != nil else {
+            preconditionFailure("Bundled \(expectedName) manifest is invalid")
+        }
+
+        var assets: [OpenClamAvatarAssetRole: OpenClamAvatarAssetReference] = [:]
+        var includedByteCount = data.count
+        for specification in OpenClamAvatarPackageContract.assetSpecifications(
+            for: manifest.version
+        ) {
+            guard let asset = manifest.assets[specification.key],
+                  asset.path.hasPrefix("assets/"),
+                  URL(fileURLWithPath: asset.path).deletingLastPathComponent()
+                    .lastPathComponent == "assets" else {
+                preconditionFailure(
+                    "Bundled \(expectedName) asset ledger is invalid"
+                )
+            }
+            assets[specification.role] = bundled(
+                directory,
+                URL(fileURLWithPath: asset.path).lastPathComponent
+            )
+            let sum = includedByteCount.addingReportingOverflow(asset.byteCount)
+            guard !sum.overflow else {
+                preconditionFailure("Bundled \(expectedName) is too large")
+            }
+            includedByteCount = sum.partialValue
+        }
+
+        var motions: [OpenClamAvatarMotionKind: OpenClamAvatarMotionAsset] = [:]
+        for specification in OpenClamAvatarPackageContract.motionSpecifications {
+            guard let motion = manifest.motions?[specification.kind.rawValue] else {
+                continue
+            }
+            motions[specification.kind] = OpenClamAvatarMotionAsset(
+                reference: .catalogBundle(
+                    directory: directory,
+                    filename: URL(fileURLWithPath: motion.path).lastPathComponent
+                ),
+                pixelSize: size(Double(motion.width), Double(motion.height)),
+                durationMilliseconds: motion.durationMilliseconds
+            )
+            let sum = includedByteCount.addingReportingOverflow(motion.byteCount)
+            guard !sum.overflow else {
+                preconditionFailure("Bundled \(expectedName) is too large")
+            }
+            includedByteCount = sum.partialValue
+        }
+
+        return OpenClamAvatarDescriptor(
+            avatarID: expectedID,
+            displayName: expectedName,
+            sourceSlug: sourceSlug,
+            sourceRelativeRuntimePath: "bundled/\(directory)",
+            includedByteCount: includedByteCount,
+            geometry: manifest.rig,
+            expressionGeometry: manifest.expression,
+            compatibility: fullExpressionCompatibility,
+            assets: assets,
+            motions: motions
+        )
+    }
 
     private static func size(_ width: Double, _ height: Double) -> OpenClamAvatarSize {
         OpenClamAvatarSize(width: width, height: height)
@@ -170,13 +240,19 @@ enum OpenClamAvatarCatalog {
         ]
         let names: [OpenClamAvatarViseme: String] = [
             .silence: "CaptainAyerVisemeSil",
+            .bilabial: "CaptainAyerVisemeFF",
             .labiodental: "CaptainAyerVisemeFF",
             .dental: "CaptainAyerVisemeTH",
+            .alveolar: "CaptainAyerVisemeNN",
+            .velar: "CaptainAyerVisemeNN",
+            .postalveolar: "CaptainAyerVisemeIH",
+            .sibilant: "CaptainAyerVisemeIH",
             .nasal: "CaptainAyerVisemeNN",
             .rhotic: "CaptainAyerVisemeRR",
             .open: "CaptainAyerVisemeAA",
             .wide: "CaptainAyerVisemeE",
             .nearClose: "CaptainAyerVisemeIH",
+            .openRounded: "CaptainAyerVisemeOU",
             .rounded: "CaptainAyerVisemeOU",
         ]
         for (viseme, name) in names {
@@ -199,10 +275,27 @@ enum OpenClamAvatarCatalog {
             .gazeLeftAtlas: bundled(directory, "gaze-left-atlas.png"),
             .gazeRightAtlas: bundled(directory, "gaze-right-atlas.png"),
         ]
-        for viseme in OpenClamAvatarViseme.allCases {
+        let filenames: [OpenClamAvatarViseme: String] = [
+            .silence: "viseme-sil.jpg",
+            .bilabial: "viseme-FF.jpg",
+            .labiodental: "viseme-FF.jpg",
+            .dental: "viseme-TH.jpg",
+            .alveolar: "viseme-nn.jpg",
+            .velar: "viseme-nn.jpg",
+            .postalveolar: "viseme-ih.jpg",
+            .sibilant: "viseme-ih.jpg",
+            .nasal: "viseme-nn.jpg",
+            .rhotic: "viseme-RR.jpg",
+            .open: "viseme-aa.jpg",
+            .wide: "viseme-E.jpg",
+            .nearClose: "viseme-ih.jpg",
+            .openRounded: "viseme-ou.jpg",
+            .rounded: "viseme-ou.jpg",
+        ]
+        for (viseme, filename) in filenames {
             result[.viseme(viseme)] = bundled(
                 directory,
-                "viseme-\(viseme.rawValue).jpg"
+                filename
             )
         }
         return result

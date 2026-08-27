@@ -115,6 +115,7 @@ class XaiOAuthTests(unittest.IsolatedAsyncioTestCase):
             XO._store_credential(credential)
             current = XO.status()
             self.assertTrue(current["connected"])
+            self.assertEqual(current["oauth"]["persistence"], "session")
             resolved = await XO.resolve_auth()
             self.assertEqual(resolved.mode, XO.OAUTH2_MODE)
             XO._clear_credential()
@@ -125,6 +126,23 @@ class XaiOAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(ACCESS, stored)
         self.assertNotIn(REFRESH, stored)
         self.assertEqual(os.stat(mode_file).st_mode & 0o777, 0o600)
+
+    async def test_signed_oauth_survives_process_coordination_reset(self):
+        self.store_oauth(expires_in=3600)
+        self.assertEqual(XO.status()["oauth"]["persistence"], "keychain")
+
+        # Model a normal signed-app restart without looking inside the stored
+        # credential: process caches and coordination state disappear, while
+        # the secure vault record remains available to the next backend.
+        credentials._memo.clear()
+        XO._reset_for_tests()
+
+        current = XO.status()
+        self.assertTrue(current["connected"])
+        self.assertEqual(current["oauth"]["persistence"], "keychain")
+        resolved = await XO.resolve_auth()
+        self.assertEqual(resolved.mode, XO.OAUTH2_MODE)
+        self.assertNotIn(ACCESS, repr(resolved))
 
     async def test_cli_proxy_headers_pin_the_released_grok_build_contract(self):
         self.store_oauth(expires_in=3600)
@@ -212,6 +230,7 @@ class XaiOAuthTests(unittest.IsolatedAsyncioTestCase):
             ))
             current = XO.status()
             self.assertEqual(current["auth_mode"], XO.API_KEY_MODE)
+            self.assertEqual(current["oauth"]["persistence"], "keychain")
             self.assertTrue(current["oauth"]["available"])
             self.assertFalse(current["connected"])
             selected = XO.set_auth_mode(XO.OAUTH2_MODE)
@@ -772,7 +791,7 @@ class XaiOAuthRouteTests(unittest.TestCase):
             "connected": False,
             "has_api_key": False,
             "oauth": {"available": True, "connected": False, "refreshable": False,
-                      "expires_at": None},
+                      "expires_at": None, "persistence": "keychain"},
             "independent_notice": XO.INDEPENDENCE_NOTICE,
         }
         with mock.patch.object(application.xai_oauth, "status",
@@ -789,7 +808,7 @@ class XaiOAuthRouteTests(unittest.TestCase):
             "connected": False,
             "has_api_key": False,
             "oauth": {"available": True, "connected": False, "refreshable": False,
-                      "expires_at": None},
+                      "expires_at": None, "persistence": "keychain"},
             "independent_notice": XO.INDEPENDENCE_NOTICE,
             "device_flow_cancelled": True,
         }

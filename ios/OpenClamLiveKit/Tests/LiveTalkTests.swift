@@ -527,6 +527,52 @@ final class LiveTalkTests: XCTestCase {
         }
     }
 
+    func testBrokerStatusFailuresGiveActionableSafeCategories() async throws {
+        let brokerURL = try XCTUnwrap(
+            URL(string: "https://broker.example/v1/live-talk/sessions")
+        )
+        let cases: [(Int, LiveTalkBrokerError)] = [
+            (401, .accessRejected),
+            (403, .accessRejected),
+            (429, .rateLimited),
+            (500, .serviceUnavailable),
+            (503, .serviceUnavailable),
+            (409, .sessionRejected),
+        ]
+
+        for (statusCode, expected) in cases {
+            let source = LiveTalkBrokerTokenSource(
+                configuration: .init(
+                    sessionEndpoint: brokerURL,
+                    appToken: String(repeating: "p", count: 32),
+                    expectedServerHost: "expected.livekit.cloud"
+                ),
+                avatar: .init(id: "captain-ayer", displayName: "Captain Ayer"),
+                liveTalkConfiguration: .managedDefault,
+                credentialVault: InMemoryProviderCredentialVault(),
+                requestPerformer: { _ in
+                    (
+                        Data(),
+                        HTTPURLResponse(
+                            url: brokerURL,
+                            statusCode: statusCode,
+                            httpVersion: "HTTP/1.1",
+                            headerFields: nil
+                        )!
+                    )
+                }
+            )
+
+            do {
+                _ = try await source.fetch()
+                XCTFail("HTTP \(statusCode) must fail closed")
+            } catch {
+                XCTAssertEqual(error as? LiveTalkBrokerError, expected)
+                XCTAssertFalse(error.localizedDescription.contains("livekit_"))
+            }
+        }
+    }
+
     func testCatalogPublishesOnlyBrokerSupportedStageCapabilities() {
         XCTAssertNotNil(option(stage: .llm, provider: "gemini"))
         XCTAssertNil(option(stage: .stt, provider: "gemini"))

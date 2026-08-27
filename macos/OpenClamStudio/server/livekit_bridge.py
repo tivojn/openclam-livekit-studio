@@ -394,6 +394,10 @@ def _secret(
 ) -> str:
     try:
         value = getter(account) or ""
+    except RuntimeError as error:
+        raise LiveKitBridgeError(
+            "livekit_credential_store_unavailable", 503
+        ) from error
     except Exception as error:
         raise LiveKitBridgeError(missing_code) from error
     if not isinstance(value, str) or not _valid_secret(value, minimum, maximum):
@@ -574,7 +578,15 @@ async def create_session(
                             "livekit_broker_redirect_rejected", 502
                         )
                     if response.status_code != 201:
-                        raise LiveKitBridgeError("livekit_broker_rejected", 502)
+                        if response.status_code in (401, 403):
+                            code = "livekit_access_rejected"
+                        elif response.status_code == 429:
+                            code = "livekit_rate_limited"
+                        elif 500 <= response.status_code <= 599:
+                            code = "livekit_service_unavailable"
+                        else:
+                            code = "livekit_broker_rejected"
+                        raise LiveKitBridgeError(code, 502)
                     length = response.headers.get("content-length")
                     if length is not None:
                         try:

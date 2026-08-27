@@ -169,11 +169,69 @@ def add_runtime_motions(runtime: Path, kinds=("idle", "move")) -> None:
     manifest_path.write_text(json.dumps(manifest))
 
 
+def add_full_expression_runtime(runtime: Path) -> None:
+    manifest_path = runtime / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["v"] = 22
+    brow = manifest["brow"]
+    brow["dys"] = [-5, -3.5, -2, -1, 0, .75, 1.5, 2.5, 4, 6, 8, 10, 12, 14]
+    brow["sqs"] = [-3, 0, 4]
+
+    smile_box = [400, 700, 12, 6]
+    forehead_l = [550, 380, 9, 8]
+    forehead_r = [450, 380, 9, 8]
+    cheek_l = [560, 600, 8, 6]
+    cheek_r = [456, 600, 8, 6]
+    under_l = [560, 550, 7, 4]
+    under_r = [456, 550, 7, 4]
+    smile_states = [0, .18, .34, .68, 1]
+    emotion_states = [0, .34, .68, 1]
+    cheek_states = [0, .8, 1.6, 2.45, 3.3]
+    under_states = [0, .5, 1, 1.6, 2.3]
+    png(runtime / "smile.png", (12, 6 * len(smile_states) * len(package.IOS_VISEMES)))
+    png(runtime / "emotion-mouth.png", (
+        12, 6 * len(emotion_states) * len(package.IOS_VISEMES) * 3
+    ))
+    png(runtime / "forehead_l.png", (9, 8 * 14 * 3))
+    png(runtime / "forehead_r.png", (9, 8 * 14 * 3))
+    png(runtime / "cheek_l.png", (8, 6 * len(cheek_states)))
+    png(runtime / "cheek_r.png", (8, 6 * len(cheek_states)))
+    png(runtime / "eyebag_l.png", (7, 4 * len(under_states)))
+    png(runtime / "eyebag_r.png", (7, 4 * len(under_states)))
+    manifest.update({
+        "smile": {
+            "src": "assets/smile.png", "box": smile_box,
+            "states": smile_states, "visemes": list(package.IOS_VISEMES),
+        },
+        "emotion_mouth": {
+            "src": "assets/emotion-mouth.png", "box": smile_box,
+            "states": emotion_states, "emotions": ["sorrow", "horror", "anger"],
+            "visemes": list(package.IOS_VISEMES),
+        },
+        "forehead": {
+            "dys": brow["dys"], "sqs": brow["sqs"],
+            "l": {"src": "assets/forehead_l.png", "box": forehead_l},
+            "r": {"src": "assets/forehead_r.png", "box": forehead_r},
+        },
+        "cheek": {
+            "ups": cheek_states,
+            "l": {"src": "assets/cheek_l.png", "box": cheek_l},
+            "r": {"src": "assets/cheek_r.png", "box": cheek_r},
+        },
+        "eyebag": {
+            "ups": under_states,
+            "l": {"src": "assets/eyebag_l.png", "box": under_l},
+            "r": {"src": "assets/eyebag_r.png", "box": under_r},
+        },
+    })
+    manifest_path.write_text(json.dumps(manifest))
+
+
 class AvatarContractParityTests(unittest.TestCase):
     def test_vendored_schemas_match_suite_contract_when_both_exist(self):
         for name in (
                 "README.md", "manifest.schema.json", "macos-full.schema.json",
-                "ios-light-v3.schema.json"):
+                "ios-light-v3.schema.json", "ios-full-expression-v4.schema.json"):
             local = SCHEMA_ROOT / name
             self.assertTrue(local.is_file())
             shared = SUITE_SCHEMA_ROOT / name
@@ -363,6 +421,212 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 content = bundle.read(asset["path"])
                 self.assertEqual(len(content), asset["byteCount"])
                 self.assertEqual(hashlib.sha256(content).hexdigest(), asset["sha256"])
+
+    def test_legacy_export_rejects_texture_dimension_above_8192(self):
+        png(self.authoring / "keyframe.png", (package.MAX_IOS_DIMENSION + 1, 1))
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "avatar image is too large"):
+            package.export_ios_light(
+                "nova",
+                "Nova",
+                self.authoring,
+                self.runtime,
+                self.root / "oversized-thumbnail.avtr",
+            )
+
+    def test_v22_exports_full_expression_v4_with_all_fifteen_visemes(self):
+        add_full_expression_runtime(self.runtime)
+        archive = self.root / "Nova-iPhone-Full-Expression.avtr"
+        manifest = package.export_ios_light(
+            "nova", "Nova", self.authoring, self.runtime, archive
+        )
+
+        self.assertEqual(manifest["version"], package.IOS_EXPRESSION_VERSION)
+        self.assertEqual(manifest["variant"], "ios-light")
+        self.assertEqual(manifest["expression"]["smileVisemes"], list(package.IOS_VISEMES))
+        self.assertEqual(
+            manifest["expression"]["emotionMouthEmotions"],
+            ["sorrow", "horror", "anger"],
+        )
+        self.assertEqual(manifest["expression"]["browGain"], 1)
+        self.assertEqual(manifest["expression"]["foreheadGain"], 1)
+        self.assertEqual(manifest["expression"]["underEyeGain"], 1)
+        expected_roles = {
+            *package.IOS_LEGACY_ROLE_FILENAMES,
+            *{f"viseme-{name}" for name in package.IOS_VISEMES},
+            *package.IOS_EXPRESSION_ROLE_FILENAMES,
+        }
+        self.assertEqual(set(manifest["assets"]), expected_roles)
+        with zipfile.ZipFile(archive) as bundle:
+            self.assertEqual(len(bundle.infolist()), package.IOS_EXPRESSION_VERSION + 29)
+            loaded = json.loads(bundle.read("manifest.json"))
+            jsonschema.Draft202012Validator(json.loads(
+                (SCHEMA_ROOT / "ios-full-expression-v4.schema.json").read_text()
+            )).validate(loaded)
+            self.assertEqual(loaded["expression"]["smile"]["storage"], "gridAtlas")
+            self.assertEqual(
+                loaded["expression"]["emotionMouth"]["storage"], "gridAtlas"
+            )
+            self.assertEqual(
+                (
+                    loaded["assets"]["smile-atlas"]["width"],
+                    loaded["assets"]["smile-atlas"]["height"],
+                ),
+                (12 * 5, 6 * 15),
+            )
+            self.assertEqual(
+                (
+                    loaded["assets"]["emotion-mouth-atlas"]["width"],
+                    loaded["assets"]["emotion-mouth-atlas"]["height"],
+                ),
+                (12 * 4, 6 * 45),
+            )
+            self.assertTrue(all(
+                asset["width"] <= package.MAX_IOS_TEXTURE_DIMENSION
+                and asset["height"] <= package.MAX_IOS_TEXTURE_DIMENSION
+                for asset in loaded["assets"].values()
+            ))
+            self.assertIn("assets/emotion-mouth-atlas.png", bundle.namelist())
+            self.assertIn("assets/forehead-left.png", bundle.namelist())
+            self.assertIn("assets/under-eye-right.png", bundle.namelist())
+
+    def test_v22_exports_bounded_per_avatar_expression_calibration(self):
+        add_full_expression_runtime(self.runtime)
+        manifest_path = self.runtime / "manifest.json"
+        runtime_manifest = json.loads(manifest_path.read_text())
+        runtime_manifest["rig_profile"] = {
+            "brows": 40,
+            "forehead": 25,
+            "eyebags": 140,
+        }
+        manifest_path.write_text(json.dumps(runtime_manifest))
+
+        manifest = package.export_ios_light(
+            "nova",
+            "Nova",
+            self.authoring,
+            self.runtime,
+            self.root / "calibrated-expression.avtr",
+        )
+
+        self.assertEqual(manifest["expression"]["browGain"], 1.35)
+        self.assertEqual(manifest["expression"]["foreheadGain"], 0.5)
+        self.assertEqual(manifest["expression"]["underEyeGain"], 1.35)
+
+    def test_vertical_strip_repack_preserves_every_row_major_frame_address(self):
+        source = self.root / "six-frame-strip.png"
+        destination = self.root / "six-frame-grid.png"
+        colors = [
+            (240, 10, 20, 255), (20, 220, 30, 255), (30, 40, 230, 255),
+            (200, 120, 10, 255), (120, 20, 180, 255), (10, 180, 170, 255),
+        ]
+        strip = Image.new("RGBA", (2, len(colors)))
+        for index, color in enumerate(colors):
+            strip.paste(color, (0, index, 2, index + 1))
+        strip.save(source)
+
+        package._copy_vertical_strip_as_grid(
+            source,
+            destination,
+            {"width": 2, "height": 1},
+            columns=3,
+            rows=2,
+        )
+
+        with Image.open(destination) as atlas:
+            self.assertEqual(atlas.size, (6, 2))
+            for index, expected in enumerate(colors):
+                column = index % 3
+                row = index // 3
+                self.assertEqual(atlas.getpixel((column * 2, row)), expected)
+
+    def test_v4_schema_locks_role_paths_sprite_shapes_and_canonical_states(self):
+        add_full_expression_runtime(self.runtime)
+        archive = self.root / "Nova-iPhone-Full-Expression.avtr"
+        package.export_ios_light(
+            "nova", "Nova", self.authoring, self.runtime, archive
+        )
+        with zipfile.ZipFile(archive) as bundle:
+            manifest = json.loads(bundle.read("manifest.json"))
+        validator = jsonschema.Draft202012Validator(json.loads(
+            (SCHEMA_ROOT / "ios-full-expression-v4.schema.json").read_text()
+        ))
+
+        bad_path = json.loads(json.dumps(manifest))
+        bad_path["assets"]["body"]["path"] = "assets/head-mask.png"
+        with self.assertRaises(jsonschema.ValidationError):
+            validator.validate(bad_path)
+
+        bad_sprite = json.loads(json.dumps(manifest))
+        bad_sprite["expression"]["smile"]["columns"] = 4
+        with self.assertRaises(jsonschema.ValidationError):
+            validator.validate(bad_sprite)
+
+        bad_states = json.loads(json.dumps(manifest))
+        bad_states["expression"]["browOffsets"][1:3] = [-2, -3.5]
+        with self.assertRaises(jsonschema.ValidationError):
+            validator.validate(bad_states)
+
+    def test_v22_rejects_noncanonical_state_bank_and_decoded_pixel_overage(self):
+        add_full_expression_runtime(self.runtime)
+        manifest_path = self.runtime / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["smile"]["states"] = [0, .34, .18, .68, 1]
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(package.AvatarPackageError, "state banks"):
+            package.export_ios_light(
+                "nova", "Nova", self.authoring, self.runtime, self.root / "bad-state.avtr"
+            )
+
+        add_full_expression_runtime(self.runtime)
+        with patch.object(package, "MAX_IOS_TOTAL_PIXELS", 1):
+            with self.assertRaisesRegex(package.AvatarPackageError, "decoded images"):
+                package.export_ios_light(
+                    "nova", "Nova", self.authoring, self.runtime,
+                    self.root / "too-many-pixels.avtr",
+                )
+
+    def test_export_rejects_transforms_or_anchors_swift_would_reject(self):
+        manifest_path = self.runtime / "manifest.json"
+        original = json.loads(manifest_path.read_text())
+        cases = {
+            "reflected": ([[-.25, 0, 128], [0, .25, 64]], "renderer limits"),
+            "sheared": ([[.25, .05, 128], [0, .25, 64]], "renderer limits"),
+            "nonuniform": ([[.25, 0, 128], [0, .30, 64]], "renderer limits"),
+            "too-small": ([[.005, 0, 128], [0, .005, 64]], "renderer limits"),
+            "eye-outside": ([[.05, 0, 0], [0, .05, 0]], "eye anchor"),
+        }
+        for label, (transform, message) in cases.items():
+            with self.subTest(label=label):
+                manifest = json.loads(json.dumps(original))
+                manifest["body"]["face_transform"] = transform
+                manifest_path.write_text(json.dumps(manifest))
+                destination = self.root / f"bad-transform-{label}.avtr"
+                with self.assertRaisesRegex(package.AvatarPackageError, message):
+                    package.export_ios_light(
+                        "nova", "Nova", self.authoring, self.runtime, destination
+                    )
+                self.assertFalse(destination.exists())
+
+        manifest_path.write_text(json.dumps(original))
+
+    def test_full_expression_ui_export_refuses_legacy_runtime_with_rebuild_guidance(self):
+        with self.assertRaisesRegex(package.AvatarPackageError, "rebuild.*full-expression"):
+            package.export_ios_light(
+                "nova", "Nova", self.authoring, self.runtime,
+                self.root / "mislabelled.avtr", require_full_expression=True,
+            )
+
+    def test_v22_rejects_partial_expression_bank_instead_of_mislabelling_it(self):
+        add_full_expression_runtime(self.runtime)
+        manifest_path = self.runtime / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.pop("eyebag")
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(package.AvatarPackageError, "complete iPhone expression"):
+            package.export_ios_light(
+                "nova", "Nova", self.authoring, self.runtime, self.root / "bad.avtr"
+            )
 
     def test_export_v3_includes_exact_ara_like_idle_and_move_records(self):
         add_runtime_motions(self.runtime)

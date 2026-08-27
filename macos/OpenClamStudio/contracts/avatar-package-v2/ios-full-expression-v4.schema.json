@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclam.app/schemas/avatar-package-v4-ios-full-expression.json",
+  "title": "OpenClam Avatar Package v4 (iOS full-expression)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "variant", "id", "displayName", "rig", "expression", "assets"],
+  "properties": {
+    "format": { "const": "openclam-avatar" },
+    "version": { "const": 4 },
+    "variant": { "const": "ios-light" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "rig": { "$ref": "#/$defs/rig" },
+    "expression": { "$ref": "#/$defs/expression" },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thumbnail", "body", "head-mask", "eye-left", "eye-right",
+        "brow-left", "brow-right", "gaze-left-atlas", "gaze-right-atlas",
+        "viseme-sil", "viseme-PP", "viseme-FF", "viseme-TH", "viseme-DD",
+        "viseme-kk", "viseme-CH", "viseme-SS", "viseme-nn", "viseme-RR",
+        "viseme-aa", "viseme-E", "viseme-ih", "viseme-oh", "viseme-ou",
+        "smile-atlas", "emotion-mouth-atlas", "forehead-left", "forehead-right",
+        "cheek-left", "cheek-right", "under-eye-left", "under-eye-right"
+      ],
+      "properties": {
+        "thumbnail": { "$ref": "#/$defs/thumbnailAsset" },
+        "body": { "$ref": "#/$defs/bodyAsset" },
+        "head-mask": { "$ref": "#/$defs/headMaskAsset" },
+        "eye-left": { "$ref": "#/$defs/eyeLeftAsset" },
+        "eye-right": { "$ref": "#/$defs/eyeRightAsset" },
+        "brow-left": { "$ref": "#/$defs/browLeftAsset" },
+        "brow-right": { "$ref": "#/$defs/browRightAsset" },
+        "gaze-left-atlas": { "$ref": "#/$defs/gazeLeftAsset" },
+        "gaze-right-atlas": { "$ref": "#/$defs/gazeRightAsset" },
+        "viseme-sil": { "$ref": "#/$defs/visemeSilAsset" },
+        "viseme-PP": { "$ref": "#/$defs/visemePPAsset" },
+        "viseme-FF": { "$ref": "#/$defs/visemeFFAsset" },
+        "viseme-TH": { "$ref": "#/$defs/visemeTHAsset" },
+        "viseme-DD": { "$ref": "#/$defs/visemeDDAsset" },
+        "viseme-kk": { "$ref": "#/$defs/visemeKkAsset" },
+        "viseme-CH": { "$ref": "#/$defs/visemeCHAsset" },
+        "viseme-SS": { "$ref": "#/$defs/visemeSSAsset" },
+        "viseme-nn": { "$ref": "#/$defs/visemeNnAsset" },
+        "viseme-RR": { "$ref": "#/$defs/visemeRRAsset" },
+        "viseme-aa": { "$ref": "#/$defs/visemeAaAsset" },
+        "viseme-E": { "$ref": "#/$defs/visemeEAsset" },
+        "viseme-ih": { "$ref": "#/$defs/visemeIhAsset" },
+        "viseme-oh": { "$ref": "#/$defs/visemeOhAsset" },
+        "viseme-ou": { "$ref": "#/$defs/visemeOuAsset" },
+        "smile-atlas": { "$ref": "#/$defs/smileAsset" },
+        "emotion-mouth-atlas": { "$ref": "#/$defs/emotionMouthAsset" },
+        "forehead-left": { "$ref": "#/$defs/foreheadLeftAsset" },
+        "forehead-right": { "$ref": "#/$defs/foreheadRightAsset" },
+        "cheek-left": { "$ref": "#/$defs/cheekLeftAsset" },
+        "cheek-right": { "$ref": "#/$defs/cheekRightAsset" },
+        "under-eye-left": { "$ref": "#/$defs/underEyeLeftAsset" },
+        "under-eye-right": { "$ref": "#/$defs/underEyeRightAsset" }
+      }
+    },
+    "motions": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 3,
+      "properties": {
+        "walk": { "allOf": [{ "$ref": "#/$defs/motion" }, { "properties": { "path": { "const": "assets/motion-walk.mov" } } }] },
+        "edgeIdle": { "allOf": [{ "$ref": "#/$defs/motion" }, { "properties": { "path": { "const": "assets/motion-edge-idle.mov" } } }] },
+        "moves": { "allOf": [{ "$ref": "#/$defs/motion" }, { "properties": { "path": { "const": "assets/motion-moves.mov" } } }] }
+      }
+    }
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "byteCount", "mediaType", "width", "height"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^assets/[A-Za-z0-9-]+\\.(png|jpg|jpeg)$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "byteCount": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+        "mediaType": { "enum": ["image/png", "image/jpeg"] },
+        "width": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 8192 }
+      }
+    },
+    "thumbnailAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/thumbnail.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "bodyAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/body.png" }, "mediaType": { "const": "image/png" } } }] },
+    "headMaskAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/head-mask.png" }, "mediaType": { "const": "image/png" } } }] },
+    "eyeLeftAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/eye-left.png" }, "mediaType": { "const": "image/png" } } }] },
+    "eyeRightAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/eye-right.png" }, "mediaType": { "const": "image/png" } } }] },
+    "browLeftAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/brow-left.png" }, "mediaType": { "const": "image/png" } } }] },
+    "browRightAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/brow-right.png" }, "mediaType": { "const": "image/png" } } }] },
+    "gazeLeftAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/gaze-left-atlas.png" }, "mediaType": { "const": "image/png" } } }] },
+    "gazeRightAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/gaze-right-atlas.png" }, "mediaType": { "const": "image/png" } } }] },
+    "visemeSilAsset": { "$ref": "#/$defs/visemeAsset-sil" },
+    "visemePPAsset": { "$ref": "#/$defs/visemeAsset-PP" },
+    "visemeFFAsset": { "$ref": "#/$defs/visemeAsset-FF" },
+    "visemeTHAsset": { "$ref": "#/$defs/visemeAsset-TH" },
+    "visemeDDAsset": { "$ref": "#/$defs/visemeAsset-DD" },
+    "visemeKkAsset": { "$ref": "#/$defs/visemeAsset-kk" },
+    "visemeCHAsset": { "$ref": "#/$defs/visemeAsset-CH" },
+    "visemeSSAsset": { "$ref": "#/$defs/visemeAsset-SS" },
+    "visemeNnAsset": { "$ref": "#/$defs/visemeAsset-nn" },
+    "visemeRRAsset": { "$ref": "#/$defs/visemeAsset-RR" },
+    "visemeAaAsset": { "$ref": "#/$defs/visemeAsset-aa" },
+    "visemeEAsset": { "$ref": "#/$defs/visemeAsset-E" },
+    "visemeIhAsset": { "$ref": "#/$defs/visemeAsset-ih" },
+    "visemeOhAsset": { "$ref": "#/$defs/visemeAsset-oh" },
+    "visemeOuAsset": { "$ref": "#/$defs/visemeAsset-ou" },
+    "visemeAsset-sil": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-sil.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-PP": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-PP.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-FF": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-FF.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-TH": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-TH.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-DD": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-DD.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-kk": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-kk.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-CH": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-CH.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-SS": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-SS.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-nn": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-nn.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-RR": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-RR.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-aa": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-aa.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-E": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-E.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-ih": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-ih.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-oh": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-oh.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "visemeAsset-ou": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/viseme-ou.jpg" }, "mediaType": { "const": "image/jpeg" } } }] },
+    "smileAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/smile-atlas.png" }, "mediaType": { "const": "image/png" } } }] },
+    "emotionMouthAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/emotion-mouth-atlas.png" }, "mediaType": { "const": "image/png" } } }] },
+    "foreheadLeftAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/forehead-left.png" }, "mediaType": { "const": "image/png" } } }] },
+    "foreheadRightAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/forehead-right.png" }, "mediaType": { "const": "image/png" } } }] },
+    "cheekLeftAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/cheek-left.png" }, "mediaType": { "const": "image/png" } } }] },
+    "cheekRightAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/cheek-right.png" }, "mediaType": { "const": "image/png" } } }] },
+    "underEyeLeftAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/under-eye-left.png" }, "mediaType": { "const": "image/png" } } }] },
+    "underEyeRightAsset": { "allOf": [{ "$ref": "#/$defs/image" }, { "properties": { "path": { "const": "assets/under-eye-right.png" }, "mediaType": { "const": "image/png" } } }] },
+    "motion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "byteCount", "mediaType", "width", "height", "durationMilliseconds"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^assets/motion-(walk|edge-idle|moves)\\.mov$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "byteCount": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+        "mediaType": { "const": "video/quicktime" },
+        "width": { "type": "integer", "minimum": 64, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 64, "maximum": 4096 },
+        "durationMilliseconds": { "type": "integer", "minimum": 250, "maximum": 12000 }
+      }
+    },
+    "rect": {
+      "type": "object", "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number" }, "y": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "sprite": {
+      "type": "object", "additionalProperties": false,
+      "required": ["box", "columns", "rows", "storage"],
+      "properties": {
+        "box": { "$ref": "#/$defs/rect" },
+        "columns": { "type": "integer", "minimum": 1 },
+        "rows": { "type": "integer", "minimum": 1 },
+        "storage": { "enum": ["verticalStrip", "gridAtlas"] }
+      }
+    },
+    "grid5x15": { "allOf": [{ "$ref": "#/$defs/sprite" }, { "properties": { "columns": { "const": 5 }, "rows": { "const": 15 }, "storage": { "const": "gridAtlas" } } }] },
+    "grid4x45": { "allOf": [{ "$ref": "#/$defs/sprite" }, { "properties": { "columns": { "const": 4 }, "rows": { "const": 45 }, "storage": { "const": "gridAtlas" } } }] },
+    "vertical14x3": { "allOf": [{ "$ref": "#/$defs/sprite" }, { "properties": { "columns": { "const": 14 }, "rows": { "const": 3 }, "storage": { "const": "verticalStrip" } } }] },
+    "vertical1x5": { "allOf": [{ "$ref": "#/$defs/sprite" }, { "properties": { "columns": { "const": 1 }, "rows": { "const": 5 }, "storage": { "const": "verticalStrip" } } }] },
+    "vertical1x8": { "allOf": [{ "$ref": "#/$defs/sprite" }, { "properties": { "columns": { "const": 1 }, "rows": { "const": 8 }, "storage": { "const": "verticalStrip" } } }] },
+    "grid25x11": { "allOf": [{ "$ref": "#/$defs/sprite" }, { "properties": { "columns": { "const": 25 }, "rows": { "const": 11 }, "storage": { "const": "gridAtlas" } } }] },
+    "expression": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "smile", "emotionMouth", "leftForehead", "rightForehead", "leftCheek",
+        "rightCheek", "leftUnderEye", "rightUnderEye", "browOffsets",
+        "browSqueezeOffsets", "smileStrengths", "smileVisemes",
+        "emotionMouthStrengths", "emotionMouthEmotions", "emotionMouthVisemes",
+        "cheekOffsets", "underEyeOffsets", "browGain", "foreheadGain",
+        "underEyeGain"
+      ],
+      "properties": {
+        "smile": { "$ref": "#/$defs/grid5x15" },
+        "emotionMouth": { "$ref": "#/$defs/grid4x45" },
+        "leftForehead": { "$ref": "#/$defs/vertical14x3" },
+        "rightForehead": { "$ref": "#/$defs/vertical14x3" },
+        "leftCheek": { "$ref": "#/$defs/vertical1x5" },
+        "rightCheek": { "$ref": "#/$defs/vertical1x5" },
+        "leftUnderEye": { "$ref": "#/$defs/vertical1x5" },
+        "rightUnderEye": { "$ref": "#/$defs/vertical1x5" },
+        "browOffsets": { "const": [-5, -3.5, -2, -1, 0, 0.75, 1.5, 2.5, 4, 6, 8, 10, 12, 14] },
+        "browSqueezeOffsets": { "const": [-3, 0, 4] },
+        "smileStrengths": { "const": [0, 0.18, 0.34, 0.68, 1] },
+        "smileVisemes": { "$ref": "#/$defs/visemes" },
+        "emotionMouthStrengths": { "const": [0, 0.34, 0.68, 1] },
+        "emotionMouthEmotions": { "const": ["sorrow", "horror", "anger"] },
+        "emotionMouthVisemes": { "$ref": "#/$defs/visemes" },
+        "cheekOffsets": { "const": [0, 0.8, 1.6, 2.45, 3.3] },
+        "underEyeOffsets": { "const": [0, 0.5, 1, 1.6, 2.3] },
+        "browGain": { "type": "number", "minimum": 0, "maximum": 1.35 },
+        "foreheadGain": { "type": "number", "minimum": 0, "maximum": 1.2 },
+        "underEyeGain": { "type": "number", "minimum": 0, "maximum": 1.35 }
+      }
+    },
+    "visemes": {
+      "const": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"]
+    },
+    "rig": {
+      "type": "object", "additionalProperties": false,
+      "required": ["bodySize", "faceTransform", "faceBoundsInBody", "leftEye", "rightEye", "leftBrow", "rightBrow", "leftGaze", "rightGaze"],
+      "properties": {
+        "bodySize": {
+          "type": "object", "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": { "width": { "type": "number" }, "height": { "type": "number" } }
+        },
+        "faceTransform": {
+          "type": "object", "additionalProperties": false,
+          "required": ["a", "b", "c", "d", "tx", "ty"],
+          "properties": {
+            "a": { "type": "number" }, "b": { "type": "number" },
+            "c": { "type": "number" }, "d": { "type": "number" },
+            "tx": { "type": "number" }, "ty": { "type": "number" }
+          }
+        },
+        "faceBoundsInBody": { "$ref": "#/$defs/rect" },
+        "leftEye": { "$ref": "#/$defs/vertical1x8" }, "rightEye": { "$ref": "#/$defs/vertical1x8" },
+        "leftBrow": { "$ref": "#/$defs/vertical14x3" }, "rightBrow": { "$ref": "#/$defs/vertical14x3" },
+        "leftGaze": { "$ref": "#/$defs/grid25x11" }, "rightGaze": { "$ref": "#/$defs/grid25x11" }
+      }
+    }
+  }
+}

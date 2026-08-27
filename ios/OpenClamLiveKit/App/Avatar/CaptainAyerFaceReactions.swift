@@ -384,6 +384,44 @@ struct CaptainAyerEyeReactionState: Equatable, Sendable {
     let upperOpacity: Double
 }
 
+struct CaptainAyerExpressionLayerRenderState: Equatable, Sendable {
+    let smile: Double
+    let sorrowMouth: Double
+    let horrorMouth: Double
+    let angerMouth: Double
+    let cheek: Double
+    let underEye: Double
+    let asymmetry: Double
+
+    init(
+        smile: Double,
+        sorrowMouth: Double,
+        horrorMouth: Double,
+        angerMouth: Double,
+        cheek: Double,
+        underEye: Double,
+        asymmetry: Double = 0
+    ) {
+        self.smile = smile
+        self.sorrowMouth = sorrowMouth
+        self.horrorMouth = horrorMouth
+        self.angerMouth = angerMouth
+        self.cheek = cheek
+        self.underEye = underEye
+        self.asymmetry = asymmetry
+    }
+
+    static let neutral = Self(
+        smile: 0,
+        sorrowMouth: 0,
+        horrorMouth: 0,
+        angerMouth: 0,
+        cheek: 0,
+        underEye: 0,
+        asymmetry: 0
+    )
+}
+
 struct CaptainAyerFaceReactionRenderState: Equatable, Sendable {
     let gazeFrame: Int?
     let leftEye: CaptainAyerEyeReactionState?
@@ -392,6 +430,18 @@ struct CaptainAyerFaceReactionRenderState: Equatable, Sendable {
     let rightBrowFrame: Int?
     let wideMouthOpacity: Double
     let headPose: CaptainAyerFaceMirrorHeadPose
+    let expressionLayers: CaptainAyerExpressionLayerRenderState
+    /// Continuous speech-brow intent in atlas-authored pixel offsets. These
+    /// values let the renderer select frames against either the legacy
+    /// 9-viseme rig or the v4 full-expression geometry without changing the
+    /// perceived movement of already-installed avatars.
+    let leftBrowOffset: Double?
+    let rightBrowOffset: Double?
+    let browSqueezeOffset: Double?
+    /// Semantic fear/surprise/anger can keep the approved open-eye landscape
+    /// even when an independent ambient blink is active. Nil keeps normal
+    /// blinking for smile, laughter, and sorrow.
+    let maximumEyeClosure: Double?
 
     init(
         gazeFrame: Int?,
@@ -400,7 +450,12 @@ struct CaptainAyerFaceReactionRenderState: Equatable, Sendable {
         leftBrowFrame: Int?,
         rightBrowFrame: Int?,
         wideMouthOpacity: Double,
-        headPose: CaptainAyerFaceMirrorHeadPose = .zero
+        headPose: CaptainAyerFaceMirrorHeadPose = .zero,
+        expressionLayers: CaptainAyerExpressionLayerRenderState = .neutral,
+        leftBrowOffset: Double? = nil,
+        rightBrowOffset: Double? = nil,
+        browSqueezeOffset: Double? = nil,
+        maximumEyeClosure: Double? = nil
     ) {
         self.gazeFrame = gazeFrame
         self.leftEye = leftEye
@@ -409,6 +464,11 @@ struct CaptainAyerFaceReactionRenderState: Equatable, Sendable {
         self.rightBrowFrame = rightBrowFrame
         self.wideMouthOpacity = wideMouthOpacity
         self.headPose = headPose
+        self.expressionLayers = expressionLayers
+        self.leftBrowOffset = leftBrowOffset
+        self.rightBrowOffset = rightBrowOffset
+        self.browSqueezeOffset = browSqueezeOffset
+        self.maximumEyeClosure = maximumEyeClosure
     }
 
     static let idle = CaptainAyerFaceReactionRenderState(
@@ -418,7 +478,12 @@ struct CaptainAyerFaceReactionRenderState: Equatable, Sendable {
         leftBrowFrame: nil,
         rightBrowFrame: nil,
         wideMouthOpacity: 0,
-        headPose: .zero
+        headPose: .zero,
+        expressionLayers: .neutral,
+        leftBrowOffset: nil,
+        rightBrowOffset: nil,
+        browSqueezeOffset: nil,
+        maximumEyeClosure: nil
     )
 }
 

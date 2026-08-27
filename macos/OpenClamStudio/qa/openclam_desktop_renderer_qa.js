@@ -255,6 +255,11 @@ assert.match(source, /RoomEvent\.AudioPlaybackStatusChanged/);
 assert.doesNotMatch(source, /room\.startAudio\(\)\.catch\(/,
   'Live Talk must not silently continue after speaker playback fails');
 assert.match(source, /const liveTalkConnectionError = error => \{/);
+assert.match(source, /livekit_credential_store_unavailable/);
+assert.match(source, /livekit_access_rejected/);
+assert.match(source, /livekit_rate_limited/);
+assert.match(source, /livekit_service_unavailable/);
+assert.match(source, /livekit_broker_unreachable/);
 assert.match(source, /detail\.includes\('livekit_selection_not_allowed'\)/);
 assert.match(source, /This saved Live Talk combination is no longer supported\. Choose one approved option for each stage, then save Live Talk\./);
 assert.match(source, /\\blivekit_\[a-z0-9_\]\+\\b\/i\.test\(detail\)/);
@@ -1154,6 +1159,10 @@ assert.match(source, /if \(!fullChat && shellState\.desktopCloseUp\)/,
   'the same close-up camera must be scoped to each mode\'s own canvas');
 assert.match(source, /openclam\.chat\.close-up-offset\.v1/,
   'the close-up drag position must persist independently from standard framing');
+assert.match(source, /const chatPoseRevisionChanged = Number\(value\.chatPoseRevision \|\| 0\)[\s\S]{0,160}Number\(shellState\.chatPoseRevision \|\| 0\)/,
+  'an explicit close-up or standby selection must remain observable when its Boolean state is unchanged');
+assert.match(source, /if \(closeUpChanged \|\| chatPoseRevisionChanged\) \{[\s\S]{0,420}markActivity\(\);/,
+  're-selecting a saved pose must immediately leave its temporary edge-idle presentation');
 assert.match(source, /const resumeChatSpeakingPose = \(\) => \{[\s\S]{0,100}markActivity\(\);[\s\S]{0,80}lastFrame = 0;/,
   'conversation activity must resume the saved speaking pose from temporary Edge Idle');
 assert.match(source, /const submitComposer = \(\) => \{[\s\S]{0,420}resumeChatSpeakingPose\(\);/,

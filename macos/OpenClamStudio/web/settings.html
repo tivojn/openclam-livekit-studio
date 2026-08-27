@@ -1128,7 +1128,7 @@ document.documentElement.dataset.design='quiet';</script>
     <div class="row" style="margin-top:12px;align-items:flex-end">
       <div class="f"><label for="livekit-pilot-token">Pilot access token</label>
         <input id="livekit-pilot-token" type="password"
-          placeholder="stored in this Mac’s Keychain — leave blank to keep"></div>
+          placeholder="paste the LiveKit access token"></div>
       <button class="btn pri" type="button" id="livekit-save">Save Live Talk</button>
     </div>
     <p class="keystate" id="livekit-state" role="status" aria-live="polite" style="margin-top:10px"></p>
@@ -1460,12 +1460,12 @@ document.documentElement.dataset.design='quiet';</script>
             <div class="motion-section-head"><div><strong class="motion-section-title" id="idle-section-title">Edge Idle</strong><p class="motion-section-copy">The supported pose held when Horizon Walk reaches a screen edge.</p></div><span class="pill" id="body-idle-state">Not generated</span></div>
             <label>Supported edge pose</label>
             <div class="idle-pose-grid" id="body-motion-poses" role="group" aria-label="Choose Edge Idle pose">
-              <button class="idle-pose-card on" type="button" data-idle-pose="back-heel" aria-pressed="true" aria-label="High heel touch: knee raised to hip height and heel touching the wall"><svg aria-hidden="true"><use href="#idle-pose-back-heel"></use></svg><span>High heel touch</span><small>knee raised · heel to wall</small></button>
+              <button class="idle-pose-card" type="button" data-idle-pose="back-heel" aria-pressed="false" aria-label="High heel touch: knee raised to hip height and heel touching the wall"><svg aria-hidden="true"><use href="#idle-pose-back-heel"></use></svg><span>High heel touch</span><small>knee raised · heel to wall</small></button>
               <button class="idle-pose-card" type="button" data-idle-pose="tailored-cross" aria-pressed="false"><svg aria-hidden="true"><use href="#idle-pose-tailored-cross"></use></svg><span>Tailored</span><small>ankles crossed</small></button>
               <button class="idle-pose-card" type="button" data-idle-pose="pocket-lean" aria-pressed="false"><svg aria-hidden="true"><use href="#idle-pose-pocket-lean"></use></svg><span>Pockets</span><small>hands in pockets</small></button>
               <button class="idle-pose-card" type="button" data-idle-pose="heel-up" aria-pressed="false" aria-label="Low heel touch: heel lifted behind and touching the wall"><svg aria-hidden="true"><use href="#idle-pose-heel-up"></use></svg><span>Low heel touch</span><small>heel lifted behind</small></button>
               <button class="idle-pose-card" type="button" data-idle-pose="folded-cross" aria-pressed="false"><svg aria-hidden="true"><use href="#idle-pose-folded-cross"></use></svg><span>Folded</span><small>arms + ankles crossed</small></button>
-              <button class="idle-pose-card" type="button" data-idle-pose="side-cross" aria-pressed="false"><svg aria-hidden="true"><use href="#idle-pose-side-cross"></use></svg><span>Side lean</span><small>shoulder + hip contact</small></button>
+              <button class="idle-pose-card on" type="button" data-idle-pose="side-cross" aria-pressed="true"><svg aria-hidden="true"><use href="#idle-pose-side-cross"></use></svg><span>Side lean</span><small>shoulder + hip contact</small></button>
               <button class="idle-pose-card" type="button" data-idle-pose="custom" aria-pressed="false"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 20.5l1-5 10.8-10.8a2 2 0 012.8 0l1.7 1.7a2 2 0 010 2.8L10.5 20zM14.8 6.7l6.5 6.5M5 23h18"/></svg><span>Custom act</span><small>Any pose or movement, performed at the edge</small></button>
             </div>
             <textarea class="idle-pose-prompt hidden" id="body-motion-prompt" maxlength="2400" placeholder="Example: dance an upbeat little routine for the audience · or: stretch and yawn, then check an imaginary watch. It is performed in place at the screen edge and loops back to standing."></textarea>
@@ -1871,6 +1871,8 @@ const WALK_STYLE_LABELS = {
   custom: 'Custom gait'
 };
 const IDLE_POSE_IDS = new Set(['back-heel', 'tailored-cross', 'pocket-lean', 'heel-up', 'folded-cross', 'side-cross', 'custom']);
+const HEEL_IDLE_POSE_IDS = new Set(['back-heel', 'heel-up']);
+const NON_FEMININE_IDLE_POSE = 'side-cross';
 const MOVE_STYLE_IDS = new Set(['viral', 'hiphop', 'kpop', 'ballet', 'salsa', 'custom']);
 const MOVE_STYLE_LABELS = {
   viral: 'Viral TikTok', hiphop: 'Hip-hop freestyle', kpop: 'K-pop point dance',
@@ -1882,7 +1884,53 @@ let BODY_PROMPT_STARTED_AT = 0, BODY_PROMPT_TIMER = 0;
 let BODY_PROMPT_STAGE = '', BODY_PROMPT_LONG_NOTICE = false;
 let BODY_EDIT_JOB_ID = null, BODY_EDIT_SLUG = null;
 let BODY_MODE = 'body', BODY_CYCLE = null;
-let BODY_WALK_STYLE = 'office', BODY_IDLE_POSE = 'back-heel', BODY_MOVE_STYLE = 'viral', BODY_BUSY = false;
+let BODY_WALK_STYLE = 'office', BODY_IDLE_POSE = NON_FEMININE_IDLE_POSE, BODY_MOVE_STYLE = 'viral', BODY_BUSY = false;
+/* qa:body-generation-draft:start */
+let BODY_GENERATION_DRAFT = null;
+
+function rememberBodyGenerationDraft(slug, jobId, profile) {
+  const source = profile && typeof profile === 'object' ? profile : {};
+  const exactProfile = {
+    style: String(source.style || ''),
+    pose: String(source.pose || ''),
+    prompt: String(source.prompt || ''),
+    presentation: String(source.presentation || ''),
+    medium: String(source.medium || ''),
+  };
+  BODY_GENERATION_DRAFT = {
+    slug: String(slug || ''),
+    jobId: String(jobId || ''),
+    profile: exactProfile,
+  };
+  return exactProfile;
+}
+
+function bodyGenerationDraftFor(slug, jobId = null) {
+  const draft = BODY_GENERATION_DRAFT;
+  if (!draft || draft.slug !== String(slug || '')) return null;
+  if (jobId !== null && draft.jobId !== String(jobId || '')) return null;
+  return draft.profile;
+}
+
+function reviseBodyGenerationDraft(slug, changes) {
+  const profile = bodyGenerationDraftFor(slug);
+  if (!profile || !changes || typeof changes !== 'object') return null;
+  ['style', 'pose', 'prompt'].forEach(key => {
+    if (Object.prototype.hasOwnProperty.call(changes, key)) {
+      profile[key] = String(changes[key] || '');
+    }
+  });
+  return profile;
+}
+
+function clearBodyGenerationDraft(slug = null, jobId = null) {
+  if (!BODY_GENERATION_DRAFT) return false;
+  if (slug !== null && BODY_GENERATION_DRAFT.slug !== String(slug || '')) return false;
+  if (jobId !== null && BODY_GENERATION_DRAFT.jobId !== String(jobId || '')) return false;
+  BODY_GENERATION_DRAFT = null;
+  return true;
+}
+/* qa:body-generation-draft:end */
 let STORE_LOADED = false, STORE_REFRESHING = false;
 let STORE_ITEMS = [];
 const STORE_PROGRESS = new Map(), STORE_THUMBNAILS = new Map();
@@ -1955,6 +2003,7 @@ function normalizeXaiAuthStatus(value) {
       connected: oauth.connected === true,
       refreshable: oauth.refreshable === true,
       expires_at: typeof oauth.expires_at === 'string' ? oauth.expires_at.slice(0, 80) : null,
+      persistence: oauth.persistence === 'keychain' ? 'keychain' : 'session',
     },
     independent_notice: xaiSafeNotice(source.independent_notice),
   };
@@ -1969,7 +2018,8 @@ function validXaiAuthStatusResponse(value) {
     && value.oauth && typeof value.oauth === 'object'
     && typeof value.oauth.available === 'boolean'
     && typeof value.oauth.connected === 'boolean'
-    && typeof value.oauth.refreshable === 'boolean');
+    && typeof value.oauth.refreshable === 'boolean'
+    && ['session', 'keychain'].includes(value.oauth.persistence));
 }
 function normalizeXaiDeviceFlow(value) {
   const source = value && typeof value === 'object' ? value : {};
@@ -3269,7 +3319,7 @@ function card(a) {
         <button class="btn sm" data-act="export-macos" ${busy ? 'disabled' : ''}
           title="Complete editable project: source, face, body, walk, edge idle, moves, and authoring library">Export Mac project</button>
         <button class="btn sm" data-act="export-ios" ${busy || st !== 'ready' ? 'disabled' : ''}
-          title="Lightweight runtime package for explicit import into OpenClam on iPhone">Export iPhone-light AVTR</button>
+          title="Full facial-expression runtime package for explicit import into OpenClam on iPhone">Export full-expression iPhone AVTR</button>
         <button class="btn sm danger" data-act="delete" ${on ? 'disabled' : ''}>Delete</button>
       </div>
       <div class="jobbox ${busy ? 'on' : ''}">
@@ -3473,7 +3523,7 @@ async function act(what, slug, btn) {
     const title = btn.closest('.av').querySelector('.av-name');
     const name = title ? title.textContent.trim() : slug;
     const variant = what === 'export-ios' ? 'ios-light' : 'macos-full';
-    const idleLabel = variant === 'ios-light' ? 'Export iPhone-light AVTR' : 'Export Mac project';
+    const idleLabel = variant === 'ios-light' ? 'Export full-expression iPhone AVTR' : 'Export Mac project';
     if (SHELL && SHELL.isElectron && typeof SHELL.exportAvatar === 'function') {
       btn.disabled = true; btn.textContent = 'Exporting…';
       const result = await SHELL.exportAvatar({ slug, name, variant });
@@ -3650,6 +3700,7 @@ function closeBody() {
   stopBodyMotionCycle();
   if (BODY_PROMPT_TIMER) clearInterval(BODY_PROMPT_TIMER);
   BODY_PROMPT_TIMER = 0;
+  clearBodyGenerationDraft();
   BODY_SLUG = null;
   BODY_BUSY = false;
 }
@@ -3865,8 +3916,44 @@ function selectMoveStyle(style, focusPrompt = false) {
   if (custom && focusPrompt) setTimeout(() => prompt.focus(), 0);
 }
 
+function bodyVisiblePresentation(state = BODY_STATE) {
+  const options = ((state || {}).body || {}).options || {};
+  const traits = (state || {}).prompt_traits || {};
+  const aliases = {
+    female: 'feminine', woman: 'feminine',
+    male: 'masculine', man: 'masculine',
+    ambiguous: 'androgynous', neutral: 'androgynous',
+    nonbinary: 'androgynous', 'non-binary': 'androgynous',
+  };
+  const raw = String(options.presentation || traits.presentation || '').toLowerCase();
+  const presentation = aliases[raw] || raw;
+  return ['feminine', 'masculine', 'androgynous'].includes(presentation)
+    ? presentation : 'androgynous';
+}
+
+function idlePoseAllowed(pose, state = BODY_STATE) {
+  return bodyVisiblePresentation(state) === 'feminine'
+    || !HEEL_IDLE_POSE_IDS.has(pose);
+}
+
+function defaultIdlePose(state = BODY_STATE) {
+  return bodyVisiblePresentation(state) === 'feminine'
+    ? 'back-heel' : NON_FEMININE_IDLE_POSE;
+}
+
+function syncIdlePoseAvailability() {
+  document.querySelectorAll('[data-idle-pose]').forEach(button => {
+    const allowed = idlePoseAllowed(button.dataset.idlePose);
+    button.classList.toggle('hidden', !allowed);
+    button.setAttribute('aria-hidden', allowed ? 'false' : 'true');
+    button.disabled = BODY_BUSY || !allowed;
+  });
+}
+
 function selectIdlePose(pose, focusPrompt = false) {
-  if (!IDLE_POSE_IDS.has(pose)) pose = 'back-heel';
+  if (!IDLE_POSE_IDS.has(pose) || !idlePoseAllowed(pose)) {
+    pose = defaultIdlePose();
+  }
   BODY_IDLE_POSE = pose;
   document.querySelectorAll('[data-idle-pose]').forEach(button => {
     const selected = button.dataset.idlePose === pose;
@@ -3878,6 +3965,7 @@ function selectIdlePose(pose, focusPrompt = false) {
   prompt.classList.toggle('hidden', !custom);
   $('#body-motion-prompt-tools').classList.toggle('hidden', !custom);
   prompt.disabled = BODY_BUSY || !custom;
+  syncIdlePoseAvailability();
   if (custom && focusPrompt) setTimeout(() => prompt.focus(), 0);
 }
 
@@ -3898,9 +3986,10 @@ function setBodyBusy(busy) {
   $('#body-remove').disabled = busy;
   $('#body-view-open').disabled = busy;
   $('#body-view-save').disabled = busy;
-  document.querySelectorAll('[data-walk-style], [data-idle-pose], [data-move-style]').forEach(button => {
+  document.querySelectorAll('[data-walk-style], [data-move-style]').forEach(button => {
     button.disabled = busy;
   });
+  syncIdlePoseAvailability();
   document.querySelectorAll('.motion-set-use, .motion-set-delete').forEach(button => {
     button.disabled = busy || button.dataset.locked === '1';
   });
@@ -4239,13 +4328,23 @@ function renderBodyStudio() {
     ? `<span class="pill ok">selected</span><strong>${esc(videoProvider.title)}</strong><p class="note">${esc(videoProvider.model || 'Provider default model')} · Direct image-to-video provider.</p>`
     : `<span class="pill bad">unavailable</span><strong>${esc(BODY_STATE.video_provider_error || 'No compatible video provider')}</strong>`;
   const metadata = BODY_STATE.body || {}, options = metadata.options || {};
-  $('#body-style').value = options.style || 'photorealistic';
-  $('#body-pose').value = options.pose || 'relaxed';
+  // A rejected provider/local-QA attempt never becomes manifest metadata. Keep
+  // its submitted editor values in a separate modal-session draft so this
+  // repaint does not silently replace them with the previously published body.
+  const submittedDraft = bodyGenerationDraftFor(BODY_SLUG);
+  $('#body-style').value = submittedDraft
+    ? submittedDraft.style : options.style || 'photorealistic';
+  $('#body-pose').value = submittedDraft
+    ? submittedDraft.pose : options.pose || 'relaxed';
   const legacyPrompt = [options.outfit, options.notes].filter(Boolean).join(' ');
-  const filledPrompt = options.prompt || legacyPrompt || BODY_STATE.default_prompt || '';
+  const filledPrompt = submittedDraft
+    ? submittedDraft.prompt
+    : options.prompt || legacyPrompt || BODY_STATE.default_prompt || '';
   $('#body-prompt').value = filledPrompt;
   BODY_PROMPT_FILLED = filledPrompt;
-  if (!options.prompt && !legacyPrompt) {
+  if (submittedDraft) {
+    setBodyPromptNote('retry', null);
+  } else if (!options.prompt && !legacyPrompt) {
     setBodyPromptNote(BODY_STATE.prompt_source, BODY_STATE.prompt_traits);
   } else {
     setBodyPromptNote('saved', null);
@@ -4254,13 +4353,19 @@ function renderBodyStudio() {
   const hasTurnaround = Boolean(BODY_STATE.has_turnaround);
   const motion = BODY_STATE.motion || {};
   const hasWalk = Boolean(BODY_STATE.has_walk ?? (motion.walk && motion.walk.sheets));
-  const hasIdle = Boolean(BODY_STATE.has_idle ?? (motion.idle && motion.idle.sheets));
+  const hasIdleAsset = Boolean(BODY_STATE.has_idle ?? (motion.idle && motion.idle.sheets));
   const savedWalkStyle = motion.walk_style || (motion.walk || {}).walk_style || {};
   BODY_WALK_STYLE = WALK_STYLE_IDS.has(savedWalkStyle.id) ? savedWalkStyle.id : 'office';
   $('#body-walk-prompt').value = BODY_WALK_STYLE === 'custom' ? savedWalkStyle.prompt || '' : '';
   selectWalkStyle(BODY_WALK_STYLE);
   const savedIdlePose = motion.idle_pose || {};
-  BODY_IDLE_POSE = IDLE_POSE_IDS.has(savedIdlePose.id) ? savedIdlePose.id : 'back-heel';
+  const unsafeSavedIdle = Boolean(
+    hasIdleAsset && bodyVisiblePresentation() !== 'feminine'
+    && (!savedIdlePose.id || HEEL_IDLE_POSE_IDS.has(savedIdlePose.id)));
+  const hasIdle = hasIdleAsset && !unsafeSavedIdle;
+  BODY_IDLE_POSE = IDLE_POSE_IDS.has(savedIdlePose.id)
+    && idlePoseAllowed(savedIdlePose.id)
+    ? savedIdlePose.id : defaultIdlePose();
   $('#body-motion-prompt').value = BODY_IDLE_POSE === 'custom' ? savedIdlePose.prompt || '' : '';
   selectIdlePose(BODY_IDLE_POSE);
   const hasMove = Boolean(BODY_STATE.has_move ?? (motion.move &&
@@ -4290,8 +4395,8 @@ function renderBodyStudio() {
   walkState.textContent = hasWalk ? 'Ready' : 'Not generated';
   walkState.className = 'pill ' + (hasWalk ? 'ok' : '');
   const idleState = $('#body-idle-state');
-  idleState.textContent = hasIdle ? 'Ready' : 'Not generated';
-  idleState.className = 'pill ' + (hasIdle ? 'ok' : '');
+  idleState.textContent = hasIdle ? 'Ready' : (unsafeSavedIdle ? 'Needs safe rebuild' : 'Not generated');
+  idleState.className = 'pill ' + (hasIdle ? 'ok' : (unsafeSavedIdle ? 'warn' : ''));
   $('#body-move-generate').textContent = hasMove ? 'Generate a new move set' : 'Generate Moves';
   // Re-cut reprocesses the retained raw take through the current local
   // pipeline (e.g. the RVM matte) - free, so offer it whenever a clip exists.
@@ -4315,7 +4420,9 @@ function renderBodyStudio() {
         : 'Generate the three full-body views first.';
   const idleButton = document.querySelector(`[data-idle-pose="${BODY_IDLE_POSE}"] span`);
   const idleLabel = idleButton ? idleButton.textContent : 'selected pose';
-  $('#body-idle-status').textContent = hasIdle
+  $('#body-idle-status').textContent = unsafeSavedIdle
+    ? 'The previous Edge Idle used a heel-specific or unknown legacy pose. It is not selectable for this body; generate the grounded Side lean instead.'
+    : hasIdle
     ? `Ready · ${idleLabel}. Generating adds a new set to the library.`
     : hasWalk
       ? 'Optional · plays when Horizon Walk reaches the left or right screen edge.'
@@ -4368,7 +4475,12 @@ function motionSetCard(set) {
 function renderMotionSets(kind) {
   const box = $(kind === 'walk' ? '#body-walk-sets'
     : kind === 'move' ? '#body-move-sets' : '#body-idle-sets');
-  const sets = ((BODY_STATE || {}).motion_sets || {})[kind] || [];
+  const allSets = ((BODY_STATE || {}).motion_sets || {})[kind] || [];
+  // Do not advertise an archived heel performance as available for a male or
+  // presentation-ambiguous body.  The API enforces the same rule if stale UI
+  // or a direct request attempts to activate one.
+  const sets = kind === 'idle' && bodyVisiblePresentation() !== 'feminine'
+    ? allSets.filter(set => !HEEL_IDLE_POSE_IDS.has(set.pose)) : allSets;
   box.classList.toggle('hidden', !sets.length);
   box.innerHTML = sets.map(motionSetCard).join('');
   box.querySelectorAll('[data-set-use]').forEach(button => {
@@ -4590,6 +4702,10 @@ function setBodyPromptNote(source, traits) {
     note.textContent = 'The prompt saved with this body. Editable before every regeneration.';
     return;
   }
+  if (source === 'retry') {
+    note.textContent = 'The rejected attempt is restored exactly. Adjust it or retry; it is not saved to this avatar until generation passes QA.';
+    return;
+  }
   if (source === 'tailored') {
     const read = [
       (traits || {}).presentation, (traits || {}).age_band, (traits || {}).medium
@@ -4625,6 +4741,7 @@ async function tailorBodyPrompt(slug, { refresh = false, force = false } = {}) {
     if (!promptWasEdited) {
       field.value = result.prompt;
       BODY_PROMPT_FILLED = result.prompt;
+      reviseBodyGenerationDraft(slug, {prompt: result.prompt});
     }
     if (BODY_STATE) {
       BODY_STATE.default_prompt = result.prompt;
@@ -4656,6 +4773,9 @@ async function tailorBodyPrompt(slug, { refresh = false, force = false } = {}) {
 }
 
 async function openBody(slug) {
+  if (BODY_GENERATION_DRAFT && BODY_GENERATION_DRAFT.slug !== String(slug || '')) {
+    clearBodyGenerationDraft();
+  }
   BODY_SLUG = slug;
   if (BODY_EDIT_SLUG !== slug) $('#body-edit-instruction').value = '';
   BODY_EDIT_SLUG = slug;
@@ -4674,7 +4794,8 @@ async function openBody(slug) {
   if (BODY_SLUG !== slug) return;
   BODY_STATE = bodyState;
   renderBodyStudio();
-  if (bodyState.prompt_source !== 'tailored' && !(bodyState.body || {}).options) {
+  if (!bodyGenerationDraftFor(slug)
+      && bodyState.prompt_source !== 'tailored' && !(bodyState.body || {}).options) {
     tailorBodyPrompt(slug);
   }
   const job = progressState.job || { done: true };
@@ -4706,10 +4827,20 @@ function bodyProfile() {
   const state = BODY_STATE || {};
   const saved = (state.body || {}).options || {};
   const traits = state.prompt_traits || {};
+  const authoredPrompt = $('#body-prompt').value.trim();
+  // A direct owner-authored identity word is stronger than an absent vision
+  // classifier. Previously a prompt that explicitly said "the exact woman"
+  // silently fell into the androgynous branch, which rejected heels and bypassed
+  // the feminine hem/footwear contract. Never infer from appearance alone; only
+  // use unambiguous words the owner put in the editable brief.
+  const promptPresentation = /\b(?:woman|female|feminine-presenting)\b/i.test(authoredPrompt)
+    ? 'feminine'
+    : (/\b(?:man|male|masculine-presenting)\b/i.test(authoredPrompt)
+      ? 'masculine' : 'androgynous');
   const presentation = ['feminine', 'masculine', 'androgynous'].includes(traits.presentation)
     ? traits.presentation
     : (['feminine', 'masculine', 'androgynous'].includes(saved.presentation)
-      ? saved.presentation : 'androgynous');
+      ? saved.presentation : promptPresentation);
   const medium = ['photograph', 'game art', 'anime', 'illustration', '3d render'].includes(traits.medium)
     ? traits.medium
     : (['photograph', 'game art', 'anime', 'illustration', '3d render'].includes(saved.medium)
@@ -4717,26 +4848,32 @@ function bodyProfile() {
   return {
     style: $('#body-style').value,
     pose: $('#body-pose').value,
-    prompt: $('#body-prompt').value.trim(),
+    prompt: authoredPrompt,
     presentation,
     medium,
   };
 }
 
 async function generateBody() {
+  const slug = BODY_SLUG;
+  const profile = bodyProfile();
   setBodyBusy(true);
   startBodyProgress('body');
   let response;
   try {
     response = await api('/api/avatar/body/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug: BODY_SLUG, profile: bodyProfile() })
+      body: JSON.stringify({ slug, profile })
     });
   } catch (error) {
+    if (BODY_SLUG !== slug) return;
     failBodyProgress('Could not reach the local OpenClam service. Reopen OpenClam Studio, then try again.');
     setBodyBusy(false);
     return;
   }
+  // Closing or switching avatars while the request was in flight deliberately
+  // discards this modal-session draft, even if the backend accepted the job.
+  if (BODY_SLUG !== slug) return;
   if (!response.started && response.reason === 'already building') {
     setBodyBusy(true);
     pollBody(response.job_id);
@@ -4748,6 +4885,7 @@ async function generateBody() {
     setBodyBusy(false);
     return;
   }
+  rememberBodyGenerationDraft(slug, response.job_id, profile);
   pollBody(response.job_id);
 }
 
@@ -4893,6 +5031,10 @@ async function pollBody(expectedJobId) {
       renderBodyStudio();
       return;
     }
+    // No recorded failure means the submitted job completed before a later
+    // publish/follow-up job replaced it. Its accepted values can now come from
+    // canonical metadata; do not let the ephemeral retry draft override them.
+    clearBodyGenerationDraft(slug, expectedJobId);
     expectedJobId = job.id;
   }
   const value = Math.max(0, Math.min(1, Number(progress.value) || 0));
@@ -4914,8 +5056,14 @@ async function pollBody(expectedJobId) {
   }
   const completedBodyEdit = Boolean(
     !job.error && BODY_EDIT_JOB_ID && expectedJobId === BODY_EDIT_JOB_ID);
+  const completedSubmittedBody = Boolean(
+    !job.error && normaliseJobKind(job.kind || BODY_JOB_KIND) === 'body'
+    && bodyGenerationDraftFor(slug, expectedJobId));
   endBodyProgress(Boolean(job.error));
   BODY_WATCH = null;
+  if (completedSubmittedBody) {
+    clearBodyGenerationDraft(slug, expectedJobId);
+  }
   BODY_STATE = await api('/api/avatar/body?slug=' + encodeURIComponent(slug));
   if (BODY_SLUG !== slug) return;
   if (completedBodyEdit) $('#body-edit-instruction').value = '';
@@ -5162,6 +5310,16 @@ $('#body-walk-prompt-ai').onclick = () =>
   draftPromptFromGist('walk', $('#body-walk-prompt'), $('#body-walk-prompt-ai'));
 $('#body-motion-prompt-ai').onclick = () =>
   draftPromptFromGist('idle', $('#body-motion-prompt'), $('#body-motion-prompt-ai'));
+function syncBodyGenerationDraftFromEditor() {
+  reviseBodyGenerationDraft(BODY_SLUG, {
+    style: $('#body-style').value,
+    pose: $('#body-pose').value,
+    prompt: $('#body-prompt').value,
+  });
+}
+$('#body-style').addEventListener('change', syncBodyGenerationDraftFromEditor);
+$('#body-pose').addEventListener('change', syncBodyGenerationDraftFromEditor);
+$('#body-prompt').addEventListener('input', syncBodyGenerationDraftFromEditor);
 document.querySelectorAll('[data-body-mode]').forEach(button => {
   button.onclick = () => setBodyMode(button.dataset.bodyMode);
 });
@@ -5990,6 +6148,12 @@ function setLiveKitState(message, good=false, bad=false) {
 /* qa:livekit-error-copy:start */
 const LIVEKIT_ERROR_COPY = Object.freeze({
   livekit_selection_not_allowed: 'This saved Live Talk combination is no longer supported. Choose one approved option for each stage, then save Live Talk.',
+  livekit_credential_store_unavailable: 'OpenClam could not access its saved Live Talk credentials. Unlock this Mac’s login Keychain, then try again.',
+  livekit_connection_config_incomplete: 'This app build is missing part of its Live Talk service configuration.',
+  livekit_not_configured: 'This app build does not include the Live Talk service configuration.',
+  livekit_access_rejected: 'The Live Talk access token was rejected. Replace it with the current pilot token, then try again.',
+  livekit_rate_limited: 'Live Talk is temporarily busy. Wait a moment, then try again.',
+  livekit_service_unavailable: 'The Live Talk service is temporarily unavailable. Try again shortly.',
 });
 function liveKitErrorMessage(value, fallback='LiveKit settings are unavailable.') {
   const candidates = value && typeof value === 'object'
@@ -6012,7 +6176,14 @@ function updateLiveKitReadiness() {
   const missing = missingLiveKitKeyProviders(
     LIVEKIT_SELECTIONS, CFG && CFG.has_keys, XAI_ACCOUNT.status.connected);
   const needs = [];
-  if (!config.has_pilot_app_token) needs.push('add the LiveKit access token');
+  if (!config.broker_url || !config.expected_server_host) {
+    needs.push('install a build with the Live Talk service configured');
+  }
+  if (config.credential_state === 'unavailable') {
+    needs.push('unlock this Mac’s login Keychain');
+  } else if (!config.has_pilot_app_token) {
+    needs.push('add the LiveKit access token');
+  }
   if (missing.length) needs.push(missing.map(provider => provider === 'xai'
     ? 'connect xAI Account' : 'store ' + (LIVEKIT_PROVIDER_NAMES[provider] || provider)
       + ' in Other provider keys').join(' and '));
@@ -6020,7 +6191,10 @@ function updateLiveKitReadiness() {
     setLiveKitState('Not ready — ' + needs.join('; ') + '.', false, true);
     return;
   }
-  setLiveKitState('Ready. LiveKit access and every selected personal provider account are available from this Mac.', true);
+  const location = config.credential_persistence === 'session'
+    ? 'for this running development session'
+    : 'from this Mac';
+  setLiveKitState(`Ready. LiveKit access and every selected personal provider account are available ${location}.`, true);
 }
 async function renderLiveKitBlock(response=null) {
   const state = $('#livekit-state');
@@ -6038,9 +6212,14 @@ async function renderLiveKitBlock(response=null) {
     $('#livekit-broker-url').value = config.broker_url || '';
     $('#livekit-server-host').value = config.expected_server_host || '';
     $('#livekit-pilot-token').value = '';
-    $('#livekit-pilot-token').placeholder = config.has_pilot_app_token
-      ? 'stored in this Mac’s Keychain — leave blank to keep'
-      : 'required once; stored only in this Mac’s Keychain';
+    const sessionOnly = config.credential_persistence === 'session';
+    $('#livekit-pilot-token').placeholder = sessionOnly
+      ? (config.has_pilot_app_token
+        ? 'available for this running Dev session — leave blank to keep'
+        : 'required for this Dev session; forgotten on restart')
+      : (config.has_pilot_app_token
+        ? 'stored in this Mac’s Keychain — leave blank to keep'
+        : 'required once; stored only in this Mac’s Keychain');
     updateLiveKitReadiness();
   } catch (error) {
     setLiveKitState(liveKitErrorMessage(error, 'Could not load LiveKit settings.'), false, true);
@@ -6257,7 +6436,9 @@ function xaiAccountStatePresentation(status=XAI_ACCOUNT.status) {
   if (status.auth_mode === 'oauth2' && !status.oauth.available) {
     return {label: 'OAuth2 · compatibility unavailable', cls: 'bad'};
   }
-  if (status.connected) return {label: xaiModeName(status.auth_mode) + ' · connected', cls: 'ok'};
+  if (status.connected) return {label: xaiModeName(status.auth_mode)
+    + (status.auth_mode === 'oauth2' && status.oauth.persistence === 'session'
+      ? ' · connected for this session' : ' · connected'), cls: 'ok'};
   if (status.state === 'expired') return {label: 'OAuth2 · reconnect', cls: 'bad'};
   if (status.auth_mode === 'api_key') return {label: 'API key · needs key', cls: 'warn'};
   if (status.auth_mode === 'oauth2') return {label: 'OAuth2 · sign in', cls: 'warn'};
@@ -6371,7 +6552,10 @@ function xaiDevicePane(flow) {
     <strong id="xai-device-title">Finish sign-in at xAI</strong>
     <p class="xai-device-step">Open the secure page, enter the code, then return here.
       OpenClam checks locally until xAI confirms or the code expires. This compatibility
-      flow uses xAI’s public Grok Build client identity, but stores its token only for OpenClam.</p>
+      flow uses xAI’s public Grok Build client identity, but stores its token only for OpenClam.
+      ${XAI_ACCOUNT.status.oauth.persistence === 'session'
+        ? 'This unsigned development session forgets the authorization when the app restarts.'
+        : 'The signed app persists the authorization securely in this Mac’s Keychain.'}</p>
     <div class="xai-device-line"><span>Verification page</span>
       <strong>${esc(shownUrl || 'Unavailable')}</strong>
       <button class="btn sm" type="button" data-xai-open-device
@@ -6404,10 +6588,13 @@ function xaiOauthPane() {
     ${xaiDevicePane(flow)}</div>`;
   if (status.oauth.connected && status.connected) {
     const expiry = xaiExpiryLabel(status.oauth.expires_at);
+    const storage = status.oauth.persistence === 'session'
+      ? ' This unsigned development build keeps the authorization in memory only; restarting the app signs it out.'
+      : ' The signed app keeps the rotating authorization securely in this Mac’s Keychain.';
     return `<div class="xai-account-pane" data-xai-pane="oauth2">
       <p class="note" style="margin:0"><span class="pill ok">connected</span>
         Signed in through xAI via Grok Build compatibility.${expiry ? ` Session expires ${esc(expiry)}${status.oauth.refreshable
-          ? ' and can refresh securely.' : '.'}` : ''}</p>
+          ? ' and can refresh securely.' : '.'}` : ''}${storage}</p>
       <div class="xai-account-actions">
         <button class="btn" type="button" data-xai-refresh-status${disabled}>Refresh status</button>
         <button class="btn danger" type="button" data-xai-logout${disabled}>Log out of xAI</button>
@@ -6416,10 +6603,13 @@ function xaiOauthPane() {
     </div>`;
   }
   const reconnect = status.state === 'expired';
+  const signInStorage = status.oauth.persistence === 'session'
+    ? 'This is an unsigned development build. OAuth credentials stay only in this running app and are forgotten on restart; it never reads or alters the signed release’s Keychain item.'
+    : 'Sign in once in your browser through Grok Build compatibility. The signed app stores its own OAuth credentials in the Mac Keychain and never shows them here.';
   return `<div class="xai-account-pane" data-xai-pane="oauth2">
     <p class="note" style="margin:0">${reconnect
       ? 'The saved xAI session expired. Sign in again to restore every xAI feature.'
-      : 'Sign in once in your browser through Grok Build compatibility. OpenClam stores its own OAuth credentials in the Mac Keychain and never shows them here.'}</p>
+      : signInStorage}</p>
     <div class="xai-account-actions">
       <button class="btn pri" type="button" data-xai-start-device${disabled}>${reconnect
         ? 'Reconnect xAI' : 'Start xAI sign-in'}</button>
@@ -6447,7 +6637,9 @@ function renderXaiAccount() {
         name="xai-auth-mode" value="oauth2" ${selected === 'oauth2' ? 'checked' : ''}>
       <span class="xai-mode-body"><span class="xai-mode-title">Sign in with xAI (OAuth2)
         <span class="pill">Grok Build compatibility</span></span>
-        <span class="xai-mode-copy">Uses xAI’s public Grok Build client identity. OpenClam remains independent and keeps its own credentials.</span></span></label>`;
+        <span class="xai-mode-copy">Uses xAI’s public Grok Build client identity. OpenClam remains independent and keeps its own credentials. ${status.oauth.persistence === 'session'
+          ? 'Unsigned development authorization lasts only until restart.'
+          : 'The signed app keeps its own authorization in Keychain.'}</span></span></label>`;
   box.innerHTML = `<div class="xai-account-head">
       <div><h3>One account. One active mode.</h3>
         <p>Switching here changes all xAI features together. OpenClam never mixes a

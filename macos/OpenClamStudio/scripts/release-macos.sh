@@ -348,8 +348,9 @@ ICON_ICNS_SHA='5bec8b8a81778d5713864c32044eb163613d22c91a5eb56f1aa8bb16fecebd3c'
 RINGTONE_SHA='471bc3d821be0bffaaddc089347c7006d31215d20ff4d5eb5da2440d67edcea4'
 LIVEKIT_CLIENT_SHA='a77a2f4c363e93099d7c135721c9ec81d6c5bacc691796dad799222e33cbfb31'
 LIVEKIT_TUPLES_SHA='ea285d07a250275c543a02647227f0dbf1890d099f245c0b90fac0d4515b8daf'
-AVATAR_CONTRACT_README_SHA='82e74fda47bb45bca89a02d40fe7a5c39374440692a4b7873bb176cdd815b2b1'
+AVATAR_CONTRACT_README_SHA='414f9d5fc32f96a8bc1eb57a536ecc59cdda3494c3ef590d82d5fa930d3cfefe'
 AVATAR_IOS_V3_SCHEMA_SHA='0c42b9f0fc3922b60fff371e3d211a2c493610c83885339f547a75568a2e68bc'
+AVATAR_IOS_V4_SCHEMA_SHA='086ea8ac64eaa5484c8edb69e1677497965bc9ed46ce25ab29f65229c956f991'
 
 require_sha256 assets/openclam-app-icon.png "$ICON_PNG_SHA" 'canonical iOS icon'
 require_sha256 assets/icon.png "$ICON_PNG_SHA" 'Electron icon PNG'
@@ -366,6 +367,8 @@ require_sha256 contracts/avatar-package-v2/README.md \
   "$AVATAR_CONTRACT_README_SHA" 'portable avatar contract documentation'
 require_sha256 contracts/avatar-package-v2/ios-light-v3.schema.json \
   "$AVATAR_IOS_V3_SCHEMA_SHA" 'iPhone-light v3 motion contract'
+require_sha256 contracts/avatar-package-v2/ios-full-expression-v4.schema.json \
+  "$AVATAR_IOS_V4_SCHEMA_SHA" 'iPhone full-expression v4 contract'
 SOURCE_ASSETS_VERIFIED=1
 
 npm run fetch:model
@@ -571,6 +574,8 @@ require_sha256 "$APP_RESOURCES/backend/contracts/avatar-package-v2/README.md" \
   "$AVATAR_CONTRACT_README_SHA" 'packaged avatar contract documentation'
 require_sha256 "$APP_RESOURCES/backend/contracts/avatar-package-v2/ios-light-v3.schema.json" \
   "$AVATAR_IOS_V3_SCHEMA_SHA" 'packaged iPhone-light v3 motion contract'
+require_sha256 "$APP_RESOURCES/backend/contracts/avatar-package-v2/ios-full-expression-v4.schema.json" \
+  "$AVATAR_IOS_V4_SCHEMA_SHA" 'packaged iPhone full-expression v4 contract'
 require_sha256 "$APP_RESOURCES/backend/models/face_landmarker.task" \
   "$FACE_MODEL_SHA" 'packaged MediaPipe face model'
 require_sha256 "$APP_RESOURCES/backend/models/LICENSE.Apache-2.0.txt" \

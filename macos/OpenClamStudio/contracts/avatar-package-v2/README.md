@@ -4,7 +4,7 @@ This directory is the shared contract for portable OpenClam avatars. It is a
 file-transfer format only. It does not synchronize avatars or couple the iOS
 and macOS applications at runtime.
 
-## iPhone-light profile
+## Legacy iPhone profile (v2/v3)
 
 An iPhone package has the `.avtr` extension and is a ZIP archive containing
 exactly 19 regular files, with no directory entries:
@@ -78,6 +78,33 @@ The normative manifest shape is `ios-light-v3.schema.json`. The synthetic,
 non-person `fixtures/ios-light-motion-v3-golden.avtr` fixture contains only
 procedural artwork and motion and is used to exercise the importer/runtime
 without copying a private avatar.
+
+## iOS full-expression v4
+
+Newly rebuilt runtime-v22 avatars export as version `4` while retaining the
+internal `ios-light` variant identifier for Store and importer compatibility.
+The user-facing package is no longer expression-light: it carries all 15
+production visemes (`sil`, `PP`, `FF`, `TH`, `DD`, `kk`, `CH`, `SS`, `nn`,
+`RR`, `aa`, `E`, `ih`, `oh`, `ou`), the viseme-indexed smile/laughter and
+sorrow/horror/anger mouth atlases, paired forehead, cheek, and under-eye
+strips, and the existing brow, 8-state eyelid, and 275-position gaze banks.
+The exporter repacks the tall smile and emotion-mouth source strips into
+row-major grid atlases before publishing, preserving every logical frame while
+keeping every v4 texture dimension at or below 8,192 pixels for iPhone GPUs.
+
+The `expression` object records each atlas box, dimensions/layout, calibrated
+state values, canonical viseme order, emotion order, and bounded brow,
+forehead, and under-eye gains derived from the avatar's authored rig profile.
+Those gains keep future manually tuned or automatically corrected avatars
+visually consistent between macOS and iOS. Import is fail-closed:
+v4 is accepted only when every role, state bank, dimension, hash, MIME type,
+and path is complete. Version 2 and 3 packages continue to import unchanged.
+
+V4 permits 64 MiB archives, 96 MiB of expanded encoded assets, and a maximum
+single image dimension of 8,192 pixels while retaining the 16 MiB per-image
+and 16-megapixel decoded-pixel limits. A package
+contains exactly 33 regular files plus up to three validated motion clips. The
+normative shape is `ios-full-expression-v4.schema.json`.
 
 ## Mac-full authoring profile
 

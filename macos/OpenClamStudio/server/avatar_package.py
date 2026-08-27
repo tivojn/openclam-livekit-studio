@@ -33,6 +33,7 @@ from PIL import Image
 FORMAT = "openclam-avatar"
 VERSION = 2
 IOS_MOTION_VERSION = 3
+IOS_EXPRESSION_VERSION = 4
 MAC_VARIANT = "macos-full"
 IOS_VARIANT = "ios-light"
 MANIFEST = "manifest.json"
@@ -45,12 +46,16 @@ MAX_MAC_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MAC_ENTRIES = 40_000
 MAX_MAC_PATH_BYTES = 1_024
 
-MAX_IOS_ARCHIVE_BYTES = 32 * 1024 * 1024
-MAX_IOS_EXPANDED_BYTES = 64 * 1024 * 1024
+MAX_IOS_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_IOS_EXPANDED_BYTES = 96 * 1024 * 1024
+MAX_IOS_LEGACY_ARCHIVE_BYTES = 32 * 1024 * 1024
+MAX_IOS_LEGACY_EXPANDED_BYTES = 64 * 1024 * 1024
 MAX_IOS_ASSET_BYTES = 16 * 1024 * 1024
 MAX_IOS_MOTION_BYTES = 16 * 1024 * 1024
 MAX_IOS_DIMENSION = 8_192
+MAX_IOS_TEXTURE_DIMENSION = 8_192
 MAX_IOS_PIXELS = 16 * 1024 * 1024
+MAX_IOS_TOTAL_PIXELS = 48 * 1024 * 1024
 MAX_IOS_MOTION_DIMENSION = 4_096
 MIN_IOS_MOTION_DURATION_MS = 250
 MAX_IOS_MOTION_DURATION_MS = 12_000
@@ -61,8 +66,19 @@ MAC_PATH_PATTERN = re.compile(r"^authoring/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 MEDIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*$")
 
-IOS_VISEMES = ("sil", "FF", "TH", "nn", "RR", "aa", "E", "ih", "ou")
-IOS_ROLE_FILENAMES = {
+IOS_LEGACY_VISEMES = ("sil", "FF", "TH", "nn", "RR", "aa", "E", "ih", "ou")
+IOS_VISEMES = (
+    "sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR",
+    "aa", "E", "ih", "oh", "ou",
+)
+IOS_BROW_OFFSETS = (-5.0, -3.5, -2.0, -1.0, 0.0, 0.75, 1.5,
+                    2.5, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0)
+IOS_BROW_SQUEEZE_OFFSETS = (-3.0, 0.0, 4.0)
+IOS_SMILE_STRENGTHS = (0.0, 0.18, 0.34, 0.68, 1.0)
+IOS_EMOTION_MOUTH_STRENGTHS = (0.0, 0.34, 0.68, 1.0)
+IOS_CHEEK_OFFSETS = (0.0, 0.8, 1.6, 2.45, 3.3)
+IOS_UNDER_EYE_OFFSETS = (0.0, 0.5, 1.0, 1.6, 2.3)
+IOS_LEGACY_ROLE_FILENAMES = {
     "thumbnail": "thumbnail.jpg",
     "body": "body.png",
     "head-mask": "head-mask.png",
@@ -72,8 +88,21 @@ IOS_ROLE_FILENAMES = {
     "brow-right": "brow-right.png",
     "gaze-left-atlas": "gaze-left-atlas.png",
     "gaze-right-atlas": "gaze-right-atlas.png",
-    **{f"viseme-{name}": f"viseme-{name}.jpg" for name in IOS_VISEMES},
+    **{f"viseme-{name}": f"viseme-{name}.jpg" for name in IOS_LEGACY_VISEMES},
 }
+IOS_EXPRESSION_ROLE_FILENAMES = {
+    "smile-atlas": "smile-atlas.png",
+    "emotion-mouth-atlas": "emotion-mouth-atlas.png",
+    "forehead-left": "forehead-left.png",
+    "forehead-right": "forehead-right.png",
+    "cheek-left": "cheek-left.png",
+    "cheek-right": "cheek-right.png",
+    "under-eye-left": "under-eye-left.png",
+    "under-eye-right": "under-eye-right.png",
+}
+# Public compatibility alias used by the v2 contract tests and downstream
+# tools that still describe the fixed 19-file package.
+IOS_ROLE_FILENAMES = IOS_LEGACY_ROLE_FILENAMES
 IOS_MOTION_FILENAMES = {
     "walk": ("walk", "motion-walk.mov"),
     "edgeIdle": ("idle", "motion-edge-idle.mov"),
@@ -545,16 +574,34 @@ def _image_details(path: Path) -> tuple[int, int, str]:
 
 
 def _copy_gaze_atlas(source: Path, destination: Path, box: Mapping[str, object]) -> None:
+    _copy_vertical_strip_as_grid(source, destination, box, columns=25, rows=11)
+
+
+def _copy_vertical_strip_as_grid(
+    source: Path,
+    destination: Path,
+    box: Mapping[str, object],
+    *,
+    columns: int,
+    rows: int,
+) -> None:
+    """Repack a logical row-major strip into a device-safe 2D texture."""
     frame_width = int(box["width"])
     frame_height = int(box["height"])
+    atlas_width = frame_width * columns
+    atlas_height = frame_height * rows
+    if atlas_width > MAX_IOS_TEXTURE_DIMENSION \
+            or atlas_height > MAX_IOS_TEXTURE_DIMENSION \
+            or atlas_width * atlas_height > MAX_IOS_PIXELS:
+        raise AvatarPackageError("iPhone atlas exceeds the device texture limit")
     with Image.open(source) as strip:
         strip.load()
-        if strip.size != (frame_width, frame_height * 25 * 11):
-            raise AvatarPackageError("gaze strip dimensions are invalid")
-        atlas = Image.new("RGBA", (frame_width * 25, frame_height * 11))
-        for row in range(11):
-            for column in range(25):
-                index = row * 25 + column
+        if strip.size != (frame_width, frame_height * columns * rows):
+            raise AvatarPackageError("runtime sprite strip dimensions are invalid")
+        atlas = Image.new("RGBA", (atlas_width, atlas_height))
+        for row in range(rows):
+            for column in range(columns):
+                index = row * columns + column
                 frame = strip.crop((
                     0, index * frame_height, frame_width, (index + 1) * frame_height
                 ))
@@ -607,8 +654,132 @@ def _asset_record(path: Path, archive_path: str) -> dict:
     }
 
 
-def _validate_ios_rig_assets(rig: Mapping[str, object], assets: Mapping[str, dict]) -> None:
+def _expression_geometry(runtime_manifest: Mapping[str, object]) -> dict | None:
+    """Return the complete v22 expression contract, or ``None`` for legacy rigs.
+
+    Partial expression banks are never labelled as full-expression packages.
+    This makes v4 a positive capability statement while preserving export of
+    old v2/v3 avatars until their source project is rebuilt on the Mac.
+    """
+    if int(runtime_manifest.get("v") or 0) < 22:
+        return None
+    smile = runtime_manifest.get("smile")
+    emotion = runtime_manifest.get("emotion_mouth")
+    forehead = runtime_manifest.get("forehead")
+    cheek = runtime_manifest.get("cheek")
+    under_eye = runtime_manifest.get("eyebag")
+    brow = runtime_manifest.get("brow")
+    values = (smile, emotion, forehead, cheek, under_eye, brow)
+    if not all(isinstance(value, dict) for value in values):
+        raise AvatarPackageError(
+            "rebuild the avatar face to publish the complete iPhone expression rig"
+        )
+    if list(smile.get("visemes") or []) != list(IOS_VISEMES) \
+            or list(emotion.get("visemes") or []) != list(IOS_VISEMES) \
+            or list(emotion.get("emotions") or []) != ["sorrow", "horror", "anger"]:
+        raise AvatarPackageError("runtime expression visemes do not match iPhone v4")
+    state_banks = (
+        (smile.get("states"), IOS_SMILE_STRENGTHS),
+        (emotion.get("states"), IOS_EMOTION_MOUTH_STRENGTHS),
+        (forehead.get("dys"), IOS_BROW_OFFSETS),
+        (forehead.get("sqs"), IOS_BROW_SQUEEZE_OFFSETS),
+        (brow.get("dys"), IOS_BROW_OFFSETS),
+        (brow.get("sqs"), IOS_BROW_SQUEEZE_OFFSETS),
+        (cheek.get("ups"), IOS_CHEEK_OFFSETS),
+        (under_eye.get("ups"), IOS_UNDER_EYE_OFFSETS),
+    )
+    if any(
+        not isinstance(values, list)
+        or len(values) != len(expected)
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in values
+        )
+        or tuple(float(value) for value in values) != expected
+        for values, expected in state_banks
+    ):
+        raise AvatarPackageError("runtime expression state banks are incomplete")
+
+    profile = runtime_manifest.get("rig_profile")
+    if profile is None:
+        profile = {}
+    if not isinstance(profile, dict):
+        raise AvatarPackageError("runtime expression calibration is invalid")
+
+    def calibrated_gain(
+        key: str,
+        fallback: float,
+        reference: float,
+        ceiling: float,
+    ) -> float:
+        value = profile.get(key, fallback)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not math.isfinite(float(value)) \
+                or not 0 <= float(value) <= 150:
+            raise AvatarPackageError("runtime expression calibration is invalid")
+        return round(min(ceiling, math.sqrt(float(value) / reference)), 6)
+
+    return {
+        "smile": _sprite(
+            smile, len(smile["states"]), len(IOS_VISEMES), "gridAtlas"
+        ),
+        "emotionMouth": _sprite(
+            emotion,
+            len(emotion["states"]),
+            len(IOS_VISEMES) * len(emotion["emotions"]),
+            "gridAtlas",
+        ),
+        "leftForehead": _sprite(forehead.get("l"), 14, 3, "verticalStrip"),
+        "rightForehead": _sprite(forehead.get("r"), 14, 3, "verticalStrip"),
+        "leftCheek": _sprite(
+            cheek.get("l"), 1, len(cheek["ups"]), "verticalStrip"
+        ),
+        "rightCheek": _sprite(
+            cheek.get("r"), 1, len(cheek["ups"]), "verticalStrip"
+        ),
+        "leftUnderEye": _sprite(
+            under_eye.get("l"), 1, len(under_eye["ups"]), "verticalStrip"
+        ),
+        "rightUnderEye": _sprite(
+            under_eye.get("r"), 1, len(under_eye["ups"]), "verticalStrip"
+        ),
+        "browOffsets": list(brow.get("dys") or []),
+        "browSqueezeOffsets": list(brow.get("sqs") or []),
+        "smileStrengths": list(smile["states"]),
+        "smileVisemes": list(smile["visemes"]),
+        "emotionMouthStrengths": list(emotion["states"]),
+        "emotionMouthEmotions": list(emotion["emotions"]),
+        "emotionMouthVisemes": list(emotion["visemes"]),
+        "cheekOffsets": list(cheek["ups"]),
+        "underEyeOffsets": list(under_eye["ups"]),
+        "browGain": calibrated_gain("brows", 10, 10, 1.35),
+        "foreheadGain": calibrated_gain("forehead", 100, 100, 1.2),
+        "underEyeGain": calibrated_gain("eyebags", 35, 35, 1.35),
+    }
+
+
+def _validate_ios_rig_assets(
+    rig: Mapping[str, object],
+    assets: Mapping[str, dict],
+    *,
+    visemes: Iterable[str] = IOS_LEGACY_VISEMES,
+    expression: Mapping[str, object] | None = None,
+) -> None:
     """Cross-check renderer geometry against the staged, metadata-free pixels."""
+    decoded_pixels = sum(
+        int(asset["width"]) * int(asset["height"])
+        for asset in assets.values()
+    )
+    if decoded_pixels > MAX_IOS_TOTAL_PIXELS:
+        raise AvatarPackageError("iPhone avatar decoded images are too large")
+    if any(
+        int(asset["width"]) > MAX_IOS_TEXTURE_DIMENSION
+        or int(asset["height"]) > MAX_IOS_TEXTURE_DIMENSION
+        for asset in assets.values()
+    ):
+        raise AvatarPackageError("iPhone avatar exceeds the device texture limit")
     body_size = rig["bodySize"]
     body_width = body_size["width"]
     body_height = body_size["height"]
@@ -629,15 +800,62 @@ def _validate_ios_rig_assets(rig: Mapping[str, object], assets: Mapping[str, dic
         raise AvatarPackageError("iPhone face bounds do not fit the body")
 
     transform = rig["faceTransform"]
-    determinant = transform["a"] * transform["d"] - transform["b"] * transform["c"]
-    if not math.isfinite(determinant) or abs(determinant) < 1e-8:
-        raise AvatarPackageError("iPhone face transform is singular")
+    a = float(transform["a"])
+    b = float(transform["b"])
+    c = float(transform["c"])
+    d = float(transform["d"])
+    tx = float(transform["tx"])
+    ty = float(transform["ty"])
+    scale_x = math.hypot(a, b)
+    scale_y = math.hypot(c, d)
+    maximum_scale = max(scale_x, scale_y)
+    dot_product = a * c + b * d
+    determinant = a * d - b * c
+    if not all(math.isfinite(value) and abs(value) <= 8192 for value in (
+            a, b, c, d, tx, ty)) \
+            or not 0.01 <= scale_x <= 2 \
+            or not 0.01 <= scale_y <= 2 \
+            or abs(scale_x - scale_y) > maximum_scale * 0.05 \
+            or abs(dot_product) > scale_x * scale_y * 0.05 \
+            or determinant <= 0:
+        raise AvatarPackageError(
+            "iPhone face transform does not match iOS renderer limits"
+        )
+
+    def transformed(x: float, y: float) -> tuple[float, float]:
+        return (a * x + c * y + tx, b * x + d * y + ty)
+
+    face_center = transformed(512, 512)
+    if not all(math.isfinite(value) for value in face_center) \
+            or not 0 <= face_center[0] < body_width \
+            or not 0 <= face_center[1] < body_height:
+        raise AvatarPackageError(
+            "iPhone face transform places the face outside the body"
+        )
+
+    left_gaze_box = rig["leftGaze"]["box"]
+    right_gaze_box = rig["rightGaze"]["box"]
+    eye_source_x = (
+        left_gaze_box["x"] + left_gaze_box["width"] / 2
+        + right_gaze_box["x"] + right_gaze_box["width"] / 2
+    ) / 2
+    eye_source_y = (
+        left_gaze_box["y"] + left_gaze_box["height"] / 2
+        + right_gaze_box["y"] + right_gaze_box["height"] / 2
+    ) / 2
+    eye_anchor = transformed(eye_source_x, eye_source_y)
+    if not all(math.isfinite(value) for value in eye_anchor) \
+            or not face["x"] - 2 <= eye_anchor[0] < face["x"] + face["width"] + 2 \
+            or not face["y"] - 2 <= eye_anchor[1] < face["y"] + face["height"] + 2:
+        raise AvatarPackageError(
+            "iPhone face transform places the eye anchor outside the face bounds"
+        )
 
     face_size = (assets["head-mask"]["width"], assets["head-mask"]["height"])
     if any(
         (assets[f"viseme-{viseme}"]["width"], assets[f"viseme-{viseme}"]["height"])
         != face_size
-        for viseme in IOS_VISEMES
+        for viseme in visemes
     ):
         raise AvatarPackageError("iPhone face images have inconsistent dimensions")
 
@@ -652,6 +870,41 @@ def _validate_ios_rig_assets(rig: Mapping[str, object], assets: Mapping[str, dic
     for role, (sprite, width_factor, height_factor) in expected_sprites.items():
         box = sprite["box"]
         expected = (box["width"] * width_factor, box["height"] * height_factor)
+        actual = (assets[role]["width"], assets[role]["height"])
+        if actual != expected:
+            raise AvatarPackageError(f"iPhone {role} dimensions do not match its runtime rig")
+
+    if expression is None:
+        return
+    expression_sprites = {
+        "smile-atlas": expression["smile"],
+        "emotion-mouth-atlas": expression["emotionMouth"],
+        "forehead-left": expression["leftForehead"],
+        "forehead-right": expression["rightForehead"],
+        "cheek-left": expression["leftCheek"],
+        "cheek-right": expression["rightCheek"],
+        "under-eye-left": expression["leftUnderEye"],
+        "under-eye-right": expression["rightUnderEye"],
+    }
+    for role, sprite in expression_sprites.items():
+        box = sprite["box"]
+        expected_storage = (
+            "gridAtlas"
+            if role in {"smile-atlas", "emotion-mouth-atlas"}
+            else "verticalStrip"
+        )
+        if sprite["storage"] != expected_storage:
+            raise AvatarPackageError(f"iPhone {role} storage is invalid")
+        if expected_storage == "gridAtlas":
+            expected = (
+                box["width"] * sprite["columns"],
+                box["height"] * sprite["rows"],
+            )
+        else:
+            expected = (
+                box["width"],
+                box["height"] * sprite["columns"] * sprite["rows"],
+            )
         actual = (assets[role]["width"], assets[role]["height"])
         if actual != expected:
             raise AvatarPackageError(f"iPhone {role} dimensions do not match its runtime rig")
@@ -859,8 +1112,10 @@ def export_ios_light(
     authoring_root: str | os.PathLike,
     runtime_root: str | os.PathLike,
     destination: str | os.PathLike,
+    *,
+    require_full_expression: bool = False,
 ) -> dict:
-    """Export the fixed iOS runtime images and eligible optional motion clips."""
+    """Export an iOS runtime, using full v22 expression parity when available."""
     identifier = _safe_identifier(identifier)
     display_name = _safe_display_name(display_name)
     authoring = Path(authoring_root).resolve(strict=True)
@@ -894,6 +1149,19 @@ def export_ios_light(
     right_brow = _sprite(brow.get("r"), 14, 3, "verticalStrip")
     left_gaze = _sprite(gaze.get("l"), 25, 11, "gridAtlas")
     right_gaze = _sprite(gaze.get("r"), 25, 11, "gridAtlas")
+    expression = _expression_geometry(runtime_manifest)
+    if require_full_expression and expression is None:
+        raise AvatarPackageError(
+            "rebuild this avatar's face before exporting the full-expression "
+            "iPhone AVTR"
+        )
+    visemes = IOS_VISEMES if expression is not None else IOS_LEGACY_VISEMES
+    role_filenames = dict(IOS_LEGACY_ROLE_FILENAMES)
+    if expression is not None:
+        role_filenames.update({
+            f"viseme-{name}": f"viseme-{name}.jpg" for name in IOS_VISEMES
+        })
+        role_filenames.update(IOS_EXPRESSION_ROLE_FILENAMES)
 
     matrix_values = [float(value) for row in transform for value in row]
     if not all(value == value and abs(value) <= 8192 for value in matrix_values):
@@ -935,14 +1203,42 @@ def export_ios_light(
         frames = runtime_manifest.get("frames")
         if not isinstance(frames, dict):
             raise AvatarPackageError("runtime viseme bank is missing")
-        for viseme in IOS_VISEMES:
+        for viseme in visemes:
             frame = frames.get(viseme)
             if not isinstance(frame, dict):
                 raise AvatarPackageError(f"runtime viseme is missing: {viseme}")
             sources[f"viseme-{viseme}"] = _runtime_asset(runtime, frame.get("open"))
 
+        if expression is not None:
+            sources.update({
+                "smile-atlas": _runtime_asset(
+                    runtime, runtime_manifest["smile"].get("src")
+                ),
+                "emotion-mouth-atlas": _runtime_asset(
+                    runtime, runtime_manifest["emotion_mouth"].get("src")
+                ),
+                "forehead-left": _runtime_asset(
+                    runtime, runtime_manifest["forehead"]["l"].get("src")
+                ),
+                "forehead-right": _runtime_asset(
+                    runtime, runtime_manifest["forehead"]["r"].get("src")
+                ),
+                "cheek-left": _runtime_asset(
+                    runtime, runtime_manifest["cheek"]["l"].get("src")
+                ),
+                "cheek-right": _runtime_asset(
+                    runtime, runtime_manifest["cheek"]["r"].get("src")
+                ),
+                "under-eye-left": _runtime_asset(
+                    runtime, runtime_manifest["eyebag"]["l"].get("src")
+                ),
+                "under-eye-right": _runtime_asset(
+                    runtime, runtime_manifest["eyebag"]["r"].get("src")
+                ),
+            })
+
         assets: dict[str, dict] = {}
-        for role, filename in IOS_ROLE_FILENAMES.items():
+        for role, filename in role_filenames.items():
             destination_asset = assets_root / filename
             if role == "thumbnail":
                 _copy_clean_image(
@@ -952,6 +1248,22 @@ def export_ios_light(
                 _copy_gaze_atlas(sources[role], destination_asset, left_gaze["box"])
             elif role == "gaze-right-atlas":
                 _copy_gaze_atlas(sources[role], destination_asset, right_gaze["box"])
+            elif role == "smile-atlas":
+                _copy_vertical_strip_as_grid(
+                    sources[role],
+                    destination_asset,
+                    expression["smile"]["box"],
+                    columns=expression["smile"]["columns"],
+                    rows=expression["smile"]["rows"],
+                )
+            elif role == "emotion-mouth-atlas":
+                _copy_vertical_strip_as_grid(
+                    sources[role],
+                    destination_asset,
+                    expression["emotionMouth"]["box"],
+                    columns=expression["emotionMouth"]["columns"],
+                    rows=expression["emotionMouth"]["rows"],
+                )
             elif role.startswith("viseme-"):
                 _copy_clean_image(
                     sources[role], destination_asset, jpeg_quality=95
@@ -961,7 +1273,9 @@ def export_ios_light(
             archive_name = f"assets/{filename}"
             assets[role] = _asset_record(destination_asset, archive_name)
 
-        _validate_ios_rig_assets(rig, assets)
+        _validate_ios_rig_assets(
+            rig, assets, visemes=visemes, expression=expression
+        )
 
         motions: dict[str, dict] = {}
         runtime_motion = runtime_manifest.get("motion")
@@ -981,13 +1295,18 @@ def export_ios_light(
 
         manifest = {
             "format": FORMAT,
-            "version": IOS_MOTION_VERSION if motions else VERSION,
+            "version": (
+                IOS_EXPRESSION_VERSION if expression is not None
+                else IOS_MOTION_VERSION if motions else VERSION
+            ),
             "variant": IOS_VARIANT,
             "id": identifier,
             "displayName": display_name,
             "rig": rig,
             "assets": assets,
         }
+        if expression is not None:
+            manifest["expression"] = expression
         if motions:
             manifest["motions"] = motions
         manifest_bytes = json.dumps(
@@ -998,7 +1317,12 @@ def export_ios_light(
         total = len(manifest_bytes) + sum(
             path.stat().st_size for path in assets_root.iterdir()
         )
-        if total > MAX_IOS_EXPANDED_BYTES:
+        expanded_limit = (
+            MAX_IOS_EXPANDED_BYTES
+            if expression is not None
+            else MAX_IOS_LEGACY_EXPANDED_BYTES
+        )
+        if total > expanded_limit:
             raise AvatarPackageError("iPhone avatar contents are too large")
 
         destination_path = Path(destination)
@@ -1014,7 +1338,7 @@ def export_ios_light(
                 _write_zip_bytes(
                     archive, MANIFEST, manifest_bytes, zipfile.ZIP_DEFLATED
                 )
-                for role, filename in IOS_ROLE_FILENAMES.items():
+                for role, filename in role_filenames.items():
                     _write_zip_file(
                         archive,
                         assets_root / filename,
@@ -1029,7 +1353,12 @@ def export_ios_light(
                             f"assets/{filename}",
                             zipfile.ZIP_DEFLATED,
                         )
-            if os.path.getsize(temporary_archive) > MAX_IOS_ARCHIVE_BYTES:
+            archive_limit = (
+                MAX_IOS_ARCHIVE_BYTES
+                if expression is not None
+                else MAX_IOS_LEGACY_ARCHIVE_BYTES
+            )
+            if os.path.getsize(temporary_archive) > archive_limit:
                 raise AvatarPackageError("iPhone avatar archive is too large")
             os.chmod(temporary_archive, 0o600)
             os.replace(temporary_archive, destination_path)

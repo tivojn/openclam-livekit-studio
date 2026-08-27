@@ -205,9 +205,9 @@ AVATAR_STORE_CATALOG_BINARY_HASHES = {
     Path("shared/avatar-store-v1/catalog/v1/captain-ayer-thumbnail.png"):
         "2103488ebbc4a50b459adeabecbada7650cb6dc2b5db5b3640dc911e09f590d6",
     Path("shared/avatar-store-v1/catalog/v1/ara-thumbnail.png"):
-        "7eb7ec65799715cdca9b52bad64d664fe2404b072a6f0a5b6af0368f4393217f",
+        "d7e7ca507994e8fc50221f5331afdfc91621a0f0e62fb6d90c9158703a1708c8",
     Path("shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png"):
-        "a191cb5a10eeea538fd1169d85088aa158cce6104a636118c84015f657861a40",
+        "3fc29765d3de9fc039a67bec6775a4c963cafb4125d03cba4701cea5c17becf8",
 }
 
 CAPTAIN_AYER_BINARY_HASHES = {
@@ -296,9 +296,12 @@ HISTORICAL_ARA_V1_0_1_BINARY_HASHES = {
         "32023cdddc2b1d24e9ed47bdf092b0cb1d8edec0f69fe7b8584c837eb72b02e7",
 }
 
-# v1.0.2 ships the current brown-blazer Ara asset set. These are the only Ara
-# binaries approved in the current source tree.
-ARA_BINARY_HASHES = {
+# The public branch briefly bundled the user's second authorized Ara export
+# before the full-expression v4 replacement. Descendant releases necessarily
+# retain those blobs in Git history. Accept only these exact path/hash pairs;
+# they remain invalid in the current tree because ARA_BINARY_HASHES below pins
+# the approved v4 payload.
+HISTORICAL_ARA_INTERIM_BINARY_HASHES = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/body.png"):
         "365d91dab92866c6bf976e90971eb8d4c0af1b0a8e977163e47945e264bf0dc3",
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-left.png"):
@@ -339,6 +342,92 @@ ARA_BINARY_HASHES = {
         "a208a2d7fdaf23b1cc346cfddafe1fb3bc2440f40a824fb14c6a6d03cc8ba33c",
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-sil.jpg"):
         "08df7b7dc0cbd5ceaa5d71d086237ed14120be14ffc3bb132960e72545c13804",
+}
+
+# Store artwork from the two preceding catalog tags remains in reachable
+# history. The current catalog hashes are still enforced separately above.
+HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES = {
+    Path("shared/avatar-store-v1/catalog/v1/ara-thumbnail.png"):
+        "7eb7ec65799715cdca9b52bad64d664fe2404b072a6f0a5b6af0368f4393217f",
+    Path("shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png"):
+        "a191cb5a10eeea538fd1169d85088aa158cce6104a636118c84015f657861a40",
+}
+
+# v1.0.2 ships Ara from the user's approved full-expression authoring project.
+# These are the byte-exact extracted contents of the reviewed v4 AVTR package.
+ARA_BINARY_HASHES = {
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/body.png"):
+        "51800a5f916eb912f848e75e3458dbaf25e2be9acbe5cc742fd13430079eba46",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-left.png"):
+        "9790e078a6b7eefcea847b1447c90b3a05edbee6ef92de4eecd686d5725400ac",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/brow-right.png"):
+        "238c6d9b2470a0affa2eb27c6390473ffe8375f4c10c90c5f958976cda0b4188",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/cheek-left.png"):
+        "88cd22db939d366c3a63758f889ecc3824ab18f8783656f1ed83641482959057",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/cheek-right.png"):
+        "12b4a92765a5a5d0fffb80cdfb54d3233412e9f6905ff5e88f5c95c3881ec1e0",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/emotion-mouth-atlas.png"):
+        "74b0f941f139f3c8e845e1e0cf6447aeabcbecad39649603eda20619c53f1f44",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/eye-left.png"):
+        "d0b14433ea60f8561b3470d83beb7b240d577246892dba1e0272252b892d4a25",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/eye-right.png"):
+        "d99149c6a201ce85edc6912e156968d859ed349fce6036e3c891d3ac52e08eaf",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/forehead-left.png"):
+        "1018cafa7d7c00d28f2701ea141d65fed1fddea064a86dd17a367aed1d0339b4",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/forehead-right.png"):
+        "2b35d60c549fba50c323acaaf19bf45d238f1be01bc27df544d90903f5df6e46",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/gaze-left-atlas.png"):
+        "6a9969e74a16dce0dc6c0cdcb11ab39b0085acec8f6ef3a2a4f49a8b9f5d7103",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/gaze-right-atlas.png"):
+        "c9f74aaeda29dae5271a565f4f52c76be53912bb74b54e42ba0761f133c19182",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/head-mask.png"):
+        "c9246023c709853c81c41fed7aaa316b8e5a97edff437fdf75e9d26951911382",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/manifest.json"):
+        "7039dd6965bd5949ed62ab6f64d5379dbee100ab0af34c06c0ecda0d82b89310",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/motion-edge-idle.mov"):
+        "aa29f004a53c883761980a4bfc223d3cbf053ca4fc7290aae7c4098191c564ef",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/motion-moves.mov"):
+        "c3467214a3e9f8ab3ffa71e8b2ce8abaa84dc1eebc935e265b1b4e50037848cb",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/motion-walk.mov"):
+        "ee4a5d12c26c33206f08ac1fc327a70abf87552e469dfd1c52745c1693d1179c",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/smile-atlas.png"):
+        "a2e0b159ba08df4ae869e4ae6720d4f54844aef819813bef23c560a5ab50f5d1",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/thumbnail.jpg"):
+        "018f05c51478dcdbc8c7bcbc2dddbb4c658795b06d53c9e0390636d19cb4e96a",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/under-eye-left.png"):
+        "c9333cf081f33b85cc20997c92039db5036b8f4ce1ffe2924faaffb324ab85b6",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/under-eye-right.png"):
+        "33289942a9f8ae2ea5c4452a068fd4755a2f5b4b9643c87024ebf2caf11f35a9",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-CH.jpg"):
+        "66d24359094cea98da3fff9738cb9299e230f2082ecb278226278e1a68723a5b",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-DD.jpg"):
+        "7db8feff2a01ec867653d45cc4ac6688843984da8fe8f9ec3d804a49c3284ab8",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-E.jpg"):
+        "fedd8cb6dd2407d816e495a23761dadf7c4ad0265e96e70ba21dd4f670b414ff",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-FF.jpg"):
+        "53d6f351bff798bccb4f765c8f2a029a08c8218621539a603fb1f2776c9a04c8",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-PP.jpg"):
+        "3f05c9420e26bc54c043055656e4905e27abff4bd6cc602940278c3d9ebd2f5a",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-RR.jpg"):
+        "68b8d97ab77b4809070844058b363d624c7ac6b33b53b46a9cdeac1546ad0fa8",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-SS.jpg"):
+        "de9e2e4b8cce5e3f7d74f5a9a571304c059b056e2491e3bc82990a345c526317",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-TH.jpg"):
+        "2061c43d8d4e27b94b450b0ca3cf776fb0f4f9c3d01fde0d060a3edb52871d5f",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-aa.jpg"):
+        "01e94ca9f042cfda73c9ccd0caebe11d4cb51e81551f74845fca001ecbf04ac6",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-ih.jpg"):
+        "e00a9f59305d1807a374cfe1308598f6ca43aefbbcea017b71210b03524a397e",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-kk.jpg"):
+        "a74e517fe0fb631c6e8d2702c4e4b4b265571ac3bccc6cc90e83ee0ab10dab68",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-nn.jpg"):
+        "6971e90708e949e9f5da30acef14d996f3f77e79886914fc733c4d23b09b51cf",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-oh.jpg"):
+        "a41b93e19907c73364cbe9726f3549c00de7a9f3cb908d2cc60af679820e74c5",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-ou.jpg"):
+        "9e8ff6aec7f131426f97261113b82c71d70501ada2bf584dafb2a5104bf8b81a",
+    Path("ios/OpenClamLiveKit/App/AvatarCatalog/Resources/AvatarCatalogAssets.bundle/ara/viseme-sil.jpg"):
+        "06e3b04886cb7d11bd73e2d232c2b4225740f216e9b652dccf5ac2669fa1850a",
 }
 
 DETERMINISTIC_FIXTURE_BINARY_HASHES = {
@@ -405,7 +494,7 @@ REQUIRED_AVATAR_BINARY_HASHES = {
     **ARA_BINARY_HASHES,
 }
 AUTHORIZED_AVATAR_LEDGER_SHA256 = (
-    "7ed8c407fd07c6899b1e75f25879e9b1390848b260dbcf9eb576ae2e74866a16"
+    "9bcd838eeb78e6a68712082ecfcdf4280e6d123f3318593f2bc0503f1d4af1b6"
 )
 ALLOWED_BINARY_HASHES = {
     **BRANDING_AND_RUNTIME_BINARY_HASHES,
@@ -421,7 +510,7 @@ CAPTAIN_AYER_CONTENTS_FILES = {
 REQUIRED_STORE_POLICY_SNIPPETS = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/OpenClamAvatarStore.swift"): (
         b"static let catalogURL: URL? = productionCatalogURL",
-        b"avatar-store-v1.0.1/shared/avatar-store-v1/catalog/v1/catalog.json",
+        b"avatar-store-v1.0.2/shared/avatar-store-v1/catalog/v1/catalog.json",
         b"static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)",
         b"guard remoteAccess.isEnabled else",
     ),
@@ -527,6 +616,15 @@ HIGH_ENTROPY_SKIP_NAMES = {
     "requirements-backend.lock",
     "requirements-electron.lock",
     "uv.lock",
+}
+
+# This Swift test contains one compact Base64 AVTR produced by the independent
+# Python exporter.  Pin the complete reviewed source file rather than weakening
+# the token scanner or exempting the path: any fixture or surrounding-code
+# change must receive a new explicit review before the public audit passes.
+REVIEWED_HIGH_ENTROPY_TEXT_HASHES = {
+    Path("ios/OpenClamLiveKit/Tests/OpenClamAvatarPackageTests.swift"):
+        "8aa08c38ca568277b0e4bac2fb700e81500ef90fef718297232cc2681be3be5a",
 }
 
 ALLOWED_SOURCE_BUILD_FILES = {
@@ -830,6 +928,10 @@ def denied_directory_reason(relative: Path) -> str | None:
 def high_entropy_finding(relative: Path, raw: bytes) -> bool:
     if relative.name in HIGH_ENTROPY_SKIP_NAMES:
         return False
+    reviewed_hash = REVIEWED_HIGH_ENTROPY_TEXT_HASHES.get(relative)
+    if reviewed_hash is not None \
+            and hashlib.sha256(raw).hexdigest() == reviewed_hash:
+        return False
     for match in HIGH_ENTROPY_RE.finditer(raw):
         token = match.group(0)
         stripped = token.rstrip(b"=")
@@ -888,14 +990,19 @@ def audit_bytes(relative: Path, raw: bytes) -> list[str]:
 
 
 def audit_history_bytes(relative: Path, raw: bytes) -> list[str]:
-    historical_ara_hash = HISTORICAL_ARA_V1_0_1_BINARY_HASHES.get(relative)
-    if historical_ara_hash is not None \
-            and hashlib.sha256(raw).hexdigest() == historical_ara_hash:
-        return []
+    actual_hash = hashlib.sha256(raw).hexdigest()
+    for historical_hashes in (
+        HISTORICAL_ARA_V1_0_1_BINARY_HASHES,
+        HISTORICAL_ARA_INTERIM_BINARY_HASHES,
+        HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES,
+    ):
+        historical_hash = historical_hashes.get(relative)
+        if historical_hash is not None and actual_hash == historical_hash:
+            return []
     historical_hash = HISTORICAL_SYNTHETIC_GUIDE_HASHES.get(relative)
     if historical_hash is None:
         return audit_bytes(relative, raw)
-    if hashlib.sha256(raw).hexdigest() != historical_hash:
+    if actual_hash != historical_hash:
         return [f"historical synthetic fixture hash mismatch: {relative}"]
     return []
 
@@ -961,7 +1068,7 @@ def release_feature_contract_findings(root: Path) -> list[str]:
 
     if contract.get("schema_version") != 1:
         findings.append("release feature contract schema mismatch")
-    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.1"}:
+    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.2"}:
         findings.append("release feature contract changed the approved Avatar Store state")
     if ptt.get("apple") != {"enabled": True, "transcript_delivery": "live"}:
         findings.append("release feature contract changed Apple PTT delivery")

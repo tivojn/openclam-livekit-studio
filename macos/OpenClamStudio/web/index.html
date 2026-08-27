@@ -1582,6 +1582,7 @@
     let assetRevision = Date.now();
     let pixelRatio = 1;
     let shellState = { onBattery: false, chatCloseUp: false, chatCloseUpBaseZoom: 1,
+      chatPoseRevision: 0,
       desktopCloseUp: false,
       pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
     let roamState = { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
@@ -2185,10 +2186,29 @@
         return 'This saved Live Talk combination is no longer supported. Choose one approved option for each stage, then save Live Talk.';
       }
       if (detail.includes('livekit_pilot_token_missing')) {
-        return 'Live Talk access is not set up on this Mac. Add the pilot access token in Settings.';
+        return 'Live Talk access is not set up for this app session. Add the access token in Settings, then call again.';
       }
-      if (detail.includes('livekit_not_configured')) {
-        return 'Live Talk is not configured in this build.';
+      if (detail.includes('livekit_credential_store_unavailable')) {
+        return 'OpenClam could not access its saved Live Talk credentials. Unlock this Mac’s login Keychain, then try again.';
+      }
+      if (detail.includes('livekit_access_rejected')) {
+        return 'The Live Talk access token was rejected. Replace it with the current pilot token in Settings.';
+      }
+      if (detail.includes('livekit_rate_limited')) {
+        return 'Live Talk is temporarily busy. Wait a moment, then try again.';
+      }
+      if (detail.includes('livekit_service_unavailable')) {
+        return 'The Live Talk service is temporarily unavailable. Try again shortly.';
+      }
+      if (detail.includes('livekit_broker_unreachable')) {
+        return 'OpenClam could not reach the Live Talk service. Check this Mac’s internet connection, then try again.';
+      }
+      if (detail.includes('livekit_xai_auth_unavailable')) {
+        return 'Live Talk needs the shared xAI Account for one of its selected stages. Reconnect xAI in Settings, then try again.';
+      }
+      if (detail.includes('livekit_not_configured')
+          || detail.includes('livekit_connection_config_incomplete')) {
+        return 'This app build does not include a complete Live Talk service configuration.';
       }
       if (/\blivekit_[a-z0-9_]+\b/i.test(detail)) {
         return 'Live Talk could not connect. Check the Live Talk choices and credentials in Settings, then try again.';
@@ -6119,6 +6139,8 @@
     const applyShellState = value => {
       if (!value || typeof value !== 'object') return;
       const chatCloseUpChanged = Boolean(value.chatCloseUp) !== Boolean(shellState.chatCloseUp);
+      const chatPoseRevisionChanged = Number(value.chatPoseRevision || 0)
+        !== Number(shellState.chatPoseRevision || 0);
       const closeUpChanged = chatCloseUpChanged
         || Boolean(value.desktopCloseUp) !== Boolean(shellState.desktopCloseUp);
       shellState = value;
@@ -6141,7 +6163,7 @@
         applyInteractionLayer(interactionLayer);
         applyRailFold(railFolded);
       }
-      if (closeUpChanged) {
+      if (closeUpChanged || chatPoseRevisionChanged) {
         manualMotionKind = null;
         manualMotionStartedAt = 0;
         chatWalkState = null;

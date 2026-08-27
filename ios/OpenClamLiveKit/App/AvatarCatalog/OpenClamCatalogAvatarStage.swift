@@ -83,6 +83,54 @@ enum OpenClamAvatarFaceAnimationPolicy {
     static let minimumInterval: TimeInterval = 1.0 / 60.0
 }
 
+/// A catalog avatar is a photographic face registered into a photographic
+/// body plate. Moving that face surface independently from the body makes the
+/// skin drift inside otherwise stationary hair and also asks Core Animation
+/// to resample the already-composited face on every speech frame. Full-
+/// expression packages therefore keep the surface rigidly registered and
+/// express head intent with their gaze, eyelid, brow, forehead, cheek, and
+/// mouth banks instead. Legacy packages retain their historical pose behavior
+/// until they are rebuilt with the body-locked v4 contract.
+struct OpenClamAvatarFaceRegistrationPlan: Equatable, Sendable {
+    let pitchDegrees: Double
+    let yawDegrees: Double
+    let rotationDegrees: Double
+    let translationX: CGFloat
+    let translationY: CGFloat
+    /// Dynamic 3D/affine passes applied after the photographic face has been
+    /// assembled. A body-locked v4 face must stay at zero so speech cannot
+    /// repeatedly filter the skin texture.
+    let dynamicResamplingPassCount: Int
+}
+
+enum OpenClamAvatarFaceRegistrationPolicy {
+    static func plan(
+        canonicalRotationDegrees: Double,
+        reaction: CaptainAyerFaceMirrorHeadPose,
+        bodyLocked: Bool,
+        bodyScale: CGFloat
+    ) -> OpenClamAvatarFaceRegistrationPlan {
+        guard !bodyLocked else {
+            return OpenClamAvatarFaceRegistrationPlan(
+                pitchDegrees: 0,
+                yawDegrees: 0,
+                rotationDegrees: canonicalRotationDegrees,
+                translationX: 0,
+                translationY: 0,
+                dynamicResamplingPassCount: 0
+            )
+        }
+        return OpenClamAvatarFaceRegistrationPlan(
+            pitchDegrees: reaction.pitch * 3.2,
+            yawDegrees: -reaction.yaw * 4.0,
+            rotationDegrees: canonicalRotationDegrees + reaction.roll * 3.4,
+            translationX: reaction.yaw * 2.4 * bodyScale,
+            translationY: reaction.pitch * 1.8 * bodyScale,
+            dynamicResamplingPassCount: reaction == .zero ? 0 : 1
+        )
+    }
+}
+
 /// Keeps identity-bearing pixels stable while speech changes. The full head is
 /// always the published silence plate; viseme changes are permitted only in a
 /// feathered lower-face patch. This avoids re-crossfading hair, eyes, skin,
@@ -394,7 +442,7 @@ struct OpenClamCatalogAvatarStage: View {
                         .animation(
                             minimumInterval: OpenClamAvatarFaceAnimationPolicy.minimumInterval,
                             paused: reduceMotion || !(
-                                controller.isSpeaking
+                                controller.isExpressionAnimating
                                     || reactions.isAnimating
                                     || reactions.isGazeAnimating
                                     || reactions.isAmbientAnimating
@@ -423,7 +471,8 @@ struct OpenClamCatalogAvatarStage: View {
                                     reduceMotion: reduceMotion
                                 )
                                 : localReaction.mergingSpeech(spokenReaction),
-                            showsReactionMouth: !mirrorsFace && !controller.isSpeaking,
+                            showsReactionMouth: !mirrorsFace
+                                && !controller.isExpressionAnimating,
                             crop: crop
                         )
                         // The static body is the destination. Source-atop
@@ -734,6 +783,12 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
             )
             let transform = avatar.geometry.faceTransform
             let faceCenter = avatar.geometry.faceCenterInBody.cgPoint
+            let registration = OpenClamAvatarFaceRegistrationPolicy.plan(
+                canonicalRotationDegrees: transform.rotationDegrees,
+                reaction: reaction.headPose,
+                bodyLocked: avatar.expressionGeometry != nil,
+                bodyScale: scale
+            )
 
             facePlates
                 .frame(
@@ -741,21 +796,21 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
                     height: 1_024 * transform.uniformScale * scale
                 )
                 .rotation3DEffect(
-                    .degrees(reaction.headPose.pitch * 3.2),
+                    .degrees(registration.pitchDegrees),
                     axis: (x: 1, y: 0, z: 0),
                     perspective: 0.22
                 )
                 .rotation3DEffect(
-                    .degrees(-reaction.headPose.yaw * 4.0),
+                    .degrees(registration.yawDegrees),
                     axis: (x: 0, y: 1, z: 0),
                     perspective: 0.22
                 )
                 .rotationEffect(
-                    .degrees(transform.rotationDegrees + reaction.headPose.roll * 3.4)
+                    .degrees(registration.rotationDegrees)
                 )
                 .offset(
-                    x: reaction.headPose.yaw * 2.4 * scale,
-                    y: reaction.headPose.pitch * 1.8 * scale
+                    x: registration.translationX,
+                    y: registration.translationY
                 )
                 .position(
                     x: origin.x + faceCenter.x * scale,
@@ -797,6 +852,16 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
                 }
             }
 
+            if let expression = avatar.expressionGeometry {
+                OpenClamCatalogExpressionMouthLayers(
+                    avatar: avatar,
+                    imageStore: imageStore,
+                    speechState: state,
+                    state: reaction.expressionLayers,
+                    geometry: expression
+                )
+            }
+
             OpenClamCatalogReactionLayers(
                 avatar: avatar,
                 imageStore: imageStore,
@@ -814,6 +879,253 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
     }
 }
 
+enum OpenClamAvatarExpressionMouthKind: Equatable, Sendable {
+    case smile
+    case emotion(name: String, index: Int)
+}
+
+enum OpenClamAvatarBrowFramePolicy {
+    static let legacyOffsets = [
+        -3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0,
+        1.75, 2.5, 3.5, 5.0, 6.5, 8.0, 9.5,
+    ]
+    static let legacySqueezeOffsets = [-3.0, 0.0, 4.0]
+
+    static func frame(
+        fallback: Int?,
+        offset: Double?,
+        squeeze: Double?,
+        expression: OpenClamAvatarExpressionGeometry?
+    ) -> Int? {
+        guard let offset else { return fallback }
+        let offsets = expression?.browOffsets ?? legacyOffsets
+        let squeezes = expression?.browSqueezeOffsets ?? legacySqueezeOffsets
+        guard !offsets.isEmpty, !squeezes.isEmpty else { return fallback }
+        let column = nearestIndex(in: offsets, to: offset)
+        let row = nearestIndex(in: squeezes, to: squeeze ?? 0)
+        return row * offsets.count + column
+    }
+
+    private static func nearestIndex(in values: [Double], to target: Double) -> Int {
+        values.indices.min { left, right in
+            abs(values[left] - target) < abs(values[right] - target)
+        } ?? 0
+    }
+}
+
+enum OpenClamAvatarExpressionCalibrationPolicy {
+    static func browOffset(
+        _ offset: Double?,
+        expression: OpenClamAvatarExpressionGeometry?
+    ) -> Double? {
+        offset.map { $0 * (expression?.browGain ?? 1) }
+    }
+
+    static func foreheadOffset(
+        _ offset: Double?,
+        expression: OpenClamAvatarExpressionGeometry?
+    ) -> Double? {
+        offset.map {
+            $0 * (expression?.browGain ?? 1)
+                * (expression?.foreheadGain ?? 1)
+        }
+    }
+
+    static func underEyeAmount(
+        _ amount: Double,
+        expression: OpenClamAvatarExpressionGeometry?
+    ) -> Double {
+        amount * (expression?.underEyeGain ?? 1)
+    }
+}
+
+struct OpenClamAvatarExpressionSpriteSample: Equatable, Sendable {
+    let frame: Int
+    let opacity: Double
+}
+
+enum OpenClamAvatarExpressionMouthCompositeOperation: Equatable, Sendable {
+    case additiveWithinPatch
+    case sourceOverBaseFace
+}
+
+enum OpenClamAvatarExpressionMouthCompositingPolicy {
+    static let sampleOperation: OpenClamAvatarExpressionMouthCompositeOperation =
+        .additiveWithinPatch
+    static let finishedPatchOperation: OpenClamAvatarExpressionMouthCompositeOperation =
+        .sourceOverBaseFace
+
+    static func blendMode(
+        for operation: OpenClamAvatarExpressionMouthCompositeOperation
+    ) -> BlendMode {
+        switch operation {
+        case .additiveWithinPatch:
+            .plusLighter
+        case .sourceOverBaseFace:
+            .normal
+        }
+    }
+}
+
+enum OpenClamAvatarExpressionMouthPolicy {
+    static func dominant(
+        _ state: CaptainAyerExpressionLayerRenderState,
+        geometry: OpenClamAvatarExpressionGeometry
+    ) -> (kind: OpenClamAvatarExpressionMouthKind, amount: Double)? {
+        var candidates: [(OpenClamAvatarExpressionMouthKind, Double)] = [
+            (.smile, state.smile),
+        ]
+        let values = [state.sorrowMouth, state.horrorMouth, state.angerMouth]
+        for (index, name) in geometry.emotionMouthEmotions.enumerated()
+            where index < values.count {
+            candidates.append((.emotion(name: name, index: index), values[index]))
+        }
+        guard let winner = candidates.max(by: { $0.1 < $1.1 }), winner.1 > 0.004 else {
+            return nil
+        }
+        return winner
+    }
+
+    static func samples(
+        kind: OpenClamAvatarExpressionMouthKind,
+        amount: Double,
+        previous: OpenClamAvatarViseme,
+        current: OpenClamAvatarViseme,
+        speechBlend: Double,
+        geometry: OpenClamAvatarExpressionGeometry
+    ) -> [OpenClamAvatarExpressionSpriteSample] {
+        let strengths: [Double]
+        let visemes: [OpenClamAvatarViseme]
+        let emotionOffset: Int
+        switch kind {
+        case .smile:
+            strengths = geometry.smileStrengths
+            visemes = geometry.smileVisemes
+            emotionOffset = 0
+        case let .emotion(_, index):
+            strengths = geometry.emotionMouthStrengths
+            visemes = geometry.emotionMouthVisemes
+            emotionOffset = max(0, index) * visemes.count
+        }
+        guard strengths.count >= 2, !visemes.isEmpty else { return [] }
+        let strength = bracket(values: strengths, target: amount)
+        let fallback = visemes.firstIndex(of: .silence) ?? 0
+        let previousRow = emotionOffset + (visemes.firstIndex(of: previous) ?? fallback)
+        let currentRow = emotionOffset + (visemes.firstIndex(of: current) ?? fallback)
+        let blend = min(1, max(0, speechBlend))
+        let raw = [
+            (previousRow * strengths.count + strength.low, (1 - blend) * (1 - strength.mix)),
+            (previousRow * strengths.count + strength.high, (1 - blend) * strength.mix),
+            (currentRow * strengths.count + strength.low, blend * (1 - strength.mix)),
+            (currentRow * strengths.count + strength.high, blend * strength.mix),
+        ]
+        var merged: [Int: Double] = [:]
+        for (frame, opacity) in raw where opacity > 0.0001 {
+            merged[frame, default: 0] += opacity
+        }
+        return merged.keys.sorted().map {
+            .init(frame: $0, opacity: min(1, merged[$0] ?? 0))
+        }
+    }
+
+    static func bracket(
+        values: [Double],
+        target: Double
+    ) -> (low: Int, high: Int, mix: Double) {
+        guard values.count >= 2 else { return (0, 0, 0) }
+        if target <= values[0] { return (0, 0, 0) }
+        if target >= values[values.count - 1] {
+            return (values.count - 1, values.count - 1, 0)
+        }
+        let high = values.firstIndex(where: { $0 >= target }) ?? values.count - 1
+        let low = max(0, high - 1)
+        let span = max(0.000_001, values[high] - values[low])
+        return (low, high, min(1, max(0, (target - values[low]) / span)))
+    }
+}
+
+@MainActor
+private struct OpenClamCatalogExpressionMouthLayers: View {
+    let avatar: OpenClamAvatarDescriptor
+    let imageStore: OpenClamAvatarAssetStore
+    let speechState: CaptainAyerAvatarRenderState
+    let state: CaptainAyerExpressionLayerRenderState
+    let geometry: OpenClamAvatarExpressionGeometry
+
+    var body: some View {
+        GeometryReader { proxy in
+            let scaleX = proxy.size.width / 1_024
+            let scaleY = proxy.size.height / 1_024
+            let active = OpenClamAvatarExpressionMouthPolicy.dominant(
+                state,
+                geometry: geometry
+            )
+            ZStack(alignment: .topLeading) {
+                if let active {
+                    let layer = layer(for: active.kind)
+                    let samples = OpenClamAvatarExpressionMouthPolicy.samples(
+                        kind: active.kind,
+                        amount: active.amount,
+                        previous: speechState.previous.catalogViseme,
+                        current: speechState.current.catalogViseme,
+                        speechBlend: speechState.blend,
+                        geometry: geometry
+                    )
+                    ZStack {
+                        ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
+                            OpenClamAvatarSpriteFrame(
+                                image: imageStore.image(for: avatar, role: layer.role),
+                                frame: sample.frame,
+                                geometry: layer.sprite
+                            )
+                            .frame(
+                                width: layer.sprite.box.width * scaleX,
+                                height: layer.sprite.box.height * scaleY
+                            )
+                            .opacity(sample.opacity)
+                            .blendMode(
+                                OpenClamAvatarExpressionMouthCompositingPolicy.blendMode(
+                                    for: OpenClamAvatarExpressionMouthCompositingPolicy
+                                        .sampleOperation
+                                )
+                            )
+                        }
+                    }
+                    .compositingGroup()
+                    .blendMode(
+                        OpenClamAvatarExpressionMouthCompositingPolicy.blendMode(
+                            for: OpenClamAvatarExpressionMouthCompositingPolicy
+                                .finishedPatchOperation
+                        )
+                    )
+                    .offset(
+                        x: layer.sprite.box.x * scaleX,
+                        y: layer.sprite.box.y * scaleY
+                    )
+                    .frame(
+                        width: layer.sprite.box.width * scaleX,
+                        height: layer.sprite.box.height * scaleY,
+                        alignment: .topLeading
+                    )
+                }
+            }
+            .compositingGroup()
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func layer(
+        for kind: OpenClamAvatarExpressionMouthKind
+    ) -> (role: OpenClamAvatarAssetRole, sprite: OpenClamAvatarSpriteGeometry) {
+        switch kind {
+        case .smile:
+            (.smileAtlas, geometry.smile)
+        case .emotion:
+            (.emotionMouthAtlas, geometry.emotionMouth)
+        }
+    }
+}
+
 @MainActor
 private struct OpenClamCatalogReactionLayers: View {
     let avatar: OpenClamAvatarDescriptor
@@ -822,8 +1134,63 @@ private struct OpenClamCatalogReactionLayers: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let expression = avatar.expressionGeometry
+            let leftBrowFrame = OpenClamAvatarBrowFramePolicy.frame(
+                fallback: state.leftBrowFrame,
+                offset: OpenClamAvatarExpressionCalibrationPolicy.browOffset(
+                    state.leftBrowOffset,
+                    expression: expression
+                ),
+                squeeze: state.browSqueezeOffset,
+                expression: expression
+            )
+            let rightBrowFrame = OpenClamAvatarBrowFramePolicy.frame(
+                fallback: state.rightBrowFrame,
+                offset: OpenClamAvatarExpressionCalibrationPolicy.browOffset(
+                    state.rightBrowOffset,
+                    expression: expression
+                ),
+                squeeze: state.browSqueezeOffset,
+                expression: expression
+            )
+            let leftForeheadFrame = OpenClamAvatarBrowFramePolicy.frame(
+                fallback: state.leftBrowFrame,
+                offset: OpenClamAvatarExpressionCalibrationPolicy.foreheadOffset(
+                    state.leftBrowOffset,
+                    expression: expression
+                ),
+                squeeze: state.browSqueezeOffset,
+                expression: expression
+            )
+            let rightForeheadFrame = OpenClamAvatarBrowFramePolicy.frame(
+                fallback: state.rightBrowFrame,
+                offset: OpenClamAvatarExpressionCalibrationPolicy.foreheadOffset(
+                    state.rightBrowOffset,
+                    expression: expression
+                ),
+                squeeze: state.browSqueezeOffset,
+                expression: expression
+            )
             ZStack(alignment: .topLeading) {
-                if let frame = state.leftBrowFrame {
+                if let expression {
+                    if let frame = leftForeheadFrame {
+                        verticalSprite(
+                            role: .foreheadLeft,
+                            frame: frame,
+                            geometry: expression.leftForehead,
+                            in: proxy.size
+                        )
+                    }
+                    if let frame = rightForeheadFrame {
+                        verticalSprite(
+                            role: .foreheadRight,
+                            frame: frame,
+                            geometry: expression.rightForehead,
+                            in: proxy.size
+                        )
+                    }
+                }
+                if let frame = leftBrowFrame {
                     verticalSprite(
                         role: .browLeft,
                         frame: frame,
@@ -831,11 +1198,29 @@ private struct OpenClamCatalogReactionLayers: View {
                         in: proxy.size
                     )
                 }
-                if let frame = state.rightBrowFrame {
+                if let frame = rightBrowFrame {
                     verticalSprite(
                         role: .browRight,
                         frame: frame,
                         geometry: avatar.geometry.rightBrow,
+                        in: proxy.size
+                    )
+                }
+                if let expression = avatar.expressionGeometry {
+                    continuousSprite(
+                        role: .cheekLeft,
+                        amount: state.expressionLayers.cheek
+                            * (1 - state.expressionLayers.asymmetry * 0.55),
+                        offsets: expression.cheekOffsets,
+                        geometry: expression.leftCheek,
+                        in: proxy.size
+                    )
+                    continuousSprite(
+                        role: .cheekRight,
+                        amount: state.expressionLayers.cheek
+                            * (1 + state.expressionLayers.asymmetry * 0.55),
+                        offsets: expression.cheekOffsets,
+                        geometry: expression.rightCheek,
                         in: proxy.size
                     )
                 }
@@ -850,6 +1235,32 @@ private struct OpenClamCatalogReactionLayers: View {
                         role: .gazeRightAtlas,
                         frame: frame,
                         geometry: avatar.geometry.rightGaze,
+                        in: proxy.size
+                    )
+                }
+                if let expression = avatar.expressionGeometry {
+                    continuousSprite(
+                        role: .underEyeLeft,
+                        amount: OpenClamAvatarExpressionCalibrationPolicy
+                            .underEyeAmount(
+                                state.expressionLayers.underEye,
+                                expression: expression
+                            )
+                            * (1 - state.expressionLayers.asymmetry),
+                        offsets: expression.underEyeOffsets,
+                        geometry: expression.leftUnderEye,
+                        in: proxy.size
+                    )
+                    continuousSprite(
+                        role: .underEyeRight,
+                        amount: OpenClamAvatarExpressionCalibrationPolicy
+                            .underEyeAmount(
+                                state.expressionLayers.underEye,
+                                expression: expression
+                            )
+                            * (1 + state.expressionLayers.asymmetry),
+                        offsets: expression.underEyeOffsets,
+                        geometry: expression.rightUnderEye,
                         in: proxy.size
                     )
                 }
@@ -872,6 +1283,43 @@ private struct OpenClamCatalogReactionLayers: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func continuousSprite(
+        role: OpenClamAvatarAssetRole,
+        amount: Double,
+        offsets: [Double],
+        geometry: OpenClamAvatarSpriteGeometry,
+        in size: CGSize
+    ) -> some View {
+        if amount > 0.004, let maximum = offsets.last, maximum > 0 {
+            let sample = OpenClamAvatarExpressionMouthPolicy.bracket(
+                values: offsets,
+                target: min(1, max(0, amount)) * maximum
+            )
+            ZStack(alignment: .topLeading) {
+                verticalSprite(
+                    role: role,
+                    frame: sample.low,
+                    geometry: geometry,
+                    in: size
+                )
+                .opacity(1 - sample.mix)
+                .blendMode(.plusLighter)
+                if sample.high != sample.low {
+                    verticalSprite(
+                        role: role,
+                        frame: sample.high,
+                        geometry: geometry,
+                        in: size
+                    )
+                    .opacity(sample.mix)
+                    .blendMode(.plusLighter)
+                }
+            }
+            .compositingGroup()
+        }
     }
 
     @ViewBuilder
@@ -939,6 +1387,56 @@ private struct OpenClamAvatarAssetImage: View {
     }
 }
 
+struct OpenClamAvatarSpriteFrameAddress: Equatable, Sendable {
+    let frame: Int
+    let column: Int
+    let row: Int
+}
+
+enum OpenClamAvatarSpriteFramePolicy {
+    static func address(
+        frame: Int,
+        columns: Int,
+        rows: Int
+    ) -> OpenClamAvatarSpriteFrameAddress {
+        let safeColumns = max(1, columns)
+        let safeRows = max(1, rows)
+        let count = safeColumns * safeRows
+        let clamped = min(max(0, frame), count - 1)
+        return .init(
+            frame: clamped,
+            column: clamped % safeColumns,
+            row: clamped / safeColumns
+        )
+    }
+}
+
+@MainActor
+private struct OpenClamAvatarSpriteFrame: View {
+    let image: UIImage?
+    let frame: Int
+    let geometry: OpenClamAvatarSpriteGeometry
+
+    @ViewBuilder
+    var body: some View {
+        switch geometry.storage {
+        case .verticalStrip:
+            OpenClamAvatarVerticalSpriteFrame(
+                image: image,
+                frame: frame,
+                frameCount: geometry.frameCount
+            )
+        case .gridAtlas:
+            OpenClamAvatarGridSpriteFrame(
+                image: image,
+                frame: frame,
+                columns: geometry.columns,
+                rows: geometry.rows
+            )
+        }
+    }
+}
+
 @MainActor
 private struct OpenClamAvatarVerticalSpriteFrame: View {
     let image: UIImage?
@@ -972,10 +1470,11 @@ private struct OpenClamAvatarGridSpriteFrame: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let count = max(1, columns * rows)
-            let clamped = min(max(0, frame), count - 1)
-            let column = clamped % max(1, columns)
-            let row = clamped / max(1, columns)
+            let address = OpenClamAvatarSpriteFramePolicy.address(
+                frame: frame,
+                columns: columns,
+                rows: rows
+            )
             OpenClamAvatarAssetImage(image: image)
                 .frame(
                     width: proxy.size.width * CGFloat(max(1, columns)),
@@ -983,8 +1482,8 @@ private struct OpenClamAvatarGridSpriteFrame: View {
                     alignment: .topLeading
                 )
                 .offset(
-                    x: -CGFloat(column) * proxy.size.width,
-                    y: -CGFloat(row) * proxy.size.height
+                    x: -CGFloat(address.column) * proxy.size.width,
+                    y: -CGFloat(address.row) * proxy.size.height
                 )
         }
         .clipped()
@@ -995,13 +1494,19 @@ private extension CaptainAyerViseme {
     var catalogViseme: OpenClamAvatarViseme {
         switch self {
         case .silence: .silence
+        case .bilabial: .bilabial
         case .labiodental: .labiodental
         case .dental: .dental
-        case .alveolar: .nasal
+        case .alveolar: .alveolar
+        case .velar: .velar
+        case .postalveolar: .postalveolar
+        case .sibilant: .sibilant
+        case .nasal: .nasal
         case .rhotic: .rhotic
         case .open: .open
         case .wide: .wide
         case .narrow: .nearClose
+        case .openRounded: .openRounded
         case .rounded: .rounded
         }
     }

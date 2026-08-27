@@ -2,6 +2,86 @@ import XCTest
 @testable import OpenClamLiveKit
 
 final class OpenClamCatalogAvatarStageTests: XCTestCase {
+    func testFullExpressionFaceSurfaceStaysRegisteredForEverySpeechHeadPose() {
+        let canonicalRotation = -0.343
+        let bodyScale: CGFloat = 1.27
+        // Sample ten seconds at the renderer's 60 Hz cadence. The authored
+        // speech pose can change every frame, but the photographic surface's
+        // body-space anchor and sampling transform must remain bit-stable.
+        for frame in 0 ... 600 {
+            let time = Double(frame) / 60
+            let pose = CaptainAyerFaceMirrorHeadPose(
+                yaw: sin(time * 1.7),
+                pitch: cos(time * 1.3),
+                roll: sin(time * 2.1 + 0.4)
+            )
+            let plan = OpenClamAvatarFaceRegistrationPolicy.plan(
+                canonicalRotationDegrees: canonicalRotation,
+                reaction: pose,
+                bodyLocked: true,
+                bodyScale: bodyScale
+            )
+
+            XCTAssertEqual(plan.pitchDegrees, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.yawDegrees, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.rotationDegrees, canonicalRotation, accuracy: 0.000_001)
+            XCTAssertEqual(plan.translationX, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.translationY, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.dynamicResamplingPassCount, 0)
+        }
+    }
+
+    func testLegacyFacePoseMappingRemainsBackwardCompatible() {
+        let pose = CaptainAyerFaceMirrorHeadPose(
+            yaw: 0.25,
+            pitch: -0.50,
+            roll: 0.75
+        )
+        let plan = OpenClamAvatarFaceRegistrationPolicy.plan(
+            canonicalRotationDegrees: -0.25,
+            reaction: pose,
+            bodyLocked: false,
+            bodyScale: 1.5
+        )
+
+        XCTAssertEqual(plan.pitchDegrees, -1.6, accuracy: 0.000_001)
+        XCTAssertEqual(plan.yawDegrees, -1.0, accuracy: 0.000_001)
+        XCTAssertEqual(plan.rotationDegrees, 2.3, accuracy: 0.000_001)
+        XCTAssertEqual(plan.translationX, 0.9, accuracy: 0.000_001)
+        XCTAssertEqual(plan.translationY, -1.35, accuracy: 0.000_001)
+        XCTAssertEqual(plan.dynamicResamplingPassCount, 1)
+    }
+
+    func testExpressionMouthAddsSamplesButSourceOverCompositesFinishedPatch() {
+        XCTAssertEqual(
+            OpenClamAvatarExpressionMouthCompositingPolicy.sampleOperation,
+            .additiveWithinPatch
+        )
+        XCTAssertEqual(
+            OpenClamAvatarExpressionMouthCompositingPolicy.finishedPatchOperation,
+            .sourceOverBaseFace,
+            "The completed photographic mouth patch must replace the base pixels normally; "
+                + "adding it to the face washes out lips and teeth."
+        )
+    }
+
+    func testGridAtlasAddressesEveryFullExpressionMouthFrameInRowMajorOrder() {
+        for (columns, rows) in [(5, 15), (4, 45)] {
+            for frame in 0 ..< columns * rows {
+                let address = OpenClamAvatarSpriteFramePolicy.address(
+                    frame: frame,
+                    columns: columns,
+                    rows: rows
+                )
+                XCTAssertEqual(address.frame, frame)
+                XCTAssertEqual(address.column, frame % columns)
+                XCTAssertEqual(address.row, frame / columns)
+                XCTAssertLessThan(address.column, columns)
+                XCTAssertLessThan(address.row, rows)
+            }
+        }
+    }
+
     func testMovesMotionFillsAvailableHeightAndStaysCenteredAcrossOrientations() {
         let source = CGSize(width: 720, height: 1_088)
         for available in [
@@ -430,6 +510,229 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
         XCTAssertEqual(exactSilenceEnd.speechPatch?.front?.viseme, .silence)
         XCTAssertEqual(exactSilenceEnd.speechPatch?.front?.opacity ?? -1, 1, accuracy: 0.0001)
         XCTAssertNil(idle.speechPatch)
+    }
+
+    func testFullExpressionMouthPolicyInterpolatesStrengthAndProductionViseme() throws {
+        let geometry = fullExpressionGeometry()
+        let active = try XCTUnwrap(
+            OpenClamAvatarExpressionMouthPolicy.dominant(
+                .init(
+                    smile: 0.18,
+                    sorrowMouth: 0,
+                    horrorMouth: 0,
+                    angerMouth: 0,
+                    cheek: 0,
+                    underEye: 0
+                ),
+                geometry: geometry
+            )
+        )
+        XCTAssertEqual(active.kind, .smile)
+        XCTAssertEqual(active.amount, 0.18, accuracy: 0.0001)
+
+        let samples = OpenClamAvatarExpressionMouthPolicy.samples(
+            kind: active.kind,
+            amount: active.amount,
+            previous: .silence,
+            current: .velar,
+            speechBlend: 0.25,
+            geometry: geometry
+        )
+        let velarRow = try XCTUnwrap(
+            OpenClamAvatarViseme.allCases.firstIndex(of: .velar)
+        )
+        XCTAssertEqual(
+            samples,
+            [
+                .init(frame: 1, opacity: 0.75),
+                .init(frame: velarRow * 5 + 1, opacity: 0.25),
+            ]
+        )
+        XCTAssertEqual(samples.reduce(0) { $0 + $1.opacity }, 1, accuracy: 0.0001)
+    }
+
+    func testFullExpressionMouthPolicySelectsTheStrongestPhraseLocalEmotion() throws {
+        let geometry = fullExpressionGeometry()
+        let active = try XCTUnwrap(
+            OpenClamAvatarExpressionMouthPolicy.dominant(
+                .init(
+                    smile: 0.18,
+                    sorrowMouth: 0.20,
+                    horrorMouth: 0.40,
+                    angerMouth: 0.98,
+                    cheek: 0.25,
+                    underEye: 0.25
+                ),
+                geometry: geometry
+            )
+        )
+
+        XCTAssertEqual(active.kind, .emotion(name: "anger", index: 2))
+        XCTAssertEqual(active.amount, 0.98, accuracy: 0.0001)
+        let samples = OpenClamAvatarExpressionMouthPolicy.samples(
+            kind: active.kind,
+            amount: 0.98,
+            previous: .postalveolar,
+            current: .openRounded,
+            speechBlend: 1,
+            geometry: geometry
+        )
+        let visemeCount = OpenClamAvatarViseme.allCases.count
+        let row = 2 * visemeCount + (OpenClamAvatarViseme.allCases.firstIndex(of: .openRounded) ?? 0)
+        XCTAssertEqual(samples.map(\.frame), [row * 4 + 2, row * 4 + 3])
+        XCTAssertEqual(samples[0].opacity, 0.0625, accuracy: 0.0001)
+        XCTAssertEqual(samples[1].opacity, 0.9375, accuracy: 0.0001)
+    }
+
+    func testPhraseCrossoverUsesOnlyDominantMouthBankToPreventDoubleLips() throws {
+        let geometry = fullExpressionGeometry()
+        let active = try XCTUnwrap(
+            OpenClamAvatarExpressionMouthPolicy.dominant(
+                .init(
+                    smile: 0.12,
+                    sorrowMouth: 0,
+                    horrorMouth: 0.24,
+                    angerMouth: 0,
+                    cheek: 0,
+                    underEye: 0
+                ),
+                geometry: geometry
+            )
+        )
+
+        XCTAssertEqual(active.kind, .emotion(name: "horror", index: 1))
+        XCTAssertEqual(active.amount, 0.24, accuracy: 0.0001)
+        let samples = OpenClamAvatarExpressionMouthPolicy.samples(
+            kind: active.kind,
+            amount: active.amount,
+            previous: .bilabial,
+            current: .openRounded,
+            speechBlend: 0.37,
+            geometry: geometry
+        )
+        XCTAssertEqual(samples.reduce(0) { $0 + $1.opacity }, 1, accuracy: 0.0001)
+    }
+
+    func testSpeechBrowIntentMapsAgainstLegacyAndFullExpressionGeometry() {
+        let geometry = fullExpressionGeometry()
+        let fallbackCanonicalFrame = 1 * 14 + 9
+
+        XCTAssertEqual(
+            OpenClamAvatarBrowFramePolicy.frame(
+                fallback: fallbackCanonicalFrame,
+                offset: 6,
+                squeeze: 0,
+                expression: geometry
+            ),
+            1 * 14 + 9,
+            "v4 must use its authored 6 px state"
+        )
+        XCTAssertEqual(
+            OpenClamAvatarBrowFramePolicy.frame(
+                fallback: fallbackCanonicalFrame,
+                offset: 6,
+                squeeze: 0,
+                expression: nil
+            ),
+            1 * 14 + 11,
+            "legacy packages must retain the older 6.5 px state mapping"
+        )
+        XCTAssertEqual(
+            OpenClamAvatarBrowFramePolicy.frame(
+                fallback: 7,
+                offset: nil,
+                squeeze: nil,
+                expression: nil
+            ),
+            7,
+            "tap/camera reactions authored as discrete frames stay untouched"
+        )
+    }
+
+    func testFullExpressionCalibrationAppliesToBrowForeheadAndUnderEye() {
+        var geometry = fullExpressionGeometry()
+        geometry = .init(
+            smile: geometry.smile,
+            emotionMouth: geometry.emotionMouth,
+            leftForehead: geometry.leftForehead,
+            rightForehead: geometry.rightForehead,
+            leftCheek: geometry.leftCheek,
+            rightCheek: geometry.rightCheek,
+            leftUnderEye: geometry.leftUnderEye,
+            rightUnderEye: geometry.rightUnderEye,
+            browOffsets: geometry.browOffsets,
+            browSqueezeOffsets: geometry.browSqueezeOffsets,
+            smileStrengths: geometry.smileStrengths,
+            smileVisemes: geometry.smileVisemes,
+            emotionMouthStrengths: geometry.emotionMouthStrengths,
+            emotionMouthEmotions: geometry.emotionMouthEmotions,
+            emotionMouthVisemes: geometry.emotionMouthVisemes,
+            cheekOffsets: geometry.cheekOffsets,
+            underEyeOffsets: geometry.underEyeOffsets,
+            browGain: 1.25,
+            foreheadGain: 0.6,
+            underEyeGain: 1.3
+        )
+
+        XCTAssertEqual(
+            OpenClamAvatarExpressionCalibrationPolicy.browOffset(
+                4,
+                expression: geometry
+            ),
+            5
+        )
+        XCTAssertEqual(
+            OpenClamAvatarExpressionCalibrationPolicy.foreheadOffset(
+                4,
+                expression: geometry
+            ) ?? -1,
+            3,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            OpenClamAvatarExpressionCalibrationPolicy.underEyeAmount(
+                0.5,
+                expression: geometry
+            ),
+            0.65,
+            accuracy: 0.0001
+        )
+    }
+
+    private func fullExpressionGeometry() -> OpenClamAvatarExpressionGeometry {
+        func sprite(columns: Int, rows: Int) -> OpenClamAvatarSpriteGeometry {
+            .init(
+                box: .init(x: 400, y: 600, width: 100, height: 80),
+                columns: columns,
+                rows: rows,
+                storage: .verticalStrip
+            )
+        }
+        let visemes = OpenClamAvatarViseme.allCases
+        return .init(
+            smile: sprite(columns: 5, rows: visemes.count),
+            emotionMouth: sprite(columns: 4, rows: visemes.count * 3),
+            leftForehead: sprite(columns: 14, rows: 3),
+            rightForehead: sprite(columns: 14, rows: 3),
+            leftCheek: sprite(columns: 1, rows: 5),
+            rightCheek: sprite(columns: 1, rows: 5),
+            leftUnderEye: sprite(columns: 1, rows: 5),
+            rightUnderEye: sprite(columns: 1, rows: 5),
+            browOffsets: OpenClamAvatarExpressionGeometry.canonicalBrowOffsets,
+            browSqueezeOffsets: OpenClamAvatarExpressionGeometry
+                .canonicalBrowSqueezeOffsets,
+            smileStrengths: OpenClamAvatarExpressionGeometry.canonicalSmileStrengths,
+            smileVisemes: visemes,
+            emotionMouthStrengths: OpenClamAvatarExpressionGeometry
+                .canonicalEmotionMouthStrengths,
+            emotionMouthEmotions: ["sorrow", "horror", "anger"],
+            emotionMouthVisemes: visemes,
+            cheekOffsets: OpenClamAvatarExpressionGeometry.canonicalCheekOffsets,
+            underEyeOffsets: OpenClamAvatarExpressionGeometry.canonicalUnderEyeOffsets,
+            browGain: 1,
+            foreheadGain: 1,
+            underEyeGain: 1
+        )
     }
 }
 

@@ -61,16 +61,20 @@ class PromptSmith(unittest.TestCase):
         )
         brief = chat.call_args.args[2].lower()
         for phrase in (
-            "fuchsia", "never use cobalt", "naturally long legs",
-            "long must never become exaggerated", "one complete outfit",
-            "light-to-midweight fabrics", "no turtleneck",
-            "at least 90mm", "masculine-presenting", "never assign pumps",
+            "fuchsia", "ban the entire blue family", "long sculpted legs",
+            "roughly 7.5 to 8 heads tall", "one complete outfit",
+            "only fashionable lightweight opaque fabrics",
+            "never describe fabric as midweight", "no turtleneck",
+            "105–120mm", "masculine-presenting", "never assign a dress",
+            "pumps, stilettos, or heels", "do not infer a gender identity",
             "gold is forbidden", "omission is preferred",
-            "no statement jewellery", "smoky eyes or a bold lip",
-            "zero fast-fashion noise",
+            "no statement jewellery", "5–8cm above the knee",
+            "modest symmetrical", "no bodycon", "office-appropriate",
+            "professional editorial polish", "zero fast-fashion noise",
         ):
             self.assertIn(phrase, brief)
         self.assertNotIn("real-looking gold", brief)
+        self.assertNotIn("editorial sensuality", brief)
 
     def test_body_rewrite_cannot_reintroduce_gold_or_accessory_clutter(self):
         with self.assertRaisesRegex(RuntimeError, "banned material or colour gold"):

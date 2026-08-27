@@ -394,6 +394,38 @@ class RigProfileTests(unittest.TestCase):
                         renderer.index("if (manifest.eyebag) {",
                         renderer.index("const composeHead")))
 
+    def test_raised_forehead_does_not_invent_horizontal_wrinkle_bands(self):
+        """A smooth source forehead stays smooth when its brows rise.
+
+        The old atlas generator drew three fixed dark Gaussian lines for every
+        positive brow offset. At close-up scale they appeared as ruler-straight
+        seams across horror/surprise faces, regardless of the person's own
+        forehead texture. Tissue travel and source-detail reinforcement remain;
+        only generated horizontal ink is forbidden.
+        """
+        from studio import expression
+
+        image = np.full((128, 128, 3), 170, np.uint8)
+        landmarks = np.full((478, 2), (64, 64), np.float32)
+        landmarks[expression.NOSE_X] = (64, 74)
+        # Only the brow geometry is consumed by forehead_state.
+        brow_x = np.linspace(68, 96, len(expression.BROW["l"]), dtype=np.float32)
+        brow_y = 68 + 4 * ((brow_x - 82) / 14) ** 2
+        landmarks[expression.BROW["l"]] = np.column_stack((brow_x, brow_y))
+        weight = np.ones(image.shape[:2], np.float32)
+        box = [64, 18, 64, 60]
+
+        raised = expression.forehead_state(
+            image, landmarks, "l", 14.0, 1.0, box, weight, sq=0.0)
+        rgb = raised[..., :3].astype(np.int16)
+        self.assertLessEqual(int(rgb.max() - rgb.min()), 1)
+        self.assertTrue(np.all(raised[..., 3] == 255))
+
+        with open(os.path.join(ROOT, "studio", "expression.py"),
+                  encoding="utf-8") as source_file:
+            source = source_file.read()
+        self.assertNotIn("for fraction in (.30, .54, .75)", source)
+
     def test_laughter_and_smile_lift_only_both_mouth_corners(self):
         """Joy keeps mouth size and upper-face identity unchanged."""
         from studio import expression

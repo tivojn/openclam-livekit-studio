@@ -78,9 +78,12 @@ xcodebuild \
   test
 ```
 
-`Config/LiveTalk.xcconfig` contains public defaults and imports the ignored
-`Config/LiveTalk.local.xcconfig` when present. Never commit the local file,
-pilot bearer, signing profiles, archives, or TestFlight export material.
+`Config/LiveTalk.xcconfig` contains the public broker/LiveKit trust pins and
+imports the ignored `Config/LiveTalk.local.xcconfig` when present. The local
+file supplies only the pilot bearer. Before archiving, run
+`python3 scripts/check-ios-livetalk-release-config.py`; it validates presence
+without printing the token. Never commit the local file, pilot bearer, signing
+profiles, archives, or TestFlight export material.
 
 ## Build the macOS app
 

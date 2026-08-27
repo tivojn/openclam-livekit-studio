@@ -517,6 +517,41 @@ class LiveKitSessionTests(unittest.TestCase):
             )
         self.assertEqual(calls, [managed_config()["broker_url"]])
 
+    def test_broker_statuses_map_to_actionable_safe_categories(self):
+        cases = {
+            401: "livekit_access_rejected",
+            403: "livekit_access_rejected",
+            429: "livekit_rate_limited",
+            500: "livekit_service_unavailable",
+            503: "livekit_service_unavailable",
+            409: "livekit_broker_rejected",
+        }
+        for status, expected in cases.items():
+            def handler(request, status_code=status):
+                return httpx.Response(status_code, request=request)
+
+            with self.subTest(status=status), self.assertRaisesRegex(
+                LK.LiveKitBridgeError, expected
+            ):
+                self.run_session(
+                    managed_config(), handler,
+                    lambda account: PILOT_TOKEN,
+                )
+
+    def test_inaccessible_credential_store_is_distinct_from_missing_token(self):
+        with self.assertRaisesRegex(
+            LK.LiveKitBridgeError, "livekit_credential_store_unavailable"
+        ) as raised:
+            LK.session_payload(
+                managed_config(),
+                "Captain Ayer",
+                "You are Captain Ayer. Be concise.",
+                lambda _account: (_ for _ in ()).throw(
+                    RuntimeError("vault unavailable")
+                ),
+            )
+        self.assertEqual(raised.exception.status_code, 503)
+
     def test_response_server_must_be_exact_expected_wss_host_and_443(self):
         bad_urls = (
             "ws://openclam-test.livekit.cloud",
@@ -704,7 +739,10 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
         config = managed_config()
         with patch.dict(os.environ, DEPLOYMENT_ENV, clear=False), \
              patch.object(application, "AUTH_TOKEN", "local-auth-token"), \
-             patch.object(application.P, "load", return_value={"livekit": config}), \
+             patch.object(
+                 application.P, "load_nonsecret",
+                 return_value={"livekit": config},
+             ), \
              patch.object(
                  application.P, "load_livekit_nonsecret", return_value=config
              ), patch.object(application.credentials, "get", return_value=PILOT_TOKEN), \
@@ -758,6 +796,97 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
         self.assertEqual(unconfigured.status_code, 503)
         self.assertEqual(unconfigured.json()["error"], "local_auth_not_configured")
         self.assertEqual(unconfigured.headers["cache-control"], "no-store")
+
+    def test_dev_livekit_config_survives_an_inaccessible_release_keychain_item(self):
+        application = route_test_application()
+        config = managed_config()
+        headers = {"X-OpenClam-Token": "local-auth-token"}
+        with patch.dict(os.environ, DEPLOYMENT_ENV, clear=False), \
+             patch.object(application, "AUTH_TOKEN", "local-auth-token"), \
+             patch.object(
+                 application.P, "load_livekit_nonsecret", return_value=config
+             ), \
+             patch.object(
+                 application.credentials, "get",
+                 side_effect=RuntimeError(
+                     "OpenClam Keychain read failed (OSStatus -25293)"
+                 ),
+             ), patch.object(
+                 application.credentials, "development_session_only",
+                 return_value=True,
+             ):
+            opened = self.request(
+                application, "GET", "/api/livekit/config", headers=headers
+            )
+
+        self.assertEqual(opened.status_code, 200)
+        self.assertFalse(opened.json()["config"]["has_pilot_app_token"])
+        self.assertEqual(
+            opened.json()["config"]["credential_persistence"], "session"
+        )
+        self.assertEqual(
+            opened.json()["config"]["credential_state"], "missing"
+        )
+        self.assertEqual(opened.headers["cache-control"], "no-store")
+
+    def test_signed_livekit_config_reports_keychain_persistence_without_secret(self):
+        application = route_test_application()
+        config = managed_config()
+        with patch.object(
+            application.P, "load_livekit_nonsecret", return_value=config
+        ), patch.object(
+            application.credentials, "get", return_value=PILOT_TOKEN
+        ), patch.object(
+            application.credentials, "development_session_only",
+            return_value=False,
+        ):
+            public = application._livekit_public_config()
+
+        self.assertTrue(public["has_pilot_app_token"])
+        self.assertEqual(public["credential_persistence"], "keychain")
+        self.assertNotIn("pilot_app_token", public)
+        self.assertNotIn(PILOT_TOKEN, json.dumps(public))
+
+    def test_signed_livekit_config_reports_inaccessible_keychain_without_crashing(self):
+        application = route_test_application()
+        config = managed_config()
+        with patch.object(
+            application.P, "load_livekit_nonsecret", return_value=config
+        ), patch.object(
+            application.credentials, "get",
+            side_effect=RuntimeError("vault unavailable"),
+        ), patch.object(
+            application.credentials, "development_session_only",
+            return_value=False,
+        ):
+            public = application._livekit_public_config()
+
+        self.assertFalse(public["has_pilot_app_token"])
+        self.assertEqual(public["credential_state"], "unavailable")
+        self.assertEqual(public["credential_persistence"], "keychain")
+        self.assertNotIn("pilot_app_token", public)
+
+    def test_nonsecret_settings_snapshot_never_reads_or_returns_credentials(self):
+        config = {
+            "persona": {"name": "Cleo"},
+            "llm": {"provider": "openai", "api_key": credentials.MARKER},
+            "livekit": {
+                **managed_config(),
+                "pilot_app_token": credentials.MARKER,
+            },
+            "keys": {"openai": credentials.MARKER},
+        }
+        with patch.object(P, "_read_config_file", return_value=config), \
+             patch.object(
+                 credentials, "get",
+                 side_effect=AssertionError("must not touch credential store"),
+             ):
+            snapshot = P.load_nonsecret()
+
+        self.assertEqual(snapshot["persona"], {"name": "Cleo"})
+        self.assertNotIn("api_key", snapshot["llm"])
+        self.assertNotIn("pilot_app_token", snapshot["livekit"])
+        self.assertNotIn("keys", snapshot)
 
     def test_saved_xai_tts_language_does_not_block_managed_ui_or_session(self):
         application = route_test_application()
@@ -973,9 +1102,11 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
         })
         with patch.dict(os.environ, DEPLOYMENT_ENV, clear=False), \
              patch.object(application, "AUTH_TOKEN", "local-auth-token"), \
-             patch.object(application.P, "load", return_value=cfg), \
              patch.object(
-                 application.P, "load_livekit_nonsecret", return_value=config
+                 application.P, "load_nonsecret", return_value=cfg
+             ), patch.object(
+                 application.P, "load",
+                 side_effect=AssertionError("must not materialise all keys"),
              ), patch.object(application, "active_slug", return_value="emma"), \
              patch.object(application, "reg", return_value=Registry()), \
              patch.object(application.LK, "create_session", new=starter):

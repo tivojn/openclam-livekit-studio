@@ -1101,7 +1101,10 @@ def _pipeline_thread(slug, job_id, notes=""):
         # reported and the pipeline moves on to the next.
         kind_labels = {"walk": "Horizon Walk", "idle": "Edge Idle",
                        "move": "Show Me Some Moves"}
-        idle_pose = motion.resolve_idle_pose(None, "")
+        body_presentation = motion.body_presentation(reg().adir(slug))
+        idle_pose = motion.resolve_idle_pose(
+            None, "", presentation=body_presentation,
+            remap_unsafe=True)
         walk_style = motion.resolve_walk_style(None, "")
         move_style = motion.resolve_move_style(None, "")
         existing = set((reg().read_manifest(slug) or {}).get("motion") or {})
@@ -2053,6 +2056,7 @@ async def api_motion_generate(request: MotionRequest):
     if not os.path.isfile(os.path.join(directory, "body", "body.json")):
         raise HTTPException(400, "generate a full body before creating motion")
     from studio import motion
+    body_presentation = motion.body_presentation(directory)
     kinds = (
         ("walk", "idle") if request.kind == "both" else (request.kind,)
     )
@@ -2062,7 +2066,9 @@ async def api_motion_generate(request: MotionRequest):
             if "walk" in kinds else None
         )
         idle_pose = (
-            motion.resolve_idle_pose(request.pose, request.pose_prompt)
+            motion.resolve_idle_pose(
+                request.pose, request.pose_prompt,
+                presentation=body_presentation, remap_unsafe=True)
             if "idle" in kinds else None
         )
         move_style = (
@@ -2089,6 +2095,9 @@ async def api_motion_generate(request: MotionRequest):
         "started": True, "slug": slug, "kind": request.kind,
         "job_id": job_id,
         "pose": idle_pose["id"] if idle_pose else None,
+        "pose_remapped": bool(
+            idle_pose and request.pose and request.pose != idle_pose["id"]),
+        "body_presentation": body_presentation,
         "walk_style": walk_style["id"] if walk_style else None,
         "move_style": move_style["id"] if move_style else None,
     }
@@ -2148,7 +2157,7 @@ async def api_motion_set_activate(request: MotionSetRequest):
         raise HTTPException(409, "avatar generation is still running")
     failure = ""
     try:
-        from studio import library
+        from studio import library, motion
         directory = reg().adir(request.slug)
         sets = {record["id"]: record
                 for record in library.list_motion_sets(directory, request.kind)}
@@ -2158,6 +2167,12 @@ async def api_motion_set_activate(request: MotionSetRequest):
         if not record["compatible"]:
             raise HTTPException(
                 409, f"this {title} set was generated for a different body set")
+        if request.kind == "idle" and not motion.idle_pose_allowed(
+                record.get("pose"), motion.body_presentation(directory)):
+            raise HTTPException(
+                422,
+                "this heel-specific Edge Idle set is available only for a "
+                "feminine-presenting body; generate Side lean for the active body")
         metadata = library.activate_motion(
             directory, request.kind, request.set_id)
         _apply_motion_metadata(manifest, metadata)
@@ -2444,6 +2459,7 @@ async def api_avatar_export(
                 registry.adir(slug),
                 runtime,
                 temporary,
+                require_full_expression=True,
             )
     except AVTR.AvatarPackageError as error:
         _discard_temporary(temporary)
@@ -2867,12 +2883,41 @@ def _livekit_error(error):
     )
 
 
+def _credential_availability(account):
+    try:
+        return "available" if credentials.get(account) else "missing"
+    except RuntimeError:
+        # The unsigned source host deliberately has no claim on a signed app
+        # Keychain item; its actionable state is simply to paste a session
+        # token. A signed build should instead tell the owner to unlock the
+        # credential store rather than pretending the item is absent.
+        return "missing" if credentials.development_session_only() \
+            else "unavailable"
+
+
 def _livekit_public_config(cfg=None):
-    cfg = cfg if cfg is not None else P.load()
-    return LK.public_config(
-        LK.deployment_config(cfg.get("livekit") or {}),
-        bool(credentials.get("livekit.pilot_app_token")),
+    if cfg is None:
+        livekit = P.load_livekit_nonsecret()
+    elif isinstance(cfg, dict) and isinstance(cfg.get("livekit"), dict):
+        livekit = cfg.get("livekit") or {}
+    else:
+        livekit = cfg if isinstance(cfg, dict) else {}
+    credential_state = _credential_availability(
+        "livekit.pilot_app_token"
     )
+    public = LK.public_config(
+        LK.deployment_config(livekit),
+        credential_state == "available",
+    )
+    # The unsigned source host intentionally cannot share the signed app's
+    # Keychain identity.  Tell Settings the truth so it never promises that a
+    # development-only token will survive a restart.  This is response-only;
+    # the field is rejected if a renderer tries to write it back.
+    public["credential_persistence"] = (
+        "session" if credentials.development_session_only() else "keychain"
+    )
+    public["credential_state"] = credential_state
+    return public
 
 
 @app.get("/api/livekit/catalog")
@@ -2903,18 +2948,26 @@ async def api_livekit_config():
 @app.post("/api/livekit/config")
 async def api_livekit_config_set(body: dict):
     try:
-        current = P.load()
+        current = P.load_nonsecret()
         update = LK.prepare_config_update(
             current.get("livekit") or {}, body,
             allow_connection_fields=False,
         )
-        saved = P.save({"livekit": update}, replace_livekit=True)
+        saved = P.save(
+            {"livekit": update},
+            replace_livekit=True,
+            materialise_result=False,
+        )
         return JSONResponse(
             {"config": _livekit_public_config(saved), "catalog": LK.catalog()},
             headers={"Cache-Control": "no-store"},
         )
     except LK.LiveKitBridgeError as error:
         _livekit_error(error)
+    except RuntimeError:
+        _livekit_error(LK.LiveKitBridgeError(
+            "livekit_credential_store_unavailable", 503
+        ))
 
 
 def _active_livekit_persona(cfg):
@@ -2930,7 +2983,10 @@ def _active_livekit_persona(cfg):
 @app.post("/api/livekit/session")
 async def api_livekit_session():
     try:
-        cfg = P.load()
+        # Resolve the one pilot token and only the provider credentials selected
+        # for this call inside LK.create_session().  An unrelated saved provider
+        # key must never make a managed Live Talk call fail before preflight.
+        cfg = P.load_nonsecret()
         name, instructions = _active_livekit_persona(cfg)
         livekit_config = LK.deployment_config(
             cfg.get("livekit") or {}, require_connection=True

@@ -98,6 +98,12 @@ own Keychain records. If xAI rotates, restricts, or withdraws Grok Build's
 public client identity, this compatibility login may stop working; the separate
 API-key option remains available and is never used as an automatic fallback.
 
+The signed, packaged app persists its access and rotating refresh record in the
+macOS Keychain, so one authorization survives ordinary app restarts. The
+unsigned **OpenClam Studio Dev** host deliberately keeps OAuth credentials only
+in backend memory: its authorization ends when that development app restarts
+and it never reads, rewrites, or weakens the signed release's Keychain item.
+
 ## Source setup
 
 ```bash
@@ -111,7 +117,9 @@ npm start
 separate Electron instance lock and shell-state folder, so an installed or
 mounted OpenClam Studio release may remain open without stealing the dev launch.
 The Python service still loads the source files from this directory; no DMG
-installation is involved.
+installation is involved. Because this host is unsigned, an xAI OAuth login is
+explicitly session-only and must be repeated after a restart. Use a signed DMG
+build when testing persistent OAuth consent.
 
 The app listens only on loopback. Electron creates a private local
 authentication token for each installation, stores it in its mode-0600 app

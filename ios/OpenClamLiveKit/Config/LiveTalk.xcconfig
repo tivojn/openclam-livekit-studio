@@ -1,8 +1,9 @@
-// Safe, source-controlled defaults. Put the real HTTPS broker endpoint and
-// internal-pilot bearer token in LiveTalk.local.xcconfig, which is gitignored.
-OPENCLAM_LIVETALK_BROKER_URL =
+// Public deployment trust pins. Only the internal pilot bearer belongs in the
+// ignored LiveTalk.local.xcconfig. Keeping the broker and LiveKit host here
+// prevents a release archive from silently losing its non-secret routing.
+OPENCLAM_LIVETALK_BROKER_URL = https:/$()/openclam-livekit-pilot-broker.openclam-live.workers.dev/v1/live-talk/sessions
 OPENCLAM_LIVETALK_APP_TOKEN =
-OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST =
+OPENCLAM_LIVETALK_EXPECTED_SERVER_HOST = openclam-live-voice-kse86f6p.livekit.cloud
 
 #include "AgentConnector.xcconfig"
 #include? "LiveTalk.local.xcconfig"

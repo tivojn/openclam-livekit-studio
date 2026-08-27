@@ -52,6 +52,13 @@ _NATIVE_KEYCHAIN = None
 # and unlike the old environment switch it cannot leak in from a parent shell.
 _TEST_VAULT_FILE = None
 _TEST_NATIVE_KEYCHAIN = None
+# The unsigned source host deliberately has no persistent credential identity.
+# Let its one manually-entered Live Talk broker token live only for that
+# backend process.  This keeps development usable without reading, replacing,
+# deleting, or weakening the signed release's protected Keychain item.
+_DEVELOPMENT_MEMORY_ONLY_ACCOUNTS = frozenset({
+    "livekit.pilot_app_token",
+})
 
 
 def development_session_only() -> bool:
@@ -359,6 +366,9 @@ def get(account):
     with _lock:
         if account in _memo:
             return _memo[account]
+        if (development_session_only()
+                and account in _DEVELOPMENT_MEMORY_ONLY_ACCOUNTS):
+            return ""
         if _is_mac():
             value = _native_keychain().get(_storage_account(account))
         else:
@@ -375,6 +385,10 @@ def put(account, value):
     if not value:
         return clear(account)
     with _lock:
+        if (development_session_only()
+                and account in _DEVELOPMENT_MEMORY_ONLY_ACCOUNTS):
+            _memo[account] = value
+            return
         if _is_mac():
             _native_keychain().put(_storage_account(account), value)
         else:
@@ -388,6 +402,10 @@ def clear(account):
     if not isinstance(account, str) or not account:
         raise ValueError("Keychain account must be a non-empty string")
     with _lock:
+        if (development_session_only()
+                and account in _DEVELOPMENT_MEMORY_ONLY_ACCOUNTS):
+            _memo[account] = ""
+            return
         if _is_mac():
             _native_keychain().clear(_storage_account(account))
         else:

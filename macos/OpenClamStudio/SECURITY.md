@@ -20,6 +20,12 @@ projects, or unredacted logs.
   Security.framework directly, with authentication UI disabled for its
   queries, so values never enter process arguments, command streams, or files
   and an inaccessible item fails instead of hanging the server.
+  The unsigned source-development host is an explicit exception: xAI OAuth
+  and its LiveKit pilot token are held only in that backend process and are
+  forgotten on restart. It never reads, rewrites, deletes, or broadens access
+  to the signed release's protected items. Non-secret authentication mode may
+  remain in a mode-0600 app-data file so Settings can explain the signed-out
+  state after restart.
 - The Security.framework migration uses versioned internal account names under
   the same service. It never touches legacy command-created items whose access
   list belongs to `/usr/bin/security`; users re-enter keys once after upgrade.

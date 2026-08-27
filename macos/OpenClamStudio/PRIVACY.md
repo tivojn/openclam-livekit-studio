@@ -12,6 +12,12 @@ Support directory. Provider keys, xAI OAuth access/refresh state, the selected
 xAI authentication mode, and the LiveKit pilot token are stored in the macOS
 Keychain under `com.lionheart.openclam.macos`.
 
+That persistence applies to the signed, packaged app. The unsigned source
+development host keeps xAI OAuth credentials and the LiveKit pilot token only
+in backend memory, forgets them when the app restarts, and does not access the
+signed release's Keychain items. It may persist only the non-secret selected
+xAI authentication mode in its mode-0600 Application Support data.
+
 The local backend listens only on `127.0.0.1`, requires a random per-install
 token kept in a mode-0600 app-data file, and does not reveal Keychain values to
 the renderer.

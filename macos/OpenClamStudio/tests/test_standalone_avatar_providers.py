@@ -184,6 +184,12 @@ class FullBodyDirectWiringTests(unittest.TestCase):
                     body.media_gen, "generate_image_edit_sync",
                     side_effect=edit), \
                  mock.patch.object(
+                    body, "_preflight_front_source",
+                    return_value={"valid": True}), \
+                 mock.patch.object(
+                    body, "_preflight_alpha_source",
+                    return_value={"valid": True}), \
+                 mock.patch.object(
                     body, "_install_sources",
                     side_effect=body.GeneratedBodyIdentityError(
                         "generated head is too small")):
@@ -214,12 +220,14 @@ class FullBodyDirectWiringTests(unittest.TestCase):
             self.assertEqual(lane["api_key"], secret)
             calls.append(tuple(references))
             path = os.path.join(options["output_dir"], options["file_name"] + ".png")
-            cv2.imwrite(path, np.full((360, 240, 3), 150, np.uint8))
+            plate = np.full((360, 240, 3), 255, np.uint8)
+            plate[10:350, 40:200] = (150, 30, 220)
+            cv2.imwrite(path, plate)
             return path
 
         def cut(_source, destination, **_options):
             rgba = np.zeros((360, 240, 4), np.uint8)
-            rgba[10:350, 40:200, :3] = 150
+            rgba[10:350, 40:200, :3] = (150, 30, 220)
             rgba[10:350, 40:200, 3] = 255
             return bool(cv2.imwrite(destination, rgba))
 
@@ -245,12 +253,19 @@ class FullBodyDirectWiringTests(unittest.TestCase):
                  mock.patch.object(body, "_head_mask", side_effect=head_mask), \
                  mock.patch.object(body, "_seam_tone_match"):
                 metadata = body.build(
-                    directory, {"style": "photorealistic", "pose": "relaxed"},
+                    directory, {
+                        "style": "photorealistic",
+                        "pose": "relaxed",
+                        "presentation": "female",
+                        "medium": "photograph",
+                    },
                     log=lambda _message: None)
             receipt = Path(directory, "body", "body.json").read_text(encoding="utf-8")
 
         self.assertNotIn(secret, receipt)
         self.assertEqual(list(metadata["views"]), ["front", "side", "back"])
+        self.assertEqual(metadata["options"]["presentation"], "feminine")
+        self.assertEqual(metadata["options"]["medium"], "photograph")
         self.assertEqual([len(references) for references in calls], [1, 2, 2])
 
     def test_xai_edit_rebuilds_all_views_locally_and_keeps_private_rollback(self):
@@ -274,18 +289,22 @@ class FullBodyDirectWiringTests(unittest.TestCase):
             self.assertIn("Precisely edit", prompt)
             calls.append(tuple(references))
             path = os.path.join(options["output_dir"], options["file_name"] + ".jpg")
-            cv2.imwrite(path, np.full((360, 240, 3), 120 + len(calls), np.uint8))
+            plate = np.full((360, 240, 3), 255, np.uint8)
+            plate[10:350, 40:200] = (120 + len(calls), 30, 220)
+            cv2.imwrite(path, plate)
             return path
 
         def cut(_source, destination, **_options):
             rgba = np.zeros((360, 240, 4), np.uint8)
-            rgba[10:350, 40:200, :3] = 150
+            rgba[10:350, 40:200, :3] = (150, 30, 220)
             rgba[10:350, 40:200, 3] = 255
             return bool(cv2.imwrite(destination, rgba))
 
         def head_mask(_image, _landmarks, destination):
-            rgba = np.zeros((360, 240, 4), np.uint8)
-            rgba[20:120, 70:170, 3] = 255
+            rgba = np.zeros((256, 256, 4), np.uint8)
+            # A compact, proportionate identity overlay for the editorial
+            # rollback fixture: 60x50 over a 160x340 person silhouette.
+            rgba[20:70, 90:150, 3] = 255
             cv2.imwrite(destination, rgba)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -320,7 +339,8 @@ class FullBodyDirectWiringTests(unittest.TestCase):
                  mock.patch.object(
                     body, "_face_transform",
                     return_value=(np.array([[1, 0, 0], [0, 1, 0]], np.float32),
-                                  {"scale": 1.0}, landmarks)), \
+                                  {"scale": 1.0,
+                                   "face_bounds": [90, 20, 60, 30]}, landmarks)), \
                  mock.patch.object(body, "_head_mask", side_effect=head_mask), \
                  mock.patch.object(body, "_seam_tone_match"):
                 metadata = body.edit(

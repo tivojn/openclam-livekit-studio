@@ -473,19 +473,21 @@ def forehead_state(key, lm, side, dy, s, box, weight, sq=0.0):
     # image origin.
     patch = warped.astype(np.float32)
 
-    # Bare forehead skin can move while looking pixel-identical.  Reinforce
-    # only the source's own fine texture and add low-contrast muscle creases;
-    # this is a photographic cue (a few luminance points), not drawn eyebrows.
+    # Bare forehead skin can move while looking pixel-identical. Reinforce only
+    # the source's own fine texture. Do not invent horizontal wrinkle bands:
+    # three fixed Gaussian lines used to be stamped at the same relative
+    # heights on every raised-brow state. At close-up scale those perfectly
+    # parallel bands read as drawn-on seams (and made smooth/younger foreheads
+    # age abruptly). The photographed texture still follows the brow warp, so
+    # naturally present creases remain and move with the tissue.
     source_patch = key[y0:y0 + bh, x0:x0 + bw].astype(np.float32)
     detail = source_patch - cv2.GaussianBlur(source_patch, (0, 0), 2.2 * s)
     activity = min(1.0, abs(float(dy)) / 7.0 + abs(float(sq)) / 3.5)
     patch += detail * (.18 + .34 * activity) * Wl[..., None]
     shade = np.zeros((bh, bw), np.float32)
-    if dy > .8:
-        for fraction in (.30, .54, .75):
-            line_y = y0 + fraction * max(btop - y0, 1.0)
-            shade -= np.exp(-0.5 * ((gy - line_y) / max(1.15 * s, .8)) ** 2) \
-                * min(8.0, dy * .82)
+    # A positive squeeze may reveal the vertical glabella/corrugator pair.
+    # Unlike the removed horizontal bands, this stays local to the nose root
+    # and is anatomically coupled to the squeeze axis rather than brow height.
     if sq > .35:
         for offset in (-.07, .07):
             line_x = nose_x + offset * span

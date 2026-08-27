@@ -336,30 +336,28 @@ def _publish_motion(directory, destination, log):
         clip = dict(source.get(kind) or {})
         if not clip.get("sheets"):
             continue
-        # The same take ships in every decode the fleet needs: VP9-alpha
-        # webm (Chromium), HEVC-alpha mov (WebKit on real devices), and the
-        # PNG atlas as the last-resort decoder-of-last-resort - the iOS
-        # SIMULATOR decodes no HEVC at all (2026-08-02), and the renderer
-        # only fetches the sheets when both videos fail, so engines with a
-        # working video path never pay for them.
+        # The same take ships in every decode the fleet needs: HEVC-alpha mov
+        # for WebKit on real devices and the PNG atlas as the universal
+        # fallback. Idle/move additionally use VP9-alpha in Chromium. Walk
+        # deliberately remains atlas-driven on desktop so its animation phase
+        # stays locked to window travel, but iOS still requires its HEVC twin.
         stream = clip.get("alpha_stream")
         stream_path = os.path.join(motion_dir, str(stream or ""))
         if stream and os.path.isfile(stream_path):
             stream_name = f"motion-{kind}.webm"
             shutil.copy2(stream_path, os.path.join(destination, stream_name))
             clip["alpha_stream"] = f"assets/{stream_name}"
-            hevc = clip.get("alpha_video")
-            hevc_path = os.path.join(motion_dir, str(hevc or ""))
-            hevc_name = f"motion-{kind}.mov"
-            if (hevc and os.path.isfile(hevc_path)
-                    and not hevc_path.endswith(".hevc.mov")
-                    and _hevc_alpha_for_web(
-                        hevc_path, os.path.join(destination, hevc_name), log)):
-                clip["alpha_stream_hevc"] = f"assets/{hevc_name}"
-            else:
-                clip.pop("alpha_stream_hevc", None)
         else:
             clip.pop("alpha_stream", None)
+        hevc = clip.get("alpha_video")
+        hevc_path = os.path.join(motion_dir, str(hevc or ""))
+        hevc_name = f"motion-{kind}.mov"
+        if (hevc and os.path.isfile(hevc_path)
+                and not hevc_path.endswith(".hevc.mov")
+                and _hevc_alpha_for_web(
+                    hevc_path, os.path.join(destination, hevc_name), log)):
+            clip["alpha_stream_hevc"] = f"assets/{hevc_name}"
+        else:
             clip.pop("alpha_stream_hevc", None)
         sheets = []
         for index, sheet in enumerate(clip.get("sheets") or []):

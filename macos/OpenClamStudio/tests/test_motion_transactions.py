@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from fastapi import HTTPException
 
-from studio import export as runtime_export, motion, rig
+from studio import export as runtime_export, library, motion, rig
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -384,6 +384,85 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertEqual("folded-cross", arguments[3]["id"])
             self.assertEqual("edge", arguments[3]["validation"])
             worker.return_value.start.assert_called_once()
+
+    def test_masculine_body_remaps_stale_heel_request_before_worker_start(self):
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "openclam"
+            os.makedirs(os.path.join(avatar_dir, "body"))
+            Path(avatar_dir, "body", "body.json").write_text(json.dumps({
+                "options": {"presentation": "masculine"},
+            }))
+            registry = FakeRegistry(
+                avatar_dir, {"slug": slug, "status": "ready"})
+            request = server_app.MotionRequest(
+                slug=slug, kind="idle", pose="back-heel")
+
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(server_app.threading, "Thread") as worker):
+                response = asyncio.run(
+                    server_app.api_motion_generate(request))
+
+            self.assertTrue(response["started"])
+            self.assertEqual("masculine", response["body_presentation"])
+            self.assertTrue(response["pose_remapped"])
+            self.assertEqual("side-cross", response["pose"])
+            arguments = worker.call_args.kwargs["args"]
+            self.assertEqual("side-cross", arguments[3]["id"])
+            self.assertNotIn(arguments[3]["id"], motion.HEEL_IDLE_POSE_IDS)
+
+    def test_feminine_body_preserves_manual_heel_request(self):
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "openclam"
+            os.makedirs(os.path.join(avatar_dir, "body"))
+            Path(avatar_dir, "body", "body.json").write_text(json.dumps({
+                "options": {"presentation": "feminine"},
+            }))
+            registry = FakeRegistry(
+                avatar_dir, {"slug": slug, "status": "ready"})
+            request = server_app.MotionRequest(
+                slug=slug, kind="idle", pose="heel-up")
+
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(server_app.threading, "Thread") as worker):
+                response = asyncio.run(
+                    server_app.api_motion_generate(request))
+
+            self.assertTrue(response["started"])
+            self.assertEqual("feminine", response["body_presentation"])
+            self.assertFalse(response["pose_remapped"])
+            self.assertEqual("heel-up", response["pose"])
+            arguments = worker.call_args.kwargs["args"]
+            self.assertEqual("heel-up", arguments[3]["id"])
+
+    def test_masculine_body_cannot_reactivate_archived_heel_idle_set(self):
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "openclam"
+            os.makedirs(os.path.join(avatar_dir, "body"))
+            Path(avatar_dir, "body", "body.json").write_text(json.dumps({
+                "options": {"presentation": "male"},
+            }))
+            registry = FakeRegistry(
+                avatar_dir, {"slug": slug, "status": "ready"})
+            request = server_app.MotionSetRequest(
+                slug=slug, kind="idle", set_id="old-high-heel")
+            archived = [{
+                "id": "old-high-heel", "compatible": True,
+                "pose": "back-heel",
+            }]
+
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(
+                        library, "list_motion_sets", return_value=archived),
+                    mock.patch.object(library, "activate_motion") as activate):
+                with self.assertRaises(HTTPException) as caught:
+                    asyncio.run(server_app.api_motion_set_activate(request))
+
+            self.assertEqual(422, caught.exception.status_code)
+            self.assertIn("feminine-presenting", caught.exception.detail)
+            activate.assert_not_called()
 
     def test_walk_request_starts_with_selected_style_only(self):
         with tempfile.TemporaryDirectory() as avatar_dir:

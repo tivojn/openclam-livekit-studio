@@ -12,6 +12,11 @@ final class OpenClamAvatarAssetStore {
     init(mainBundle: Bundle = .main) {
         self.mainBundle = mainBundle
         cache.countLimit = 28
+        // A real full-expression Cleo package is about 26 MP for atlases and
+        // ~43 MP including all visemes. Runtime needs only the active subset;
+        // cost-based eviction keeps decoded UIImage memory bounded even when
+        // callers visit many plates in one conversation.
+        cache.totalCostLimit = 144 * 1_024 * 1_024
     }
 
     func image(
@@ -42,7 +47,11 @@ final class OpenClamAvatarAssetStore {
         }
 
         if let loaded {
-            cache.setObject(loaded, forKey: key)
+            cache.setObject(
+                loaded,
+                forKey: key,
+                cost: Self.decodedCost(of: loaded)
+            )
         }
         return loaded
     }
@@ -112,5 +121,19 @@ final class OpenClamAvatarAssetStore {
         case let .installedFile(url):
             "installed:\(url.standardizedFileURL.path)"
         }
+    }
+
+    private static func decodedCost(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            let result = cgImage.bytesPerRow.multipliedReportingOverflow(
+                by: cgImage.height
+            )
+            return result.overflow ? Int.max : result.partialValue
+        }
+        let pixels = image.size.width * image.scale
+            * image.size.height * image.scale
+        guard pixels.isFinite, pixels > 0,
+              pixels <= CGFloat(Int.max / 4) else { return Int.max }
+        return Int(pixels.rounded(.up)) * 4
     }
 }

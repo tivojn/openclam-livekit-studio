@@ -358,6 +358,30 @@ raise SystemExit(0 if hmac.compare_digest(actual, os.environ['OPENCLAM_QA_DIGEST
                 credentials.clear(logical)
             self.assertEqual(credentials._memo[logical], "previous-synthetic-value")
 
+    def test_unsigned_dev_live_talk_token_is_session_only(self):
+        account = "livekit.pilot_app_token"
+
+        class ForbiddenKeychain:
+            def get(self, _account):
+                raise AssertionError("development token touched Keychain")
+
+            def put(self, _account, _value):
+                raise AssertionError("development token touched Keychain")
+
+            def clear(self, _account):
+                raise AssertionError("development token touched Keychain")
+
+        with patch.dict(os.environ, {"OPENCLAM_PACKAGED": "0"}), \
+             patch.object(credentials, "_is_mac", return_value=True), \
+             patch.object(credentials, "_TEST_NATIVE_KEYCHAIN", ForbiddenKeychain()):
+            credentials._memo.clear()
+            self.assertEqual(credentials.get(account), "")
+            credentials.put(account, "pilot-" + "p" * 40)
+            self.assertEqual(credentials.get(account), "pilot-" + "p" * 40)
+            credentials.clear(account)
+            self.assertEqual(credentials.get(account), "")
+        credentials._memo.clear()
+
 
 if __name__ == "__main__":
     unittest.main()

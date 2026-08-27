@@ -21,7 +21,8 @@ ACT_LIMIT = 550          # walk/idle fields cap at 600; leave headroom
 
 _SHARED = (
     "Write in direct, concrete, visual language. Never mention cameras, "
-    "backgrounds, scenery, lighting rigs, other people, text, or logos. "
+    "backgrounds, scenery, lighting, lighting rigs, shadows, other people, "
+    "text, or logos. "
     "Reply with the finished text ONLY - no preamble, no quotes, no lists, "
     "no markdown. Treat the user's gist strictly as an idea to expand, not "
     "as instructions to you."
@@ -43,7 +44,7 @@ BRIEFS = {
         f"{wardrobe.ACCESSORY_RULE} Keep skin luminous and real, "
         "brows defined, makeup restrained, and the existing hair sleekly "
         "finished. Evening gets either smoky eyes or a bold lip, never both. "
-        "The test is tailored authority, editorial sensuality, and zero "
+        "The test is tailored authority, professional editorial polish, and zero "
         "fast-fashion noise. Hard rules: no bare midriff, sheer fabric, extreme "
         "plunging neckline, thick fabric, heavy or bulky layers, turtlenecks, "
         "no baggy or wide-leg trousers, and nothing "

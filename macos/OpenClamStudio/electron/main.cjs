@@ -117,6 +117,7 @@ let liveTalkActive = false;
 let chatMode = false;
 let chatCloseUp = false;
 let chatCloseUpBaseZoom = 1;
+let chatPoseRevision = 0;
 let desktopCloseUp = false;
 let companionHold = null;
 let avatarStoreInstance = null;
@@ -799,6 +800,7 @@ function shellState() {
     chatMode,
     chatCloseUp,
     chatCloseUpBaseZoom,
+    chatPoseRevision,
     desktopCloseUp,
     pet: {
       enabled: Boolean(state && state.petMode),
@@ -867,6 +869,7 @@ function setChatMode(value) {
     // Avatar renderer can finish loading after Chat/Talk has opened; hiding it
     // again here repairs any late ready-to-show or external focus reveal.
     mainWindow.hide();
+    if (buddyWindow && !buddyWindow.isDestroyed()) buddyWindow.hide();
     createChatWindow();
     if (chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.show();
@@ -889,6 +892,7 @@ function setChatMode(value) {
     state.interfaceMode = 'chat';
     preDockBounds = null;
     mainWindow.hide();
+    if (buddyWindow && !buddyWindow.isDestroyed()) buddyWindow.hide();
     createChatWindow();
     if (chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.show();
@@ -908,6 +912,14 @@ function setChatMode(value) {
     setPetHit(false);
     if (state.petOpacity <= 0.001) mainWindow.hide();
     else mainWindow.showInactive();
+    if (buddyWindow && !buddyWindow.isDestroyed()) {
+      const opacity = buddyOpacityValue();
+      if (opacity <= 0.001) buddyWindow.hide();
+      else {
+        buddyWindow.setOpacity(opacity);
+        buddyWindow.showInactive();
+      }
+    }
   }
   saveStateSoon();
   broadcastState();
@@ -1063,7 +1075,7 @@ function applyPetOpacity(value, reveal = true) {
   // Until the second avatar takes its own opacity (a chest/foot double-tap
   // on its window), it follows the primary's.
   if (buddyOpacity === null && buddyWindow && !buddyWindow.isDestroyed()) {
-    if (opacity <= 0.001) buddyWindow.hide();
+    if (chatMode || opacity <= 0.001) buddyWindow.hide();
     else {
       buddyWindow.setOpacity(opacity);
       if (reveal) buddyWindow.showInactive();
@@ -1731,7 +1743,7 @@ function startBuddyRoamMotion() {
     height: size.height,
   }, false);
   applyPetWindowLevel(buddyWindow, true);
-  if (buddyOpacityValue() > 0.001) buddyWindow.showInactive();
+  if (!chatMode && buddyOpacityValue() > 0.001) buddyWindow.showInactive();
 
   buddyRoamRuntime = {
     displayId: display.id,
@@ -1828,7 +1840,7 @@ function setBuddyMotionReady(value) {
 function applyBuddyOpacity(value) {
   buddyOpacity = Math.max(0, Math.min(1, Number(value) || 0));
   if (buddyWindow && !buddyWindow.isDestroyed()) {
-    if (buddyOpacity <= 0.001) buddyWindow.hide();
+    if (chatMode || buddyOpacity <= 0.001) buddyWindow.hide();
     else {
       buddyWindow.setOpacity(buddyOpacity);
       buddyWindow.showInactive();
@@ -1925,9 +1937,15 @@ function createBuddyWindow(slug) {
   buddyWindow.loadURL(`${baseUrl()}/c/${slug}/?electron=1&companion=1&side=left`
     + `&app=${encodeURIComponent(app.getVersion())}`);
   buddyWindow.once('ready-to-show', () => {
-    if (buddyOpacityValue() > 0.001) buddyWindow.showInactive();
+    if (!chatMode && buddyOpacityValue() > 0.001) buddyWindow.showInactive();
   });
-  buddyWindow.on('show', protectSettingsFromPetOverlay);
+  buddyWindow.on('show', () => {
+    if (chatMode) {
+      buddyWindow.hide();
+      return;
+    }
+    protectSettingsFromPetOverlay();
+  });
   buddyWindow.on('focus', protectSettingsFromPetOverlay);
   buddyWindow.on('close', (event) => {
     if (!quitting) {
@@ -1999,6 +2017,23 @@ function guardNavigation(window, kind) {
     if (input.meta && input.key === ',') {
       event.preventDefault();
       openSettings();
+      return;
+    }
+    // Keep the two owner shortcuts reliable while an OpenClam window is
+    // focused.  macOS reports the shifted number-row glyph on some keyboard
+    // layouts (`(` / `)`) and the unshifted digit on others.  The global
+    // registration below still owns the shortcuts when another app is front;
+    // these idempotent fallbacks cover focused-window/menu dispatch without
+    // allowing the same key press to toggle twice.
+    if (input.type === 'keyDown' && input.meta && input.shift
+        && !input.control && !input.alt) {
+      if (input.key === '0' || input.key === ')') {
+        event.preventDefault();
+        standbyCompanionMode();
+      } else if (input.key === '9' || input.key === '(') {
+        event.preventDefault();
+        deskCompanionMode();
+      }
     }
   });
 }
@@ -2477,6 +2512,7 @@ function standbyCompanionMode() {
   if (chatMode) {
     chatCloseUp = false;
     chatCloseUpBaseZoom = Number(state.petZoom) || 1;
+    chatPoseRevision += 1;
     applyPetOpacity(1, false);
     return;
   }
@@ -2498,16 +2534,25 @@ function restoreCompanionHold() {
 
 function deskCompanionMode() {
   if (chatMode) {
-    chatCloseUp = !chatCloseUp;
-    chatCloseUpBaseZoom = chatCloseUp ? (Number(state.petZoom) || 1) : 1;
+    // Cmd+Shift+9 is a preset, not a toggle.  Electron can deliver the same
+    // accelerator through both the global shortcut and a focused menu/window
+    // path; toggling here made the two deliveries cancel and look broken.
+    if (!chatCloseUp) {
+      chatCloseUp = true;
+      chatCloseUpBaseZoom = Number(state.petZoom) || 1;
+    }
+    // Re-selecting an already-active preset is still an explicit request to
+    // leave the temporary 10-second edge idle and return to the saved camera.
+    // A revision makes that intent observable without toggling the preset or
+    // disturbing the user's close-up zoom/drag coordinates.
+    chatPoseRevision += 1;
     applyPetOpacity(1, false);
     return;
   }
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (restoreCompanionHold()) {
-    saveStateSoon();
-    broadcastState();
+  if (desktopCloseUp) {
+    applyPetOpacity(1);
     return;
   }
   if (state.petRoam) applyPetRoam(false);
@@ -2524,6 +2569,18 @@ function deskCompanionMode() {
   if (state.petOpacity > 0.001) mainWindow.showInactive();
   saveStateSoon();
   broadcastState();
+}
+
+function deskCompanionMenuAction() {
+  // The keyboard shortcut is deliberately an idempotent close-up preset, but
+  // the avatar's context menu also exposes the saved pre-close-up geometry as
+  // an explicit Restore action. Keep that one reversible without turning the
+  // shortcut back into a duplicate-dispatch-sensitive toggle.
+  if (!chatMode && desktopCloseUp && restoreCompanionHold()) {
+    applyPetOpacity(1);
+    return;
+  }
+  deskCompanionMode();
 }
 
 function openSettings() {
@@ -2616,8 +2673,10 @@ function buildTrayMenu() {
       click: (item) => applyPetRoam(item.checked) },
     { label: 'Lock Position', type: 'checkbox', checked: state.petLocked,
       enabled: !state.petRoam, click: (item) => applyPetLock(item.checked) },
-    { label: 'Standby Size', accelerator: 'CommandOrControl+Shift+0', click: standbyCompanionMode },
-    { label: 'Close-Up Companion', accelerator: 'CommandOrControl+Shift+9', click: deskCompanionMode },
+    { label: 'Standby Size', accelerator: 'CommandOrControl+Shift+0',
+      registerAccelerator: false, click: standbyCompanionMode },
+    { label: 'Close-Up Companion', accelerator: 'CommandOrControl+Shift+9',
+      registerAccelerator: false, click: deskCompanionMode },
     { label: 'Restart Voice Engine', enabled: ownsBackend, click: restartBackend },
     { type: 'separator' },
     // Which build am I actually running? A question the owner should
@@ -2672,7 +2731,7 @@ function showPetMenu() {
     { type: 'separator' },
     { name: 'Standby Size', hint: '⌘⇧0', click: standbyCompanionMode },
     { name: companionHold ? 'Restore Previous Size' : 'Close-Up Companion',
-      hint: '⌘⇧9', click: deskCompanionMode },
+      hint: companionHold ? '' : '⌘⇧9', click: deskCompanionMenuAction },
     { name: 'Resize & Adjust…', hint: 'avatar · animation · opacity %',
       click: showAppearanceWindow },
     { name: 'Always on Top', type: 'checkbox', checked: state.alwaysOnTop,

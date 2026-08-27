@@ -140,8 +140,19 @@ for (const contract of [
   'avatar-package-v2/manifest.schema.json',
   'avatar-package-v2/macos-full.schema.json',
   'avatar-package-v2/ios-light-v3.schema.json',
+  'avatar-package-v2/ios-full-expression-v4.schema.json',
 ]) assert.ok(contractResource && contractResource.filter.includes(contract),
   `packaging must include portable avatar contract ${contract}`);
+const iosFullExpressionV4Sha =
+  '086ea8ac64eaa5484c8edb69e1677497965bc9ed46ce25ab29f65229c956f991';
+assert.ok(
+  release.includes(`AVATAR_IOS_V4_SCHEMA_SHA='${iosFullExpressionV4Sha}'`),
+  'macOS release must pin the reviewed iPhone full-expression v4 schema');
+for (const required of [
+  'require_sha256 contracts/avatar-package-v2/ios-full-expression-v4.schema.json',
+  'require_sha256 "$APP_RESOURCES/backend/contracts/avatar-package-v2/ios-full-expression-v4.schema.json"',
+]) assert.ok(release.includes(required),
+  `macOS release must hash-check v4 schema at source and package boundary: ${required}`);
 const sitePackagesResource = pkg.build.extraResources.find(
   (resource) => resource.from === '.electron-site-packages');
 const studioResource = pkg.build.extraResources.find(

@@ -22,11 +22,29 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 from . import body, cutout
 
 
-# v13 adds current-frame, pose-guided upper-limb recovery to the source-aware
-# Vision fallback.  Older cuts can contain intact arms in the retained white-
-# plate source but only a faint semantic matte, so they must be re-cut before
-# reuse.  The recovery never borrows colour or geometry from another frame.
-MOTION_VERSION = 14
+# v15 makes the retained white plate a two-sided contract: strong, connected
+# current-frame detail (including one-pixel stiletto stems) is recovered, while
+# exterior-connected plate, floor shadows, and the real gaps between limbs and
+# the torso are release-blocking background. Older cuts can have those shadows
+# promoted to opaque pixels, so they must be re-cut before reuse.
+MOTION_VERSION = 15
+# Shadows are not harmless presentation on motion plates: a floor shadow can
+# merge into a stiletto stem, while a wall-contact shadow can attach to hair or
+# clothing and become indistinguishable from the subject to a semantic matte.
+# Prevent those pixels at the provider rather than asking alpha repair to infer
+# whether a dark connected component is anatomy or lighting.
+SHADOWLESS_PLATE_CONTRACT = (
+    "FLAT SHADOWLESS LIGHTING — use flat, soft, diffuse frontal illumination "
+    "with uniform exposure and no directional key, rim, back, or practical "
+    "light. Render no floor shadow beneath either shoe, sole, toe, or high-heel "
+    "stem; no wall shadow or contact shadow behind hair, head, arms, torso, "
+    "clothing, or body; and no ambient-occlusion shadow, grounding darkening, "
+    "drop shadow, reflection, halo, or gray fringe in any body or clothing gap. "
+    "Show floor and invisible-wall contact through pose geometry only, never "
+    "through shading. Keep the plate uniformly pure white through and around "
+    "every silhouette gap, and ignore conflicting lighting direction in any "
+    "editable art direction or wardrobe receipt."
+)
 # Full provider resolution. These were 512x768 - a decoded-atlas memory
 # budget from the traversal era - which threw away almost half the subject
 # pixels the in-place loop pipeline now buys (the portrait plate spends its
@@ -37,6 +55,11 @@ TARGET_HEIGHT = 1088
 WALK_FPS = 24
 IDLE_FPS = 12
 MAX_SHEET_FRAMES = 32
+# A white-plate pixel needs this much foreground evidence to seed a real detail
+# component.  The one-pixel fringe around that core keeps source antialiasing;
+# broad pale floor shadows never become their own foreground seed.
+WHITE_PLATE_DETAIL_CORE_ALPHA = 192
+WHITE_PLATE_EXTERIOR_CONFIDENCE = 0.30
 # Gate rejections are dominated by near-misses, so a third candidate
 # meaningfully raises the odds a run ships instead of failing outright.
 MAX_CANDIDATE_ATTEMPTS = 3
@@ -49,6 +72,25 @@ MAX_CANDIDATE_ATTEMPTS = 3
 RELAXED_LOOP_SHIPPING = True
 DEFAULT_WALK_STYLE = "office"
 DEFAULT_IDLE_POSE = "back-heel"
+# Heel-contact poses are a deliberate feminine styling choice, not a universal
+# motion default.  The body authoring pipeline persists visible presentation in
+# body.json; callers that know that presentation use the grounded side lean for
+# masculine or ambiguous bodies.  Keeping DEFAULT_IDLE_POSE preserves old
+# authored feminine projects and CLI round-trips that do not carry body context.
+DEFAULT_NON_FEMININE_IDLE_POSE = "side-cross"
+HEEL_IDLE_POSE_IDS = frozenset(("back-heel", "heel-up"))
+PRESENTATION_ALIASES = {
+    "female": "feminine",
+    "woman": "feminine",
+    "feminine-presenting": "feminine",
+    "male": "masculine",
+    "man": "masculine",
+    "masculine-presenting": "masculine",
+    "ambiguous": "androgynous",
+    "neutral": "androgynous",
+    "nonbinary": "androgynous",
+    "non-binary": "androgynous",
+}
 WALK_STYLE_PRESETS = {
     "office": {
         "loop_video": (
@@ -559,11 +601,63 @@ def _move_style_receipt(style):
     return receipt
 
 
-def resolve_idle_pose(pose_id=None, custom_prompt=""):
+def normalise_presentation(value):
+    """Return the motion policy's fail-closed visible-presentation branch."""
+    value = _clean(value, 40).lower()
+    value = PRESENTATION_ALIASES.get(value, value)
+    return value if value in {"feminine", "masculine", "androgynous"} \
+        else "androgynous"
+
+
+def body_presentation(avatar_dir):
+    """Read the presentation that authored the active body, without guessing.
+
+    Old body manifests did not persist this field.  Those projects resolve to
+    androgynous, which deliberately selects the grounded no-heel default until
+    the owner regenerates a presentation-aware body.
+    """
+    path = os.path.join(avatar_dir, "body", "body.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, ValueError):
+        return "androgynous"
+    options = metadata.get("options") if isinstance(metadata, dict) else None
+    return normalise_presentation(
+        options.get("presentation") if isinstance(options, dict) else None)
+
+
+def idle_pose_allowed(pose_id, presentation):
+    """Whether a preset is safe for this visible-presentation branch."""
+    return not (
+        normalise_presentation(presentation) != "feminine"
+        and _clean(pose_id, 40) in HEEL_IDLE_POSE_IDS
+    )
+
+
+def resolve_idle_pose(
+        pose_id=None, custom_prompt="", *, presentation=None,
+        remap_unsafe=False):
     if isinstance(pose_id, dict):
         custom_prompt = pose_id.get("prompt", custom_prompt)
         pose_id = pose_id.get("id")
-    pose_id = _clean(pose_id, 40) or DEFAULT_IDLE_POSE
+    pose_id = _clean(pose_id, 40)
+    if not pose_id:
+        pose_id = (
+            DEFAULT_IDLE_POSE
+            if presentation is None
+            or normalise_presentation(presentation) == "feminine"
+            else DEFAULT_NON_FEMININE_IDLE_POSE
+        )
+    if presentation is not None and not idle_pose_allowed(
+            pose_id, presentation):
+        if remap_unsafe:
+            pose_id = DEFAULT_NON_FEMININE_IDLE_POSE
+        else:
+            raise ValueError(
+                "heel-specific edge-idle poses are available only for a "
+                "feminine-presenting body; choose Side lean or another "
+                "grounded pose")
     if pose_id == "custom":
         prompt = _clean(custom_prompt, 2400)
         if len(prompt) < 12:
@@ -751,7 +845,9 @@ MOVEMENT STYLE — {walk_style['label']}. {walk_style['keyframe']}{tracking_cont
 
 COMPOSITION — one person only, complete figure centered on a vertical 2:3 canvas, locked camera at waist height, long lens, generous clean margin, no crop, no props, no text, no furniture, no floor shadow. Shoot against a seamless pure white studio background and floor: bright, even white only, with no cast shadow, gray, scenery, reflections, or colored light spill on the subject. If any garment or shoe is white or near-white, render it one clearly visible tone deeper than the backdrop so the silhouette never blends into it.
 
-Editable wardrobe receipt, subordinate to the visual references: {outfit}"""
+Editable wardrobe receipt, subordinate to the visual references: {outfit}
+
+{SHADOWLESS_PLATE_CONTRACT}"""
 
 
 def _idle_keyframe_prompt(outfit, has_pose_reference, idle_pose=None):
@@ -765,7 +861,9 @@ OPENING POSE — one natural, balanced standing frame that a performance loop ca
 
 COMPOSITION — one person only, full figure centered on a vertical 2:3 canvas with margin for the movement, locked camera, no crop, no props, no text, no furniture, no cast shadow. Shoot against a seamless pure white studio background and floor: bright, even white only, with no cast shadow, gray, scenery, reflections, or colored light spill on the subject. If any garment or shoe is white or near-white, render it one clearly visible tone deeper than the backdrop so the silhouette never blends into it.
 
-Editable wardrobe receipt, subordinate to the visual references: {outfit}"""
+Editable wardrobe receipt, subordinate to the visual references: {outfit}
+
+{SHADOWLESS_PLATE_CONTRACT}"""
     reference_note = (
         "Reference 1 is the generated canonical FRONT full-body plate and is the body, wardrobe, and proportion authority. "
         "Reference 2 is the canonical HD head and is the facial-identity authority. Reference 3 is pose geometry only: "
@@ -782,7 +880,9 @@ POSE GEOMETRY — author the selected canonical LEFT-EDGE pose. The selected dir
 
 COMPOSITION — one person only, full figure centered on a vertical 2:3 canvas with enough margin for the selected edge pose, locked camera, no crop, no props, no weapons, no garter, no text, no furniture, no cast shadow. Shoot against a seamless pure white studio background and floor: bright, even white only, with no cast shadow, gray, scenery, reflections, or colored light spill on the subject. If any garment or shoe is white or near-white, render it one clearly visible tone deeper than the backdrop so the silhouette never blends into it.
 
-Editable wardrobe receipt, subordinate to the visual references: {outfit}"""
+Editable wardrobe receipt, subordinate to the visual references: {outfit}
+
+{SHADOWLESS_PLATE_CONTRACT}"""
 
 
 def _loop_walk_video_prompt(walk_style):
@@ -831,6 +931,8 @@ PRIORITY 1 — IDENTITY, HAIR, AND WARDROBE: preserve the exact selected person'
 
 CAMERA AND PLATE: locked camera with constant scale, exposure, and color; no camera motion, zoom, reframing, or cuts. The entire background and floor stay seamless pure white with no scenery, shadows, reflections, text, props, gray, or colored spill; white or near-white wardrobe stays one clearly visible tone deeper than the backdrop. The subject's complete full body and both shoes stay inside the frame at all times.
 
+{SHADOWLESS_PLATE_CONTRACT}
+
 STYLE-SPECIFIC REJECTIONS — {walk_style['reject']}
 
 GLOBAL REJECTIONS — reject forward travel across the frame, root drift, treadmill speed changes, bounce, camera movement, cuts, body-part disappearance, extra fingers, warped shoes, color flicker, hairstyle drift, identity drift, or wardrobe drift."""
@@ -874,6 +976,8 @@ PRIORITY 1 — IDENTITY, HAIR, AND WARDROBE: preserve the exact selected person'
 
 CAMERA AND PLATE: the three light-gray vertical registration lines and floor line remain exactly stationary. Camera scale, exposure, and color remain constant. The entire background and floor stay seamless pure white with no scenery, shadows, reflections, text, props, gray, or colored spill; white or near-white wardrobe stays one clearly visible tone deeper than the backdrop. Keep the subject's complete full body and both shoes inside frame while the subject crosses from roughly {enters}% to {exits}% at constant speed.
 
+{SHADOWLESS_PLATE_CONTRACT}
+
 STYLE-SPECIFIC REJECTIONS — {walk_style['reject']}
 
 GLOBAL REJECTIONS — reject bounce, camera movement, cuts, body-part disappearance, extra fingers, warped shoes, color flicker, hairstyle drift, identity drift, or wardrobe drift."""
@@ -892,6 +996,8 @@ IDENTITY AND WARDROBE — preserve the exact person's face, apparent age, hair, 
 
 CAMERA AND PLATE — locked camera, constant scale, exposure, and color; no cuts or zoom. The entire background and floor stay seamless pure white with no scenery, shadows, reflections, text, props, gray, or colored spill; white or near-white wardrobe stays one clearly visible tone deeper than the backdrop. The complete body and both shoes stay inside the frame at all times.
 
+{SHADOWLESS_PLATE_CONTRACT}
+
 Reject: identity drift, wardrobe changes, camera motion, leaving the frame, or freezing in place instead of performing."""
     contact_lock = (
         "Keep the screen-left upper-back contact and the rear tip of the raised shoe's "
@@ -902,7 +1008,11 @@ Reject: identity drift, wardrobe changes, camera motion, leaving the frame, or f
         "Keep every selected screen-left shoulder, upper-back, or side-body wall contact "
         "fixed in place, and keep every floor-contacting shoe planted exactly as shown."
     )
-    return f"""Animate a subtle living hold of this exact supported edge pose with a locked camera. Preserve the exact identity, hair, outfit, materials, colors, accessories, arm arrangement, leg arrangement, contact points, and both complete shoes from the input keyframe. The selected pose direction is: {idle_pose['prompt']} Preserve a seamless pure white background and floor throughout every frame, with no gray, scenery, reflections, cast shadow, or colored spill on the subject. {contact_lock} Add only natural breathing, one soft blink, a tiny chin adjustment, and restrained fabric and hair settling. Never straighten away from the wall, become a tree pose, float without support, change which leg bears weight, uncross or cross the legs, change the arm arrangement, walk, talk, move the camera, zoom, cut, add objects, or add text. Begin and end with the exact same silhouette, limb geometry, wall contacts, and floor contacts for a seamless idle loop."""
+    return f"""Animate a subtle living hold of this exact supported edge pose with a locked camera. Preserve the exact identity, hair, outfit, materials, colors, accessories, arm arrangement, leg arrangement, contact points, and both complete shoes from the input keyframe. The selected pose direction is: {idle_pose['prompt']} Preserve a seamless pure white background and floor throughout every frame, with no gray, scenery, reflections, cast shadow, or colored spill on the subject. {contact_lock}
+
+{SHADOWLESS_PLATE_CONTRACT}
+
+Add only natural breathing, one soft blink, a tiny chin adjustment, and restrained fabric and hair settling. Never straighten away from the wall, become a tree pose, float without support, change which leg bears weight, uncross or cross the legs, change the arm arrangement, walk, talk, move the camera, zoom, cut, add objects, or add text. Begin and end with the exact same silhouette, limb geometry, wall contacts, and floor contacts for a seamless idle loop."""
 
 
 def _move_keyframe_prompt(outfit, move_style=None):
@@ -1807,6 +1917,18 @@ def _segment_frames(frames, workspace, log):
         ]
     elif rvm_frames is None:
         repaired = [cutout._decontaminate_edges(frame) for frame in repaired]
+    alpha_quality = (
+        _source_alpha_integrity_quality(repaired, frames, poses)
+        if not green_screen else
+        {
+            "available": False,
+            "valid": True,
+            "reason": "green-screen clip uses the chroma-key integrity gate",
+        }
+    )
+    # _process_clip reapplies this gate to the exact selected source_loop. The
+    # full provider take can contain an unused malformed lead-in/tail frame;
+    # rejecting it here would reject pixels that can never ship.
     # RVM frames skip edge decontamination on purpose: repainting the soft
     # contour from core colors would erase the model's own clean foreground
     # prediction, which is the whole point of using it.
@@ -1815,23 +1937,28 @@ def _segment_frames(frames, workspace, log):
     # "corrected", failing takes that have no green plate at all.
     color_sources = segmented
     if not green_screen and rvm_frames is None:
-        # The Vision helper reads a quality-96 JPEG staging copy, while the
-        # accepted upper-limb component deliberately restores the original
-        # decoded provider pixels. Build the expected colour authority with
-        # that same local rule: source RGB on accepted arms, helper RGB
-        # elsewhere. Comparing every subject pixel to the original frame would
-        # instead measure harmless JPEG staging deltas across the whole body.
+        # The helper reads a quality-96 JPEG staging copy, while every opaque,
+        # strong current-source pixel deliberately restores the original
+        # decoded provider RGB. Build the expected authority with that same
+        # explicit rule. This keeps the color gate strict (p99 <= 2) without
+        # treating an intentional source restoration as corruption.
         color_sources = []
         for index, (segmented_frame, source) in enumerate(zip(
                 segmented, frames)):
             authority = segmented_frame.copy()
             source_alpha = _white_plate_source_alpha(source)
-            authority[:, :, 3] = _recover_source_upper_limbs(
-                authority, authority[:, :, 3], source, poses[index],
-                source_alpha=source_alpha)
+            source_subject_alpha = _white_plate_subject_alpha(source_alpha)
+            approved_opaque = (
+                (repaired[index][:, :, 3] >= 250)
+                & (source_subject_alpha >= WHITE_PLATE_DETAIL_CORE_ALPHA)
+            )
+            authority[:, :, 3][approved_opaque] = 255
+            authority[:, :, :3][approved_opaque] = source[:, :, :3][
+                approved_opaque]
             color_sources.append(authority)
     color_quality = _color_fidelity_quality(
         color_sources, repaired, check_green_spill=green_screen)
+    color_quality["alpha_integrity_quality"] = alpha_quality
     return repaired, poses, matte_method, color_quality
 
 
@@ -1852,7 +1979,57 @@ def _white_plate_source_alpha(source, confidence=None):
     ).astype(np.uint8)
 
 
-def _veto_current_white_plate(alpha, confidence):
+def _white_plate_subject_alpha(source_alpha):
+    """Conservative source-supported subject alpha for detail recovery.
+
+    A continuous inverse-white score alone cannot tell a pale floor shadow
+    from a pale shoe.  It previously let a broad shadow touch the shoe, after
+    which connected-component recovery and interior solidification made the
+    whole patch opaque.  Real fine structures have a strong non-plate core: a
+    black heel stem, shoe seam, skin, hair, or garment pixel.  Keep that core
+    and exactly one source-antialiased ring around it.  Anything broader but
+    made only of weak plate evidence is deliberately left to the semantic
+    matte instead of being invented by the recovery pass.
+    """
+    core = source_alpha >= WHITE_PLATE_DETAIL_CORE_ALPHA
+    if not core.any():
+        return np.zeros(source_alpha.shape, dtype=np.uint8)
+    fringe = cv2.dilate(
+        core.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        iterations=1,
+    ).astype(bool)
+    supported = fringe & (source_alpha >= 8)
+    output = np.zeros(source_alpha.shape, dtype=np.uint8)
+    output[supported] = source_alpha[supported]
+    return output
+
+
+def _exterior_white_plate(confidence):
+    """Plate-like pixels connected to the current frame's outer border.
+
+    Connectivity is the important distinction: a bright tooth or eye highlight
+    is enclosed by the subject and therefore cannot become a body gap.  The
+    slightly grey plate visible between an arm and waist, or beneath a heel,
+    remains connected to the exterior even after provider compression.
+    """
+    plate = (confidence >= WHITE_PLATE_EXTERIOR_CONFIDENCE).astype(np.uint8)
+    count, labels = cv2.connectedComponents(plate, connectivity=8)
+    if count <= 1:
+        return np.zeros(confidence.shape, dtype=bool)
+    border_labels = np.unique(np.concatenate((
+        labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1],
+    )))
+    border_labels = border_labels[border_labels > 0]
+    return (
+        np.isin(labels, border_labels)
+        if border_labels.size else
+        np.zeros(confidence.shape, dtype=bool)
+    )
+
+
+def _veto_current_white_plate(
+        alpha, confidence, source_subject_alpha=None):
     """Remove temporal ghosts contradicted by the current source frame.
 
     Temporal median/pose repair is useful for a genuine one-frame dropout, but
@@ -1863,7 +2040,21 @@ def _veto_current_white_plate(alpha, confidence):
     also removes morphology-created duplicate stems without eroding the real,
     dark source-supported heel.
     """
+    if source_subject_alpha is None:
+        source_subject_alpha = _white_plate_subject_alpha(
+            np.clip((1 - confidence) * 255, 0, 255).astype(np.uint8))
     output = alpha.copy()
+    exterior = _exterior_white_plate(confidence)
+    unsupported_plate = exterior & (source_subject_alpha < 8)
+    output[unsupported_plate] = 0
+    # At the true silhouette, retain only the one-pixel source-derived
+    # antialias ring. This also prevents temporal consensus from widening the
+    # edge into yesterday's arm or heel position.
+    supported_fringe = exterior & (source_subject_alpha >= 8)
+    output[supported_fringe] = np.minimum(
+        output[supported_fringe], source_subject_alpha[supported_fringe])
+    # Pure current-frame plate is definitive even in the unlikely event that
+    # an isolated compression speck made it into the fringe map.
     output[confidence > 0.93] = 0
     return output
 
@@ -1892,7 +2083,8 @@ def _lower_body_alpha_hole_candidates(alpha):
     return candidates.astype(bool)
 
 
-def _fill_lower_body_alpha_holes(alpha, source=None, source_alpha=None):
+def _fill_lower_body_alpha_holes(
+        alpha, source=None, source_alpha=None, source_subject_alpha=None):
     """Repair true lower-body losses without painting white leg gaps opaque.
 
     The old contour-only fill could not distinguish a missing shoe pixel from
@@ -1911,13 +2103,16 @@ def _fill_lower_body_alpha_holes(alpha, source=None, source_alpha=None):
         return output
     if source_alpha is None:
         source_alpha = _white_plate_source_alpha(source)
+    if source_subject_alpha is None:
+        source_subject_alpha = _white_plate_subject_alpha(source_alpha)
     output[candidates] = np.maximum(
-        output[candidates], source_alpha[candidates])
+        output[candidates], source_subject_alpha[candidates])
     return output
 
 
 def _recover_source_ankles(
-        current, alpha, source, pose, source_alpha=None):
+        current, alpha, source, pose, source_alpha=None,
+        source_subject_alpha=None):
     """Restore white-plate-supported shoe detail near tracked ankles.
 
     Vision's semantic matte can omit a one-pixel heel stem even when the source
@@ -1931,9 +2126,22 @@ def _recover_source_ankles(
         return alpha
     if source_alpha is None:
         source_alpha = _white_plate_source_alpha(source)
-    half_width = max(4, round(body_height * 0.075))
+    if source_subject_alpha is None:
+        source_subject_alpha = _white_plate_subject_alpha(source_alpha)
+    # Recovery must cover the complete corridor measured by
+    # ``_source_ankle_detail_quality`` (8% of body height), plus one narrow
+    # antialias margin.  The old 7.5% recovery box was smaller than its own
+    # release gate: a moving/crossed pump at the outer column could be counted
+    # as required source heel detail but remain unreachable by recovery.  This
+    # does not admit arbitrary plate pixels—the current-source component still
+    # has to touch the existing ankle/shoe matte, and the final exterior-plate
+    # veto remains authoritative.
+    half_width = max(4, round(body_height * 0.085))
     above = max(4, round(body_height * 0.095))
-    below = max(4, round(body_height * 0.142))
+    # Vision's ankle joint sits above the shoe opening; on a high heel the
+    # stiletto stem can extend another quarter of tracked body height below
+    # that point. The region remains narrow and source-component gated.
+    below = max(5, round(body_height * 0.300))
     rows, columns = np.ogrid[:alpha.shape[0], :alpha.shape[1]]
     region = np.zeros(alpha.shape, dtype=bool)
     for joint in ("left_ankle", "right_ankle"):
@@ -1945,7 +2153,7 @@ def _recover_source_ankles(
             & (rows >= point[1] - above)
             & (rows <= point[1] + below)
         )
-    source_subject = region & (source_alpha >= 24)
+    source_subject = region & (source_subject_alpha >= 8)
     if not source_subject.any():
         return alpha
     _count, labels = cv2.connectedComponents(
@@ -1956,19 +2164,20 @@ def _recover_source_ankles(
     if not kept.size:
         return alpha
     connected = source_subject & np.isin(labels, kept)
-    recovered = connected & (source_alpha > alpha)
+    recovered = connected & (source_subject_alpha > alpha)
     if not recovered.any():
         output = alpha.copy()
     else:
         output = alpha.copy()
-        output[recovered] = source_alpha[recovered]
+        output[recovered] = source_subject_alpha[recovered]
         current[:, :, :3][recovered] = source[:, :, :3][recovered]
-    # A pale leather shoe may carry only 25–50% white-plate alpha even in its
-    # interior. Once that source component is connected to the tracked ankle,
-    # its one-pixel-or-wider core is subject, not a translucent plate fringe.
+    # Only the strong interior of the accepted current-frame detail becomes
+    # opaque. The source-derived one-pixel ring remains fractional, so a heel
+    # is crisp without turning the pale floor shadow beneath it into a blob.
     core = cv2.distanceTransform(
         connected.astype(np.uint8), cv2.DIST_L2, 3) >= 0.9
-    solid = core & (source_alpha >= 40)
+    solid = core & (
+        source_subject_alpha >= WHITE_PLATE_DETAIL_CORE_ALPHA)
     output[solid] = 255
     current[:, :, :3][solid] = source[:, :, :3][solid]
     return output
@@ -2024,7 +2233,8 @@ def _fill_face_alpha_holes(current, alpha, source, pose):
 
 
 def _recover_source_upper_limbs(
-        current, alpha, source, pose, source_alpha=None):
+        current, alpha, source, pose, source_alpha=None,
+        source_subject_alpha=None):
     """Restore source-supported arms and hands along the tracked skeleton.
 
     Vision's person mask can lose most of a fast horizontal forearm even when
@@ -2040,6 +2250,8 @@ def _recover_source_upper_limbs(
         return alpha
     if source_alpha is None:
         source_alpha = _white_plate_source_alpha(source)
+    if source_subject_alpha is None:
+        source_subject_alpha = _white_plate_subject_alpha(source_alpha)
 
     region = np.zeros(alpha.shape, dtype=np.uint8)
     seed_region = np.zeros(alpha.shape, dtype=np.uint8)
@@ -2077,7 +2289,7 @@ def _recover_source_upper_limbs(
     if not tracked:
         return alpha
 
-    source_subject = (source_alpha >= 24) & (region > 0)
+    source_subject = (source_subject_alpha >= 8) & (region > 0)
     if not source_subject.any():
         return alpha
     count, labels = cv2.connectedComponents(
@@ -2098,7 +2310,7 @@ def _recover_source_upper_limbs(
         return alpha
     output = alpha.copy()
     output[connected] = np.maximum(
-        output[connected], source_alpha[connected])
+        output[connected], source_subject_alpha[connected])
     # The semantic matte's weak arm pixels can already be opaque enough that
     # the alpha comparison above does not call them "recovered", while their
     # RGB still came from an aligned neighbour.  Current-source authority is
@@ -2131,7 +2343,8 @@ def _endpoint_connected_component(mask, start, end, radius):
 
 
 def _source_upper_limb_quality(
-        alpha, source_alpha, pose, baseline_alpha=None):
+        alpha, source_alpha, pose, baseline_alpha=None,
+        source_subject_alpha=None):
     """Hard current-source integrity check for tracked upper-arm segments.
 
     A wrist-disc presence test misses a forearm whose two ends remain visible.
@@ -2149,9 +2362,11 @@ def _source_upper_limb_quality(
     body_height = _pose_height(pose)
     if body_height is None:
         return unavailable
+    if source_subject_alpha is None:
+        source_subject_alpha = _white_plate_subject_alpha(source_alpha)
     corridor_width = max(5, round(body_height * 0.105))
     endpoint_radius = max(3, round(body_height * 0.040))
-    source_support = source_alpha >= 24
+    source_support = source_subject_alpha >= 8
     source_margin = cv2.dilate(
         source_support.astype(np.uint8),
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
@@ -2183,9 +2398,10 @@ def _source_upper_limb_quality(
             output_support = (alpha >= 24) & source_component
             output_connected = _endpoint_connected_component(
                 output_support, start, end, endpoint_radius) is not None
-            source_weight = source_alpha[source_component].astype(np.float64)
+            source_weight = source_subject_alpha[
+                source_component].astype(np.float64)
             output_weight = np.minimum(
-                alpha[source_component], source_alpha[source_component],
+                alpha[source_component], source_subject_alpha[source_component],
             ).astype(np.float64)
             alpha_recall = float(
                 np.sum(output_weight) / max(1.0, np.sum(source_weight)))
@@ -2249,6 +2465,223 @@ def _source_upper_limb_quality(
             + ", ".join(failures)
         ),
         "segments": segments,
+    }
+
+
+def _source_ankle_detail_quality(alpha, source_subject_alpha, pose):
+    """Require current-frame thin shoe/heel detail to survive the matte.
+
+    The broad extremity probe proves that a foot exists, but it cannot notice a
+    missing two-pixel stiletto stem.  This gate follows the source component
+    touching each tracked ankle, measures weighted alpha recall, and separately
+    measures the one-pixel-or-wider protrusions removed by a 3x3 opening in the
+    shoe band.  Those protrusions are exactly where heel stems and narrow straps
+    live.  The output must keep them connected to the ankle component.
+    """
+    unavailable = {
+        "available": False,
+        "valid": True,
+        "reason": "no source-connected ankle detail to measure",
+        "ankles": {},
+    }
+    body_height = _pose_height(pose)
+    if body_height is None:
+        return unavailable
+    rows, columns = np.ogrid[:alpha.shape[0], :alpha.shape[1]]
+    support = source_subject_alpha >= 8
+    core = source_subject_alpha >= WHITE_PLATE_DETAIL_CORE_ALPHA
+    half_width = max(5, round(body_height * 0.080))
+    above = max(4, round(body_height * 0.070))
+    below = max(5, round(body_height * 0.300))
+    seed_radius = max(3, round(body_height * 0.045))
+    ankle_results = {}
+    failures = []
+    for joint in ("left_ankle", "right_ankle"):
+        point = _pose_point(pose, joint, 0.20)
+        if point is None:
+            continue
+        region = (
+            (np.abs(columns - point[0]) <= half_width)
+            & (rows >= point[1] - above)
+            & (rows <= point[1] + below)
+        )
+        source_mask = support & region
+        count, labels = cv2.connectedComponents(
+            source_mask.astype(np.uint8), connectivity=8)
+        if count <= 1:
+            continue
+        seed = (
+            ((columns - point[0]) ** 2 + (rows - point[1]) ** 2
+             <= seed_radius ** 2)
+            & core
+        )
+        kept = np.unique(labels[seed])
+        kept = kept[kept > 0]
+        if not kept.size:
+            continue
+        component = source_mask & np.isin(labels, kept)
+        if int(np.count_nonzero(component)) < 12:
+            continue
+
+        source_weight = source_subject_alpha[component].astype(np.float64)
+        output_weight = np.minimum(
+            alpha[component], source_subject_alpha[component],
+        ).astype(np.float64)
+        alpha_recall = float(
+            np.sum(output_weight) / max(1.0, np.sum(source_weight)))
+
+        component_core = core & component
+        opened = cv2.morphologyEx(
+            component_core.astype(np.uint8),
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        ).astype(bool)
+        thin = (
+            component_core & ~opened
+            & (rows >= point[1] - max(2, round(body_height * 0.025)))
+        )
+        thin_pixels = int(np.count_nonzero(thin))
+        thin_recall = (
+            float(np.count_nonzero((alpha >= 24) & thin)) / thin_pixels
+            if thin_pixels else 1.0
+        )
+
+        output_mask = (alpha >= 24) & component
+        output_count, output_labels = cv2.connectedComponents(
+            output_mask.astype(np.uint8), connectivity=8)
+        if output_count <= 1:
+            connected = False
+        else:
+            output_seed_labels = np.unique(output_labels[seed & output_mask])
+            output_seed_labels = output_seed_labels[output_seed_labels > 0]
+            connected_output = (
+                output_mask & np.isin(output_labels, output_seed_labels)
+                if output_seed_labels.size else
+                np.zeros(alpha.shape, dtype=bool)
+            )
+            connected = (
+                not thin_pixels
+                or float(np.count_nonzero(connected_output & thin))
+                / thin_pixels >= 0.90
+            )
+        valid = (
+            alpha_recall >= 0.94
+            and thin_recall >= 0.90
+            and connected
+        )
+        ankle_results[joint] = {
+            "valid": valid,
+            "alpha_recall": round(alpha_recall, 4),
+            "thin_detail_recall": round(thin_recall, 4),
+            "thin_detail_pixels": thin_pixels,
+            "thin_detail_connected": connected,
+        }
+        if not valid:
+            failures.append(joint)
+    if not ankle_results:
+        return unavailable
+    return {
+        "available": True,
+        "valid": not failures,
+        "reason": (
+            "source-supported heel and shoe detail remains connected"
+            if not failures else
+            "lost source-supported heel detail: " + ", ".join(failures)
+        ),
+        "ankles": ankle_results,
+    }
+
+
+def _source_alpha_integrity_quality(processed, sources, poses=None):
+    """Release gate for plate gaps, halos, and thin heel detail.
+
+    This checks the final, stabilized RGBA frames—not an intermediate mask.
+    Any visible alpha on exterior-connected plate unsupported by a strong
+    source detail is a real shipped halo/gap fill and therefore rejects the
+    clip.  Tracked ankle components additionally have to retain their thin
+    current-frame detail.
+    """
+    if not processed or not sources or len(processed) != len(sources):
+        return {
+            "available": False,
+            "valid": False,
+            "reason": "source and processed alpha frame counts differ",
+        }
+    leaking_pixels = []
+    leaking_alpha_mass = []
+    ankle_frames = []
+    failed_ankles = []
+    limb_frames = []
+    failed_limbs = []
+    for index, (frame, source) in enumerate(zip(processed, sources)):
+        if frame.shape[:2] != source.shape[:2]:
+            return {
+                "available": False,
+                "valid": False,
+                "reason": f"source and alpha dimensions differ on frame {index + 1}",
+            }
+        confidence = _white_plate_confidence(source)
+        source_alpha = _white_plate_source_alpha(
+            source, confidence=confidence)
+        source_subject_alpha = _white_plate_subject_alpha(source_alpha)
+        forbidden = (
+            _exterior_white_plate(confidence)
+            & (source_subject_alpha < 8)
+        )
+        leak = forbidden & (frame[:, :, 3] >= 8)
+        leaking_pixels.append(int(np.count_nonzero(leak)))
+        leaking_alpha_mass.append(int(np.sum(
+            frame[:, :, 3][forbidden].astype(np.uint64))))
+        pose = poses[index] if poses and index < len(poses) else None
+        ankle = _source_ankle_detail_quality(
+            frame[:, :, 3], source_subject_alpha, pose)
+        if ankle["available"]:
+            ankle_frames.append(ankle)
+            if not ankle["valid"]:
+                failed_ankles.append(index + 1)
+        limb = _source_upper_limb_quality(
+            frame[:, :, 3], source_alpha, pose,
+            source_subject_alpha=source_subject_alpha)
+        if limb["available"]:
+            limb_frames.append(limb)
+            if not limb["valid"]:
+                failed_limbs.append(index + 1)
+    maximum_leak = max(leaking_pixels, default=0)
+    total_leak = int(sum(leaking_pixels))
+    total_alpha_mass = int(sum(leaking_alpha_mass))
+    valid = (
+        maximum_leak == 0
+        and total_alpha_mass == 0
+        and not failed_ankles
+        and not failed_limbs
+    )
+    reasons = []
+    if maximum_leak:
+        reasons.append(
+            f"exterior plate leaked into alpha ({maximum_leak}px in one frame)")
+    if failed_ankles:
+        reasons.append(
+            "thin heel detail failed on frame(s) "
+            + ", ".join(str(value) for value in failed_ankles[:8]))
+    if failed_limbs:
+        reasons.append(
+            "source-supported arm detail failed on frame(s) "
+            + ", ".join(str(value) for value in failed_limbs[:8]))
+    return {
+        "available": True,
+        "valid": valid,
+        "reason": (
+            "negative-space gaps are clear and thin heels remain connected"
+            if valid else "; ".join(reasons)
+        ),
+        "frames": len(processed),
+        "maximum_plate_leak_pixels": maximum_leak,
+        "total_plate_leak_pixels": total_leak,
+        "total_plate_leak_alpha": total_alpha_mass,
+        "tracked_ankle_frames": len(ankle_frames),
+        "failed_ankle_frames": failed_ankles,
+        "tracked_limb_frames": len(limb_frames),
+        "failed_limb_frames": failed_limbs,
     }
 
 
@@ -2339,6 +2772,10 @@ def _refine_white_matte(source, rgba):
     if not mask.any():
         return rgba
     whiteness = _white_plate_confidence(source)
+    source_alpha = _white_plate_source_alpha(
+        source, confidence=whiteness)
+    source_subject_alpha = _white_plate_subject_alpha(source_alpha)
+    exterior_plate = _exterior_white_plate(whiteness)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     core = cv2.erode(mask, kernel, iterations=2).astype(bool)
     reach = cv2.dilate(mask, kernel, iterations=5).astype(bool)
@@ -2348,21 +2785,16 @@ def _refine_white_matte(source, rgba):
     # plate, however far Vision's coarse edge overshot.
     outer = reach & ~inside
     refined[outer] = np.minimum(refined[outer], (1 - whiteness[outer]) * 255)
-    # Plate pockets: PURE-white regions (measured plate 1.0 vs cream shoes
-    # <=0.68) connected to the plate outside the figure - white showing
-    # through a hair-shoulder gap, a smudge hugging a moving hand - are
-    # background even where Vision marked them opaque at full confidence,
-    # at any depth inside the mask. The strict threshold is what protects
-    # off-white wardrobe; garments that are literally plate-white are
-    # unmattable on a white plate and the prompts now forbid them.
-    plate = (whiteness > 0.93).astype(np.uint8)
-    count, labels = cv2.connectedComponents(plate, connectivity=8)
-    exterior_labels = np.unique(labels[(~reach) & (plate > 0)])
-    exterior_labels = exterior_labels[exterior_labels > 0]
-    if exterior_labels.size:
-        pocket = np.isin(labels, exterior_labels)
-        refined[pocket] = np.minimum(
-            refined[pocket], (1 - whiteness[pocket]) * 255)
+    # Plate gaps and floor shadows remain connected to the outer plate even
+    # after H.264 compression makes them slightly grey. Remove every such
+    # pixel unless it belongs to the one-pixel antialias fringe of a strong
+    # current-source subject core. This preserves the true arm/waist gap and
+    # prevents pale heel shadows becoming opaque blobs.
+    unsupported_plate = exterior_plate & (source_subject_alpha < 8)
+    refined[unsupported_plate] = 0
+    source_fringe = exterior_plate & (source_subject_alpha >= 8)
+    refined[source_fringe] = np.minimum(
+        refined[source_fringe], source_subject_alpha[source_fringe])
     # Clearly non-white pixels near the body are subject (heel sticks,
     # straps, hair wisps) - but only when connected to the body, so plate
     # smudges and shadows far from her stay out.
@@ -2427,6 +2859,7 @@ def _stabilise_segmented(segmented, poses=None, source_frames=None):
             index, current, segmented, poses, stable_alpha)
         source = source_frames[index] if source_frames is not None else None
         source_alpha = None
+        source_subject_alpha = None
         source_confidence = None
         if source is not None:
             if source.shape[:2] != current.shape[:2]:
@@ -2436,14 +2869,16 @@ def _stabilise_segmented(segmented, poses=None, source_frames=None):
             source_confidence = _white_plate_confidence(source)
             source_alpha = _white_plate_source_alpha(
                 source, confidence=source_confidence)
-            alpha_before_limb_recovery = stable_alpha.copy()
+            source_subject_alpha = _white_plate_subject_alpha(source_alpha)
             stable_alpha = _recover_source_upper_limbs(
                 current, stable_alpha, source,
                 poses[index] if poses else None,
-                source_alpha=source_alpha)
+                source_alpha=source_alpha,
+                source_subject_alpha=source_subject_alpha)
             stable_alpha = _recover_source_ankles(
                 current, stable_alpha, source, poses[index] if poses else None,
-                source_alpha=source_alpha)
+                source_alpha=source_alpha,
+                source_subject_alpha=source_subject_alpha)
         if source is None:
             # Chroma/RVM inputs do not have the known white-plate authority used
             # below, so retain the historical tiny-gap repair for those paths.
@@ -2454,7 +2889,8 @@ def _stabilise_segmented(segmented, poses=None, source_frames=None):
             )
         alpha_before_hole_fill = stable_alpha.copy()
         stable_alpha = _fill_lower_body_alpha_holes(
-            stable_alpha, source, source_alpha=source_alpha)
+            stable_alpha, source, source_alpha=source_alpha,
+            source_subject_alpha=source_subject_alpha)
         filled_holes = (
             (alpha_before_hole_fill < 24) & (stable_alpha >= 24)
         ).astype(np.uint8)
@@ -2462,20 +2898,41 @@ def _stabilise_segmented(segmented, poses=None, source_frames=None):
             recovered = stable_alpha > alpha_before_hole_fill
             current[:, :, :3][recovered] = source[:, :, :3][recovered]
             stable_alpha = _veto_current_white_plate(
-                stable_alpha, source_confidence)
+                stable_alpha, source_confidence,
+                source_subject_alpha=source_subject_alpha)
             stable_alpha = _fill_face_alpha_holes(
                 current, stable_alpha, source,
                 poses[index] if poses else None)
-            limb_quality = _source_upper_limb_quality(
-                stable_alpha, source_alpha,
-                poses[index] if poses else None,
-                baseline_alpha=alpha_before_limb_recovery)
-            if limb_quality["available"] and not limb_quality["valid"]:
-                raise RuntimeError(limb_quality["reason"])
+            # Selection happens after segmentation. A provider's unused lead-in
+            # or tail frame may be malformed, so the hard limb gate is applied
+            # by _process_clip to the exact source_loop that will ship.
         presence = (stable_alpha >= 24).astype(np.uint8)
         interior = cv2.distanceTransform(presence, cv2.DIST_L2, 3) >= 1.5
         stable_alpha[interior] = 255
+        if source is not None:
+            # Enforce the white-plate invariant on the *final* alpha, after
+            # mouth-hole repair and interior solidification.  Those later
+            # passes are intentionally additive; without this final authority
+            # check, a small exterior-connected plate cavity can be painted
+            # back after the earlier temporal-ghost veto and then fail only at
+            # release time.  Current-source subject fringe remains capped at
+            # its measured fractional alpha, while unsupported arm/waist gaps
+            # and floor shadows are guaranteed transparent.
+            stable_alpha = _veto_current_white_plate(
+                stable_alpha, source_confidence,
+                source_subject_alpha=source_subject_alpha)
         stable_alpha[stable_alpha < 8] = 0
+        if source is not None:
+            # Opaque current-source-supported subject pixels use the approved
+            # current decoded RGB, never a temporally borrowed neighbour or
+            # JPEG-staging approximation. Fractional contour pixels keep their
+            # clean matte foreground colour for correct compositing.
+            approved_opaque = (
+                (stable_alpha >= 250)
+                & (source_subject_alpha >= WHITE_PLATE_DETAIL_CORE_ALPHA)
+            )
+            current[:, :, :3][approved_opaque] = source[:, :, :3][
+                approved_opaque]
         if source is None and filled_holes.any():
             current[:, :, :3] = cv2.inpaint(
                 current[:, :, :3], filled_holes * 255, 5, cv2.INPAINT_TELEA)
@@ -3017,6 +3474,49 @@ def _pose_cycle_metrics(
         "foot_lift_max": foot_lift["lift_max"],
         "sides": side_metrics,
     }
+
+
+def _pose_cycle_valid_except_single_untracked_arm(quality):
+    """Allow a measured full gait when Vision loses only the far arm.
+
+    A three-quarter walk can keep the far arm visibly intact while macOS
+    Vision cannot label its wrist often enough to build an arm signal.  That
+    tracking limitation must not force the old first-half seam, but it also
+    must not relax any measurable gait rule.  `_pose_cycle_metrics` already
+    records every other failure explicitly, so accept only its exact two
+    consequences for one missing arm: unavailable arm motion and unavailable
+    arm/leg correlation.  Period fit, stride coverage, both leg cycles,
+    tracked-side arm excursion/correlation, endpoint position and endpoint
+    velocity therefore remain mandatory.
+    """
+    if not quality or not quality.get("available") or quality.get("valid"):
+        return False
+    sides = quality.get("sides") or {}
+    untracked = [
+        side for side in ("left", "right")
+        if not (sides.get(side) or {}).get("arm_available")
+    ]
+    if len(untracked) != 1:
+        return False
+    missing = untracked[0]
+    visible = "right" if missing == "left" else "left"
+    if not (sides.get(missing) or {}).get("leg_available"):
+        return False
+    visible_metrics = sides.get(visible) or {}
+    if not (
+            visible_metrics.get("arm_available")
+            and visible_metrics.get("leg_available")):
+        return False
+    allowed = {
+        f"{missing} arm tracking unavailable",
+        f"{missing} arm and leg are not contralateral",
+    }
+    reasons = {
+        reason.strip()
+        for reason in str(quality.get("reason") or "").split(";")
+        if reason.strip()
+    }
+    return reasons == allowed
 
 
 # A tracked hand or heel counts as missing when it sits further than this many
@@ -3799,6 +4299,265 @@ def _silhouette_closure_quality(
     }
 
 
+def _motion_cast_shadow_quality(
+        source_frames, alpha_frames, kind, idle_validation="back-heel"):
+    """Reject persistent cast shadows without trying to erase anatomy.
+
+    Motion is generated on a known white plate.  A cast shadow is therefore a
+    provider defect, not useful subject detail.  This deliberately detects only
+    two high-confidence shapes: a detached, neutral horizontal patch beside the
+    floor contacts, and (for supported Edge Idle) a persistent neutral vertical
+    patch immediately behind the canonical screen-left silhouette.  Anything
+    smaller or less geometric is left untouched; an ambiguous take is retried
+    instead of modifying its pixels.
+    """
+    if (not source_frames or not alpha_frames
+            or len(source_frames) != len(alpha_frames)):
+        return {
+            "available": False,
+            "valid": False,
+            "reason": "source and alpha frame counts differ",
+        }
+
+    floor_frames = []
+    wall_frames = []
+    floor_max_area = 0
+    wall_max_area = 0
+    measured = 0
+    wall_enabled = kind == "idle" and idle_validation != "free"
+
+    for index, (source, rgba) in enumerate(zip(source_frames, alpha_frames)):
+        if (source.ndim != 3 or source.shape[2] < 3
+                or rgba.ndim != 3 or rgba.shape[2] < 4
+                or source.shape[:2] != rgba.shape[:2]):
+            continue
+        hsv = cv2.cvtColor(source[:, :, :3], cv2.COLOR_BGR2HSV)
+        height, width = hsv.shape[:2]
+        border = np.concatenate((
+            hsv[0, :, :], hsv[-1, :, :], hsv[:, 0, :], hsv[:, -1, :],
+        ))
+        white_border = np.mean((border[:, 1] <= 35) & (border[:, 2] >= 235))
+        if white_border < 0.55:
+            continue
+
+        alpha = (rgba[:, :, 3] >= 24).astype(np.uint8)
+        count, labels, statistics, _centroids = cv2.connectedComponentsWithStats(
+            alpha, connectivity=8)
+        if count <= 1:
+            continue
+        subject_label = 1 + int(np.argmax(statistics[1:, cv2.CC_STAT_AREA]))
+        subject = labels == subject_label
+        subject_area = int(statistics[subject_label, cv2.CC_STAT_AREA])
+        if subject_area < 64:
+            continue
+        x = int(statistics[subject_label, cv2.CC_STAT_LEFT])
+        y = int(statistics[subject_label, cv2.CC_STAT_TOP])
+        body_width = int(statistics[subject_label, cv2.CC_STAT_WIDTH])
+        body_height = int(statistics[subject_label, cv2.CC_STAT_HEIGHT])
+        measured += 1
+
+        gray = cv2.cvtColor(source[:, :, :3], cv2.COLOR_BGR2GRAY)
+        grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        gradient = cv2.magnitude(grad_x, grad_y)
+        neutral = (
+            (hsv[:, :, 1] <= 36)
+            & (hsv[:, :, 2] >= 58)
+            & (hsv[:, :, 2] <= 242)
+        )
+        # Authored traversal plates carry thin full-span registration guides;
+        # they are geometry, not shadows.  Remove only genuinely full-span
+        # rows/columns before connected-component measurement.
+        neutral = neutral.copy()
+        neutral[np.mean(neutral, axis=1) >= 0.72, :] = False
+        neutral[:, np.mean(neutral, axis=0) >= 0.72] = False
+
+        guard_radius = max(2, round(body_height * 0.004))
+        guard = cv2.dilate(
+            subject.astype(np.uint8),
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (guard_radius * 2 + 1,) * 2),
+        ).astype(bool)
+        floor_mask = neutral & ~guard
+        near_radius = max(10, round(body_height * 0.045))
+        near_subject = cv2.dilate(
+            subject.astype(np.uint8),
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (near_radius * 2 + 1,) * 2),
+        ).astype(bool)
+        floor_mask &= near_subject
+        floor_top = max(0, y + body_height - round(body_height * 0.07))
+        floor_bottom = min(height, y + body_height + round(body_height * 0.07))
+        floor_band = np.zeros((height, width), dtype=bool)
+        floor_band[floor_top:floor_bottom] = True
+        floor_mask &= floor_band
+
+        component_count, component_labels, component_stats, _ = (
+            cv2.connectedComponentsWithStats(
+                floor_mask.astype(np.uint8), connectivity=8))
+        minimum_floor_area = max(28, round(subject_area * 0.00035))
+        minimum_floor_width = max(10, round(body_width * 0.04))
+        for label in range(1, component_count):
+            area = int(component_stats[label, cv2.CC_STAT_AREA])
+            component_width = int(component_stats[label, cv2.CC_STAT_WIDTH])
+            component_height = int(component_stats[label, cv2.CC_STAT_HEIGHT])
+            left = int(component_stats[label, cv2.CC_STAT_LEFT])
+            if (area < minimum_floor_area
+                    or component_width < minimum_floor_width
+                    or component_width < component_height * 1.8
+                    or component_width >= width * 0.70
+                    or left + component_width < x - body_width * 0.12
+                    or left > x + body_width * 1.12):
+                continue
+            pixels = component_labels == label
+            if float(np.mean(gradient[pixels] <= 52)) < 0.55:
+                continue
+            floor_frames.append(index + 1)
+            floor_max_area = max(floor_max_area, area)
+            break
+
+        if not wall_enabled:
+            continue
+        # A real silhouette has chromatic, very dark, or textured detail.  The
+        # wall-shadow candidate is the smooth neutral echo just to its left.
+        trusted = subject & (
+            (hsv[:, :, 1] >= 42)
+            | (hsv[:, :, 2] <= 55)
+            | (gradient >= 36)
+        )
+        corridor = np.zeros((height, width), dtype=bool)
+        wall_margin = max(10, round(body_width * 0.14))
+        wall_end = min(height, y + round(body_height * 0.88))
+        for row in range(max(0, y), wall_end):
+            columns = np.flatnonzero(trusted[row])
+            if not columns.size:
+                continue
+            left = int(columns[0])
+            corridor[row, max(0, left - wall_margin):max(0, left - 1)] = True
+        wall_mask = neutral & corridor & (gradient <= 52)
+        wall_mask = cv2.morphologyEx(
+            wall_mask.astype(np.uint8), cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7)),
+        )
+        component_count, component_labels, component_stats, _ = (
+            cv2.connectedComponentsWithStats(wall_mask, connectivity=8))
+        minimum_wall_area = max(40, round(subject_area * 0.00055))
+        minimum_wall_height = max(16, round(body_height * 0.10))
+        for label in range(1, component_count):
+            area = int(component_stats[label, cv2.CC_STAT_AREA])
+            component_width = int(component_stats[label, cv2.CC_STAT_WIDTH])
+            component_height = int(component_stats[label, cv2.CC_STAT_HEIGHT])
+            if (area < minimum_wall_area
+                    or component_height < minimum_wall_height
+                    or component_height < component_width * 1.2
+                    or component_width > body_width * 0.18):
+                continue
+            pixels = component_labels == label
+            # Closing bridges small compression breaks; most of the measured
+            # region still has to be an observed neutral source pixel.
+            if float(np.mean(neutral[pixels])) < 0.62:
+                continue
+            wall_frames.append(index + 1)
+            wall_max_area = max(wall_max_area, area)
+            break
+
+    if not measured:
+        return {
+            "available": False,
+            "valid": True,
+            "reason": "no measurable white-plate subject frames",
+        }
+    persistence = 1 if measured == 1 else max(2, math.ceil(measured * 0.12))
+    floor_invalid = len(floor_frames) >= persistence
+    wall_invalid = len(wall_frames) >= persistence
+    valid = not (floor_invalid or wall_invalid)
+    if floor_invalid and wall_invalid:
+        reason = "persistent detached floor and wall-contact cast shadows"
+    elif floor_invalid:
+        reason = "persistent detached floor shadow beneath the footwear"
+    elif wall_invalid:
+        reason = "persistent wall/contact shadow behind the Edge Idle silhouette"
+    else:
+        reason = "no persistent cast-shadow geometry detected"
+    return {
+        "available": True,
+        "valid": valid,
+        "reason": reason,
+        "measured_frames": measured,
+        "minimum_persistent_frames": persistence,
+        "floor_shadow_frames": floor_frames[:24],
+        "wall_shadow_frames": wall_frames[:24],
+        "floor_shadow_max_area": floor_max_area,
+        "wall_shadow_max_area": wall_max_area,
+    }
+
+
+def _select_untracked_arm_loop(frames, poses, fps, loop, pose_profile):
+    """Best closed full-stride cut when only the far arm is untrackable."""
+    source_gait = _source_gait_profile(poses) if poses else None
+    gait_period = (source_gait or {}).get("period")
+    if not gait_period:
+        raise RuntimeError("walk cadence is unavailable")
+    minimum = max(8, round(loop["minimum"] * fps))
+    maximum = min(len(frames) - 1, round(loop["maximum"] * fps))
+    candidates = []
+    for start in range(0, len(frames) - minimum, 2):
+        for length in range(minimum, maximum + 1, 2):
+            end = start + length
+            if end >= len(frames):
+                break
+            quality = _pose_cycle_metrics(
+                poses, start, end, profile=pose_profile,
+                source_gait=source_gait)
+            if not _pose_cycle_valid_except_single_untracked_arm(quality):
+                continue
+            # Loop-mode footage has a locked plate and root, so the source
+            # endpoint masks are directly comparable. Rank by both whole-body
+            # and head/shoulder agreement, then use measured limb endpoint and
+            # velocity errors as tie-breakers. This chooses a real closed gait,
+            # not the visually similar half-cycle the period gate was built to
+            # reject.
+            closure = _silhouette_closure_quality(
+                [frames[start], frames[end - 1]])
+            if not closure.get("valid"):
+                continue
+            upper = (
+                closure.get("upper_overlap")
+                if closure.get("upper_available") else 1.0
+            )
+            score = (
+                float(closure["body_overlap"]) + float(upper)
+                - float(quality["closure_error"]) * 0.10
+                - float(quality["velocity_error"]) * 0.05
+                - abs(length - gait_period) / gait_period * 0.02
+            )
+            candidates.append((-score, start, end))
+    if not candidates:
+        raise RuntimeError(
+            "walk video did not contain a closed full gait with only one "
+            "untrackable arm")
+    candidates.sort()
+    distinct = []
+    for _score, start, end in candidates:
+        if any(abs(start - s) <= 3 and abs(end - e) <= 3
+               for s, e in distinct):
+            continue
+        distinct.append((start, end))
+        if len(distinct) >= 8:
+            break
+    # Reapply the exact release closure gate after candidate-local packing.
+    # Bounds and scale can change slightly with a shorter source window.
+    for _score, start, end in candidates:
+        normalised, _bounds = _normalise_frames(frames[start:end])
+        if not _silhouette_closure_quality(normalised).get("valid"):
+            continue
+        ordered = [(start, end)] + [
+            pair for pair in distinct if pair != (start, end)
+        ]
+        return frames[start:end], start, end, ordered
+    raise RuntimeError("no untracked-arm gait candidate passed packed closure")
+
+
 def _relaxed_walk_selection(frames, poses, fps, loop, pose_profile):
     """Choose a closed full gait without turning reliability mode into a veto.
 
@@ -3823,7 +4582,21 @@ def _relaxed_walk_selection(frames, poses, fps, loop, pose_profile):
             return_candidates=True,
         )
     except RuntimeError:
-        return fallback
+        # A far arm can remain visibly complete yet be occluded from Vision in
+        # a three-quarter walk. Retry only for that exact tracking-only miss;
+        # `_pose_cycle_valid_except_single_untracked_arm` keeps every measured
+        # gait safeguard hard. The exact packed-canvas silhouette gate below
+        # prevents a merely good thumbnail score from creating another seam.
+        try:
+            selected, start, end, alternates = _select_untracked_arm_loop(
+                frames, poses, fps, loop, pose_profile,
+            )
+        except RuntimeError:
+            return fallback
+        return (
+            selected, start, end, alternates,
+            "closed full-gait selection; one far arm untrackable",
+        )
     return selected, start, end, alternates, "closed full-gait selection"
 
 
@@ -3835,6 +4608,11 @@ def _process_clip(
     with tempfile.TemporaryDirectory(prefix=f".{kind}-frames-", dir=stage) as workspace:
         alpha_frames, poses, matte_method, color_quality = _segment_frames(
             frames, workspace, log)
+    alpha_integrity_quality = color_quality.pop("alpha_integrity_quality", None) or {
+        "available": False,
+        "valid": False,
+        "reason": "alpha integrity receipt missing",
+    }
     if matte_method == "chroma-key-green-screen":
         if not color_quality["available"]:
             raise RuntimeError(
@@ -3952,6 +4730,40 @@ def _process_clip(
             log(
                 f"selected strict wall-contact idle loop {loop_start}:{loop_end}; "
                 f"{quality_detail}")
+    cast_shadow_quality = _motion_cast_shadow_quality(
+        frames[loop_start:loop_end],
+        alpha_frames[loop_start:loop_end],
+        kind,
+        idle_validation=idle_validation,
+    )
+    if cast_shadow_quality.get("available"):
+        if not cast_shadow_quality.get("valid"):
+            raise RuntimeError(
+                f"{kind} generated take failed cast-shadow QA: "
+                f"{cast_shadow_quality.get('reason')}; regenerate it")
+    else:
+        log(
+            "cast-shadow QA unavailable: "
+            f"{cast_shadow_quality.get('reason') or 'unknown plate geometry'}")
+    if matte_method != "chroma-key-green-screen":
+        # The provider is allowed to leave an unusable lead-in or tail outside
+        # the selected loop.  The release receipt must nevertheless be hard and
+        # exact: recompute it over the frames that are actually packed, and
+        # reject any shipped arm/waist plate leak, broken arm, or missing heel
+        # stem.  Do this after alternate walk-loop rescue has chosen its final
+        # endpoints so the manifest records the same pixels the runtime uses.
+        alpha_integrity_quality = _source_alpha_integrity_quality(
+            alpha_frames[loop_start:loop_end],
+            frames[loop_start:loop_end],
+            poses[loop_start:loop_end],
+        )
+        if not alpha_integrity_quality.get("available"):
+            raise RuntimeError(
+                f"could not validate the {kind} clip's source-aware alpha integrity")
+        if not alpha_integrity_quality.get("valid"):
+            raise RuntimeError(
+                f"{kind} alpha cutout integrity failed: "
+                f"{alpha_integrity_quality.get('reason') or 'unknown alpha defect'}")
     extremity_quality = _extremity_integrity(
         alpha_frames, poses, loop_start, loop_end)
     if not extremity_quality["available"] and not relaxed:
@@ -4022,6 +4834,8 @@ def _process_clip(
         metrics["loop_closure_quality"] = closure_quality
         metrics["extremity_quality"] = extremity_quality
         metrics["color_fidelity_quality"] = color_quality
+        metrics["alpha_integrity_quality"] = alpha_integrity_quality
+        metrics["cast_shadow_quality"] = cast_shadow_quality
     else:
         metrics = {
             "edge_anchors": _edge_anchors(normalised, bounds),
@@ -4033,6 +4847,8 @@ def _process_clip(
             "loop_closure_quality": closure_quality,
             "extremity_quality": extremity_quality,
             "color_fidelity_quality": color_quality,
+            "alpha_integrity_quality": alpha_integrity_quality,
+            "cast_shadow_quality": cast_shadow_quality,
         }
     return {
         "fps": fps,

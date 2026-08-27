@@ -643,6 +643,31 @@ def load_livekit_nonsecret():
     return out
 
 
+def load_nonsecret():
+    """Read application settings without materialising any credential.
+
+    Live Talk needs the active persona and its non-secret stage selections
+    before it knows which (if any) provider credential to request.  Using the
+    general ``load()`` path here would eagerly read every saved provider key,
+    so one unrelated inaccessible Keychain item could prevent an otherwise
+    fully-managed call from starting.  This snapshot deliberately removes all
+    credential fields and the platform keyring; call sites must resolve only
+    the exact credentials they require through the vault boundary.
+    """
+    import credentials
+    with _lock:
+        out = _read_config_file()
+    out = json.loads(json.dumps(out))
+    for block_name, fields in credentials.SECRET_FIELDS.items():
+        block = out.get(block_name)
+        if not isinstance(block, dict):
+            continue
+        for field in fields:
+            block.pop(field, None)
+    out.pop("keys", None)
+    return out
+
+
 def _write_config_file(cfg):
     directory = os.path.dirname(CONFIG)
     os.makedirs(directory, mode=0o700, exist_ok=True)
@@ -657,7 +682,7 @@ def _write_config_file(cfg):
             os.remove(tmp)
 
 
-def save(cfg, *, replace_livekit=False):
+def save(cfg, *, replace_livekit=False, materialise_result=True):
     """Merge-and-write, so a UI that posts only the TTS block cannot wipe the
     API key sitting in the STT block. Incoming plaintext keys are swept into
     the vault before anything is written; the file only ever sees markers.
@@ -706,6 +731,11 @@ def save(cfg, *, replace_livekit=False):
         _normalization_pending[0] = False
         if (cur.get("tts") or {}) != (new.get("tts") or {}):
             _cache["tts"] = None         # voice or engine changed, drop the pipeline
+    if not materialise_result:
+        # Dedicated secret-setting routes already know which single credential
+        # they wrote.  Returning the marker-only snapshot avoids an unrelated
+        # Keychain read after the atomic save has succeeded.
+        return json.loads(json.dumps(new))
     return credentials.materialise(new)
 
 

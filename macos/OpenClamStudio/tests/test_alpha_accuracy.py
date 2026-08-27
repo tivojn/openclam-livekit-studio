@@ -9,7 +9,7 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from studio import cutout, motion
+from studio import cutout, export as runtime_export, motion
 
 
 def _pose(left_ankle=(52, 130), right_ankle=(104, 130)):
@@ -19,6 +19,12 @@ def _pose(left_ankle=(52, 130), right_ankle=(104, 130)):
         "root": (78, 78),
         "left_hip": (62, 78),
         "right_hip": (94, 78),
+        "left_shoulder": (60, 42),
+        "right_shoulder": (96, 42),
+        "left_elbow": (48, 70),
+        "right_elbow": (108, 70),
+        "left_wrist": (44, 98),
+        "right_wrist": (112, 98),
         "left_knee": (56, 104),
         "right_knee": (100, 104),
         "left_ankle": left_ankle,
@@ -130,6 +136,30 @@ def _thin_detail_fixture(stem_width):
     image[:, :, :3][alpha >= 128] = (35, 55, 105)
     image[:, :, :3][(alpha > 0) & (alpha < 128)] = (230, 235, 240)
     return image, stem_x, stem_rows
+
+
+def _heel_plate_fixture(include_shadow_alpha=False, include_stem_alpha=True):
+    """White-plate lower body with a real 2px heel and a touching shadow."""
+    source = np.full((180, 160, 3), 255, np.uint8)
+    source[48:138, 96:108] = (68, 92, 128)
+    source[132:144, 88:114] = (18, 25, 38)
+    # This broad, low-saturation plate shadow touches the genuine stem. It is
+    # intentionally plausible H.264 white-plate evidence, not a subject core.
+    source[163:170, 86:130] = (232, 232, 232)
+    source[143:169, 109:111] = (12, 18, 28)
+
+    alpha = np.zeros((180, 160), np.uint8)
+    alpha[48:138, 96:108] = 255
+    alpha[132:144, 88:114] = 255
+    if include_stem_alpha:
+        alpha[143:169, 109:111] = 255
+    if include_shadow_alpha:
+        alpha[163:170, 86:130] = 255
+    frame = np.zeros((180, 160, 4), np.uint8)
+    frame[:, :, :3] = source
+    frame[:, :, 3] = alpha
+    frame[:, :, :3][alpha == 0] = 0
+    return source, frame
 
 
 class AlphaAccuracy(unittest.TestCase):
@@ -339,7 +369,30 @@ class AlphaAccuracy(unittest.TestCase):
         self.assertEqual((20, 35, 65), tuple(current[144, 108, :3]))
         self.assertEqual(0, int(repaired[144, 94]))
 
-    def test_pose_guided_source_recovery_makes_pale_shoe_core_opaque(self):
+    def test_ankle_recovery_covers_the_release_gate_outer_column(self):
+        alpha = np.zeros((180, 160), np.uint8)
+        alpha[55:137, 99:106] = 255
+        alpha[132:141, 99:110] = 255
+        current = np.zeros((180, 160, 4), np.uint8)
+        current[:, :, 3] = alpha
+        current[:, :, :3][alpha > 0] = (70, 90, 120)
+
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[alpha > 0] = (70, 90, 120)
+        # right_ankle is x=104 and the 110px tracked body height makes x=113
+        # the outer column of the 8%-wide QA corridor.  It is connected to the
+        # shoe in current-source evidence, but the former 7.5% recovery box
+        # stopped one pixel short and made the release gate reject the frame.
+        source[136:142, 109:114] = (20, 35, 65)
+        source[141:166, 112:114] = (20, 35, 65)
+
+        repaired = motion._recover_source_ankles(
+            current, alpha, source, _pose())
+
+        self.assertGreaterEqual(int(repaired[150, 113]), 192)
+        self.assertEqual((20, 35, 65), tuple(current[150, 113, :3]))
+
+    def test_pose_guided_source_recovery_does_not_promote_pale_floor_shadow(self):
         alpha = np.zeros((180, 160), np.uint8)
         alpha[55:137, 99:106] = 255
         alpha[132:141, 91:110] = 255
@@ -349,14 +402,96 @@ class AlphaAccuracy(unittest.TestCase):
 
         source = np.full((180, 160, 3), 255, np.uint8)
         source[alpha > 0] = (70, 90, 120)
+        # A compressed pale floor shadow can touch the shoe exactly like this.
+        # With no strong non-plate core it is ambiguous and must remain plate;
+        # authoring already forbids white/off-white footwear on a white plate.
         source[140:150, 106:111] = (232, 232, 232)
 
         repaired = motion._recover_source_ankles(
             current, alpha, source, _pose())
 
-        self.assertEqual(255, int(repaired[145, 108]))
-        self.assertEqual((232, 232, 232), tuple(current[145, 108, :3]))
+        self.assertEqual(0, int(repaired[145, 108]))
         self.assertEqual(0, int(repaired[145, 94]))
+
+    def test_stabiliser_restores_heel_stem_but_clears_touching_floor_shadow(self):
+        source, segmented = _heel_plate_fixture(
+            include_shadow_alpha=True, include_stem_alpha=False)
+
+        repaired = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source])[0]
+
+        self.assertTrue(np.all(repaired[146:162, 109:111, 3] == 255))
+        self.assertEqual(0, int(np.count_nonzero(
+            repaired[164:170, 86:108, 3])))
+        self.assertEqual(0, int(np.count_nonzero(
+            repaired[164:170, 112:130, 3])))
+
+    def test_final_white_plate_veto_runs_after_additive_hole_repair(self):
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[28:150, 62:100] = (44, 61, 104)
+        alpha = np.zeros((180, 160), np.uint8)
+        alpha[28:150, 62:100] = 255
+        segmented = np.zeros((180, 160, 4), np.uint8)
+        segmented[:, :, :3] = source
+        segmented[:, :, 3] = alpha
+        segmented[:, :, :3][alpha == 0] = 0
+
+        def additive_plate_fill(_current, current_alpha, _source, _pose):
+            output = current_alpha.copy()
+            # Model an additive repair that accidentally paints a small piece
+            # of exterior-connected white plate after the temporal veto.
+            output[72:77, 38:44] = 255
+            return output
+
+        with mock.patch.object(
+                motion, "_fill_face_alpha_holes",
+                side_effect=additive_plate_fill):
+            repaired = motion._stabilise_segmented(
+                [segmented], poses=[_pose()], source_frames=[source])[0]
+
+        self.assertEqual(0, int(np.count_nonzero(
+            repaired[72:77, 38:44, 3])))
+        quality = motion._source_alpha_integrity_quality(
+            [repaired], [source], [_pose()])
+        self.assertTrue(quality["valid"], quality)
+
+    def test_exterior_gray_arm_waist_gap_stays_transparent(self):
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[34:132, 68:102] = (36, 45, 78)
+        source[48:122, 51:58] = (82, 112, 168)
+        # Provider compression/shading makes this genuine background gap gray,
+        # while it remains connected to the exterior above and below the arm.
+        source[48:122, 58:68] = (232, 232, 232)
+        rgba = np.zeros((180, 160, 4), np.uint8)
+        rgba[:, :, :3] = source
+        rgba[34:132, 51:102, 3] = 255
+
+        refined = motion._refine_white_matte(source, rgba)
+
+        self.assertEqual(0, int(np.count_nonzero(
+            refined[54:116, 60:66, 3])))
+        self.assertTrue(np.all(refined[54:116, 52:57, 3] >= 192))
+        self.assertTrue(np.all(refined[54:116, 70:96, 3] >= 192))
+
+    def test_release_gate_rejects_plate_shadow_and_missing_heel_stem(self):
+        source, good = _heel_plate_fixture()
+        good_quality = motion._source_alpha_integrity_quality(
+            [good], [source], [_pose()])
+        self.assertTrue(good_quality["valid"], good_quality)
+        self.assertEqual(0, good_quality["maximum_plate_leak_pixels"])
+        self.assertGreaterEqual(good_quality["tracked_ankle_frames"], 1)
+
+        _source, leaked = _heel_plate_fixture(include_shadow_alpha=True)
+        leaked_quality = motion._source_alpha_integrity_quality(
+            [leaked], [source], [_pose()])
+        self.assertFalse(leaked_quality["valid"])
+        self.assertGreater(leaked_quality["maximum_plate_leak_pixels"], 0)
+
+        _source, missing = _heel_plate_fixture(include_stem_alpha=False)
+        missing_quality = motion._source_alpha_integrity_quality(
+            [missing], [source], [_pose()])
+        self.assertFalse(missing_quality["valid"])
+        self.assertIn(1, missing_quality["failed_ankle_frames"])
 
     def test_face_hole_repair_restores_teeth_but_not_leg_gap(self):
         alpha = np.zeros((180, 160), np.uint8)
@@ -471,6 +606,52 @@ class AlphaAccuracy(unittest.TestCase):
         rgba = np.zeros((16, 16, 4), np.uint8)
         with self.assertRaisesRegex(ValueError, "frame counts differ"):
             motion._stabilise_segmented([rgba], source_frames=[])
+
+    def test_runtime_publish_adds_walk_hevc_without_changing_desktop_to_video(self):
+        with tempfile.TemporaryDirectory() as avatar_dir, \
+                tempfile.TemporaryDirectory() as runtime_dir:
+            motion_dir = os.path.join(avatar_dir, "motion")
+            os.makedirs(motion_dir)
+            cv2.imwrite(
+                os.path.join(motion_dir, "walk-0.png"),
+                np.zeros((4, 4, 4), np.uint8),
+            )
+            with open(os.path.join(motion_dir, "walk-alpha.mov"), "wb") as handle:
+                handle.write(b"prores-alpha")
+            with open(os.path.join(motion_dir, "motion.json"), "w") as handle:
+                json.dump({
+                    "v": motion.MOTION_VERSION,
+                    "walk": {
+                        "fps": 24,
+                        "frames": 1,
+                        "sheets": [{
+                            "image": "walk-0.png", "first": 0,
+                            "count": 1, "columns": 1, "rows": 1,
+                        }],
+                        "alpha_video": "walk-alpha.mov",
+                        "alpha_stream": None,
+                    },
+                }, handle)
+
+            def encode(_source, destination, _log):
+                with open(destination, "wb") as handle:
+                    handle.write(b"hevc-alpha")
+                return True
+
+            with mock.patch.object(
+                    runtime_export, "_hevc_alpha_for_web",
+                    side_effect=encode) as encoder:
+                published = runtime_export._publish_motion(
+                    avatar_dir, runtime_dir, lambda _message: None)
+
+            self.assertEqual(1, encoder.call_count)
+            self.assertEqual(
+                "assets/motion-walk.mov",
+                published["walk"]["alpha_stream_hevc"],
+            )
+            self.assertNotIn("alpha_stream", published["walk"])
+            self.assertTrue(os.path.isfile(
+                os.path.join(runtime_dir, "motion-walk.mov")))
 
 
 if __name__ == "__main__":

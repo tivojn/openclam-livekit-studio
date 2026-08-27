@@ -1,6 +1,6 @@
 {
   "name": "openclam-livekit-studio",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "author": "OpenClam contributors",
   "license": "MIT",
   "private": true,
@@ -161,7 +161,8 @@
           "avatar-package-v2/README.md",
           "avatar-package-v2/manifest.schema.json",
           "avatar-package-v2/macos-full.schema.json",
-          "avatar-package-v2/ios-light-v3.schema.json"
+          "avatar-package-v2/ios-light-v3.schema.json",
+          "avatar-package-v2/ios-full-expression-v4.schema.json"
         ]
       },
       {

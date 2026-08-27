@@ -174,15 +174,23 @@ def analyse(runtime: Path, neutral: str, frames: list[str], expect: str | None =
     open_eye_floor = (min((float(row["eye_open"]) for row in analysed_rows),
                           default=0.0) / neutral_eye
                       if neutral_eye > 1e-6 else 0.0)
+    median_eye_ratio = (float(np.median([
+        float(row["eye_open"]) for row in analysed_rows
+    ])) / neutral_eye if neutral_eye > 1e-6 and analysed_rows else 0.0)
     laughter_landscape = {
+        # Kept for diagnosis only. The approved v22 smile deliberately does
+        # not widen the mouth: it lifts both photographed corners while each
+        # active viseme retains its own width, aperture, teeth, and tongue.
         "mouth_width_gain": round(widest - neutral_width, 6),
         "corner_lift_gain": round(highest_corners - neutral_lift, 6),
         "open_eye_floor_ratio": round(open_eye_floor, 6),
+        # One natural blink may appear in a frame burst. Median openness is the
+        # stable eyelash/upper-face check and therefore ignores that outlier.
+        "median_eye_open_ratio": round(median_eye_ratio, 6),
     }
     laughter_landscape["pass"] = bool(neutral_metrics
-        and laughter_landscape["mouth_width_gain"] >= .015
         and laughter_landscape["corner_lift_gain"] >= .006
-        and laughter_landscape["open_eye_floor_ratio"] >= .68)
+        and .82 <= laughter_landscape["median_eye_open_ratio"] <= 1.18)
     sorrow_landscape = {
         "corner_drop": round(neutral_lift - lowest_corners, 6),
         "inner_brow_lift": round(highest_brow - neutral_brow, 6),

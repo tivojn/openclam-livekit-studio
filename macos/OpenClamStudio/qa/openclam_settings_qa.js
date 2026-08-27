@@ -203,7 +203,7 @@ includes('id="msg" role="status" aria-live="polite"');
 includes('Managed by LiveKit. No personal provider key is needed for this stage.');
 includes('The key is never placed in room metadata.');
 includes('Export Mac project');
-includes('Export iPhone-light AVTR');
+includes('Export full-expression iPhone AVTR');
 includes('Second avatar (left)');
 includes('Keep a second local avatar on the left side of this Mac’s desk');
 includes("api('/api/avatar/companion'");
@@ -214,8 +214,17 @@ for (const id of [
   'body-prompt-progress', 'body-prompt-stage', 'body-prompt-elapsed',
   'body-prompt-rail', 'body-prompt-bar',
 ]) includes(`id="${id}"`);
+includes("const HEEL_IDLE_POSE_IDS = new Set(['back-heel', 'heel-up'])");
+includes("const NON_FEMININE_IDLE_POSE = 'side-cross'");
+includes('function bodyVisiblePresentation(state = BODY_STATE)');
+includes("button.classList.toggle('hidden', !allowed)");
+includes("pose = defaultIdlePose()");
+includes("allSets.filter(set => !HEEL_IDLE_POSE_IDS.has(set.pose))");
+includes('The previous Edge Idle used a heel-specific or unknown legacy pose.');
 includes('✦ New luxury look');
 includes("tailorBodyPrompt(BODY_SLUG, { refresh: true, force: true })");
+includes("const promptPresentation = /\\b(?:woman|female|feminine-presenting)\\b/i.test(authoredPrompt)");
+includes("/\\b(?:man|male|masculine-presenting)\\b/i.test(authoredPrompt)");
 includes("fetch('/api/avatar/body/prompt/stream'");
 includes("BODY_PROMPT_STAGE === 'analysis'");
 includes('Edits you make while it works will not be overwritten.');
@@ -435,7 +444,8 @@ const safeStatus = xaiContext.normalizeStatus({
   provider: 'xai', auth_mode: 'oauth2', state: 'connected', connected: true,
   has_api_key: true,
   oauth: {available: true, connected: true, refreshable: true,
-    expires_at: '2026-08-15T12:00:00Z', access_token: 'nested-secret'},
+    expires_at: '2026-08-15T12:00:00Z', persistence: 'session',
+    access_token: 'nested-secret'},
   bearer_token: 'top-level-secret', refresh_token: 'refresh-secret',
   independent_notice: 'xAI is independent.',
 });
@@ -443,9 +453,11 @@ assert.equal(safeStatus.auth_mode, 'oauth2');
 assert.equal(safeStatus.connected, true);
 assert.equal(safeStatus.oauth.available, true);
 assert.equal(safeStatus.oauth.refreshable, true);
+assert.equal(safeStatus.oauth.persistence, 'session');
 assert.equal(xaiContext.validStatus({
   provider: 'xai', auth_mode: 'oauth2', state: 'connected', connected: true,
-  has_api_key: false, oauth: {available: true, connected: true, refreshable: true},
+  has_api_key: false, oauth: {available: true, connected: true, refreshable: true,
+    persistence: 'keychain'},
 }), true);
 assert.equal(xaiContext.validStatus({provider: 'xai'}), false,
   'Malformed local status responses must fail closed');
@@ -508,6 +520,9 @@ includes('The modes are mutually exclusive.');
 includes('Grok Build compatibility');
 includes('Uses xAI’s public Grok Build client identity.');
 includes('OpenClam remains independent and keeps its own credentials.');
+includes('connected for this session');
+includes('forgotten on restart');
+includes("status.oauth.persistence === 'session'");
 includes('does not make');
 includes('or imply a partnership.');
 excludes(/data-xai-oauth-unavailable/,
@@ -883,6 +898,10 @@ assert.equal(liveKitErrorMessage('livekit_selection_not_allowed', 'fallback'), r
 assert.equal(liveKitErrorMessage({detail: 'livekit_selection_not_allowed'}, 'fallback'), retiredSelectionCopy);
 assert.equal(liveKitErrorMessage(new Error('livekit_selection_not_allowed: retired tuple'), 'fallback'),
   retiredSelectionCopy);
+assert.match(liveKitErrorMessage('livekit_credential_store_unavailable', 'fallback'), /unlock.*Keychain/i);
+assert.match(liveKitErrorMessage('livekit_access_rejected', 'fallback'), /access token was rejected/i);
+assert.match(liveKitErrorMessage('livekit_rate_limited', 'fallback'), /temporarily busy/i);
+assert.match(liveKitErrorMessage('livekit_service_unavailable', 'fallback'), /temporarily unavailable/i);
 assert.equal(liveKitErrorMessage('unknown_livekit_protocol_code', 'Safe fallback.'), 'Safe fallback.',
   'Unknown machine codes must not be rendered');
 assert.equal(liveKitErrorMessage('LiveKit configuration is unavailable.', 'fallback'),
@@ -894,5 +913,7 @@ includes('Live Talk does not fall back to a lane credential.');
 includes('Aura-2 Andromeda is English-only.');
 includes('xAI recognition is automatic only within its exact 25-language list; Chinese is unavailable.');
 includes('every selected personal provider account are available');
+includes('install a build with the Live Talk service configured');
+includes('unlock this Mac’s login Keychain');
 
 console.log('OpenClam Studio settings QA passed.');

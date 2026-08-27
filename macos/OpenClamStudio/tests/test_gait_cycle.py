@@ -184,6 +184,53 @@ class LoopSelectionTests(unittest.TestCase):
         self.assertEqual([], alternates)
         self.assertEqual("first-half fallback", method)
 
+    def test_relaxed_shipping_uses_closed_full_gait_when_far_arm_untrackable(self):
+        period = 48
+        frames = periodic_silhouette_frames(145, period)
+        poses = gait_poses(145, period)
+        for pose in poses:
+            pose["joints"]["left_wrist"]["confidence"] = 0.0
+
+        selected, start, end, _alternates, method = (
+            motion._relaxed_walk_selection(
+                frames, poses, 24,
+                {"target": 1.05, "minimum": 0.85, "maximum": 3.4},
+                "office-gait",
+            )
+        )
+
+        self.assertEqual(
+            "closed full-gait selection; one far arm untrackable", method)
+        self.assertGreaterEqual(end - start, round(period * 0.85))
+        quality = motion._pose_cycle_metrics(poses, start, end)
+        self.assertFalse(quality["valid"])
+        self.assertTrue(
+            motion._pose_cycle_valid_except_single_untracked_arm(quality),
+            quality["reason"],
+        )
+        closure = motion._silhouette_closure_quality(selected)
+        self.assertTrue(closure["valid"], closure["reason"])
+
+    def test_untracked_arm_fallback_does_not_relax_visible_side_gait(self):
+        period = 48
+        poses = gait_poses(145, period)
+        for pose in poses:
+            pose["joints"]["left_wrist"]["confidence"] = 0.0
+            # Make the tracked right arm move with, rather than opposite, its
+            # right leg. The fallback must retain the contralateral gate.
+            swing = (
+                pose["joints"]["right_ankle"]["x"] - 215.0
+            ) / 1.5
+            pose["joints"]["right_wrist"]["x"] = 220.0 + swing
+
+        with self.assertRaisesRegex(RuntimeError, "only one untrackable arm"):
+            motion._select_untracked_arm_loop(
+                periodic_silhouette_frames(145, period),
+                poses, 24,
+                {"target": 1.05, "minimum": 0.85, "maximum": 3.4},
+                "office-gait",
+            )
+
 
 def treadmill_poses(count, period, stride=120.0, root_x=200.0):
     """In-place walker whose stance foot slides backward linearly.

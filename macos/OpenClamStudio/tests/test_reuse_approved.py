@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 
@@ -198,6 +199,61 @@ class DefaultDirectionTest(unittest.TestCase):
     def test_absent_idle_pose_still_resolves_to_the_default(self):
         self.assertEqual(
             motion.resolve_idle_pose(None, "")["id"], motion.DEFAULT_IDLE_POSE)
+
+    def test_presentation_aware_default_keeps_feminine_heel_choice(self):
+        self.assertEqual(
+            motion.resolve_idle_pose(
+                None, "", presentation="feminine",
+                remap_unsafe=True)["id"],
+            "back-heel")
+
+    def test_masculine_and_ambiguous_defaults_use_grounded_side_lean(self):
+        for presentation in ("masculine", "male", "androgynous", "neutral", None):
+            with self.subTest(presentation=presentation):
+                if presentation is None:
+                    presentation = "unknown"
+                resolved = motion.resolve_idle_pose(
+                    None, "", presentation=presentation,
+                    remap_unsafe=True)
+                self.assertEqual(
+                    resolved["id"], motion.DEFAULT_NON_FEMININE_IDLE_POSE)
+                self.assertEqual(resolved["validation"], "edge")
+
+    def test_stale_heel_pose_is_remapped_only_for_non_feminine_body(self):
+        for pose in motion.HEEL_IDLE_POSE_IDS:
+            with self.subTest(pose=pose):
+                safe = motion.resolve_idle_pose(
+                    pose, presentation="masculine", remap_unsafe=True)
+                self.assertEqual(safe["id"], "side-cross")
+                feminine = motion.resolve_idle_pose(
+                    pose, presentation="feminine", remap_unsafe=True)
+                self.assertEqual(feminine["id"], pose)
+
+    def test_non_feminine_explicit_heel_pose_can_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "available only"):
+            motion.resolve_idle_pose(
+                "back-heel", presentation="androgynous",
+                remap_unsafe=False)
+
+
+class BodyPresentationTest(unittest.TestCase):
+    def test_reads_normalised_presentation_from_active_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            body_dir = Path(directory, "body")
+            body_dir.mkdir()
+            Path(body_dir, "body.json").write_text(json.dumps({
+                "options": {"presentation": "male"},
+            }))
+            self.assertEqual(motion.body_presentation(directory), "masculine")
+
+    def test_legacy_or_malformed_body_fails_closed_to_androgynous(self):
+        with tempfile.TemporaryDirectory() as directory:
+            body_dir = Path(directory, "body")
+            body_dir.mkdir()
+            Path(body_dir, "body.json").write_text("{}")
+            self.assertEqual(motion.body_presentation(directory), "androgynous")
+            Path(body_dir, "body.json").write_text("{ broken")
+            self.assertEqual(motion.body_presentation(directory), "androgynous")
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ struct CaptainAyerAvatarStage: View {
                 .animation(
                     minimumInterval: 1.0 / 30.0,
                     paused: reduceMotion || !(
-                        controller.isSpeaking
+                        controller.isExpressionAnimating
                             || reactions.isAnimating
                             || reactions.isGazeAnimating
                             || reactions.isAmbientAnimating
@@ -78,7 +78,8 @@ struct CaptainAyerAvatarStage: View {
                             reduceMotion: reduceMotion
                         )
                         : localReaction.mergingSpeech(spokenReaction),
-                    showsReactionMouth: !mirrorsFace && !controller.isSpeaking,
+                    showsReactionMouth: !mirrorsFace
+                        && !controller.isExpressionAnimating,
                     crop: presentation.crop
                 )
             }
@@ -364,8 +365,20 @@ private struct CaptainAyerFaceReactionLayers: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let leftBrowFrame = OpenClamAvatarBrowFramePolicy.frame(
+                fallback: state.leftBrowFrame,
+                offset: state.leftBrowOffset,
+                squeeze: state.browSqueezeOffset,
+                expression: nil
+            )
+            let rightBrowFrame = OpenClamAvatarBrowFramePolicy.frame(
+                fallback: state.rightBrowFrame,
+                offset: state.rightBrowOffset,
+                squeeze: state.browSqueezeOffset,
+                expression: nil
+            )
             ZStack(alignment: .topLeading) {
-                if let frame = state.leftBrowFrame {
+                if let frame = leftBrowFrame {
                     sprite(
                         assetName: "CaptainAyerBrowLeft",
                         frame: frame,
@@ -374,7 +387,7 @@ private struct CaptainAyerFaceReactionLayers: View {
                         in: proxy.size
                     )
                 }
-                if let frame = state.rightBrowFrame {
+                if let frame = rightBrowFrame {
                     sprite(
                         assetName: "CaptainAyerBrowRight",
                         frame: frame,

@@ -29,6 +29,29 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertEqual(planner.timeline(for: "").cues, [.init(offset: 0, viseme: .silence)])
     }
 
+    func testPlannerCanPublishAllFifteenProductionVisemes() {
+        let timeline = CaptainAyerLipSyncPlanner().timeline(
+            for: "mbp f th t k ch s n r a e i o oa u",
+            duration: 6
+        )
+        let rendered = Set(timeline.cues.map(\.viseme))
+        XCTAssertEqual(rendered, Set(CaptainAyerViseme.allCases))
+        XCTAssertEqual(CaptainAyerViseme.allCases.count, 15)
+    }
+
+    func testPlannerKeepsChineseAndOtherNonLatinSpeechArticulating() {
+        let timeline = CaptainAyerLipSyncPlanner().timeline(
+            for: "你好，今天过得怎么样？",
+            duration: 3
+        )
+        let spoken = Set(timeline.cues.map(\.viseme)).subtracting([.silence])
+
+        XCTAssertEqual(timeline.duration, 3, accuracy: 0.0001)
+        XCTAssertGreaterThanOrEqual(spoken.count, 3)
+        XCTAssertEqual(timeline.cues.last?.viseme, .silence)
+        XCTAssertTrue(spoken.isSubset(of: Set(CaptainAyerViseme.allCases)))
+    }
+
     func testUnpunctuatedTimelineCrossfadesFromSilenceAtOnsetAtSixtyHertz() {
         let timeline = CaptainAyerLipSyncPlanner().timeline(
             for: "Photo",
@@ -147,6 +170,252 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertNotNil(reduced.leftBrowFrame)
     }
 
+    func testSpeechExpressionTimelineSwitchesIntentAtPhraseBoundaries() throws {
+        let timeline = CaptainAyerSpeechExpressionPlanner.timeline(
+            for: "Haha, this is hilarious! But I am horrified and afraid. Finally I am furious.",
+            duration: 9
+        )
+        XCTAssertGreaterThanOrEqual(timeline.cues.count, 3)
+        let laugh = timeline.state(at: 0.2).plan
+        let horrorCue = try XCTUnwrap(timeline.cues.first { $0.plan.fear > 0 })
+        let angerCue = try XCTUnwrap(timeline.cues.first { $0.plan.anger > 0 })
+        XCTAssertGreaterThan(laugh.laughter, 0.5)
+        XCTAssertGreaterThan(
+            timeline.state(at: horrorCue.start + 0.05).plan.fear,
+            0.5
+        )
+        XCTAssertGreaterThan(
+            timeline.state(at: angerCue.start + 0.05).plan.anger,
+            0.5
+        )
+    }
+
+    func testPhraseExpressionRetargetCrossfadesForDesktopParityWithoutNeutralPop() {
+        let laughter = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "Haha, this is hilarious laughter."
+        )
+        let horror = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "I am horrified, terrified, and afraid."
+        )
+        var transition = CaptainAyerSpeechExpressionTransitionState(
+            initial: laughter,
+            at: 10
+        )
+
+        let boundary = transition.sample(target: horror, at: 10)
+        XCTAssertEqual(
+            boundary,
+            laughter,
+            "A phrase boundary must retain the exact face already on screen"
+        )
+
+        let midpoint = transition.sample(target: horror, at: 10.18)
+        XCTAssertEqual(midpoint.laughter, laughter.laughter * 0.5, accuracy: 0.0001)
+        XCTAssertEqual(midpoint.fear, horror.fear * 0.5, accuracy: 0.0001)
+        XCTAssertGreaterThan(midpoint.laughter, 0)
+        XCTAssertGreaterThan(midpoint.fear, 0)
+
+        let settled = transition.sample(target: horror, at: 10.36)
+        XCTAssertEqual(settled, horror)
+        XCTAssertEqual(
+            CaptainAyerSpeechExpressionTransitionPolicy.duration,
+            0.36,
+            accuracy: 0.0001
+        )
+    }
+
+    func testExpressionRetargetDuringCrossfadeStartsFromDisplayedFace() {
+        let laughter = CaptainAyerSpeechExpressionPlanner.plan(for: "Haha, hilarious.")
+        let sorrow = CaptainAyerSpeechExpressionPlanner.plan(for: "I feel tragic sorrow.")
+        let anger = CaptainAyerSpeechExpressionPlanner.plan(for: "I am furious and angry.")
+        var transition = CaptainAyerSpeechExpressionTransitionState(
+            initial: laughter,
+            at: 2
+        )
+        _ = transition.sample(target: sorrow, at: 2)
+        let displayed = transition.sample(target: sorrow, at: 2.12)
+        let retargeted = transition.sample(target: anger, at: 2.12)
+
+        XCTAssertEqual(retargeted, displayed)
+        let afterOneFrame = transition.sample(target: anger, at: 2.12 + 1.0 / 60.0)
+        XCTAssertLessThan(afterOneFrame.sadness, displayed.sadness)
+        XCTAssertGreaterThan(afterOneFrame.anger, displayed.anger)
+    }
+
+    func testApprovedEmotionMouthTuningMatchesDesktopV22() {
+        let laughter = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: CaptainAyerSpeechExpressionPlanner.plan(for: "Haha, hilarious laughter!"),
+            progress: 0.5,
+            elapsed: 1
+        )
+        XCTAssertEqual(laughter.expressionLayers.smile, 0.18, accuracy: 0.0001)
+        XCTAssertNil(laughter.leftBrowFrame, "Approved laughter is mouth-only")
+        XCTAssertEqual(laughter.expressionLayers.cheek, 0, accuracy: 0.0001)
+
+        let sorrow = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: CaptainAyerSpeechExpressionPlanner.plan(for: "I am heartbroken with sorrow."),
+            progress: 0.5,
+            elapsed: 1
+        )
+        let horror = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: CaptainAyerSpeechExpressionPlanner.plan(for: "I am horrified and terrified."),
+            progress: 0.5,
+            elapsed: 1
+        )
+        let anger = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: CaptainAyerSpeechExpressionPlanner.plan(for: "I am furious and angry."),
+            progress: 0.5,
+            elapsed: 1
+        )
+        XCTAssertGreaterThan(sorrow.expressionLayers.sorrowMouth, 0)
+        XCTAssertGreaterThan(horror.expressionLayers.horrorMouth, 0)
+        XCTAssertGreaterThan(anger.expressionLayers.angerMouth, 0)
+        XCTAssertGreaterThan(anger.expressionLayers.angerMouth, horror.expressionLayers.horrorMouth)
+    }
+
+    func testLongUtteranceKeepsExpressionUntilAudioActuallyFinishes() {
+        let plan = CaptainAyerSpeechExpressionPlanner.plan(
+            for: "Haha, this hilarious laughter makes me joyful."
+        )
+        let middle = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: plan,
+            progress: 0.50,
+            elapsed: 30
+        )
+        let finalFivePercent = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: plan,
+            progress: 0.95,
+            elapsed: 57
+        )
+
+        XCTAssertEqual(finalFivePercent.expressionLayers.smile, 0.18, accuracy: 0.0001)
+        XCTAssertEqual(
+            finalFivePercent.expressionLayers.smile,
+            middle.expressionLayers.smile,
+            accuracy: 0.0001,
+            "A 60-second answer must not spend its final six seconds fading neutral"
+        )
+    }
+
+    func testSemanticOpenEyesCapAmbientBlinkForFearAndAngerOnly() {
+        let fullBlink = CaptainAyerEyeClosurePolicy.state(amount: 1)
+        let ambient = CaptainAyerFaceReactionRenderState(
+            gazeFrame: nil,
+            leftEye: fullBlink,
+            rightEye: fullBlink,
+            leftBrowFrame: nil,
+            rightBrowFrame: nil,
+            wideMouthOpacity: 0
+        )
+        for words in [
+            "I am horrified and terrified with fear.",
+            "I am furious, outraged, and angry.",
+        ] {
+            let speech = CaptainAyerSpeechExpressionPlanner.renderState(
+                for: CaptainAyerSpeechExpressionPlanner.plan(for: words),
+                progress: 0.5,
+                elapsed: 1
+            )
+            let merged = ambient.mergingSpeech(speech)
+            let maximum = try? XCTUnwrap(speech.maximumEyeClosure)
+            XCTAssertLessThan(CaptainAyerEyeClosurePolicy.amount(merged.leftEye), 1)
+            XCTAssertLessThanOrEqual(
+                CaptainAyerEyeClosurePolicy.amount(merged.leftEye),
+                (maximum ?? 1) + 0.0001
+            )
+        }
+
+        let laughter = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: CaptainAyerSpeechExpressionPlanner.plan(for: "Haha, joyful laughter."),
+            progress: 0.5,
+            elapsed: 1
+        )
+        XCTAssertNil(laughter.maximumEyeClosure)
+        XCTAssertEqual(ambient.mergingSpeech(laughter).leftEye, fullBlink)
+    }
+
+    func testSpeechExpressionReleaseStartsFromDisplayedFaceAndSettlesIn280ms() {
+        let spoken = CaptainAyerSpeechExpressionPlanner.renderState(
+            for: CaptainAyerSpeechExpressionPlanner.plan(for: "I am horrified and afraid."),
+            progress: 1,
+            elapsed: 2
+        )
+        XCTAssertEqual(
+            CaptainAyerSpeechExpressionReleasePolicy.value(from: spoken, progress: 0),
+            spoken
+        )
+        let halfway = CaptainAyerSpeechExpressionReleasePolicy.value(
+            from: spoken,
+            progress: 0.5
+        )
+        XCTAssertEqual(
+            halfway.expressionLayers.horrorMouth,
+            spoken.expressionLayers.horrorMouth * 0.5,
+            accuracy: 0.0001
+        )
+        XCTAssertGreaterThan(
+            halfway.maximumEyeClosure ?? -1,
+            spoken.maximumEyeClosure ?? -1,
+            "Releasing horror must relax the open-eye cap toward normal blinking."
+        )
+        XCTAssertEqual(
+            CaptainAyerSpeechExpressionReleasePolicy.value(from: spoken, progress: 1),
+            .idle
+        )
+        XCTAssertEqual(
+            CaptainAyerSpeechExpressionReleasePolicy.duration,
+            0.28,
+            accuracy: 0.0001
+        )
+    }
+
+    func testSpeechExpressionReleaseReturnsGazeAndBrowsTowardNeutral() {
+        XCTAssertEqual(
+            CaptainAyerDiscreteFaceReleasePolicy.frame(
+                from: 0,
+                columns: 25,
+                rows: 11,
+                neutralColumn: 12,
+                neutralRow: 5,
+                progress: 0
+            ),
+            0
+        )
+        XCTAssertEqual(
+            CaptainAyerDiscreteFaceReleasePolicy.frame(
+                from: 0,
+                columns: 25,
+                rows: 11,
+                neutralColumn: 12,
+                neutralRow: 5,
+                progress: 0.5
+            ),
+            3 * 25 + 6
+        )
+        XCTAssertEqual(
+            CaptainAyerDiscreteFaceReleasePolicy.frame(
+                from: 0,
+                columns: 25,
+                rows: 11,
+                neutralColumn: 12,
+                neutralRow: 5,
+                progress: 1
+            ),
+            5 * 25 + 12
+        )
+        XCTAssertEqual(
+            CaptainAyerDiscreteFaceReleasePolicy.frame(
+                from: 41,
+                columns: 14,
+                rows: 3,
+                neutralColumn: 4,
+                neutralRow: 1,
+                progress: 1
+            ),
+            18
+        )
+    }
+
     func testInteractiveReactionKeepsPriorityOverSpeechExpression() throws {
         let eye = CaptainAyerEyeReactionState(
             lowerFrame: nil,
@@ -194,7 +463,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
     }
 
     @MainActor
-    func testControllerRejectsStaleGenerationAndResetsOnFinish() {
+    func testControllerRejectsStaleGenerationAndReleasesOnFinish() {
         let controller = CaptainAyerLipSyncController()
         controller.prepare(text: "Aye", generation: 7)
 
@@ -206,10 +475,21 @@ final class CaptainAyerAvatarTests: XCTestCase {
         controller.finish(generation: 6)
         XCTAssertTrue(controller.isSpeaking)
 
-        controller.finish(generation: 7)
-        XCTAssertEqual(controller.phase, .idle)
+        let finishDate = Date().addingTimeInterval(1)
+        controller.finish(generation: 7, at: finishDate)
+        XCTAssertEqual(controller.phase, .releasing)
         XCTAssertNil(controller.generation)
         XCTAssertEqual(controller.renderState(), .idle)
+        XCTAssertNotEqual(controller.expressionRenderState(at: finishDate), .idle)
+        XCTAssertEqual(
+            controller.expressionRenderState(
+                at: finishDate.addingTimeInterval(0.28)
+                    .addingTimeInterval(0.001)
+            ),
+            .idle
+        )
+        controller.cancelAll()
+        XCTAssertEqual(controller.phase, .idle)
     }
 
     @MainActor
