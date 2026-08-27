@@ -56,6 +56,19 @@ NOSE_TIP = 1
 
 _det = None
 _det_lock = threading.Lock()
+_stylized_det = None
+_stylized_det_lock = threading.Lock()
+
+# The human-trained landmarker can understand a surprising amount of drawn
+# anatomy, but an oversized cartoon face often falls outside its full-frame
+# detector prior.  These windows are intentionally bounded and are only tried
+# by detect_for_intake() after the normal, strict full-frame pass fails.  The
+# 0.72 x 0.77 corner windows are important for large, off-centre illustrated
+# portraits; the remaining sizes make the same recovery useful for ordinary
+# crops without becoming an unbounded sliding-window scan.
+STYLIZED_WIDTH_FRACTIONS = (0.80, 0.75, 0.72, 0.70, 0.65)
+STYLIZED_HEIGHT_FRACTIONS = (0.90, 0.85, 0.80, 0.77, 0.75, 0.70)
+STYLIZED_ANCHORS = (0.0, 0.5, 1.0)
 
 
 def _model_hash(path):
@@ -121,17 +134,236 @@ def detector():
     return _det
 
 
+def stylized_detector():
+    """A permissive detector used only behind the intake topology gate.
+
+    Lower presence thresholds help MediaPipe propose meshes for illustration,
+    while _stylized_mesh_quality() rejects the weak eye/texture boxes that
+    those thresholds can otherwise expose.  Runtime plates never use this
+    detector: a generated canonical head must still pass detect().
+    """
+    global _stylized_det
+    if _stylized_det is None:
+        with _stylized_det_lock:
+            if _stylized_det is None:
+                _ensure_model()
+                _stylized_det = vision.FaceLandmarker.create_from_options(
+                    vision.FaceLandmarkerOptions(
+                        base_options=mpp.BaseOptions(model_asset_path=MODEL),
+                        running_mode=vision.RunningMode.IMAGE, num_faces=1,
+                        output_facial_transformation_matrixes=True,
+                        min_face_detection_confidence=0.10,
+                        min_face_presence_confidence=0.01,
+                        min_tracking_confidence=0.01))
+    return _stylized_det
+
+
+def _detect_with(instance, bgr):
+    """Run one FaceLandmarker instance and return pixel-space geometry."""
+    h, w = bgr.shape[:2]
+    result = instance.detect(mp.Image(
+        image_format=mp.ImageFormat.SRGB,
+        data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
+    if not result.face_landmarks:
+        return None, None
+    landmarks = np.array(
+        [[point.x * w, point.y * h]
+         for point in result.face_landmarks[0]], np.float32)
+    transform = (np.array(result.facial_transformation_matrixes[0])
+                 if getattr(result, "facial_transformation_matrixes", None)
+                 else None)
+    return landmarks, transform
+
+
 def detect(bgr):
     """-> (478x2 landmark array in pixels, 4x4 facial transform) or (None, None)."""
-    h, w = bgr.shape[:2]
-    r = detector().detect(mp.Image(image_format=mp.ImageFormat.SRGB,
-                                   data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
-    if not r.face_landmarks:
-        return None, None
-    lm = np.array([[l.x * w, l.y * h] for l in r.face_landmarks[0]], np.float32)
-    M = (np.array(r.facial_transformation_matrixes[0])
-         if getattr(r, "facial_transformation_matrixes", None) else None)
-    return lm, M
+    return _detect_with(detector(), bgr)
+
+
+def _stylized_mesh_quality(lm, crop_width, crop_height, source_minimum):
+    """Return a ranking score for a plausible stylized 478-point face.
+
+    Low-threshold MediaPipe proposals are not trusted merely because they
+    contain 478 points.  A real face mesh must have coherent eye, mouth and
+    oval topology, remain inside the tested crop, and be large enough to be
+    the subject rather than a background motif.  The score favours a large,
+    centred mesh and lets detect_for_intake() choose among overlapping crops.
+    """
+    lm = np.asarray(lm)
+    if lm.shape != (478, 2) or not np.isfinite(lm).all():
+        return None
+    inside = ((lm[:, 0] >= 0) & (lm[:, 0] < crop_width) &
+              (lm[:, 1] >= 0) & (lm[:, 1] < crop_height))
+    if float(inside.mean()) < 0.99:
+        return None
+
+    oval = lm[FACE_OVAL]
+    oval_width = float(np.ptp(oval[:, 0]))
+    oval_height = float(np.ptp(oval[:, 1]))
+    eye_span = float(np.linalg.norm(lm[EYE_L_OUT] - lm[EYE_R_OUT]))
+    mouth_width = float(np.ptp(lm[OUTER_LIP, 0]))
+    if min(oval_width, oval_height, eye_span, mouth_width) <= 1e-6:
+        return None
+
+    eye_ratio = eye_span / oval_width
+    mouth_ratio = mouth_width / eye_span
+    oval_ratio = oval_height / oval_width
+    eye_y = float((lm[EYE_L_OUT, 1] + lm[EYE_R_OUT, 1]) / 2.0)
+    mouth_y = float(lm[OUTER_LIP, 1].mean())
+    nose_y = float(lm[NOSE_TIP, 1])
+    eye_mouth_ratio = (mouth_y - eye_y) / oval_height
+    projected_mouth = foreshortening(lm)
+    face_area = ((oval_width * oval_height) /
+                 max(1.0, float(crop_width * crop_height)))
+    if not (0.45 < eye_ratio < 0.80 and
+            0.30 < mouth_ratio < 0.75 and
+            0.75 < oval_ratio < 1.45 and
+            0.20 < eye_mouth_ratio < 0.65 and
+            eye_y < nose_y < mouth_y and
+            0.55 < projected_mouth < 1.80 and
+            oval_width >= 0.18 * float(source_minimum) and
+            oval_height >= 0.25 * float(crop_height) and
+            face_area >= 0.08):
+        return None
+
+    centre = oval.mean(axis=0)
+    centre_error = math.hypot(
+        float(centre[0]) / crop_width - 0.5,
+        float(centre[1]) / crop_height - 0.5)
+    score = (face_area - 0.10 * centre_error -
+             0.10 * abs(oval_ratio - 1.0) -
+             0.03 * abs(eye_ratio - 0.60) -
+             0.02 * abs(mouth_ratio - 0.50))
+    return dict(
+        score=float(score), eye_oval_ratio=float(eye_ratio),
+        mouth_eye_ratio=float(mouth_ratio),
+        oval_aspect=float(oval_ratio),
+        eye_mouth_oval_ratio=float(eye_mouth_ratio),
+        foreshortening=float(projected_mouth), face_area=float(face_area))
+
+
+def _stylized_windows(width, height):
+    """Yield unique anchored crop boxes as (x, y, width, height)."""
+    seen = set()
+    for width_fraction in STYLIZED_WIDTH_FRACTIONS:
+        for height_fraction in STYLIZED_HEIGHT_FRACTIONS:
+            crop_width = int(round(width * width_fraction))
+            crop_height = int(round(height * height_fraction))
+            for anchor_x in STYLIZED_ANCHORS:
+                for anchor_y in STYLIZED_ANCHORS:
+                    x = int(round((width - crop_width) * anchor_x))
+                    y = int(round((height - crop_height) * anchor_y))
+                    box = (x, y, crop_width, crop_height)
+                    if box not in seen:
+                        seen.add(box)
+                        yield box
+
+
+def classify_source_medium(bgr, landmarks):
+    """Classify the face artwork as photo, illustration, or uncertain.
+
+    Detection strategy and visual medium are deliberately independent.  A
+    centred cartoon can pass MediaPipe's strict detector, while an off-centre
+    photograph may need the crop fallback.  The prompt pipeline needs the
+    *medium*, not the route by which the mesh was found.
+
+    Drawn faces characteristically combine large, nearly flat colour regions
+    with a small number of strong ink/shape boundaries.  Natural photographs
+    have many more low-amplitude tonal transitions.  We measure both on a
+    bounded face crop and leave the ambiguous band as ``unknown`` so a
+    medium-preserving prompt can be used instead of guessing.
+    """
+    image = np.asarray(bgr)
+    lm = np.asarray(landmarks)
+    if image.ndim != 3 or image.shape[2] < 3 or lm.shape != (478, 2):
+        return dict(source_medium="unknown", medium_score=None)
+
+    height, width = image.shape[:2]
+    oval = lm[FACE_OVAL]
+    x0, y0 = np.min(oval, axis=0)
+    x1, y1 = np.max(oval, axis=0)
+    pad_x = 0.12 * max(1.0, float(x1 - x0))
+    pad_y = 0.12 * max(1.0, float(y1 - y0))
+    left = max(0, int(math.floor(x0 - pad_x)))
+    top = max(0, int(math.floor(y0 - pad_y)))
+    right = min(width, int(math.ceil(x1 + pad_x)))
+    bottom = min(height, int(math.ceil(y1 + pad_y)))
+    crop = image[top:bottom, left:right, :3]
+    if min(crop.shape[:2], default=0) < 8:
+        return dict(source_medium="unknown", medium_score=None)
+
+    scale = min(1.0, 256.0 / max(crop.shape[:2]))
+    if scale < 1.0:
+        crop = cv2.resize(crop, None, fx=scale, fy=scale,
+                          interpolation=cv2.INTER_AREA)
+    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32)
+    horizontal = np.linalg.norm(lab[:, 1:] - lab[:, :-1], axis=2).ravel()
+    vertical = np.linalg.norm(lab[1:] - lab[:-1], axis=2).ravel()
+    delta = np.concatenate((horizontal, vertical))
+    if not delta.size:
+        return dict(source_medium="unknown", medium_score=None)
+
+    flat_fraction = float(np.mean(delta < 2.0))
+    strong_edge_fraction = float(np.mean(delta > 20.0))
+    score = flat_fraction + 2.0 * strong_edge_fraction
+    if score >= 0.72:
+        medium = "illustration"
+    elif score <= 0.62:
+        medium = "photograph"
+    else:
+        medium = "unknown"
+    return dict(
+        source_medium=medium,
+        medium_score=round(float(score), 6),
+        medium_features=dict(
+            flat_fraction=round(flat_fraction, 6),
+            strong_edge_fraction=round(strong_edge_fraction, 6)))
+
+
+def detect_for_intake(bgr):
+    """Detect a photo or, after strict failure, a topology-gated cartoon.
+
+    Returns ``(landmarks, transform, metadata)``.  Landmarks from a winning
+    crop are remapped into the original image coordinate system.  Consumers
+    outside source registration should keep using detect(), so permissive
+    cartoon proposals can never silently enter the production runtime.
+    """
+    landmarks, transform = detect(bgr)
+    if landmarks is not None:
+        metadata = dict(detection_mode="strict")
+        metadata.update(classify_source_medium(bgr, landmarks))
+        return landmarks, transform, metadata
+
+    height, width = bgr.shape[:2]
+    best = None
+    instance = stylized_detector()
+    for x, y, crop_width, crop_height in _stylized_windows(width, height):
+        local, candidate_transform = _detect_with(
+            instance, bgr[y:y + crop_height, x:x + crop_width])
+        if local is None:
+            continue
+        quality = _stylized_mesh_quality(
+            local, crop_width, crop_height, min(width, height))
+        if quality is None:
+            continue
+        if best is None or quality["score"] > best[0]:
+            mapped = local.copy()
+            mapped[:, 0] += x
+            mapped[:, 1] += y
+            metadata = dict(
+                detection_mode="crop-fallback",
+                detection_crop=dict(x=x, y=y, width=crop_width,
+                                    height=crop_height,
+                                    source=[int(width), int(height)]),
+                topology={key: round(value, 6)
+                          for key, value in quality.items()
+                          if key != "score"})
+            best = (quality["score"], mapped, candidate_transform, metadata)
+    if best is None:
+        return None, None, None
+    metadata = best[3]
+    metadata.update(classify_source_medium(bgr, best[1]))
+    return best[1], best[2], metadata
 
 
 def pose_angles(M):

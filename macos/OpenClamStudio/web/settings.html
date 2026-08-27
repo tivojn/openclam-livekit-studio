@@ -952,7 +952,7 @@ document.documentElement.dataset.design='quiet';</script>
   <div class="card">
     <div class="newface">
       <div class="drop" id="drop">
-        <div style="font-size:15px;color:var(--ink);margin-bottom:4px">Drop a portrait here</div>
+        <div style="font-size:15px;color:var(--ink);margin-bottom:4px">Drop a face image here</div>
         <div>or click to choose · PNG, JPEG, WEBP, HEIC</div>
       </div>
       <div class="newface-side">
@@ -962,10 +962,11 @@ document.documentElement.dataset.design='quiet';</script>
           <button class="btn" id="importAvtr" type="button" title="Import a complete avatar (.avtr) — face, body, walk, and edge idle arrive ready to use">Import .avtr…</button>
         </div>
         <div class="note" style="margin:0">
-          Everything downstream inherits the source photo: straight-on pose,
-          even light, neutral closed mouth, no hair across the cheeks, and as
-          much resolution as you have. The pose report below tells you if it
-          will hold up before you spend the build.
+          Photos and illustrated or cartoon faces are supported. Start with a
+          large, front-facing face with clear eyes, nose, and mouth. OpenClam
+          preserves the source art style, then creates a neutral,
+          animation-ready head before the long build. The pose report below
+          tells you if it will hold up before you spend the build.
         </div>
       </div>
     </div>
@@ -3286,6 +3287,14 @@ function avatarProgress(a) {
   };
 }
 
+function avatarSourceMedium(a) {
+  const source = a.source_metrics || a.metrics || {};
+  const value = String(source.source_medium ||
+    ((a.head || {}).source_medium) || source.source_mode ||
+    ((a.head || {}).source_mode) || '').toLowerCase();
+  return value.startsWith('stylized') ? 'illustration' : value;
+}
+
 function card(a) {
   const on = a.slug === ACTIVE, st = a.status || 'draft';
   const duo = a.slug === COMPANION;
@@ -3303,6 +3312,9 @@ function card(a) {
     <div class="body">
       <h3><span class="av-name">${esc(a.name || a.slug)}</span><button class="av-rename" data-act="rename" type="button" title="Rename this avatar" aria-label="Rename this avatar">✎</button></h3>
       ${metrics(a)}
+      ${avatarSourceMedium(a) === 'illustration'
+        ? '<p class="note" style="color:var(--ok-text)">Cartoon face recognized · the build will preserve its art style and create a trackable animation head.</p>'
+        : ''}
       ${a.error ? `<p class="note" style="color:var(--bad-text)">${esc(a.error)}</p>` : ''}
       <div class="acts">
         ${st === 'ready'

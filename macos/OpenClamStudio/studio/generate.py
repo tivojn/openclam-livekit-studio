@@ -12,7 +12,11 @@ from . import visemes
 
 MAX_WORKERS = 4
 RETRIES = 2
+# The established photo prompt remains v3 so adding cartoon support does not
+# invalidate or re-bill every existing photographic avatar.
 HEAD_PROMPT_VERSION = 3
+ILLUSTRATION_HEAD_PROMPT_VERSION = 1
+PRESERVE_MEDIUM_HEAD_PROMPT_VERSION = 1
 HEAD_PROMPT = """Create an ultra-high-definition square identity head reference from the supplied photo.
 
 IDENTITY — preserve the exact same adult person's facial identity, skull and facial proportions, skin tone and texture, apparent age, hairline, hairstyle, eyebrows, eye shape and color, nose, lips, ears, and distinctive natural features. Do not beautify, de-age, stylize, or redesign the person.
@@ -24,6 +28,48 @@ FRAMING — show only the complete head and hair, centered and fully visible, wi
 POSE — face the camera straight on with an upright head, eyes naturally open, and a neutral closed mouth. Preserve realistic asymmetry. Use even soft studio light and a plain neutral background with clean separation around every hair edge.
 
 This is a reusable identity asset for facial animation and later full-body image editing, not a fashion portrait or profile photograph."""
+
+STYLIZED_HEAD_PROMPT = """Create an ultra-high-definition square, animation-ready head reference from the supplied illustration.
+
+CHARACTER IDENTITY — preserve the exact same illustrated character, apparent age, face silhouette, skin palette, eye and iris design, eyebrows, nose, mouth design, ears, hairline, hairstyle, scars, linework, shading language, and every distinctive identity feature. Preserve the source medium and drawing style exactly. Do not photorealize, beautify, de-age, redesign, or substitute a generic anime character.
+
+IDENTITY-BEARING HEADWEAR — keep the exact hat, headwear, glasses, hair ornaments, or other head-attached item already present in the source when it identifies the character. Preserve its shape, colors, markings, placement, and relationship to the hair. Do not add any item that is absent from the source.
+
+TRACKABLE FACE — render one coherent, unobstructed face, straight toward the camera, with stable bilateral eye placement and a single anatomically connected brow, nose, cheek, jaw, and mouth region. Gently normalize only the camera pose and facial layout needed for reliable facial animation; keep the character's stylized proportions and recognizability. No duplicate eyes, brows, lips, teeth, tongues, face fragments, or detached features.
+
+EXPRESSION — eyes naturally open and looking at the camera. Use a calm neutral expression and one closed, relaxed mouth with no visible teeth or tongue. Preserve the source's characteristic lip and mouth line style while closing an open grin.
+
+FRAMING — show the complete head, hair, ears, and identity-bearing headwear, centered and fully visible, with a very small neutral upper-neck transition below the jaw. No shoulders, collarbones, chest, torso, arms, hands, clothing, handheld props, text, or extra characters. Do not crop the crown, brim, hair, chin, jaw, or ears.
+
+Use even clean light and a plain neutral background with crisp separation around the entire illustrated silhouette. This is a reusable character identity plate for facial animation, not a new artwork or costume design."""
+
+PRESERVE_MEDIUM_HEAD_PROMPT = """Create an ultra-high-definition square, animation-ready head reference from the supplied image.
+
+VISUAL MEDIUM — preserve the source medium exactly. If the source is a photograph, keep it fully photographic with the same natural skin and hair detail. If it is an illustration, animation still, painting, 3D render, or other artwork, keep that exact linework, shading, texture, palette, and rendering language. Never convert a drawing into a photo or a photo into artwork.
+
+IDENTITY — preserve the exact same adult person or character: face silhouette, skull and facial proportions, apparent age, complexion or skin palette, eyes, brows, nose, mouth design, ears, hairline, hairstyle, scars, glasses, identity-bearing headwear, and all distinctive natural or drawn features. Do not beautify, de-age, redesign, or substitute a generic face.
+
+TRACKABLE FACE — render one coherent, unobstructed face straight toward the camera with stable bilateral eye placement and a single connected brow, nose, cheek, jaw, and mouth region. Gently normalize only camera pose and facial layout needed for animation. No duplicate or detached facial features.
+
+EXPRESSION — eyes naturally open and looking at the camera. Use a calm neutral expression and one closed, relaxed mouth with no visible teeth or tongue.
+
+FRAMING — show the complete head, hair, ears, glasses, and identity-bearing headwear, centered and fully visible, with only a very small neutral upper-neck transition. No shoulders, chest, torso, arms, hands, handheld props, text, or extra characters. Do not crop the crown, brim, hair, chin, jaw, or ears. Use even clean light and a plain neutral background."""
+
+
+def head_prompt_for(source_medium):
+    """Return the medium-safe canonical-head prompt and its cache version."""
+    medium = str(source_medium or "unknown").lower()
+    # Compatibility for draft manifests created by the first crop-fallback
+    # implementation before detection path and medium were separated.
+    if medium.startswith("stylized") or medium in {"illustration", "cartoon", "drawing"}:
+        return STYLIZED_HEAD_PROMPT, ILLUSTRATION_HEAD_PROMPT_VERSION
+    if medium in {"photo", "photograph", "photographic"}:
+        return HEAD_PROMPT, HEAD_PROMPT_VERSION
+    return PRESERVE_MEDIUM_HEAD_PROMPT, PRESERVE_MEDIUM_HEAD_PROMPT_VERSION
+
+
+def head_prompt_version(source_medium):
+    return head_prompt_for(source_medium)[1]
 
 
 def _file_digest(path):
@@ -41,7 +87,7 @@ def default_head_provider():
 
 def generate_head(reference, destination, provider=None, quality="high",
                   timeout=1800, log=print, overwrite=False, pose_note="",
-                  keep=""):
+                  keep="", source_medium="photograph"):
     """Create and cache the canonical head-only identity asset used downstream.
 
     pose_note carries a measured correction ("previous attempt: yaw -9.1deg
@@ -59,12 +105,13 @@ def generate_head(reference, destination, provider=None, quality="high",
     # normalises the face, and normalising quietly removed the very things
     # that made a character recognisable (owner, 2026-08-04). It joins the
     # signature below, so changing it correctly re-renders.
-    prompt = HEAD_PROMPT + pose_note
+    prompt, prompt_version = head_prompt_for(source_medium)
+    prompt += pose_note
     if keep:
         prompt += f"\nMUST KEEP from the source portrait: {keep}"
 
     signature = hashlib.sha256((
-        f"v{HEAD_PROMPT_VERSION}\n{provider['name']}\n{provider.get('model')}\n"
+        f"v{prompt_version}\n{provider['name']}\n{provider.get('model')}\n"
         f"{quality}\n{prompt}\n" + _file_digest(reference)
     ).encode("utf-8")).hexdigest()
     signature_file = destination + ".prompt"
@@ -112,9 +159,10 @@ def generate_head(reference, destination, provider=None, quality="high",
 def generate_one(keyframe, name, out_dir, yaw=None, roll=None,
                  model=None, quality="high", credentials=None,
                  timeout=1800, log=print, overwrite=False,
-                 _provider_config=None, prompt_note=""):
+                 _provider_config=None, prompt_note="", source_medium="photo"):
     os.makedirs(out_dir, exist_ok=True)
-    prompt = visemes.prompt_for(name, yaw, roll)
+    prompt = visemes.prompt_for(
+        name, yaw, roll, source_medium=source_medium)
     if prompt_note:
         prompt += "\n\nQA CORRECTION FROM THE PREVIOUS ATTEMPT:\n" + str(prompt_note)
     if _provider_config is None:
@@ -177,7 +225,8 @@ def generate_one(keyframe, name, out_dir, yaw=None, roll=None,
 
 
 def generate_set(keyframe, out_dir, yaw=None, roll=None, names=None,
-                 workers=MAX_WORKERS, log=print, on_done=None, **kw):
+                 workers=MAX_WORKERS, log=print, on_done=None,
+                 source_medium="photo", **kw):
     names = names or visemes.ORDER
     os.makedirs(out_dir, exist_ok=True)
     results = {}
@@ -191,7 +240,8 @@ def generate_set(keyframe, out_dir, yaw=None, roll=None, names=None,
         t0 = time.time()
         p = generate_one(
             keyframe, n, out_dir, yaw, roll, log=log,
-            _provider_config=provider_config, **kw)
+            _provider_config=provider_config,
+            source_medium=source_medium, **kw)
         log(f"  {n:7s} {'rendered' if p else 'FAILED  '} in {time.time()-t0:5.1f}s")
         results[n] = p
         if on_done:

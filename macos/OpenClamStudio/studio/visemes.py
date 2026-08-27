@@ -104,6 +104,99 @@ CLOSER = ("\n\nRender only that anatomically coupled lower-face articulation, at
 BLINK_CLOSER = ("\n\nRender only that relaxed blink. Everything else in the frame must "
                 "be identical to the input image.")
 
+# Illustration edits need a genuinely separate rendering contract. Adding a
+# short "keep the style" suffix to the photographic prompt is not sufficient:
+# the photo contract explicitly asks for pores, natural enamel, soft tonal
+# boundaries and no ink-like edges. Those instructions make an image model
+# repaint anime, comic and toon-rendered faces even when the final sentence
+# asks it not to. The articulation descriptions below remain shared; these
+# blocks change only the medium, identity and rendering rules around them.
+STYLIZED_BASE = (
+    "Edit this illustrated character head. This is a LIP-SYNC SPEECH SHAPE "
+    "(viseme) frame for a talking-head animation, so the ONLY thing that may "
+    "change is the requested speech articulation below the eyes: lips, mouth, "
+    "jaw, chin, mouth corners and the immediately connected lower-cheek shapes.\n\n"
+    "ABSOLUTELY UNCHANGED: the character identity, face silhouette and "
+    "proportions, head position, head angle, head size, camera framing and "
+    "distance, crop, eyes, eyebrows, eyelids, gaze, nose, ears, hairline, hair, "
+    "identity-bearing headwear and accessories, neck and shoulders, lighting "
+    "and background. Preserve the source medium, linework, line weight, edge "
+    "treatment, palette, color fills, texture and shading language exactly.\n\n"
+    "DO NOT re-frame, re-crop, zoom, rotate, re-pose, re-light, beautify, "
+    "smooth, restyle or redraw the character. Do not convert the illustration "
+    "to another medium and do not add realistic surface detail absent from the "
+    "source. Do not add an emotion or a smile; permit only the subtle "
+    "lower-face movement required by the requested sound.\n\n"
+)
+
+STYLIZED_AMPLITUDE = (
+    "AMPLITUDE - THE SINGLE MOST IMPORTANT CONSTRAINT:\n"
+    "This is QUIET CONVERSATIONAL SPEECH at close range, with small and "
+    "efficient mouth movement. It is NOT singing, shouting, stage diction or "
+    "an exaggerated pronunciation diagram. The jaw barely moves and the "
+    "character's neutral expression stays unchanged: no grimace, snarl, "
+    "bared-teeth emotion or strain. Keep the change SMALL and UNDERSTATED. If "
+    "unsure, make it smaller.\n\n"
+    "BUT THERE IS A FLOOR - unless this is explicitly a closed-lip shape, its "
+    "defining gap, tooth contact, rounding or slit must remain distinguishable "
+    "from the closed resting mouth. Shrink the movement; never delete it.\n\n"
+)
+
+STYLIZED_FACIAL_COUPLING = (
+    "CONNECTED LOWER-FACE DESIGN - AVOID A PASTED-ON MOUTH:\n"
+    "Do not replace an isolated oval around the lips. Let the mouth corners, "
+    "jaw, chin and immediately adjacent lower-cheek shapes move together by "
+    "the smallest amount the source design supports. Keep every change below "
+    "the lower eyelids. Preserve simplified geometry when the source is "
+    "simplified; do not invent folds, wrinkles, gradients or texture that the "
+    "illustration does not use.\n\n"
+)
+
+STYLIZED_DENTAL_CONTINUITY = (
+    "MOUTH-DESIGN CONTINUITY - FIXED CHARACTER ART:\n"
+    "Preserve the character's established teeth, tongue, lip and oral-interior "
+    "design across every mouth shape. If teeth are individual shapes, keep the "
+    "same count, spacing, palette and outlines; if they are a simplified band "
+    "or block, keep that same simplification. The lower teeth move only with "
+    "the jaw. Do not invent extra teeth, gums, tongue detail, highlights or "
+    "realistic dental anatomy absent from the reference.\n\n"
+)
+
+STYLIZED_ORAL_RENDERING = (
+    "SOURCE-MEDIUM ORAL RENDERING:\n"
+    "Render the lips, teeth, tongue and mouth interior with the exact graphic "
+    "vocabulary already present in the input. Preserve its linework, flat or "
+    "graded fills, edge softness, palette and level of detail. A dark cavity, "
+    "hard contour or simplified tooth band is correct when the source uses it; "
+    "do not replace those choices with a different rendering style.\n\n"
+)
+
+STYLIZED_CLOSER = (
+    "\n\nRender only that connected lower-face articulation at the small "
+    "conversational scale described above. Any anatomical color or shading "
+    "wording describes placement only; the source illustration's own palette, "
+    "linework and rendering language always control the final pixels. Everything "
+    "else in the frame must remain identical to the input image."
+)
+
+STYLIZED_BLINK_PROMPT = (
+    "Edit this illustrated character head. This is a BLINK frame for a "
+    "talking-head animation, so the ONLY thing that may change is the eyes.\n\n"
+    "Close BOTH EYELIDS FULLY in a relaxed blink, using the character's existing "
+    "eyelid, lash, line and shading design. Preserve the established eye size, "
+    "spacing and angle. Do not squeeze the eyes, wrinkle the nose, move the "
+    "eyebrows or invent crease detail absent from the source.\n\n"
+    "ABSOLUTELY UNCHANGED: the mouth and lips, character identity and face "
+    "silhouette, head pose and size, framing, crop, eyebrows, nose, ears, hair, "
+    "identity-bearing headwear and accessories, neck and shoulders, lighting "
+    "and background. Preserve the source medium, linework, line weight, edge "
+    "treatment, palette, fills, texture and shading language exactly. Do not "
+    "re-frame, re-pose, re-light, retouch, restyle or convert the illustration "
+    "to another medium."
+    "\n\nRender only that relaxed blink. Everything else in the frame must be "
+    "identical to the input image."
+)
+
 # name -> (phoneme group, articulation, opening spec)
 # The opening is expressed against the subject's own lower lip thickness, which
 # is a feature the model can see in the reference; absolute units mean nothing to it.
@@ -312,7 +405,117 @@ def pose_clause(yaw, roll):
             f"NOT straight-to-camera.\n\n")
 
 
-def prompt_for(name, yaw=None, roll=None):
+def stylized_pose_clause(yaw, roll):
+    """Pose wording for characters without assuming gender or realism."""
+    if yaw is None:
+        return ""
+    if abs(yaw) < 6 and abs(roll) < 6:
+        return ("The head faces the camera STRAIGHT ON, perfectly frontal and level. "
+                "Draw the mouth SYMMETRICALLY about the vertical midline, with both "
+                "mouth corners the same distance from the centre of the philtrum.\n\n")
+    side = "the character's left" if yaw > 0 else "the character's right"
+    return (f"IMPORTANT: the head is TURNED about {abs(yaw):.0f} degrees toward "
+            f"{side} and tilted about {abs(roll):.0f} degrees. Draw the mouth in "
+            f"that same illustrated perspective - foreshortened toward the far "
+            f"cheek, NOT symmetric and NOT straight-to-camera.\n\n")
+
+
+def _is_stylized_medium(source_medium):
+    value = str(source_medium or "photo").strip().lower()
+    return value.startswith((
+        "stylized", "illustration", "illustrated", "cartoon", "anime",
+        "comic", "drawing", "drawn", "painting", "painted", "toon"))
+
+
+def _stylized_articulation(text):
+    """Remove photo- and gender-specific wording from shared mouth geometry."""
+    replacements = (
+        ("A small softly shadowed warm gap", "A small source-style oral gap"),
+        ("her lower lip's thickness", "the character's own lower-lip thickness"),
+        ("HER LOWER LIP", "THE CHARACTER'S OWN LOWER LIP"),
+        ("her lower lip", "the character's own lower lip"),
+        ("a small softly shadowed warm gap", "a small source-style oral gap"),
+        ("a clear softly shadowed warm opening", "a clear source-style opening"),
+        ("a softly lit warm oral space", "an oral space drawn in the source style"),
+        ("softly shadowed warm rose rather than black",
+         "drawn with the source illustration's existing oral-interior palette"),
+    )
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
+
+def _medium_neutral_contract(text):
+    """Remove illustration assumptions while retaining medium preservation."""
+    replacements = (
+        ("Edit this illustrated character head", "Edit this supplied face image"),
+        ("FIXED CHARACTER ART", "FIXED SOURCE DESIGN"),
+        ("exact graphic vocabulary", "exact visual vocabulary"),
+        ("same illustrated perspective", "same source perspective"),
+        ("Draw the mouth", "Render the mouth"),
+        ("THE CHARACTER'S OWN", "THE SUBJECT'S OWN"),
+        ("the character's own", "the subject's own"),
+        ("the character's", "the subject's"),
+        ("the character", "the subject"),
+        ("character identity", "subject identity"),
+        ("character's", "subject's"),
+        ("character", "subject"),
+        ("source illustration's", "source image's"),
+        ("source illustration", "source image"),
+        ("illustration's", "image's"),
+        ("illustration", "image"),
+    )
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
+
+def _preserve_medium_prompt(name, yaw=None, roll=None):
+    """Use a style-agnostic contract when local evidence is inconclusive."""
+    if name in EYE_SHAPES:
+        return _medium_neutral_contract(STYLIZED_BLINK_PROMPT)
+    group, desc, opening = SHAPES[name]
+    opening = OPENING_OVERRIDE.get(name, opening)
+    desc = _stylized_articulation(desc)
+    opening = _stylized_articulation(opening)
+    prompt = (STYLIZED_BASE + STYLIZED_AMPLITUDE
+              + STYLIZED_FACIAL_COUPLING + STYLIZED_DENTAL_CONTINUITY
+              + STYLIZED_ORAL_RENDERING
+              + stylized_pose_clause(yaw, roll)
+              + f"MOUTH SHAPE TO RENDER - viseme '{name}' ({group}):\n"
+              + f"{desc}\n\nHOW FAR THE MOUTH OPENS:\n{opening}"
+              + STYLIZED_CLOSER)
+    return _medium_neutral_contract(prompt)
+
+
+def prompt_for(name, yaw=None, roll=None, source_medium="photo"):
+    """Return a medium-aware edit prompt without disturbing photo cache keys.
+
+    The default/photo branch deliberately retains the original assembly and
+    strings byte for byte. ``generate.generate_one`` includes this final prompt
+    in its cache digest, so a stylized build receives a distinct cache key while
+    every existing photo render remains reusable.
+    """
+    medium = str(source_medium or "unknown").strip().lower()
+    if medium in {"unknown", "uncertain", "preserve"}:
+        return _preserve_medium_prompt(name, yaw, roll)
+    if _is_stylized_medium(medium):
+        if name in EYE_SHAPES:
+            return STYLIZED_BLINK_PROMPT
+        group, desc, opening = SHAPES[name]
+        opening = OPENING_OVERRIDE.get(name, opening)
+        desc = _stylized_articulation(desc)
+        opening = _stylized_articulation(opening)
+        return (STYLIZED_BASE + STYLIZED_AMPLITUDE
+                + STYLIZED_FACIAL_COUPLING + STYLIZED_DENTAL_CONTINUITY
+                + STYLIZED_ORAL_RENDERING
+                + stylized_pose_clause(yaw, roll)
+                + f"MOUTH SHAPE TO RENDER - viseme '{name}' ({group}):\n"
+                + f"{desc}\n\nHOW FAR THE MOUTH OPENS:\n{opening}"
+                + STYLIZED_CLOSER)
+
+    # Do not refactor this branch into the stylized blocks. Its exact output is
+    # part of the existing photo-render cache signature.
     if name in EYE_SHAPES:
         return BLINK_PROMPT
     group, desc, opening = SHAPES[name]

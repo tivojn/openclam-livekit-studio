@@ -145,36 +145,100 @@ def take_square(img, x0, y0, size, top_fill=None):
     return img[y0:y0 + size, x0:x0 + size]
 
 
-def build_keyframe(src_path, out_path, diag_dir=None):
+def _stylized_reference_square(img, detection_crop):
+    """Expand the proven cartoon detection crop into a square reference.
+
+    This retains more of the illustration than the detector window while
+    guaranteeing that the already-validated face stays inside.  Whenever the
+    source has enough room the square remains wholly in-image, avoiding the
+    conspicuous letterbox bands a generic contain operation would add.
+    """
+    height, width = img.shape[:2]
+    crop_width = int(detection_crop["width"])
+    crop_height = int(detection_crop["height"])
+    size = max(crop_width, crop_height)
+    centre_x = float(detection_crop["x"]) + crop_width / 2.0
+    centre_y = float(detection_crop["y"]) + crop_height / 2.0
+    x0 = int(round(centre_x - size / 2.0))
+    y0 = int(round(centre_y - size / 2.0))
+    if size <= width:
+        x0 = min(max(0, x0), width - size)
+    if size <= height:
+        y0 = min(max(0, y0), height - size)
+    square = take_square(img, x0, y0, size, _border_colour(img))
+    return square, x0, y0, size
+
+
+def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
     img = read_image_bgr(src_path)
     if img is None:
         raise ValueError(f"could not read image: {src_path}")
-    lm, M = face.detect(img)
+    detection = None
+    if allow_stylized:
+        lm, M, detection = face.detect_for_intake(img)
+    else:
+        lm, M = face.detect(img)
     if lm is None:
         raise ValueError("no face detected in the uploaded image")
 
-    crown_y = silhouette_top(img, lm)
-    x0, y0, size = square_crop(img, lm, crown_y)
-    clipped = crown_y is not None and crown_y <= 1
-    crop = take_square(img, x0, y0, size,
-                       _border_colour(img) if clipped else None)
+    crop_fallback = bool(detection and
+                         detection.get("detection_mode") == "crop-fallback")
+    if crop_fallback:
+        # Preserve the complete illustration (including identity-bearing hats,
+        # ears and linework) for the canonical-head provider.  Re-running the
+        # human full-frame detector on this square is intentionally avoided:
+        # its known failure is why the bounded intake fallback was needed.
+        # The already topology-gated source mesh is projected exactly instead.
+        crop, x0, y0, size = _stylized_reference_square(
+            img, detection["detection_crop"])
+        crown_y = None
+    else:
+        crown_y = silhouette_top(img, lm)
+        x0, y0, size = square_crop(img, lm, crown_y)
+        clipped = crown_y is not None and crown_y <= 1
+        crop = take_square(img, x0, y0, size,
+                           _border_colour(img) if clipped else None)
     interp = cv2.INTER_AREA if size > KEY_SIZE else cv2.INTER_LANCZOS4
     key = cv2.resize(crop, (KEY_SIZE, KEY_SIZE), interpolation=interp)
     cv2.imwrite(out_path, key, [cv2.IMWRITE_PNG_COMPRESSION, 3])
 
-    klm, kM = face.detect(key)
-    if klm is None:
-        raise ValueError("face lost after cropping - try a less tightly cropped photo")
+    if crop_fallback:
+        scale = KEY_SIZE / float(size)
+        klm = lm.copy()
+        klm[:, 0] = (klm[:, 0] - x0) * scale
+        klm[:, 1] = (klm[:, 1] - y0) * scale
+        kM = M
+    else:
+        klm, kM = face.detect(key)
+        if klm is None:
+            raise ValueError("face lost after cropping - try a less tightly cropped photo")
     m = face.metrics(klm, kM)
 
     lip = klm[face.OUTER_LIP]
     m["mouth_width_px"] = float(lip[:, 0].max() - lip[:, 0].min())
     m["crop"] = dict(x0=x0, y0=y0, size=size, source=[int(img.shape[1]), int(img.shape[0])])
-    key_crown = silhouette_top(key, klm)
+    key_crown = None if crop_fallback else silhouette_top(key, klm)
     m["source_crown_y"] = None if crown_y is None else float(crown_y)
     m["crown_clearance"] = (None if key_crown is None
                             else round(float(key_crown) / KEY_SIZE, 4))
     m["warnings"] = warnings_for(m)
+    if detection:
+        m["detection_mode"] = detection.get("detection_mode", "strict")
+        m["source_medium"] = detection.get("source_medium", "unknown")
+        m["medium_score"] = detection.get("medium_score")
+        if detection.get("medium_features"):
+            m["medium_features"] = detection["medium_features"]
+    if crop_fallback:
+        m["detection_crop"] = detection["detection_crop"]
+        m["topology"] = detection["topology"]
+        if m.get("source_medium") == "illustration":
+            m["warnings"].append(
+                "Cartoon face recognized with compatibility mode; the build will "
+                "preserve its art style and create a trackable animation head")
+        else:
+            m["warnings"].append(
+                "Face recognized with expanded crop search; the build will normalize "
+                "it into a strictly trackable animation head")
 
     if diag_dir:
         os.makedirs(diag_dir, exist_ok=True)

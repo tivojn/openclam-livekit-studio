@@ -170,51 +170,82 @@ def delete_avatar(slug):
 
 # ---------------------------------------------------------------- create
 
+def _reserve_avatar_directory(requested_slug):
+    """Atomically reserve a unique avatar directory and return (slug, path)."""
+    os.makedirs(AVATARS, mode=0o700, exist_ok=True)
+    base, index = requested_slug, 2
+    slug = requested_slug
+    while True:
+        directory = adir(slug)
+        try:
+            # os.mkdir is the reservation.  Unlike check-then-makedirs, two
+            # simultaneous uploads can never acquire the same directory.
+            os.mkdir(directory, mode=0o700)
+            return slug, directory
+        except FileExistsError:
+            suffix = f"-{index}"
+            slug = f"{base[:63 - len(suffix)].rstrip('-')}{suffix}"
+            index += 1
+
+
 def create_avatar(image_path, name=None, slug=None):
-    """Register an uploaded photo and prepare its keyframe.  No generation yet -
+    """Register an uploaded face image and prepare its keyframe. No generation yet -
     this returns fast so the UI can show the crop and any pose warnings first."""
     name = name or os.path.splitext(os.path.basename(image_path))[0]
     name = re.sub(r"[\x00-\x1f\x7f]+", " ", str(name)).strip()[:120] or "Avatar"
     slug = slugify(slug or name)
-    base, index = slug, 2
-    while os.path.isdir(adir(slug)):
-        suffix = f"-{index}"
-        slug = f"{base[:63 - len(suffix)].rstrip('-')}{suffix}"
-        index += 1
+    slug, d = _reserve_avatar_directory(slug)
+    try:
+        ext = os.path.splitext(image_path)[1].lower()
+        if ext in prep.HEIC_EXTENSIONS:
+            # Everything downstream reads the stored source with OpenCV, which
+            # has no HEIC codec - so the source of record becomes a PNG.
+            src = os.path.join(d, "source.png")
+            prep.decode_heic(image_path, src)
+        else:
+            src = os.path.join(d, "source" + ext)
+            if os.path.abspath(image_path) != os.path.abspath(src):
+                shutil.copyfile(image_path, src)
+        os.chmod(src, 0o600)
 
-    d = adir(slug)
-    os.makedirs(d, mode=0o700, exist_ok=True)
-    ext = os.path.splitext(image_path)[1].lower()
-    if ext in prep.HEIC_EXTENSIONS:
-        # Everything downstream reads the stored source with OpenCV, which
-        # has no HEIC codec - so the source of record becomes a PNG.
-        src = os.path.join(d, "source.png")
-        prep.decode_heic(image_path, src)
-    else:
-        src = os.path.join(d, "source" + ext)
-        if os.path.abspath(image_path) != os.path.abspath(src):
-            shutil.copyfile(image_path, src)
-    os.chmod(src, 0o600)
+        source_key = os.path.join(d, "source-keyframe.png")
+        key = os.path.join(d, "keyframe.png")
+        metrics = prep.build_keyframe(
+            src, source_key, diag_dir=os.path.join(d, "diag"),
+            allow_stylized=True)
+        shutil.copy2(source_key, key)
 
-    source_key = os.path.join(d, "source-keyframe.png")
-    key = os.path.join(d, "keyframe.png")
-    metrics = prep.build_keyframe(
-        src, source_key, diag_dir=os.path.join(d, "diag"))
-    shutil.copy2(source_key, key)
-
-    return write_manifest(slug, dict(
-        slug=slug, name=name,
-        created=datetime.datetime.now().isoformat(timespec="seconds"),
-        source=os.path.basename(src), source_keyframe="source-keyframe.png",
-        keyframe="keyframe.png",
-        status="draft", progress=dict(done=0, total=len(visemes.ORDER)),
-        metrics=metrics, warnings=metrics.get("warnings", []),
-        visemes=[], preview=None, sheet=None, log=[]))
+        return write_manifest(slug, dict(
+            slug=slug, name=name,
+            created=datetime.datetime.now().isoformat(timespec="seconds"),
+            source=os.path.basename(src), source_keyframe="source-keyframe.png",
+            keyframe="keyframe.png",
+            status="draft", progress=dict(done=0, total=len(visemes.ORDER)),
+            metrics=metrics, warnings=metrics.get("warnings", []),
+            visemes=[], preview=None, sheet=None, log=[]))
+    except Exception:
+        # This directory was reserved by this call and cannot contain a prior
+        # avatar.  A rejected upload must not leave source-only ghosts that
+        # consume names and appear in future maintenance scans.
+        shutil.rmtree(d, ignore_errors=True)
+        raise
 
 
 # ---------------------------------------------------------------- build
 
 RIG_ARTIFACTS = ("visemes", "diag", "runtime", "preview.mp4", "sheet.jpg")
+
+
+def _source_medium(report):
+    """Read new medium metadata while accepting early cartoon draft manifests."""
+    report = report or {}
+    medium = str(report.get("source_medium") or "").strip().lower()
+    if medium:
+        return medium
+    legacy = str(report.get("source_mode") or "").strip().lower()
+    if legacy.startswith("stylized"):
+        return "illustration"
+    return "photograph"
 
 
 def _band_suggestion(keys):
@@ -748,7 +779,8 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         if not os.path.isfile(source_keyframe):
             source_image = os.path.join(d, m.get("source") or "")
             if os.path.isfile(source_image):
-                prep.build_keyframe(source_image, source_keyframe)
+                prep.build_keyframe(
+                    source_image, source_keyframe, allow_stylized=True)
             else:
                 shutil.copy2(key, source_keyframe)
             m["source_keyframe"] = os.path.basename(source_keyframe)
@@ -761,11 +793,14 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         staged_keyframe = os.path.join(d, ".head-keyframe.png")
         best = None
         pose_note = ""
+        source_report = m.get("source_metrics") or m.get("metrics") or {}
+        source_medium = _source_medium(source_report)
         for pose_attempt in range(3):
             generate.generate_head(
                 source_keyframe, head_path, provider=head_provider,
                 log=emit, quality=quality, pose_note=pose_note,
-                keep=notes, overwrite=bool(pose_attempt))
+                keep=notes, overwrite=bool(pose_attempt),
+                source_medium=source_medium)
             head_metrics = prep.build_keyframe(
                 head_path, staged_keyframe, diag_dir=diag)
             issues = _frontality_issues(head_metrics)
@@ -799,9 +834,10 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         m["head"] = dict(
             image="head.png",
             source=os.path.basename(source_keyframe),
-            prompt_version=generate.HEAD_PROMPT_VERSION,
+            prompt_version=generate.head_prompt_version(source_medium),
             provider=head_provider.get("name"),
             model=head_provider.get("model"),
+            source_medium=source_medium,
         )
         write_manifest(slug, m)
 
@@ -819,7 +855,8 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
             write_manifest(slug, m)
 
         got = generate.generate_set(key, raw, yaw=yaw, roll=roll, names=names,
-                                    log=emit, on_done=on_done, quality=quality)
+                                    log=emit, on_done=on_done, quality=quality,
+                                    source_medium=source_medium)
         missing = [n for n, p in got.items() if not p]
         if missing:
             emit(f"WARNING: no render for {', '.join(missing)}")
@@ -837,6 +874,7 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
                 corrected = generate.generate_one(
                     key, "TH", raw, yaw=yaw, roll=roll, quality=quality,
                     log=emit, overwrite=True,
+                    source_medium=source_medium,
                     prompt_note=(
                         "The tongue in the previous TH plate was visibly lateral. "
                         "Show only a tiny, flat, perfectly centred tongue-tip sliver "
