@@ -167,9 +167,60 @@ enum OpenClamAvatarStandbyTransformPolicy {
         )
     }
 
+    static func transformed(
+        from startingTransform: OpenClamAvatarStandbyTransform,
+        magnification: CGFloat,
+        centroidTranslation: CGSize,
+        in canvasSize: CGSize
+    ) -> OpenClamAvatarStandbyTransform {
+        let safeMagnification = magnification.isFinite && magnification > 0
+            ? magnification
+            : 1
+        return sanitized(
+            scale: startingTransform.scale * safeMagnification,
+            normalizedOffset: translated(
+                from: startingTransform.normalizedOffset,
+                by: centroidTranslation,
+                in: canvasSize
+            )
+        )
+    }
+
     private static func clampOffset(_ value: CGFloat) -> CGFloat {
         guard value.isFinite else { return 0 }
         return min(maximumNormalizedOffset, max(-maximumNormalizedOffset, value))
+    }
+}
+
+/// A two-finger interaction always derives its preview from one immutable
+/// starting transform. Gesture updates are cumulative-from-start values, so
+/// UIKit's overlapping pinch and pan recognizers can never compound drift.
+struct OpenClamAvatarTransformSession: Equatable, Sendable {
+    let mode: OpenClamAvatarDisplayMode
+    let startingTransform: OpenClamAvatarStandbyTransform
+    private(set) var previewTransform: OpenClamAvatarStandbyTransform
+
+    init(
+        mode: OpenClamAvatarDisplayMode,
+        startingTransform: OpenClamAvatarStandbyTransform
+    ) {
+        self.mode = mode
+        self.startingTransform = startingTransform
+        previewTransform = startingTransform
+    }
+
+    mutating func update(
+        magnification: CGFloat,
+        centroidTranslation: CGSize,
+        canvasSize: CGSize
+    ) -> OpenClamAvatarStandbyTransform {
+        previewTransform = OpenClamAvatarStandbyTransformPolicy.transformed(
+            from: startingTransform,
+            magnification: magnification,
+            centroidTranslation: centroidTranslation,
+            in: canvasSize
+        )
+        return previewTransform
     }
 }
 
@@ -532,7 +583,7 @@ enum CaptainAyerInteractionLayer: String, CaseIterable, Sendable {
 
     var detail: String {
         switch self {
-        case .avatar: "Pinch for size; swipe vertically for opacity"
+        case .avatar: "Two fingers resize or move; one-finger vertical swipe changes opacity"
         case .thread: "Swipe to scroll the chat; avatar gestures are off"
         }
     }
@@ -633,6 +684,22 @@ struct CaptainAyerOverlayGestureState: Equatable, Sendable {
 
     mutating func endPinch() {
         isPinching = false
+    }
+
+    mutating func cancelOpacityDrag() -> Double? {
+        let revertedOpacity = opacityDragSession?.startingOpacity
+        opacityDragSession = nil
+        suppressesOpacityUntilDragEnd = false
+        return revertedOpacity
+    }
+
+    /// Cancels any preview without persisting it. The original opacity is
+    /// returned so switching to Thread-in-front can immediately restore the
+    /// last committed appearance before disabling avatar hit testing.
+    mutating func cancelAll() -> Double? {
+        let revertedOpacity = cancelOpacityDrag()
+        self = CaptainAyerOverlayGestureState()
+        return revertedOpacity
     }
 }
 
@@ -867,6 +934,12 @@ struct CaptainAyerAvatarOverlay: View {
     private var storedStandbyOffsetX = 0.0
     @AppStorage("captainAyer.overlay.standbyOffsetY")
     private var storedStandbyOffsetY = 0.0
+    @AppStorage("captainAyer.overlay.closeUpScale")
+    private var storedCloseUpScale = Double(CaptainAyerOverlayTuning.initialScale)
+    @AppStorage("captainAyer.overlay.closeUpOffsetX")
+    private var storedCloseUpOffsetX = 0.0
+    @AppStorage("captainAyer.overlay.closeUpOffsetY")
+    private var storedCloseUpOffsetY = 0.0
     @AppStorage("captainAyer.overlay.hidden")
     private var storedAvatarHidden = false
     @AppStorage("captainAyer.overlay.interactionLayer")
@@ -876,9 +949,9 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var scale = CaptainAyerOverlayTuning.initialScale
     @State private var displayMode = OpenClamAvatarDisplayMode.closeUp
     @State private var standbyOffset = CGPoint.zero
-    @State private var standbyOffsetAtDragStart: CGPoint?
+    @State private var closeUpOffset = CGPoint.zero
     @State private var gestureState = CaptainAyerOverlayGestureState()
-    @State private var scaleAtPinchStart: CGFloat?
+    @State private var transformSession: OpenClamAvatarTransformSession?
     @State private var isAvatarHidden = false
     @State private var interactionLayer = CaptainAyerInteractionLayer.avatar
     @State private var showsOpacityPanel = false
@@ -890,6 +963,13 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var motionCompletionTask: Task<Void, Never>?
 
     private var isHeadAnchored: Bool { displayMode == .closeUp }
+    private var activeFramingOffset: CGPoint {
+        switch displayMode {
+        case .standby: standbyOffset
+        case .closeUp: closeUpOffset
+        case .horizonWalk, .edgeIdle, .moves: .zero
+        }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -934,19 +1014,16 @@ struct CaptainAyerAvatarOverlay: View {
                     avatarStage(
                         presentation: presentation,
                         width: stageLayout.stageFrame.width,
-                        height: stageLayout.stageFrame.height
+                        height: stageLayout.stageFrame.height,
+                        canvasSize: stageBounds.size
                     )
                     .position(
                         x: stageLayout.stageFrame.midX,
                         y: stageLayout.stageFrame.midY
                     )
                     .offset(
-                        x: displayMode == .standby
-                            ? standbyOffset.x * subjectBounds.width
-                            : 0,
-                        y: displayMode == .standby
-                            ? standbyOffset.y * subjectBounds.height
-                            : 0
+                        x: activeFramingOffset.x * stageBounds.width,
+                        y: activeFramingOffset.y * stageBounds.height
                     )
                     // Keep the narrow silhouette gesture surface alive at 0%
                     // opacity so an upward swipe can recover the avatar. The
@@ -1024,9 +1101,18 @@ struct CaptainAyerAvatarOverlay: View {
             storedStandbyOffsetX = Double(standby.normalizedOffset.x)
             storedStandbyOffsetY = Double(standby.normalizedOffset.y)
             standbyOffset = standby.normalizedOffset
-            scale = displayMode == .standby
-                ? standby.scale
-                : CaptainAyerOverlayTuning.initialScale
+            let closeUp = OpenClamAvatarStandbyTransformPolicy.sanitized(
+                scale: CGFloat(storedCloseUpScale),
+                normalizedOffset: CGPoint(
+                    x: storedCloseUpOffsetX,
+                    y: storedCloseUpOffsetY
+                )
+            )
+            storedCloseUpScale = Double(closeUp.scale)
+            storedCloseUpOffsetX = Double(closeUp.normalizedOffset.x)
+            storedCloseUpOffsetY = Double(closeUp.normalizedOffset.y)
+            closeUpOffset = closeUp.normalizedOffset
+            scale = displayMode == .standby ? standby.scale : closeUp.scale
             isAvatarHidden = false
             interactionLayer = CaptainAyerInteractionLayer(
                 rawValue: storedInteractionLayer
@@ -1037,9 +1123,10 @@ struct CaptainAyerAvatarOverlay: View {
             motionSession = OpenClamAvatarMotionSessionState()
             motionCompletionTask?.cancel()
             motionCompletionTask = nil
-            standbyOffsetAtDragStart = nil
+            transformSession = nil
         }
         .onDisappear {
+            cancelAvatarGesturePreviews()
             stopAvatarMotion(restoreFraming: false)
             connectionFeedback.stop()
             faceMirror.stop()
@@ -1119,20 +1206,9 @@ struct CaptainAyerAvatarOverlay: View {
     private func avatarStage(
         presentation: OpenClamCatalogAvatarStage.Presentation,
         width: CGFloat,
-        height: CGFloat
+        height: CGFloat,
+        canvasSize: CGSize
     ) -> some View {
-        let allowsPositioning = displayMode == .standby
-        let positionChanged: ((CGSize) -> Void)? = allowsPositioning
-            ? { translation in
-                updateStandbyPosition(
-                    translation: translation,
-                    canvasSize: CGSize(width: width, height: height)
-                )
-            }
-            : nil
-        let positionEnded: (() -> Void)? = allowsPositioning
-            ? { endStandbyPosition() }
-            : nil
         return OpenClamCatalogAvatarStage(
             avatar: avatar,
             controller: controller,
@@ -1146,10 +1222,16 @@ struct CaptainAyerAvatarOverlay: View {
             renderOpacity: opacity,
             onVerticalOpacityChanged: updateOpacityDrag,
             onVerticalOpacityEnded: endOpacityDrag,
-            onMagnificationChanged: updatePinch,
-            onMagnificationEnded: endPinch,
-            onPositionChanged: positionChanged,
-            onPositionEnded: positionEnded,
+            onVerticalOpacityCancelled: cancelOpacityDrag,
+            onTransformBegan: beginAvatarTransform,
+            onTransformChanged: { magnification, translation in
+                updateAvatarTransform(
+                    magnification: magnification,
+                    translation: translation,
+                    canvasSize: canvasSize
+                )
+            },
+            onTransformEnded: endAvatarTransform,
             onInteraction: noteAvatarInteraction
         )
         .frame(width: width, height: height)
@@ -1218,48 +1300,72 @@ struct CaptainAyerAvatarOverlay: View {
         storedOpacity = completedOpacity
     }
 
-    private func updatePinch(magnification: CGFloat) {
-        if scaleAtPinchStart == nil {
+    private func cancelOpacityDrag() {
+        guard let revertedOpacity = gestureState.cancelOpacityDrag() else { return }
+        setOpacity(revertedOpacity, persists: false)
+    }
+
+    private func beginAvatarTransform() {
+        guard interactionLayer.allowsAvatarGestures else { return }
+        if displayMode.isMotion {
             stopAvatarMotion()
-            if let revertedOpacity = gestureState.beginPinch() {
-                setOpacity(revertedOpacity, persists: false)
-            }
-            scaleAtPinchStart = scale
-            wakeRail()
         }
-        guard let scaleAtPinchStart else { return }
-        scale = CaptainAyerOverlayTuning.clampedScale(
-            scaleAtPinchStart * magnification
+        guard transformSession == nil else { return }
+        if let revertedOpacity = gestureState.beginPinch() {
+            setOpacity(revertedOpacity, persists: false)
+        }
+        transformSession = OpenClamAvatarTransformSession(
+            mode: displayMode,
+            startingTransform: activeFramingTransform
         )
+        wakeRail()
     }
 
-    private func endPinch() {
-        scaleAtPinchStart = nil
-        gestureState.endPinch()
-        guard displayMode == .standby else { return }
-        storedStandbyScale = Double(scale)
-    }
-
-    private func updateStandbyPosition(
+    private func updateAvatarTransform(
+        magnification: CGFloat,
         translation: CGSize,
         canvasSize: CGSize
     ) {
-        guard displayMode == .standby else { return }
-        if standbyOffsetAtDragStart == nil {
-            standbyOffsetAtDragStart = standbyOffset
-            wakeRail()
+        if transformSession == nil {
+            beginAvatarTransform()
         }
-        standbyOffset = OpenClamAvatarStandbyTransformPolicy.translated(
-            from: standbyOffsetAtDragStart ?? standbyOffset,
-            by: translation,
-            in: canvasSize
+        guard var session = transformSession else { return }
+        let preview = session.update(
+            magnification: magnification,
+            centroidTranslation: translation,
+            canvasSize: canvasSize
         )
+        transformSession = session
+        applyFramingTransform(preview, for: session.mode)
     }
 
-    private func endStandbyPosition() {
-        standbyOffsetAtDragStart = nil
-        storedStandbyOffsetX = Double(standbyOffset.x)
-        storedStandbyOffsetY = Double(standbyOffset.y)
+    private func endAvatarTransform(cancelled: Bool) {
+        guard let session = transformSession else {
+            gestureState.endPinch()
+            return
+        }
+        let result = cancelled
+            ? session.startingTransform
+            : session.previewTransform
+        applyFramingTransform(result, for: session.mode)
+        if !cancelled {
+            persistFramingTransform(result, for: session.mode)
+        }
+        transformSession = nil
+        gestureState.endPinch()
+    }
+
+    private func cancelAvatarGesturePreviews() {
+        if let revertedOpacity = gestureState.cancelAll() {
+            setOpacity(revertedOpacity, persists: false)
+        }
+        if let transformSession {
+            applyFramingTransform(
+                transformSession.startingTransform,
+                for: transformSession.mode
+            )
+        }
+        transformSession = nil
     }
 
     private var toolRail: some View {
@@ -1395,8 +1501,7 @@ struct CaptainAyerAvatarOverlay: View {
             interactionLayer = interactionLayer.toggled
             storedInteractionLayer = interactionLayer.rawValue
             if interactionLayer == .thread {
-                gestureState = CaptainAyerOverlayGestureState()
-                scaleAtPinchStart = nil
+                cancelAvatarGesturePreviews()
             }
         }
         .accessibilityLabel("Interaction layer")
@@ -1610,17 +1715,17 @@ struct CaptainAyerAvatarOverlay: View {
     }
 
     private func selectAvatarMode(_ mode: OpenClamAvatarDisplayMode) {
+        if transformSession != nil || gestureState.hasOpacityDrag {
+            cancelAvatarGesturePreviews()
+        }
         guard let kind = mode.motionKind else {
             stopAvatarMotion(restoreFraming: false)
-            let standby = restoredStandbyTransform
+            let transform = mode == .standby
+                ? restoredStandbyTransform
+                : restoredCloseUpTransform
             animate(.framing) {
                 displayMode = mode
-                scale = mode == .standby
-                    ? standby.scale
-                    : CaptainAyerOverlayTuning.initialScale
-                if mode == .standby {
-                    standbyOffset = standby.normalizedOffset
-                }
+                applyFramingTransform(transform, for: mode)
             }
             storedDisplayMode = mode.rawValue
             storedFraming = mode == .standby ? "full" : "closeup"
@@ -1640,7 +1745,7 @@ struct CaptainAyerAvatarOverlay: View {
         storedStandbyOffsetX = Double(factory.normalizedOffset.x)
         storedStandbyOffsetY = Double(factory.normalizedOffset.y)
         standbyOffset = factory.normalizedOffset
-        standbyOffsetAtDragStart = nil
+        transformSession = nil
         selectAvatarMode(.standby)
     }
 
@@ -1689,6 +1794,66 @@ struct CaptainAyerAvatarOverlay: View {
                 y: storedStandbyOffsetY
             )
         )
+    }
+
+    private var restoredCloseUpTransform: OpenClamAvatarStandbyTransform {
+        OpenClamAvatarStandbyTransformPolicy.sanitized(
+            scale: CGFloat(storedCloseUpScale),
+            normalizedOffset: CGPoint(
+                x: storedCloseUpOffsetX,
+                y: storedCloseUpOffsetY
+            )
+        )
+    }
+
+    private var activeFramingTransform: OpenClamAvatarStandbyTransform {
+        switch displayMode {
+        case .standby:
+            OpenClamAvatarStandbyTransformPolicy.sanitized(
+                scale: scale,
+                normalizedOffset: standbyOffset
+            )
+        case .closeUp:
+            OpenClamAvatarStandbyTransformPolicy.sanitized(
+                scale: scale,
+                normalizedOffset: closeUpOffset
+            )
+        case .horizonWalk, .edgeIdle, .moves:
+            restoredStandbyTransform
+        }
+    }
+
+    private func applyFramingTransform(
+        _ transform: OpenClamAvatarStandbyTransform,
+        for mode: OpenClamAvatarDisplayMode
+    ) {
+        scale = transform.scale
+        switch mode {
+        case .standby:
+            standbyOffset = transform.normalizedOffset
+        case .closeUp:
+            closeUpOffset = transform.normalizedOffset
+        case .horizonWalk, .edgeIdle, .moves:
+            break
+        }
+    }
+
+    private func persistFramingTransform(
+        _ transform: OpenClamAvatarStandbyTransform,
+        for mode: OpenClamAvatarDisplayMode
+    ) {
+        switch mode {
+        case .standby:
+            storedStandbyScale = Double(transform.scale)
+            storedStandbyOffsetX = Double(transform.normalizedOffset.x)
+            storedStandbyOffsetY = Double(transform.normalizedOffset.y)
+        case .closeUp:
+            storedCloseUpScale = Double(transform.scale)
+            storedCloseUpOffsetX = Double(transform.normalizedOffset.x)
+            storedCloseUpOffsetY = Double(transform.normalizedOffset.y)
+        case .horizonWalk, .edgeIdle, .moves:
+            break
+        }
     }
 
     private func beginAvatarMotion(_ kind: OpenClamAvatarMotionKind) {

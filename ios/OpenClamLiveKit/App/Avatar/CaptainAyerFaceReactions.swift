@@ -94,7 +94,6 @@ enum CaptainAyerAvatarDragIntent: Equatable, Sendable {
     case pending
     case gaze
     case opacity
-    case position
 }
 
 /// One intent classifier is shared by the stage and its tests so the
@@ -106,22 +105,13 @@ enum CaptainAyerAvatarGesturePolicy {
 
     static func dragIntent(
         translation: CGSize,
-        supportsOpacity: Bool,
-        supportsPosition: Bool = false
+        supportsOpacity: Bool
     ) -> CaptainAyerAvatarDragIntent {
         guard translation.width.isFinite, translation.height.isFinite else {
             return .pending
         }
         let horizontal = abs(translation.width)
         let vertical = abs(translation.height)
-        if supportsPosition,
-           hypot(horizontal, vertical) > tapSlop {
-            // Standby is the one direct-manipulation mode: a drag moves the
-            // companion in both axes. Opacity remains available from its rail
-            // slider (and as a vertical swipe in Close-up), so it must not
-            // steal a deliberate vertical repositioning gesture here.
-            return .position
-        }
         if supportsOpacity,
            vertical >= horizontal * verticalDominance {
             // Keep a vertically dominant touch undecided until it clears the
@@ -140,7 +130,6 @@ enum CaptainAyerAvatarDragCompletion: Equatable, Sendable {
     case tap
     case gaze
     case opacity
-    case position
 }
 
 struct CaptainAyerAvatarDragSession: Equatable, Sendable {
@@ -149,18 +138,14 @@ struct CaptainAyerAvatarDragSession: Equatable, Sendable {
 
     mutating func update(
         translation: CGSize,
-        supportsOpacity: Bool,
-        supportsPosition: Bool = false
+        supportsOpacity: Bool
     ) {
         let proposed = CaptainAyerAvatarGesturePolicy.dragIntent(
             translation: translation,
-            supportsOpacity: supportsOpacity,
-            supportsPosition: supportsPosition
+            supportsOpacity: supportsOpacity
         )
         if proposed == .opacity {
             intent = .opacity
-        } else if proposed == .position, intent != .opacity {
-            intent = .position
         } else if intent == .pending, proposed == .gaze {
             intent = .gaze
         }
@@ -172,7 +157,6 @@ struct CaptainAyerAvatarDragSession: Equatable, Sendable {
 
     var completion: CaptainAyerAvatarDragCompletion {
         if intent == .opacity { return .opacity }
-        if intent == .position { return .position }
         return exceededTapSlop ? .gaze : .tap
     }
 }

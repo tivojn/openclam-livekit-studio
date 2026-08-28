@@ -615,26 +615,10 @@ final class OpenClamConversationUITests: XCTestCase {
         putThreadLayerInFront(fullyTransparent: true)
 
         let before = latestUser.frame.minY
-        // The composer intentionally keeps the keyboard open after Send. Keep
-        // the physical drag inside the visible thread rather than beginning
-        // on the keyboard, which would exercise keyboard gesture handling.
-        let swipeUpStart = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.50)
-        )
-        let swipeUpEnd = app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.50, dy: 0.18)
-        )
-        swipeUpStart.press(forDuration: 0.06, thenDragTo: swipeUpEnd)
-
-        let movedUp = expectation(
-            for: NSPredicate { _, _ in
-                !latestUser.isHittable || latestUser.frame.minY < before - 44
-            },
-            evaluatedWith: nil
-        )
-        wait(for: [movedUp], timeout: 3)
-        let afterUp = latestUser.frame.minY
-
+        // A submitted turn is intentionally anchored near the top, so first
+        // drag downward toward older history. Keep the physical drag inside
+        // the visible thread rather than beginning on the keyboard, which
+        // would exercise keyboard gesture handling instead of layer routing.
         let swipeDownStart = app.coordinate(
             withNormalizedOffset: CGVector(dx: 0.50, dy: 0.20)
         )
@@ -645,7 +629,7 @@ final class OpenClamConversationUITests: XCTestCase {
 
         let movedDown = expectation(
             for: NSPredicate { _, _ in
-                latestUser.frame.minY > afterUp + 44
+                !latestUser.isHittable || latestUser.frame.minY > before + 44
             },
             evaluatedWith: nil
         )
@@ -710,9 +694,9 @@ final class OpenClamConversationUITests: XCTestCase {
 
         putAvatarLayerInFront()
 
-        // Close-up keeps vertical direct manipulation assigned to opacity.
-        // Standby reserves direct dragging for its remembered position.
-        selectAvatarMode("Close-up")
+        // A one-finger vertical swipe controls opacity in Standby too. Size
+        // and position belong exclusively to the separate two-finger gesture.
+        selectAvatarMode("Standby")
 
         let opacityControl = app.buttons["openclam-avatar-opacity-control"]
         XCTAssertTrue(opacityControl.waitForExistence(timeout: 2))

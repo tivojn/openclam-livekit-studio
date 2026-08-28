@@ -845,6 +845,75 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertFalse(state.hasOpacityDrag)
     }
 
+    func testCancellingOpacityPreviewRestoresStartWithoutPersistence() throws {
+        var state = CaptainAyerOverlayGestureState()
+        let preview = try XCTUnwrap(
+            state.updateOpacityDrag(
+                startingOpacity: 0.42,
+                verticalTranslation: -90
+            )
+        )
+        XCTAssertEqual(preview, 0.72, accuracy: 0.0001)
+        XCTAssertTrue(state.hasOpacityDrag)
+
+        let restored = try XCTUnwrap(state.cancelOpacityDrag())
+        XCTAssertEqual(restored, 0.42, accuracy: 0.0001)
+        XCTAssertFalse(state.hasOpacityDrag)
+        XCTAssertFalse(state.suppressesOpacityUntilDragEnd)
+        XCTAssertNil(
+            state.completeOpacityDrag(),
+            "A cancelled visual preview must never produce a persisted value"
+        )
+
+        let freshPreview = try XCTUnwrap(
+            state.updateOpacityDrag(
+                startingOpacity: restored,
+                verticalTranslation: -30
+            )
+        )
+        XCTAssertEqual(freshPreview, 0.52, accuracy: 0.0001)
+    }
+
+    func testCancellingOpacityDuringPinchClearsStaleDragButKeepsPinchOwnership() throws {
+        var state = CaptainAyerOverlayGestureState()
+        _ = try XCTUnwrap(
+            state.updateOpacityDrag(
+                startingOpacity: 0.50,
+                verticalTranslation: -120
+            )
+        )
+        XCTAssertEqual(try XCTUnwrap(state.beginPinch()), 0.50, accuracy: 0.0001)
+        XCTAssertTrue(state.isPinching)
+        XCTAssertTrue(state.suppressesOpacityUntilDragEnd)
+
+        XCTAssertNil(state.cancelOpacityDrag())
+        XCTAssertTrue(
+            state.isPinching,
+            "Cancelling the stale one-finger path must not release the active two-finger transform"
+        )
+        XCTAssertFalse(state.hasOpacityDrag)
+        XCTAssertFalse(state.suppressesOpacityUntilDragEnd)
+        XCTAssertNil(
+            state.updateOpacityDrag(
+                startingOpacity: 0.50,
+                verticalTranslation: -90
+            )
+        )
+
+        state.endPinch()
+        XCTAssertFalse(state.isPinching)
+        XCTAssertEqual(
+            try XCTUnwrap(
+                state.updateOpacityDrag(
+                    startingOpacity: 0.50,
+                    verticalTranslation: -30
+                )
+            ),
+            0.60,
+            accuracy: 0.0001
+        )
+    }
+
     func testOpeningWhisperOpacityIsVisibleButSubtle() {
         XCTAssertGreaterThan(
             CaptainAyerOverlayTuning.initialOpacity,
@@ -1049,6 +1118,142 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
     }
 
+    func testTwoFingerTransformUsesCumulativeScaleAndCentroidTranslation() {
+        var session = OpenClamAvatarTransformSession(
+            mode: .standby,
+            startingTransform: OpenClamAvatarStandbyTransform(
+                scale: 1.2,
+                normalizedOffset: CGPoint(x: 0.10, y: -0.20)
+            )
+        )
+        let canvas = CGSize(width: 400, height: 800)
+
+        let first = session.update(
+            magnification: 1.25,
+            centroidTranslation: CGSize(width: 40, height: 40),
+            canvasSize: canvas
+        )
+        XCTAssertEqual(first.scale, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(first.normalizedOffset.x, 0.20, accuracy: 0.0001)
+        XCTAssertEqual(first.normalizedOffset.y, -0.15, accuracy: 0.0001)
+
+        let second = session.update(
+            magnification: 2,
+            centroidTranslation: CGSize(width: 80, height: 120),
+            canvasSize: canvas
+        )
+        XCTAssertEqual(second.scale, 2.4, accuracy: 0.0001)
+        XCTAssertEqual(second.normalizedOffset.x, 0.30, accuracy: 0.0001)
+        XCTAssertEqual(second.normalizedOffset.y, -0.05, accuracy: 0.0001)
+        XCTAssertEqual(
+            session.startingTransform,
+            OpenClamAvatarStandbyTransform(
+                scale: 1.2,
+                normalizedOffset: CGPoint(x: 0.10, y: -0.20)
+            ),
+            "Every recognizer update must remain cumulative from one immutable start"
+        )
+    }
+
+    func testTwoFingerTransformSupportsPurePanAndPurePinch() {
+        let starting = OpenClamAvatarStandbyTransform(
+            scale: 1.5,
+            normalizedOffset: CGPoint(x: 0.10, y: -0.10)
+        )
+
+        let panned = OpenClamAvatarStandbyTransformPolicy.transformed(
+            from: starting,
+            magnification: 1,
+            centroidTranslation: CGSize(width: -120, height: 160),
+            in: CGSize(width: 400, height: 800)
+        )
+        XCTAssertEqual(panned.scale, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(panned.normalizedOffset.x, -0.20, accuracy: 0.0001)
+        XCTAssertEqual(panned.normalizedOffset.y, 0.10, accuracy: 0.0001)
+
+        let pinched = OpenClamAvatarStandbyTransformPolicy.transformed(
+            from: starting,
+            magnification: 0.5,
+            centroidTranslation: .zero,
+            in: CGSize(width: 400, height: 800)
+        )
+        XCTAssertEqual(pinched.scale, 0.75, accuracy: 0.0001)
+        XCTAssertEqual(pinched.normalizedOffset.x, 0.10, accuracy: 0.0001)
+        XCTAssertEqual(pinched.normalizedOffset.y, -0.10, accuracy: 0.0001)
+    }
+
+    func testTwoFingerTransformClampsAndRejectsInvalidGestureGeometry() {
+        let starting = OpenClamAvatarStandbyTransform(
+            scale: 1.25,
+            normalizedOffset: CGPoint(x: 0.12, y: -0.18)
+        )
+        let clamped = OpenClamAvatarStandbyTransformPolicy.transformed(
+            from: starting,
+            magnification: 100,
+            centroidTranslation: CGSize(width: 10_000, height: -10_000),
+            in: CGSize(width: 400, height: 800)
+        )
+        XCTAssertEqual(
+            clamped.scale,
+            CaptainAyerOverlayTuning.maximumScale,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            clamped.normalizedOffset.x,
+            OpenClamAvatarStandbyTransformPolicy.maximumNormalizedOffset,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            clamped.normalizedOffset.y,
+            -OpenClamAvatarStandbyTransformPolicy.maximumNormalizedOffset,
+            accuracy: 0.0001
+        )
+
+        let invalid = OpenClamAvatarStandbyTransformPolicy.transformed(
+            from: starting,
+            magnification: .nan,
+            centroidTranslation: CGSize(width: 90, height: 90),
+            in: CGSize(width: 0, height: CGFloat.infinity)
+        )
+        XCTAssertEqual(invalid.scale, starting.scale, accuracy: 0.0001)
+        XCTAssertEqual(invalid.normalizedOffset.x, 0.12, accuracy: 0.0001)
+        XCTAssertEqual(invalid.normalizedOffset.y, -0.18, accuracy: 0.0001)
+    }
+
+    func testStandbyAndCloseUpKeepIndependentTwoFingerSessions() {
+        var standby = OpenClamAvatarTransformSession(
+            mode: .standby,
+            startingTransform: .factory
+        )
+        var closeUp = OpenClamAvatarTransformSession(
+            mode: .closeUp,
+            startingTransform: OpenClamAvatarStandbyTransform(
+                scale: 2,
+                normalizedOffset: CGPoint(x: 0.20, y: -0.10)
+            )
+        )
+
+        let standbyPreview = standby.update(
+            magnification: 1.4,
+            centroidTranslation: CGSize(width: 40, height: 0),
+            canvasSize: CGSize(width: 400, height: 800)
+        )
+        let closeUpPreview = closeUp.update(
+            magnification: 0.8,
+            centroidTranslation: CGSize(width: 0, height: 80),
+            canvasSize: CGSize(width: 400, height: 800)
+        )
+
+        XCTAssertEqual(standby.mode, .standby)
+        XCTAssertEqual(standbyPreview.scale, 1.4, accuracy: 0.0001)
+        XCTAssertEqual(standbyPreview.normalizedOffset.x, 0.10, accuracy: 0.0001)
+        XCTAssertEqual(standbyPreview.normalizedOffset.y, 0, accuracy: 0.0001)
+        XCTAssertEqual(closeUp.mode, .closeUp)
+        XCTAssertEqual(closeUpPreview.scale, 1.6, accuracy: 0.0001)
+        XCTAssertEqual(closeUpPreview.normalizedOffset.x, 0.20, accuracy: 0.0001)
+        XCTAssertEqual(closeUpPreview.normalizedOffset.y, 0, accuracy: 0.0001)
+    }
+
     func testFactoryStandbyResetMatchesDefaultSizeAndLocation() {
         XCTAssertEqual(OpenClamAvatarStandbyTransform.factory.scale, 1)
         XCTAssertEqual(
@@ -1057,39 +1262,44 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
     }
 
-    func testStandbyDragUsesPositionWhileCloseupRetainsGaze() {
+    func testSingleFingerDragNeverRepositionsTheStandbyAvatar() {
         XCTAssertEqual(
             CaptainAyerAvatarGesturePolicy.dragIntent(
                 translation: CGSize(width: 30, height: 8),
-                supportsOpacity: true,
-                supportsPosition: true
-            ),
-            .position
-        )
-        XCTAssertEqual(
-            CaptainAyerAvatarGesturePolicy.dragIntent(
-                translation: CGSize(width: 30, height: 8),
-                supportsOpacity: true,
-                supportsPosition: false
+                supportsOpacity: true
             ),
             .gaze
         )
         XCTAssertEqual(
             CaptainAyerAvatarGesturePolicy.dragIntent(
                 translation: CGSize(width: 2, height: 30),
-                supportsOpacity: true,
-                supportsPosition: true
+                supportsOpacity: true
             ),
-            .position
+            .opacity
         )
         XCTAssertEqual(
             CaptainAyerAvatarGesturePolicy.dragIntent(
                 translation: CGSize(width: 2, height: 30),
-                supportsOpacity: true,
-                supportsPosition: false
+                supportsOpacity: false
             ),
-            .opacity
+            .gaze
         )
+
+        var vertical = CaptainAyerAvatarDragSession()
+        vertical.update(
+            translation: CGSize(width: 2, height: 30),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(vertical.intent, .opacity)
+        XCTAssertEqual(vertical.completion, .opacity)
+
+        var horizontal = CaptainAyerAvatarDragSession()
+        horizontal.update(
+            translation: CGSize(width: 30, height: 2),
+            supportsOpacity: true
+        )
+        XCTAssertEqual(horizontal.intent, .gaze)
+        XCTAssertEqual(horizontal.completion, .gaze)
     }
 
     func testMotionPlaybackModeIsKeyDerivedAndNotPackageControlled() {

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum OpenClamAvatarFacePlateScope: Equatable, Sendable {
     case fullHead
@@ -331,10 +332,418 @@ enum OpenClamAvatarStageInteractionGeometry {
     }
 }
 
-private struct OpenClamAvatarStageInteractionSurface: Shape {
-    let region: Path
+@MainActor
+private final class OpenClamAvatarStageInteractionUIView: UIView {
+    var interactionPath: CGPath?
 
-    func path(in _: CGRect) -> Path { region }
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isMultipleTouchEnabled = true
+        isOpaque = false
+        backgroundColor = .clear
+        isAccessibilityElement = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard super.point(inside: point, with: event),
+              let interactionPath else { return false }
+        return interactionPath.contains(
+            point,
+            using: .winding,
+            transform: .identity
+        )
+    }
+}
+
+/// UIKit owns this one narrow surface because SwiftUI's `DragGesture` does
+/// not expose its touch count. Keeping all four recognizers on the same view
+/// gives one finger and two fingers unambiguous, non-overlapping jobs while
+/// preserving the stage's descriptor-derived silhouette hit testing.
+@MainActor
+private struct OpenClamAvatarStageInteractionView: UIViewRepresentable {
+    let interactionPath: CGPath
+    let onSinglePanBegan: () -> Void
+    let onSinglePanChanged: (_ translation: CGSize, _ location: CGPoint) -> Void
+    let onSinglePanEnded: (
+        _ translation: CGSize,
+        _ location: CGPoint,
+        _ cancelled: Bool
+    ) -> Void
+    let onTap: (_ location: CGPoint) -> Void
+    let onTransformBegan: () -> Void
+    let onTransformChanged: (_ magnification: CGFloat, _ translation: CGSize) -> Void
+    let onTransformEnded: (_ cancelled: Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            onSinglePanBegan: onSinglePanBegan,
+            onSinglePanChanged: onSinglePanChanged,
+            onSinglePanEnded: onSinglePanEnded,
+            onTap: onTap,
+            onTransformBegan: onTransformBegan,
+            onTransformChanged: onTransformChanged,
+            onTransformEnded: onTransformEnded
+        )
+    }
+
+    func makeUIView(context: Context) -> OpenClamAvatarStageInteractionUIView {
+        let view = OpenClamAvatarStageInteractionUIView(frame: .zero)
+        view.interactionPath = interactionPath
+        context.coordinator.install(on: view)
+        return view
+    }
+
+    func updateUIView(
+        _ uiView: OpenClamAvatarStageInteractionUIView,
+        context: Context
+    ) {
+        uiView.interactionPath = interactionPath
+        context.coordinator.update(
+            onSinglePanBegan: onSinglePanBegan,
+            onSinglePanChanged: onSinglePanChanged,
+            onSinglePanEnded: onSinglePanEnded,
+            onTap: onTap,
+            onTransformBegan: onTransformBegan,
+            onTransformChanged: onTransformChanged,
+            onTransformEnded: onTransformEnded
+        )
+    }
+
+    static func dismantleUIView(
+        _ uiView: OpenClamAvatarStageInteractionUIView,
+        coordinator: Coordinator
+    ) {
+        coordinator.uninstall(from: uiView)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        private var onSinglePanBegan: () -> Void
+        private var onSinglePanChanged: (CGSize, CGPoint) -> Void
+        private var onSinglePanEnded: (CGSize, CGPoint, Bool) -> Void
+        private var onTap: (CGPoint) -> Void
+        private var onTransformBegan: () -> Void
+        private var onTransformChanged: (CGFloat, CGSize) -> Void
+        private var onTransformEnded: (Bool) -> Void
+
+        private weak var installedView: UIView?
+        private weak var singlePan: UIPanGestureRecognizer?
+        private weak var tap: UITapGestureRecognizer?
+        private weak var twoFingerPan: UIPanGestureRecognizer?
+        private weak var pinch: UIPinchGestureRecognizer?
+
+        private var activeTransformRecognizers: Set<ObjectIdentifier> = []
+        private var transformMagnification: CGFloat = 1
+        private var transformTranslation = CGSize.zero
+        private var transformWasCancelled = false
+        private var isSinglePanActive = false
+        private var didBeginSinglePanCallbacks = false
+        private var singlePanWasSupersededByTransform = false
+        private var latestSinglePanTranslation = CGSize.zero
+        private var latestSinglePanLocation = CGPoint.zero
+
+        init(
+            onSinglePanBegan: @escaping () -> Void,
+            onSinglePanChanged: @escaping (CGSize, CGPoint) -> Void,
+            onSinglePanEnded: @escaping (CGSize, CGPoint, Bool) -> Void,
+            onTap: @escaping (CGPoint) -> Void,
+            onTransformBegan: @escaping () -> Void,
+            onTransformChanged: @escaping (CGFloat, CGSize) -> Void,
+            onTransformEnded: @escaping (Bool) -> Void
+        ) {
+            self.onSinglePanBegan = onSinglePanBegan
+            self.onSinglePanChanged = onSinglePanChanged
+            self.onSinglePanEnded = onSinglePanEnded
+            self.onTap = onTap
+            self.onTransformBegan = onTransformBegan
+            self.onTransformChanged = onTransformChanged
+            self.onTransformEnded = onTransformEnded
+        }
+
+        func update(
+            onSinglePanBegan: @escaping () -> Void,
+            onSinglePanChanged: @escaping (CGSize, CGPoint) -> Void,
+            onSinglePanEnded: @escaping (CGSize, CGPoint, Bool) -> Void,
+            onTap: @escaping (CGPoint) -> Void,
+            onTransformBegan: @escaping () -> Void,
+            onTransformChanged: @escaping (CGFloat, CGSize) -> Void,
+            onTransformEnded: @escaping (Bool) -> Void
+        ) {
+            self.onSinglePanBegan = onSinglePanBegan
+            self.onSinglePanChanged = onSinglePanChanged
+            self.onSinglePanEnded = onSinglePanEnded
+            self.onTap = onTap
+            self.onTransformBegan = onTransformBegan
+            self.onTransformChanged = onTransformChanged
+            self.onTransformEnded = onTransformEnded
+        }
+
+        func install(on view: UIView) {
+            guard installedView !== view else { return }
+            if let installedView { uninstall(from: installedView) }
+
+            let singlePan = UIPanGestureRecognizer(
+                target: self,
+                action: #selector(singlePanChanged(_:))
+            )
+            singlePan.minimumNumberOfTouches = 1
+            // Let this recognizer observe finger two instead of ending its
+            // one-finger session (and potentially committing opacity) before
+            // the transform recognizers have reached `.began`. Its callback
+            // path below immediately cancels one-finger behavior at 2 touches;
+            // the exact-two-finger recognizers remain the sole transform owner.
+            singlePan.maximumNumberOfTouches = 2
+            configure(singlePan)
+
+            let tap = UITapGestureRecognizer(
+                target: self,
+                action: #selector(tapped(_:))
+            )
+            tap.numberOfTouchesRequired = 1
+            tap.numberOfTapsRequired = 1
+            configure(tap)
+            tap.require(toFail: singlePan)
+
+            let twoFingerPan = UIPanGestureRecognizer(
+                target: self,
+                action: #selector(transformRecognizerChanged(_:))
+            )
+            twoFingerPan.minimumNumberOfTouches = 2
+            twoFingerPan.maximumNumberOfTouches = 2
+            configure(twoFingerPan)
+
+            let pinch = UIPinchGestureRecognizer(
+                target: self,
+                action: #selector(transformRecognizerChanged(_:))
+            )
+            configure(pinch)
+
+            view.addGestureRecognizer(singlePan)
+            view.addGestureRecognizer(tap)
+            view.addGestureRecognizer(twoFingerPan)
+            view.addGestureRecognizer(pinch)
+
+            installedView = view
+            self.singlePan = singlePan
+            self.tap = tap
+            self.twoFingerPan = twoFingerPan
+            self.pinch = pinch
+        }
+
+        func uninstall(from view: UIView) {
+            // SwiftUI can dismantle a representable while reconciling state.
+            // Do not synchronously call back into that state from here; the
+            // owning overlay already cancels previews when it disappears or
+            // switches to Thread-in-front.
+            [singlePan, tap, twoFingerPan, pinch]
+                .compactMap { $0 }
+                .forEach(view.removeGestureRecognizer)
+            installedView = nil
+            singlePan = nil
+            tap = nil
+            twoFingerPan = nil
+            pinch = nil
+            activeTransformRecognizers.removeAll()
+            isSinglePanActive = false
+            didBeginSinglePanCallbacks = false
+            singlePanWasSupersededByTransform = false
+            latestSinglePanTranslation = .zero
+            latestSinglePanLocation = .zero
+            resetTransformValues()
+        }
+
+        private func configure(_ recognizer: UIGestureRecognizer) {
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            recognizer.delegate = self
+        }
+
+        @objc private func singlePanChanged(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            // The representable lives inside the avatar's scaleEffect. Use
+            // window points for gesture thresholds and opacity travel so a
+            // four-times zoom does not make the same finger drag four times
+            // less effective. Gaze location remains local to the stage.
+            let point = recognizer.translation(in: view.window ?? view)
+            let translation = CGSize(width: point.x, height: point.y)
+            let location = recognizer.location(in: view)
+            switch recognizer.state {
+            case .began:
+                isSinglePanActive = true
+                latestSinglePanTranslation = translation
+                latestSinglePanLocation = location
+                guard recognizer.numberOfTouches == 1,
+                      activeTransformRecognizers.isEmpty else {
+                    didBeginSinglePanCallbacks = false
+                    singlePanWasSupersededByTransform = true
+                    return
+                }
+                didBeginSinglePanCallbacks = true
+                singlePanWasSupersededByTransform = false
+                onSinglePanBegan()
+                onSinglePanChanged(translation, location)
+            case .changed:
+                latestSinglePanTranslation = translation
+                latestSinglePanLocation = location
+                if recognizer.numberOfTouches >= 2 {
+                    supersedeSinglePanForTransform()
+                    return
+                }
+                if didBeginSinglePanCallbacks,
+                   !singlePanWasSupersededByTransform {
+                    onSinglePanChanged(translation, location)
+                }
+            case .ended:
+                finishSinglePan(
+                    translation: translation,
+                    location: location,
+                    recognizerWasCancelled: false
+                )
+            case .cancelled:
+                finishSinglePan(
+                    translation: translation,
+                    location: location,
+                    recognizerWasCancelled: true
+                )
+            default:
+                break
+            }
+        }
+
+        private func finishSinglePan(
+            translation: CGSize,
+            location: CGPoint,
+            recognizerWasCancelled: Bool
+        ) {
+            if didBeginSinglePanCallbacks {
+                onSinglePanEnded(
+                    translation,
+                    location,
+                    recognizerWasCancelled
+                        || singlePanWasSupersededByTransform
+                )
+            }
+            isSinglePanActive = false
+            didBeginSinglePanCallbacks = false
+            singlePanWasSupersededByTransform = false
+            latestSinglePanTranslation = .zero
+            latestSinglePanLocation = .zero
+        }
+
+        /// Ends a one-finger preview as a cancellation at the instant finger
+        /// two is observed. This closes the ordering hole where maxTouches=1
+        /// could emit `.ended` and commit opacity before pinch/two-pan began.
+        /// Clearing the delivery flag makes the recognizer's later terminal
+        /// state a no-op, so cancellation is reported exactly once.
+        private func supersedeSinglePanForTransform() {
+            singlePanWasSupersededByTransform = true
+            guard isSinglePanActive, didBeginSinglePanCallbacks else { return }
+            onSinglePanEnded(
+                latestSinglePanTranslation,
+                latestSinglePanLocation,
+                true
+            )
+            didBeginSinglePanCallbacks = false
+        }
+
+        @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended,
+                  let view = recognizer.view else { return }
+            onTap(recognizer.location(in: view))
+        }
+
+        @objc private func transformRecognizerChanged(
+            _ recognizer: UIGestureRecognizer
+        ) {
+            let identifier = ObjectIdentifier(recognizer)
+            switch recognizer.state {
+            case .began:
+                if activeTransformRecognizers.isEmpty {
+                    resetTransformValues()
+                    // A second finger upgrades the interaction to a transform.
+                    // Stop and cancel the earlier one-finger preview now, and
+                    // prevent a pending tap from firing when the fingers lift.
+                    supersedeSinglePanForTransform()
+                    tap?.isEnabled = false
+                    onTransformBegan()
+                }
+                activeTransformRecognizers.insert(identifier)
+                updateTransformValue(from: recognizer)
+                publishTransform()
+            case .changed:
+                guard activeTransformRecognizers.contains(identifier) else {
+                    return
+                }
+                updateTransformValue(from: recognizer)
+                publishTransform()
+            case .ended, .cancelled:
+                guard activeTransformRecognizers.contains(identifier) else {
+                    return
+                }
+                updateTransformValue(from: recognizer)
+                publishTransform()
+                activeTransformRecognizers.remove(identifier)
+                if recognizer.state == .cancelled {
+                    transformWasCancelled = true
+                }
+                if activeTransformRecognizers.isEmpty {
+                    let cancelled = transformWasCancelled
+                    onTransformEnded(cancelled)
+                    tap?.isEnabled = true
+                    resetTransformValues()
+                }
+            default:
+                break
+            }
+        }
+
+        private func updateTransformValue(from recognizer: UIGestureRecognizer) {
+            if let pinch = recognizer as? UIPinchGestureRecognizer {
+                transformMagnification = pinch.scale
+            } else if let pan = recognizer as? UIPanGestureRecognizer,
+                      let view = pan.view {
+                let point = pan.translation(in: view.window ?? view)
+                transformTranslation = CGSize(width: point.x, height: point.y)
+            }
+        }
+
+        private func publishTransform() {
+            onTransformChanged(transformMagnification, transformTranslation)
+        }
+
+        private func resetTransformValues() {
+            transformMagnification = 1
+            transformTranslation = .zero
+            transformWasCancelled = false
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            let firstIsTransform = isTransformRecognizer(gestureRecognizer)
+            let secondIsTransform = isTransformRecognizer(otherGestureRecognizer)
+            if firstIsTransform, secondIsTransform { return true }
+
+            // The first pan may already be recognized when finger two lands.
+            // Let the exact-two-finger recognizers begin, then their `.began`
+            // path supersedes (and ultimately cancels) the one-finger action.
+            return (gestureRecognizer === singlePan && secondIsTransform)
+                || (otherGestureRecognizer === singlePan && firstIsTransform)
+        }
+
+        private func isTransformRecognizer(
+            _ recognizer: UIGestureRecognizer
+        ) -> Bool {
+            recognizer === pinch || recognizer === twoFingerPan
+        }
+    }
 }
 
 /// Descriptor-driven counterpart to CaptainAyerAvatarStage. It classifies
@@ -343,7 +752,6 @@ private struct OpenClamAvatarStageInteractionSurface: Shape {
 @MainActor
 struct OpenClamCatalogAvatarStage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var touchStart: CGPoint?
     @State private var dragSession = CaptainAyerAvatarDragSession()
 
     enum Presentation: Sendable {
@@ -395,13 +803,12 @@ struct OpenClamCatalogAvatarStage: View {
     let renderOpacity: Double
     let onVerticalOpacityChanged: ((CGFloat) -> Void)?
     let onVerticalOpacityEnded: (() -> Void)?
-    /// The overlay owns persisted scale and its drag/pinch arbitration, while
-    /// this stage owns the hit region. Keeping this callback here ensures a
-    /// pinch cannot silently make the transparent canvas interactive again.
-    let onMagnificationChanged: ((CGFloat) -> Void)?
-    let onMagnificationEnded: (() -> Void)?
-    let onPositionChanged: ((CGSize) -> Void)?
-    let onPositionEnded: (() -> Void)?
+    let onVerticalOpacityCancelled: (() -> Void)?
+    /// The overlay owns persisted scale/position and transform arbitration;
+    /// the stage owns exact touch counts and the narrow hit region.
+    let onTransformBegan: (() -> Void)?
+    let onTransformChanged: ((_ magnification: CGFloat, _ translation: CGSize) -> Void)?
+    let onTransformEnded: ((_ cancelled: Bool) -> Void)?
     let onInteraction: () -> Void
     private let imageStore: OpenClamAvatarAssetStore
 
@@ -416,10 +823,10 @@ struct OpenClamCatalogAvatarStage: View {
         renderOpacity: Double = 1,
         onVerticalOpacityChanged: ((CGFloat) -> Void)? = nil,
         onVerticalOpacityEnded: (() -> Void)? = nil,
-        onMagnificationChanged: ((CGFloat) -> Void)? = nil,
-        onMagnificationEnded: (() -> Void)? = nil,
-        onPositionChanged: ((CGSize) -> Void)? = nil,
-        onPositionEnded: (() -> Void)? = nil,
+        onVerticalOpacityCancelled: (() -> Void)? = nil,
+        onTransformBegan: (() -> Void)? = nil,
+        onTransformChanged: ((CGFloat, CGSize) -> Void)? = nil,
+        onTransformEnded: ((Bool) -> Void)? = nil,
         imageStore: OpenClamAvatarAssetStore? = nil,
         onInteraction: @escaping () -> Void = {}
     ) {
@@ -433,10 +840,10 @@ struct OpenClamCatalogAvatarStage: View {
         self.renderOpacity = min(1, max(0, renderOpacity))
         self.onVerticalOpacityChanged = onVerticalOpacityChanged
         self.onVerticalOpacityEnded = onVerticalOpacityEnded
-        self.onMagnificationChanged = onMagnificationChanged
-        self.onMagnificationEnded = onMagnificationEnded
-        self.onPositionChanged = onPositionChanged
-        self.onPositionEnded = onPositionEnded
+        self.onVerticalOpacityCancelled = onVerticalOpacityCancelled
+        self.onTransformBegan = onTransformBegan
+        self.onTransformChanged = onTransformChanged
+        self.onTransformEnded = onTransformEnded
         self.imageStore = imageStore ?? .shared
         self.onInteraction = onInteraction
     }
@@ -510,24 +917,51 @@ struct OpenClamCatalogAvatarStage: View {
                     .allowsHitTesting(false)
                 }
 
-                // This surface deliberately stays outside the visual alpha,
-                // but follows a narrow local body silhouette rather than the
-                // stage rectangle. It uses simultaneous recognition so the
-                // conversation retains its normal scroll gesture.
-                let surface = OpenClamAvatarStageInteractionSurface(
-                    region: interactionPath(stageSize: proxy.size, crop: crop)
+                // This surface deliberately stays outside visual alpha and
+                // claims only the avatar silhouette. Blank canvas therefore
+                // remains a native thread-scroll target.
+                OpenClamAvatarStageInteractionView(
+                    interactionPath: interactionPath(
+                        stageSize: proxy.size,
+                        crop: crop
+                    ),
+                    onSinglePanBegan: beginSinglePan,
+                    onSinglePanChanged: { translation, location in
+                        updateSinglePan(
+                            translation: translation,
+                            location: location,
+                            stageSize: proxy.size,
+                            crop: crop
+                        )
+                    },
+                    onSinglePanEnded: { translation, location, cancelled in
+                        endSinglePan(
+                            translation: translation,
+                            location: location,
+                            cancelled: cancelled,
+                            stageSize: proxy.size,
+                            crop: crop
+                        )
+                    },
+                    onTap: { location in
+                        handleTap(
+                            at: location,
+                            stageSize: proxy.size,
+                            crop: crop
+                        )
+                    },
+                    onTransformBegan: {
+                        reactions.cancelGaze()
+                        onTransformBegan?()
+                    },
+                    onTransformChanged: { magnification, translation in
+                        onTransformChanged?(magnification, translation)
+                    },
+                    onTransformEnded: { cancelled in
+                        onTransformEnded?(cancelled)
+                    }
                 )
-                surface
-                    .fill(Color.clear)
-                    .contentShape(surface)
-                    .simultaneousGesture(
-                        faceGesture(stageSize: proxy.size, crop: crop),
-                        including: .all
-                    )
-                    .simultaneousGesture(
-                        stagePinchGesture,
-                        including: .all
-                    )
+                    .frame(width: proxy.size.width, height: proxy.size.height)
                     .accessibilityHidden(true)
             }
         }
@@ -555,108 +989,103 @@ struct OpenClamCatalogAvatarStage: View {
         }
     }
 
-    private func faceGesture(stageSize: CGSize, crop: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
-                if touchStart == nil {
-                    touchStart = value.startLocation
-                    dragSession = CaptainAyerAvatarDragSession()
-                }
-                dragSession.update(
-                    translation: value.translation,
-                    supportsOpacity: onVerticalOpacityChanged != nil
-                        && onVerticalOpacityEnded != nil,
-                    supportsPosition: onPositionChanged != nil
-                        && onPositionEnded != nil
-                )
-                if dragSession.intent == .opacity {
-                    reactions.cancelGaze()
-                }
-
-                if dragSession.intent == .opacity {
-                    onVerticalOpacityChanged?(value.translation.height)
-                    onInteraction()
-                    return
-                }
-                if dragSession.intent == .position {
-                    reactions.cancelGaze()
-                    onPositionChanged?(value.translation)
-                    onInteraction()
-                    return
-                }
-                guard dragSession.intent == .gaze else {
-                    reactions.cancelGaze()
-                    return
-                }
-                guard allowsGazeTracking else {
-                    reactions.cancelGaze()
-                    return
-                }
-                reactions.updateGaze(
-                    toward: normalizedGazeDirection(
-                        for: value.location,
-                        stageSize: stageSize,
-                        crop: crop
-                    )
-                )
-                onInteraction()
-            }
-            .onEnded { value in
-                let completion = dragSession.completion
-                defer {
-                    touchStart = nil
-                    dragSession = CaptainAyerAvatarDragSession()
-                }
-                if completion == .opacity {
-                    reactions.cancelGaze()
-                    onVerticalOpacityEnded?()
-                    onInteraction()
-                    return
-                }
-                if completion == .position {
-                    reactions.cancelGaze()
-                    onPositionEnded?()
-                    onInteraction()
-                    return
-                }
-                guard allowsGazeTracking else {
-                    reactions.cancelGaze()
-                    return
-                }
-                reactions.releaseGaze(reduceMotion: reduceMotion)
-                if completion == .tap {
-                    let didReactToFace = reactions.react(
-                        atNormalizedFacePoint: normalizedFacePoint(
-                            for: value.location,
-                            stageSize: stageSize,
-                            crop: crop
-                        )
-                    )
-                    if !didReactToFace {
-                        reactions.react(
-                            atNormalizedBodyPoint: normalizedBodyPoint(
-                                for: value.location,
-                                stageSize: stageSize,
-                                crop: crop
-                            )
-                        )
-                    }
-                }
-                onInteraction()
-            }
+    private func beginSinglePan() {
+        dragSession = CaptainAyerAvatarDragSession()
     }
 
-    /// Pinch is intentionally registered on the same silhouette as face
-    /// gestures. `simultaneousGesture` leaves the underlying ScrollView's
-    /// recognizer intact, and empty stage canvas remains fully click-through.
-    private var stagePinchGesture: some Gesture {
-        MagnifyGesture(minimumScaleDelta: 0.01)
-            .onChanged { value in
-                onMagnificationChanged?(value.magnification)
+    private func updateSinglePan(
+        translation: CGSize,
+        location: CGPoint,
+        stageSize: CGSize,
+        crop: CGRect
+    ) {
+        dragSession.update(
+            translation: translation,
+            supportsOpacity: onVerticalOpacityChanged != nil
+                && onVerticalOpacityEnded != nil
+                && onVerticalOpacityCancelled != nil
+        )
+        if dragSession.intent == .opacity {
+            reactions.cancelGaze()
+            onVerticalOpacityChanged?(translation.height)
+            onInteraction()
+            return
+        }
+        guard dragSession.intent == .gaze else {
+            reactions.cancelGaze()
+            return
+        }
+        guard allowsGazeTracking else {
+            reactions.cancelGaze()
+            return
+        }
+        reactions.updateGaze(
+            toward: normalizedGazeDirection(
+                for: location,
+                stageSize: stageSize,
+                crop: crop
+            )
+        )
+        onInteraction()
+    }
+
+    private func endSinglePan(
+        translation _: CGSize,
+        location _: CGPoint,
+        cancelled: Bool,
+        stageSize _: CGSize,
+        crop _: CGRect
+    ) {
+        let completion = dragSession.completion
+        dragSession = CaptainAyerAvatarDragSession()
+        if completion == .opacity {
+            reactions.cancelGaze()
+            if cancelled {
+                onVerticalOpacityCancelled?()
+            } else {
+                onVerticalOpacityEnded?()
             }
-            .onEnded { _ in
-                onMagnificationEnded?()
-            }
+            onInteraction()
+            return
+        }
+        if cancelled {
+            reactions.cancelGaze()
+            return
+        }
+        guard allowsGazeTracking else {
+            reactions.cancelGaze()
+            return
+        }
+        reactions.releaseGaze(reduceMotion: reduceMotion)
+        onInteraction()
+    }
+
+    private func handleTap(
+        at location: CGPoint,
+        stageSize: CGSize,
+        crop: CGRect
+    ) {
+        guard allowsGazeTracking else {
+            reactions.cancelGaze()
+            return
+        }
+        let didReactToFace = reactions.react(
+            atNormalizedFacePoint: normalizedFacePoint(
+                for: location,
+                stageSize: stageSize,
+                crop: crop
+            )
+        )
+        if !didReactToFace {
+            reactions.react(
+                atNormalizedBodyPoint: normalizedBodyPoint(
+                    for: location,
+                    stageSize: stageSize,
+                    crop: crop
+                )
+            )
+        }
+        onInteraction()
     }
 
     private func normalizedGazeDirection(
@@ -726,14 +1155,14 @@ struct OpenClamCatalogAvatarStage: View {
         )
     }
 
-    private func interactionPath(stageSize: CGSize, crop: CGRect) -> Path {
+    private func interactionPath(stageSize: CGSize, crop: CGRect) -> CGPath {
         guard let placement = placement(stageSize: stageSize, crop: crop) else {
-            return Path()
+            return CGMutablePath()
         }
         let regions = OpenClamAvatarStageInteractionGeometry.bodyRegions(
             for: avatar.geometry
         )
-        var path = Path()
+        let path = CGMutablePath()
         for (index, bodyRegion) in regions.enumerated() {
             let stageRegion = CGRect(
                 x: placement.origin.x + bodyRegion.minX * placement.scale,
@@ -748,7 +1177,8 @@ struct OpenClamCatalogAvatarStage: View {
                 let radius = min(stageRegion.width, stageRegion.height) * 0.30
                 path.addRoundedRect(
                     in: stageRegion,
-                    cornerSize: CGSize(width: radius, height: radius)
+                    cornerWidth: radius,
+                    cornerHeight: radius
                 )
             }
         }
