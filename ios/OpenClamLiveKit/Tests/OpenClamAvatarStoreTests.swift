@@ -140,7 +140,14 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
                 try XCTUnwrap(URL(string:
-                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.2/shared/avatar-store-v1/catalog/v1/catalog.json?changed=1"
+                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json?changed=1"
+                ))
+            )
+        )
+        XCTAssertFalse(
+            OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
+                try XCTUnwrap(URL(string:
+                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.2/shared/avatar-store-v1/catalog/v1/catalog.json"
                 ))
             )
         )
@@ -347,6 +354,10 @@ final class OpenClamAvatarStoreTests: XCTestCase {
 
     func testReleaseStoreUsesPinnedProductionCatalogEndpoint() {
         XCTAssertTrue(OpenClamAvatarStoreReleasePolicy.isAvailable)
+        XCTAssertEqual(
+            OpenClamAvatarStoreReleasePolicy.productionCatalogURL.absoluteString,
+            "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json"
+        )
         XCTAssertEqual(
             OpenClamAvatarStoreReleasePolicy.catalogURL,
             OpenClamAvatarStoreReleasePolicy.productionCatalogURL

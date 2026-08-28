@@ -68,6 +68,52 @@
         }
       },
       "version": 2
+    },
+    {
+      "author": "OpenClam",
+      "id": "luffy-2d",
+      "name": "Luffy · 2D",
+      "thumbnail": {
+        "bytes": 1048024,
+        "height": 1024,
+        "mime": "image/png",
+        "sha256": "921b7bbe683d52cb5fec03f7b66fe4a6e87cd34ab002c1e73f17747a9ec0c5a6",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/luffy-2d-thumbnail.png",
+        "width": 1024
+      },
+      "variants": {
+        "ios-light": {
+          "bytes": 25824696,
+          "format": "openclam-avatar",
+          "profile": "ios-light",
+          "sha256": "cf46ab4f830c916f16eccd9ba13ae78007664c022409fecc19effbcaa4a36728",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.3/luffy-2d-ios-light.avtr"
+        }
+      },
+      "version": 1
+    },
+    {
+      "author": "OpenClam",
+      "id": "luffy-3d",
+      "name": "Luffy · 3D",
+      "thumbnail": {
+        "bytes": 931381,
+        "height": 1024,
+        "mime": "image/png",
+        "sha256": "382745868b04fef16c3d2743e261277298aadbeb989a96855c646a9143383aaf",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png",
+        "width": 1024
+      },
+      "variants": {
+        "ios-light": {
+          "bytes": 30007561,
+          "format": "openclam-avatar",
+          "profile": "ios-light",
+          "sha256": "11e8b5bf559943b97d5490858d2b363ac1d01675da8740ef3ae296ad5497d808",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.3/luffy-3d-ios-light.avtr"
+        }
+      },
+      "version": 1
     }
   ],
   "schemaVersion": 1

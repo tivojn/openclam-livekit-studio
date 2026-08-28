@@ -457,12 +457,12 @@ class AvatarStoreReleaseTests(unittest.TestCase):
                 release_tag="main",
             )
 
-    def test_explicit_catalog_merge_preserves_captain_and_ara(self):
+    def test_explicit_catalog_merge_preserves_every_other_entry(self):
         base = json.loads(BASE_CATALOG.read_text())
         originals = {
             row["id"]: copy.deepcopy(row)
             for row in base["entries"]
-            if row["id"] in {"captain-ayer", "ara"}
+            if row["id"] != "cleo"
         }
         current = next(row for row in base["entries"] if row["id"] == "cleo")
         updated = copy.deepcopy(current)
@@ -476,8 +476,8 @@ class AvatarStoreReleaseTests(unittest.TestCase):
             preserved_identifiers=frozenset(originals),
         )
         merged_by_id = {row["id"]: row for row in merged["entries"]}
-        self.assertEqual(merged_by_id["captain-ayer"], originals["captain-ayer"])
-        self.assertEqual(merged_by_id["ara"], originals["ara"])
+        for identifier, original in originals.items():
+            self.assertEqual(merged_by_id[identifier], original)
         self.assertEqual(merged_by_id["cleo"], updated)
         self.assertEqual(
             [row["id"] for row in merged["entries"]],
@@ -652,7 +652,7 @@ class AvatarStoreReleaseTests(unittest.TestCase):
         originals = {
             row["id"]: copy.deepcopy(row)
             for row in base["entries"]
-            if row["id"] in {"captain-ayer", "ara"}
+            if row["id"] != "cleo"
         }
         manifest = {
             "format": BUILD.avtr.FORMAT,
@@ -728,9 +728,9 @@ class AvatarStoreReleaseTests(unittest.TestCase):
             self.assertIsNone(result["macManifest"])
 
             merged = {row["id"]: row for row in result["catalog"]["entries"]}
-            self.assertEqual(set(merged), {"captain-ayer", "ara", "cleo"})
-            self.assertEqual(merged["captain-ayer"], originals["captain-ayer"])
-            self.assertEqual(merged["ara"], originals["ara"])
+            self.assertEqual(set(merged), set(originals) | {"cleo"})
+            for identifier, original in originals.items():
+                self.assertEqual(merged[identifier], original)
             self.assertEqual((merged["cleo"]["id"], merged["cleo"]["name"]), (
                 "cleo", "Cleo"
             ))

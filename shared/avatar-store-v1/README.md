@@ -26,10 +26,11 @@ the protected bundled fallbacks. Only the Store's pinned verification path may
 install these updates; Files import remains collision-blocked, and the bundled
 fallback remains undeletable.
 
-The `avatar-store-v1.0.2` catalog publishes full-expression iOS packages for
-Ara and Cleo. Each package is produced by the reviewed Mac AVTR exporter from
-an approved avatar project; only its public thumbnail is retained in source.
-The catalog pins every release package's exact size and SHA-256 digest.
+The `avatar-store-v1.0.3` catalog adds full-expression iOS packages for
+`luffy-2d` / Luffy · 2D and `luffy-3d` / Luffy · 3D alongside Ara and Cleo.
+Each package is produced by the reviewed Mac AVTR exporter from an approved
+avatar project; only its public thumbnail is retained in source. The catalog
+pins every release package's exact size and SHA-256 digest.
 
 ## Generic staging layout
 

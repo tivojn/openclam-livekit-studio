@@ -208,6 +208,10 @@ AVATAR_STORE_CATALOG_BINARY_HASHES = {
         "d7e7ca507994e8fc50221f5331afdfc91621a0f0e62fb6d90c9158703a1708c8",
     Path("shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png"):
         "3fc29765d3de9fc039a67bec6775a4c963cafb4125d03cba4701cea5c17becf8",
+    Path("shared/avatar-store-v1/catalog/v1/luffy-2d-thumbnail.png"):
+        "921b7bbe683d52cb5fec03f7b66fe4a6e87cd34ab002c1e73f17747a9ec0c5a6",
+    Path("shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png"):
+        "382745868b04fef16c3d2743e261277298aadbeb989a96855c646a9143383aaf",
 }
 
 CAPTAIN_AYER_BINARY_HASHES = {
@@ -510,7 +514,7 @@ CAPTAIN_AYER_CONTENTS_FILES = {
 REQUIRED_STORE_POLICY_SNIPPETS = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/OpenClamAvatarStore.swift"): (
         b"static let catalogURL: URL? = productionCatalogURL",
-        b"avatar-store-v1.0.2/shared/avatar-store-v1/catalog/v1/catalog.json",
+        b"avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json",
         b"static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)",
         b"guard remoteAccess.isEnabled else",
     ),
@@ -1068,7 +1072,7 @@ def release_feature_contract_findings(root: Path) -> list[str]:
 
     if contract.get("schema_version") != 1:
         findings.append("release feature contract schema mismatch")
-    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.2"}:
+    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.3"}:
         findings.append("release feature contract changed the approved Avatar Store state")
     if ptt.get("apple") != {"enabled": True, "transcript_delivery": "live"}:
         findings.append("release feature contract changed Apple PTT delivery")
