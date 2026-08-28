@@ -77,6 +77,141 @@ class DirectProviderDefaultsTests(unittest.TestCase):
                 {"provider": "openai", "max_tokens": 99}, "Be concise"))
         self.assertEqual(answer, "Signed-in answer")
 
+    def test_local_attachment_blocks_normalize_for_each_provider_shape(self):
+        image_url = "data:image/jpeg;base64,YQ=="
+        reviewed = P._bounded_xai_messages([{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect the attached image."},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }])
+
+        ollama = P._ollama_attachment_messages(reviewed)[0]
+        self.assertEqual(ollama["content"], "Inspect the attached image.")
+        self.assertEqual(ollama["images"], ["YQ=="])
+        self.assertNotIn("data:image", json.dumps(ollama))
+
+        anthropic = P._anthropic_attachment_messages(reviewed)[0]
+        self.assertEqual(anthropic["content"][1], {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": "YQ=="},
+        })
+
+        gemini = P._gemini_attachment_contents(reviewed)[0]
+        self.assertEqual(gemini["parts"][1], {
+            "inlineData": {"mimeType": "image/jpeg", "data": "YQ=="},
+        })
+
+        text_only = P._text_only_attachment_messages(reviewed)[0]["content"]
+        self.assertIn("not delivered by this text-only route", text_only)
+        self.assertNotIn(image_url, text_only)
+        self.assertNotIn("YQ==", text_only)
+
+    def test_local_attachment_gate_rejects_executable_image_mime(self):
+        with self.assertRaisesRegex(RuntimeError, "bounded image data URLs"):
+            P._bounded_xai_messages([{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/svg+xml;base64,YQ=="},
+                }],
+            }])
+
+    def test_attachment_history_only_resends_newest_image_user_turn(self):
+        historical_urls = [
+            f"data:image/jpeg;base64,b2xkLWltYWdlLTI={index}"
+            for index in range(4)
+        ]
+        latest_url = "data:image/webp;base64,bmV3LWltYWdl"
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "First request."},
+                *({"type": "image_url", "image_url": {"url": url}}
+                  for url in historical_urls),
+                {"type": "text", "text": "Keep this trailing text."},
+            ],
+        }, {
+            "role": "assistant",
+            "content": "I reviewed the earlier attachments.",
+        }, {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Now inspect this image."},
+                {"type": "image_url", "image_url": {"url": latest_url}},
+            ],
+        }]
+
+        # The historical images exceed this bound cumulatively, but the newest
+        # image-bearing turn remains within it and is the only one transmitted.
+        with patch.object(P, "_MAX_XAI_IMAGE_DATA_CHARS", len(latest_url)):
+            reviewed = P._bounded_xai_messages(messages)
+
+        serialized = json.dumps(reviewed)
+        self.assertNotIn("b2xkLWltYWdl", serialized)
+        self.assertIn(latest_url, serialized)
+        self.assertIn("First request.", reviewed[0]["content"][0]["text"])
+        self.assertEqual(
+            "Keep this trailing text.", reviewed[0]["content"][-1]["text"])
+        marker = reviewed[0]["content"][1]["text"]
+        self.assertIn("4 previously attached images were omitted", marker)
+        self.assertEqual(
+            1,
+            sum(block["type"] == "image_url"
+                for message in reviewed
+                for block in message["content"]
+                if isinstance(message["content"], list)),
+        )
+
+    def test_attachment_history_does_not_validate_or_retransmit_old_pixels(self):
+        reviewed = P._bounded_xai_messages([{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": {"url": "not-a-data-url"},
+            }],
+        }, {
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,YQ=="},
+            }],
+        }])
+        self.assertIn("omitted from repeated model context", reviewed[0]["content"][0]["text"])
+        self.assertEqual(
+            "data:image/jpeg;base64,YQ==",
+            reviewed[1]["content"][0]["image_url"]["url"],
+        )
+
+    def test_attachment_gate_still_rejects_five_images_in_newest_turn(self):
+        with self.assertRaisesRegex(RuntimeError, "vision input is too large"):
+            P._bounded_xai_messages([{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,YQ=="},
+                } for _ in range(5)],
+            }])
+
+    def test_non_xai_attachment_path_fails_closed_before_network(self):
+        cases = (
+            ([{"type": "image_url", "image_url": {"url": "not-a-data-url"}}],
+             "bounded image data URLs"),
+            ([{"type": "image_url", "image_url": {
+                "url": "data:image/jpeg;base64,YQ==",
+            }} for _ in range(5)], "vision input is too large"),
+        )
+        for content, message in cases:
+            with self.subTest(message=message), \
+                 patch.object(P.httpx, "AsyncClient") as client, \
+                 self.assertRaisesRegex(RuntimeError, message):
+                asyncio.run(P._chat_direct(
+                    [{"role": "user", "content": content}],
+                    {"provider": "ollama", "model": "llama3.2-vision"},
+                ))
+            client.assert_not_called()
+
     def test_unknown_provider_fails_before_any_network_request(self):
         with self.assertRaisesRegex(RuntimeError, "Choose a direct language model"):
             asyncio.run(P.chat([], {"provider": "retired-gateway"}))

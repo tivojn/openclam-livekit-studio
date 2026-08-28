@@ -168,16 +168,65 @@ def _presentation_context(options, style):
         presentation, medium)
 
 
-def _allow_stylized_source(options):
-    """Enable permissive local geometry only for an explicit non-photo rig."""
-    options = options if isinstance(options, dict) else {}
-    style = options.get("style") if options.get("style") in STYLES \
-        else "photorealistic"
-    _presentation, medium, _rule = _presentation_context(options, style)
-    return medium not in {
-        "", "unknown", "photo", "photograph", "photoreal",
-        "photorealistic",
-    }
+_STYLISED_SOURCE_MEDIA = {
+    "game art": "game art",
+    "game-art": "game art",
+    "anime": "anime",
+    "illustration": "illustration",
+    "illustrated": "illustration",
+    "cartoon": "illustration",
+    "drawing": "illustration",
+    "3d render": "3d render",
+    "3d-render": "3d render",
+    "soft-3d": "3d render",
+}
+
+
+def _normalise_source_medium(value, legacy_mode=None):
+    """Whitelist the local detector branch; every unknown value is a photo."""
+    medium = _clean(value, 40).lower()
+    if medium in _STYLISED_SOURCE_MEDIA:
+        return _STYLISED_SOURCE_MEDIA[medium]
+    legacy = _clean(legacy_mode, 40).lower()
+    if not medium and legacy.startswith("stylized"):
+        return "illustration"
+    return "photograph"
+
+
+def _stored_source_medium(avatar_dir):
+    """Read only intake/build evidence stored with the avatar.
+
+    Body style and wardrobe-planner output are user/provider presentation
+    choices.  They are never authority to lower face or alpha gates.  The
+    original intake report wins when present; older projects may fall back to
+    their stored canonical-head report.  Missing, malformed, ``unknown`` and
+    arbitrary values all remain photographic.
+    """
+    try:
+        with open(os.path.join(avatar_dir, "manifest.json"),
+                  encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return "photograph"
+    if not isinstance(manifest, dict):
+        return "photograph"
+    for key in ("source_metrics", "metrics"):
+        if key not in manifest:
+            continue
+        report = manifest.get(key)
+        if not isinstance(report, dict):
+            return "photograph"
+        return _normalise_source_medium(
+            report.get("source_medium"), report.get("source_mode"))
+    head = manifest.get("head")
+    if isinstance(head, dict) and "source_medium" in head:
+        return _normalise_source_medium(head.get("source_medium"))
+    return "photograph"
+
+
+def _allow_stylized_source(avatar_dir):
+    """Enable permissive local geometry only from stored intake evidence."""
+    return _stored_source_medium(avatar_dir) != "photograph"
 
 
 def image_provider_selection():
@@ -743,7 +792,7 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
         raise RuntimeError("generated front body source could not be decoded")
     stage = tempfile.mkdtemp(prefix=".body-front-preflight-", dir=avatar_dir)
     try:
-        allow_stylized = _allow_stylized_source(options)
+        allow_stylized = _allow_stylized_source(avatar_dir)
         cutout_path = os.path.join(stage, "front.png")
         if not cutout.render(
                 source, cutout_path, log=log, tight=True,
@@ -831,7 +880,7 @@ def _preflight_alpha_source(
     stage = tempfile.mkdtemp(
         prefix=f".body-{view}-alpha-preflight-", dir=avatar_dir)
     try:
-        allow_stylized = _allow_stylized_source(options)
+        allow_stylized = _allow_stylized_source(avatar_dir)
         cutout_path = os.path.join(stage, f"{view}.png")
         if not cutout.render(
                 source, cutout_path, log=log, tight=True,
@@ -865,15 +914,30 @@ def _preflight_alpha_source(
 
 
 def _identity_cutout(
-        keyframe_path, keyframe, destination, allow_stylized, log=print):
+        keyframe_path, keyframe, destination, allow_stylized, log=print,
+        landmarks=None):
     """Build the temporary identity colour source used by ``_head_mask``.
 
     Vision person segmentation is meaningful for a photographic portrait, but
     on an oversized cartoon head it can return a tiny arbitrary body fragment.
-    The following head mask is already bounded by the detected facial oval, so
-    a stylized rig safely starts from opaque BGRA geometry instead.
+    Explicitly stylized rigs first use the local border-connected plate
+    extractor.  That preserves the canonical hat, hair, ears, jaw, and neck as
+    one silhouette; keeping only the facial oval left the generated body's ears
+    and chin underneath and produced doubled anatomy at close-up scale.
+
+    A failed or implausible stylized matte still falls back to opaque BGRA.  The
+    caller's stylized mask author then detects that fallback and reverts to the
+    conservative facial-oval mask, so a segmentation failure can never turn the
+    whole portrait square into a replacement layer.
     """
     if allow_stylized:
+        rendered_ok = cutout.render(
+            keyframe_path, destination, log=log, tight=True,
+            allow_stylized=True)
+        rendered = cv2.imread(destination, cv2.IMREAD_UNCHANGED) \
+            if rendered_ok else None
+        if _stylized_identity_cutout_is_safe(rendered, landmarks):
+            return rendered
         opaque = np.dstack((
             keyframe,
             np.full(keyframe.shape[:2], 255, np.uint8),
@@ -887,6 +951,44 @@ def _identity_cutout(
     if rendered is None or rendered.ndim != 3 or rendered.shape[2] != 4:
         raise RuntimeError("identity overlay mask is not RGBA")
     return rendered
+
+
+def _stylized_identity_cutout_is_safe(image, landmarks=None):
+    """Reject arbitrary/tiny cartoon mattes before they become head geometry."""
+    if (image is None or image.ndim != 3 or image.shape[2] != 4
+            or min(image.shape[:2]) < 16):
+        return False
+    alpha = image[:, :, 3]
+    foreground = alpha > 8
+    coverage = float(np.mean(foreground))
+    points = cv2.findNonZero(foreground.astype(np.uint8))
+    if points is None or not (0.02 <= coverage <= 0.90):
+        return False
+    _x, _y, width, height = cv2.boundingRect(points)
+    if (width < image.shape[1] * 0.18
+            or height < image.shape[0] * 0.18):
+        return False
+    if landmarks is None:
+        return True
+    oval = np.asarray(landmarks, dtype=np.float32)[face.FACE_OVAL]
+    valid = (
+        (oval[:, 0] >= 0) & (oval[:, 0] < image.shape[1])
+        & (oval[:, 1] >= 0) & (oval[:, 1] < image.shape[0])
+    )
+    if int(np.sum(valid)) < max(8, len(face.FACE_OVAL) // 2):
+        return False
+    samples = np.round(oval[valid]).astype(np.int32)
+    samples[:, 0] = np.clip(samples[:, 0], 0, image.shape[1] - 1)
+    samples[:, 1] = np.clip(samples[:, 1], 0, image.shape[0] - 1)
+    if float(np.mean(alpha[samples[:, 1], samples[:, 0]] > 8)) < 0.82:
+        return False
+    hull_gate = np.zeros(alpha.shape, dtype=np.uint8)
+    cv2.fillConvexPoly(
+        hull_gate, cv2.convexHull(np.round(oval).astype(np.int32)), 1)
+    hull_area = int(np.sum(hull_gate))
+    if hull_area <= 0:
+        return False
+    return float(np.sum(foreground & (hull_gate > 0))) / hull_area >= 0.82
 
 
 def _head_mask(cutout_image, landmarks, destination):
@@ -951,6 +1053,137 @@ def _head_mask(cutout_image, landmarks, destination):
     rgba = np.full((*mask.shape, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = np.round(mask * 255).astype(np.uint8)
     cv2.imwrite(destination, rgba)
+
+
+def _stylized_head_mask(cutout_image, landmarks, destination):
+    """Author a complete, identity-owned cartoon head silhouette.
+
+    Above the jaw, the validated local matte owns the whole canonical head:
+    hat/hair, ears, cheeks, and chin.  Below the jaw it narrows to the neck and
+    then fades, preventing a bust or source clothing from replacing the approved
+    full-body wardrobe.  An opaque-square fallback is routed through the legacy
+    oval author instead of ever becoming a square runtime layer.
+    """
+    if not _stylized_identity_cutout_is_safe(cutout_image, landmarks):
+        _head_mask(cutout_image, landmarks, destination)
+        return "face-oval-fallback"
+    alpha = cutout_image[:, :, 3].astype(np.float32) / 255.0
+    oval = np.asarray(landmarks, dtype=np.float32)[face.FACE_OVAL]
+    top = float(np.min(oval[:, 1]))
+    chin = float(np.max(oval[:, 1]))
+    left = float(np.min(oval[:, 0]))
+    right = float(np.max(oval[:, 0]))
+    center = (left + right) * 0.5
+    face_width = max(1.0, right - left)
+    face_height = max(1.0, chin - top)
+    ys = np.arange(alpha.shape[0], dtype=np.float32)
+
+    # The generated plate already owns a calibrated neck and collar.  End the
+    # canonical replacement just below the jaw over a very short feather;
+    # carrying a differently shaded portrait neck farther down makes the
+    # handoff read as a rectangular patch in flat artwork.
+    fade_start = min(alpha.shape[0] - 2, chin)
+    fade_end = min(alpha.shape[0], chin + face_height * 0.16)
+    fade = np.ones_like(ys)
+    if fade_end > fade_start:
+        progress = np.clip(
+            (ys - fade_start) / (fade_end - fade_start), 0.0, 1.0)
+        smooth = progress * progress * (3.0 - 2.0 * progress)
+        fade = 1.0 - smooth
+
+    # Only rows below the chin are narrowed; hat, hair, ears, cheeks, and the
+    # complete jaw remain exactly as supplied by the canonical illustration.
+    neck_progress = np.clip(
+        (ys - chin) / max(1.0, fade_end - chin), 0.0, 1.0)
+    half_width = face_width * (0.36 - 0.10 * neck_progress)
+    feather = max(10.0, face_width * 0.055)
+    xs = np.arange(alpha.shape[1], dtype=np.float32)[None, :]
+    narrow = np.clip(
+        (half_width[:, None] + feather - np.abs(xs - center)) / feather,
+        0.0, 1.0)
+    engage = np.clip(
+        (ys - chin) / max(1.0, face_height * 0.18), 0.0, 1.0)
+    engage = engage * engage * (3.0 - 2.0 * engage)
+    neck_gate = 1.0 - engage[:, None] * (1.0 - narrow)
+    mask = np.clip(alpha * fade[:, None] * neck_gate, 0.0, 1.0)
+    rgba = np.full((*mask.shape, 4), 255, dtype=np.uint8)
+    rgba[:, :, 3] = np.round(mask * 255).astype(np.uint8)
+    if not cv2.imwrite(destination, rgba):
+        raise RuntimeError("the stylized identity overlay mask could not be written")
+    return "full-silhouette"
+
+
+def _stylized_head_clear_mask(
+        body_image, mask_path, transform, key_landmarks, face_bounds,
+        destination):
+    """Build the body-space eraser for doubled cartoon face anatomy.
+
+    The canonical silhouette itself is always cleared.  In the facial band we
+    additionally clear a conservative dilation of the aligned oval, just far
+    enough to remove generated ears, cheek outlines, and the second chin that
+    can sit outside the canonical matte.  This anatomical expansion is clipped
+    above the deep neck and does not expand through the hat, hair, or clothing.
+    """
+    if (body_image is None or body_image.ndim != 3
+            or body_image.shape[2] != 4 or not face_bounds):
+        raise RuntimeError("the stylized body clear mask inputs are invalid")
+    portrait_mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+    if (portrait_mask is None or portrait_mask.ndim != 3
+            or portrait_mask.shape[2] != 4):
+        raise RuntimeError("the stylized identity overlay mask is invalid")
+    height, width = body_image.shape[:2]
+    warped = cv2.warpAffine(
+        portrait_mask[:, :, 3], np.asarray(transform, dtype=np.float64),
+        (width, height), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    projected = cv2.transform(
+        np.asarray(key_landmarks, dtype=np.float32)[face.FACE_OVAL][None, :, :],
+        np.asarray(transform, dtype=np.float32))[0]
+    _face_x, face_y, face_width, face_height = [float(v) for v in face_bounds]
+    # Hard replacement ends at the *canonical* projected chin, not the
+    # generated detector's often-taller cartoon oval.  Below it the body remains
+    # fully present and the authored target neck simply source-overs onto it;
+    # partially erasing an opaque body would lower combined alpha and expose a
+    # background crescent during the neck cross-dissolve.
+    chin_stop = min(height, int(np.ceil(float(np.max(projected[:, 1])) + 1.0)))
+    facial_band = np.zeros((height, width), dtype=bool)
+    facial_band[:chin_stop] = True
+    canonical = (warped > 4) & facial_band
+    anatomy = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillConvexPoly(
+        anatomy, cv2.convexHull(np.round(projected).astype(np.int32)), 255)
+    radius = max(3, int(round(face_width * 0.18)))
+    kernel_size = radius * 2 + 1
+    anatomy = cv2.dilate(
+        anatomy,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)))
+    band = np.zeros((height, width), dtype=np.uint8)
+    top = max(0, int(np.floor(face_y - face_height * 0.08)))
+    # Stop above the generated chin.  The canonical silhouette already removes
+    # the second jaw; the extra dilation exists only for outer cheek/ear strokes.
+    # Extending its flat lower boundary into the neck made a rectangular colour
+    # step visible even though alpha remained valid.
+    bottom = min(
+        height,
+        int(np.ceil(min(
+            face_y + face_height * 0.90,
+            float(np.max(projected[:, 1]))))),
+    )
+    band[top:bottom] = 1
+    donor_anatomy = (
+        (anatomy > 0) & (band > 0) & (body_image[:, :, 3] > 8)
+        & ~canonical)
+    clear_alpha = np.where(canonical | donor_anatomy, 255, 0).astype(np.uint8)
+    rgba = np.full((height, width, 4), 255, dtype=np.uint8)
+    rgba[:, :, 3] = clear_alpha
+    if not cv2.imwrite(destination, rgba):
+        raise RuntimeError("the stylized body clear mask could not be written")
+    return {
+        "canonical_pixels": int(np.sum(clear_alpha > 4)),
+        "anatomy_pixels": int(np.sum(donor_anatomy)),
+        "bounds": _alpha_bounds(rgba),
+    }
 
 
 def _constrain_head_mask(mask_path, body_image, transform, face_bounds):
@@ -1024,8 +1257,15 @@ def _composite_head_proportion_failure(body_image, mask_path, transform,
 
 
 def _runtime_composite_preview(body_path, keyframe, mask_path, transform,
-                               destination):
-    """Bake the same standing head/body stack shown by the desktop runtime."""
+                               destination, replace=False,
+                               clear_mask_path=None):
+    """Bake the same standing head/body stack shown by the desktop runtime.
+
+    Photographic rigs retain the established soft source-over blend.  Explicit
+    stylized rigs use a separately-authored body-space clear mask first, so the
+    generated plate cannot show a second jaw, cheek, or pair of ears beneath
+    the canonical cartoon head.
+    """
     body_rgba = cv2.imread(body_path, cv2.IMREAD_UNCHANGED)
     mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
     if (body_rgba is None or body_rgba.ndim != 3 or body_rgba.shape[2] != 4
@@ -1038,13 +1278,39 @@ def _runtime_composite_preview(body_path, keyframe, mask_path, transform,
         (body_rgba.shape[1], body_rgba.shape[0]),
         flags=cv2.INTER_AREA, borderMode=cv2.BORDER_CONSTANT,
         borderValue=(0, 0, 0, 0))
-    alpha = warped[:, :, 3:4].astype(np.float32) / 255.0
-    composite = body_rgba.copy()
-    composite[:, :, :3] = np.round(
-        warped[:, :, :3].astype(np.float32) * alpha
-        + body_rgba[:, :, :3].astype(np.float32) * (1.0 - alpha)
-    ).astype(np.uint8)
-    composite[:, :, 3] = np.maximum(body_rgba[:, :, 3], warped[:, :, 3])
+    source_alpha = warped[:, :, 3:4].astype(np.float32) / 255.0
+    if not replace:
+        composite = body_rgba.copy()
+        composite[:, :, :3] = np.round(
+            warped[:, :, :3].astype(np.float32) * source_alpha
+            + body_rgba[:, :, :3].astype(np.float32)
+            * (1.0 - source_alpha)
+        ).astype(np.uint8)
+        composite[:, :, 3] = np.maximum(
+            body_rgba[:, :, 3], warped[:, :, 3])
+    else:
+        clear_mask = cv2.imread(clear_mask_path, cv2.IMREAD_UNCHANGED) \
+            if clear_mask_path else None
+        if (clear_mask is None or clear_mask.ndim != 3
+                or clear_mask.shape[2] != 4
+                or clear_mask.shape[:2] != body_rgba.shape[:2]):
+            raise RuntimeError("the stylized body clear mask is invalid")
+        clear_alpha = clear_mask[:, :, 3:4].astype(np.float32) / 255.0
+        body_alpha = (
+            body_rgba[:, :, 3:4].astype(np.float32) / 255.0
+            * (1.0 - clear_alpha))
+        out_alpha = source_alpha + body_alpha * (1.0 - source_alpha)
+        premultiplied = (
+            warped[:, :, :3].astype(np.float32) * source_alpha
+            + body_rgba[:, :, :3].astype(np.float32) * body_alpha
+            * (1.0 - source_alpha))
+        composite = np.zeros_like(body_rgba)
+        composite[:, :, :3] = np.round(
+            premultiplied / np.maximum(out_alpha, 1e-6)
+        ).clip(0, 255).astype(np.uint8)
+        composite[:, :, 3] = np.round(
+            out_alpha[:, :, 0] * 255.0).clip(0, 255).astype(np.uint8)
+        composite[composite[:, :, 3] == 0, :3] = 0
     if not cv2.imwrite(destination, composite):
         raise RuntimeError("the standing composite preview could not be written")
 
@@ -1313,9 +1579,10 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         raise RuntimeError("avatar identity head is missing")
     stored_style = options.get("style") \
         if options.get("style") in STYLES else "photorealistic"
-    stored_presentation, stored_medium, _stored_rule = \
+    stored_presentation, _requested_medium, _stored_rule = \
         _presentation_context(options, stored_style)
-    allow_stylized = _allow_stylized_source(options)
+    stored_medium = _stored_source_medium(avatar_dir)
+    allow_stylized = stored_medium != "photograph"
     for view in BODY_VIEWS:
         if not os.path.isfile(str(sources.get(view) or "")):
             raise RuntimeError(f"the generated {view} body source is missing")
@@ -1421,27 +1688,46 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         portrait_cutout_path = os.path.join(stage, "portrait-cutout.png")
         portrait_cutout = _identity_cutout(
             keyframe_path, keyframe, portrait_cutout_path, allow_stylized,
-            log=lambda _message: None)
+            log=lambda _message: None, landmarks=key_landmarks)
         head_mask_path = os.path.join(stage, "head-mask.png")
-        _head_mask(portrait_cutout, key_landmarks, head_mask_path)
+        head_composite = "blend"
+        if allow_stylized:
+            head_mask_mode = _stylized_head_mask(
+                portrait_cutout, key_landmarks, head_mask_path)
+            head_composite = "replace" \
+                if head_mask_mode == "full-silhouette" else "blend"
+        else:
+            _head_mask(portrait_cutout, key_landmarks, head_mask_path)
         face_bounds = alignment.get("face_bounds")
+        clear_mask_path = None
+        clear_mask_quality = None
         if face_bounds:
-            _constrain_head_mask(
-                head_mask_path, view_images["front"], transform, face_bounds)
+            if head_composite == "replace":
+                clear_mask_path = os.path.join(stage, "head-clear-mask.png")
+                clear_mask_quality = _stylized_head_clear_mask(
+                    view_images["front"], head_mask_path, transform,
+                    key_landmarks, face_bounds, clear_mask_path)
+            else:
+                _constrain_head_mask(
+                    head_mask_path, view_images["front"], transform,
+                    face_bounds)
             proportion_failure = _composite_head_proportion_failure(
                 view_images["front"], head_mask_path, transform, face_bounds)
             if proportion_failure:
                 raise GeneratedBodyIdentityError(proportion_failure)
-        _seam_tone_match(
-            os.path.join(stage, "body.png"), keyframe, portrait_cutout,
-            head_mask_path, transform,
-            face_bounds)
+        if head_composite != "replace":
+            _seam_tone_match(
+                os.path.join(stage, "body.png"), keyframe, portrait_cutout,
+                head_mask_path, transform,
+                face_bounds)
         preview_name = None
         if face_bounds:
             preview_name = "body-composite.png"
             _runtime_composite_preview(
                 os.path.join(stage, "body.png"), keyframe, head_mask_path,
-                transform, os.path.join(stage, preview_name))
+                transform, os.path.join(stage, preview_name),
+                replace=head_composite == "replace",
+                clear_mask_path=clear_mask_path)
         os.remove(portrait_cutout_path)
 
         height, width = view_images["front"].shape[:2]
@@ -1489,6 +1775,10 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             },
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
         }
+        if head_composite == "replace":
+            metadata["head_composite"] = "replace"
+            metadata["head_clear_mask"] = "head-clear-mask.png"
+            metadata["head_clear_quality"] = clear_mask_quality
         if edit_receipt:
             metadata["edit"] = dict(edit_receipt)
         with open(os.path.join(stage, "body.json"), "w") as handle:

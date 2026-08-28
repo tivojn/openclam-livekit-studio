@@ -43,6 +43,19 @@ def gait_poses(count, period, amplitude=40.0):
     return poses
 
 
+def ipsilateral_gait_poses(count, period, amplitude=40.0):
+    """Synthetic broken walker: each arm advances with its same-side leg."""
+    poses = gait_poses(count, period, amplitude)
+    for pose in poses:
+        for side, shoulder_x, hip_x in (
+                ("left", 180.0, 185.0), ("right", 220.0, 215.0)):
+            ankle = pose["joints"][f"{side}_ankle"]
+            leg_offset = ankle["x"] - hip_x
+            pose["joints"][f"{side}_wrist"]["x"] = (
+                shoulder_x + leg_offset / 1.5)
+    return poses
+
+
 def blank_frames(count, width=48, height=72):
     frame = np.full((height, width, 4), 255, dtype=np.uint8)
     return [frame.copy() for _ in range(count)]
@@ -113,6 +126,27 @@ class CycleGateTests(unittest.TestCase):
         quality = motion._pose_cycle_metrics(poses, 2, 26)
         self.assertFalse(quality["valid"])
         self.assertIn("covers only part of the source", quality["reason"])
+
+    def test_ipsilateral_gait_is_hard_rejected_in_relaxed_shipping(self):
+        quality = motion._pose_cycle_metrics(
+            ipsilateral_gait_poses(150, 48), 0, 48)
+        self.assertFalse(quality["valid"])
+        self.assertIn("not contralateral", quality["reason"])
+        # Relaxed shipping may override the aggregate validity for taste
+        # gates, but the dedicated biomechanics gate reads the side signals
+        # and must still veto this clip.
+        relaxed_receipt = {
+            **quality,
+            "valid": True,
+            "reason": "relaxed loop shipping: gates observed, not enforced",
+        }
+        with self.assertRaisesRegex(RuntimeError, "ipsilateral"):
+            motion._enforce_hard_contralateral_gait(relaxed_receipt)
+
+    def test_contralateral_gait_passes_hard_coordination_gate(self):
+        quality = motion._pose_cycle_metrics(gait_poses(150, 48), 0, 48)
+        hard = motion._enforce_hard_contralateral_gait(quality)
+        self.assertTrue(hard["valid"], hard["reason"])
 
 
 class LoopSelectionTests(unittest.TestCase):

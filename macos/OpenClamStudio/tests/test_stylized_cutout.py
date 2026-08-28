@@ -156,14 +156,50 @@ class StylizedFlatPlateTests(unittest.TestCase):
 
 
 class StylizedRoutingTests(unittest.TestCase):
-    def test_body_medium_enables_stylized_path_without_weakening_photo(self):
-        self.assertFalse(body._allow_stylized_source({
-            "style": "photorealistic", "medium": "photograph"}))
-        self.assertTrue(body._allow_stylized_source({
-            "style": "anime", "medium": "illustration"}))
-        self.assertFalse(body._allow_stylized_source({
-            "style": "photorealistic", "medium": "unknown"}))
-        self.assertFalse(body._allow_stylized_source({}))
+    def test_body_medium_comes_only_from_stored_intake_evidence(self):
+        with tempfile.TemporaryDirectory() as avatar:
+            manifest_path = os.path.join(avatar, "manifest.json")
+            self.assertFalse(body._allow_stylized_source(avatar))
+            for value, expected in (
+                    ("photograph", False),
+                    ("unknown", False),
+                    ("future-corrupt-label", False),
+                    ("illustration", True),
+                    ("anime", True)):
+                with open(manifest_path, "w", encoding="utf-8") as handle:
+                    json.dump({
+                        "source_metrics": {"source_medium": value},
+                        # Requested/provider style must never lower local gates.
+                        "body": {"options": {
+                            "style": "anime", "medium": "illustration",
+                        }},
+                    }, handle)
+                self.assertEqual(
+                    expected, body._allow_stylized_source(avatar), value)
+
+    def test_body_unknown_original_does_not_inherit_generated_head_style(self):
+        with tempfile.TemporaryDirectory() as avatar:
+            with open(os.path.join(avatar, "manifest.json"), "w",
+                      encoding="utf-8") as handle:
+                json.dump({
+                    "source_metrics": {"source_medium": "unknown"},
+                    "metrics": {"source_medium": "illustration"},
+                    "head": {"source_medium": "illustration"},
+                }, handle)
+            self.assertEqual("photograph", body._stored_source_medium(avatar))
+            self.assertFalse(body._allow_stylized_source(avatar))
+
+    def test_body_corrupt_original_report_does_not_fall_through(self):
+        with tempfile.TemporaryDirectory() as avatar:
+            with open(os.path.join(avatar, "manifest.json"), "w",
+                      encoding="utf-8") as handle:
+                json.dump({
+                    "source_metrics": "damaged-report",
+                    "metrics": {"source_medium": "illustration"},
+                    "head": {"source_medium": "illustration"},
+                }, handle)
+            self.assertEqual("photograph", body._stored_source_medium(avatar))
+            self.assertFalse(body._allow_stylized_source(avatar))
 
     def test_body_face_detector_uses_intake_only_when_explicitly_stylized(self):
         image = np.zeros((80, 80, 3), np.uint8)
@@ -183,20 +219,44 @@ class StylizedRoutingTests(unittest.TestCase):
         strict.assert_called_once()
         intake.assert_not_called()
 
-    def test_stylized_identity_overlay_is_opaque_before_face_oval_mask(self):
+    def test_stylized_identity_overlay_falls_back_when_cutout_is_unusable(self):
         keyframe = _white_cartoon(80)
         with tempfile.TemporaryDirectory() as directory:
             source = os.path.join(directory, "keyframe.png")
             destination = os.path.join(directory, "identity.png")
             cv2.imwrite(source, keyframe)
-            with mock.patch.object(body.cutout, "render") as render:
+            with mock.patch.object(
+                    body.cutout, "render", return_value=None) as render:
                 rgba = body._identity_cutout(
                     source, keyframe, destination, True,
                     log=lambda _message: None)
             stored = cv2.imread(destination, cv2.IMREAD_UNCHANGED)
-        render.assert_not_called()
+        render.assert_called_once_with(
+            source, destination, log=mock.ANY, tight=True,
+            allow_stylized=True)
         self.assertTrue(np.all(rgba[:, :, 3] == 255))
         self.assertTrue(np.array_equal(rgba, stored))
+
+    def test_stylized_identity_overlay_uses_valid_local_subject_silhouette(self):
+        keyframe = _white_cartoon(112)
+        landmarks = np.zeros((478, 2), np.float32)
+        for point_index, landmark_index in enumerate(body.face.FACE_OVAL):
+            angle = 2.0 * np.pi * point_index / len(body.face.FACE_OVAL)
+            landmarks[landmark_index] = (
+                56.0 + 24.0 * np.cos(angle),
+                56.0 + 30.0 * np.sin(angle),
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "keyframe.png")
+            destination = os.path.join(directory, "identity.png")
+            cv2.imwrite(source, keyframe)
+            rgba = body._identity_cutout(
+                source, keyframe, destination, True,
+                log=lambda _message: None, landmarks=landmarks)
+        self.assertEqual(0, int(rgba[0, 0, 3]))
+        self.assertEqual(255, int(rgba[56, 56, 3]))
+        self.assertTrue(body._stylized_identity_cutout_is_safe(
+            rgba, landmarks))
 
     def test_motion_medium_reader_is_strict_for_legacy_and_photo_manifests(self):
         with tempfile.TemporaryDirectory() as avatar:
@@ -207,6 +267,7 @@ class StylizedRoutingTests(unittest.TestCase):
                     ("photo", "photograph"),
                     ("photograph", "photograph"),
                     ("unknown", "photograph"),
+                    ("future-corrupt-label", "photograph"),
                     ("anime", "anime"),
                     ("illustration", "illustration")):
                 with open(os.path.join(body_dir, "body.json"), "w") as handle:
@@ -242,7 +303,7 @@ class StylizedRoutingTests(unittest.TestCase):
                 mock.patch.object(
                     motion, "_stabilise_segmented",
                     side_effect=lambda segmented, _poses,
-                    source_frames=None: segmented),
+                    source_frames=None, allow_stylized=False: segmented),
                 mock.patch.object(
                     motion.cutout, "_decontaminate_edges",
                     side_effect=lambda image: image),

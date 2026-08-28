@@ -237,13 +237,31 @@ RIG_ARTIFACTS = ("visemes", "diag", "runtime", "preview.mp4", "sheet.jpg")
 
 
 def _source_medium(report):
-    """Read new medium metadata while accepting early cartoon draft manifests."""
-    report = report or {}
+    """Return only a reviewed source-medium branch.
+
+    Runtime detector selection is a security/quality boundary, not a free-form
+    styling hint.  Corrupt, future, and legacy photo manifests therefore stay
+    on the strict photographic detector.  Only stored, explicit art-media
+    labels can opt into the topology-gated stylized path.
+    """
+    report = report if isinstance(report, dict) else {}
     medium = str(report.get("source_medium") or "").strip().lower()
-    if medium:
-        return medium
+    aliases = {
+        "game art": "game art",
+        "game-art": "game art",
+        "anime": "anime",
+        "illustration": "illustration",
+        "illustrated": "illustration",
+        "cartoon": "illustration",
+        "drawing": "illustration",
+        "3d render": "3d render",
+        "3d-render": "3d render",
+        "soft-3d": "3d render",
+    }
+    if medium in aliases:
+        return aliases[medium]
     legacy = str(report.get("source_mode") or "").strip().lower()
-    if legacy.startswith("stylized"):
+    if not medium and legacy.startswith("stylized"):
         return "illustration"
     return "photograph"
 

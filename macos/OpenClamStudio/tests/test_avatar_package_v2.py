@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -145,6 +146,44 @@ def make_runtime(authoring: Path) -> Path:
     }
     (runtime / "manifest.json").write_text(json.dumps(manifest))
     return runtime
+
+
+def configure_stylized_body_replacement(
+    authoring: Path,
+    runtime: Path,
+    *,
+    source_medium: str = "illustration",
+) -> None:
+    """Author one explicit replacement body with a visibly different bake."""
+    authoring_manifest_path = authoring / "manifest.json"
+    authoring_manifest = json.loads(authoring_manifest_path.read_text())
+    authoring_manifest["source_metrics"] = {"source_medium": source_medium}
+    authoring_manifest_path.write_text(json.dumps(authoring_manifest))
+
+    runtime_manifest_path = runtime / "manifest.json"
+    runtime_manifest = json.loads(runtime_manifest_path.read_text())
+    runtime_body = runtime_manifest["body"]
+    runtime_body["head_composite"] = "replace"
+    runtime_body["options"] = {"style": "anime", "medium": "anime"}
+    runtime_manifest_path.write_text(json.dumps(runtime_manifest))
+
+    authored_body = {
+        "image": "body.png",
+        "head_mask": "head-mask.png",
+        "head_composite": "replace",
+        "width": runtime_body["width"],
+        "height": runtime_body["height"],
+        "face_transform": runtime_body["face_transform"],
+        "alignment": runtime_body["alignment"],
+        "options": {"style": "anime", "medium": "anime"},
+        "views": {"front": {"preview_image": "body-composite.png"}},
+    }
+    (authoring / "body" / "body.json").write_text(json.dumps(authored_body))
+    png(
+        authoring / "body" / "body-composite.png",
+        (runtime_body["width"], runtime_body["height"]),
+        color=(240, 30, 40, 255),
+    )
 
 
 def add_runtime_motions(runtime: Path, kinds=("idle", "move")) -> None:
@@ -421,6 +460,69 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 content = bundle.read(asset["path"])
                 self.assertEqual(len(content), asset["byteCount"])
                 self.assertEqual(hashlib.sha256(content).hexdigest(), asset["sha256"])
+
+    def test_explicit_stylized_replace_packages_baked_body_pixels(self):
+        configure_stylized_body_replacement(self.authoring, self.runtime)
+        archive = self.root / "Cartoon-iPhone.avtr"
+        package.export_ios_light(
+            "cartoon", "Cartoon", self.authoring, self.runtime, archive)
+
+        with zipfile.ZipFile(archive) as bundle, \
+                Image.open(io.BytesIO(bundle.read("assets/body.png"))) as packaged, \
+                Image.open(self.authoring / "body" / "body-composite.png") as baked:
+            self.assertEqual(
+                baked.convert("RGBA").tobytes(),
+                packaged.convert("RGBA").tobytes(),
+            )
+            self.assertEqual((240, 30, 40, 255), packaged.convert("RGBA").getpixel((0, 0)))
+
+    def test_photo_unknown_and_corrupt_sources_never_package_cartoon_bake(self):
+        for source_medium in ("photograph", "unknown", "corrupt-future-value"):
+            with self.subTest(source_medium=source_medium):
+                authoring = make_authoring(
+                    self.root / f"source-{source_medium}", "avatar")
+                runtime = make_runtime(authoring)
+                configure_stylized_body_replacement(
+                    authoring, runtime, source_medium=source_medium)
+                archive = self.root / f"{source_medium}-iPhone.avtr"
+                package.export_ios_light(
+                    "avatar", "Avatar", authoring, runtime, archive)
+                with zipfile.ZipFile(archive) as bundle, \
+                        Image.open(io.BytesIO(bundle.read("assets/body.png"))) as packaged, \
+                        Image.open(runtime / "body.png") as raw:
+                    self.assertEqual(
+                        raw.convert("RGBA").tobytes(),
+                        packaged.convert("RGBA").tobytes(),
+                    )
+                    self.assertNotEqual(
+                        (240, 30, 40, 255),
+                        packaged.convert("RGBA").getpixel((0, 0)),
+                    )
+
+    def test_stylized_bake_path_and_raw_runtime_comparisons_fail_closed(self):
+        configure_stylized_body_replacement(self.authoring, self.runtime)
+        authored_body_path = self.authoring / "body" / "body.json"
+        authored_body = json.loads(authored_body_path.read_text())
+        authored_body["views"]["front"]["preview_image"] = "../body-composite.png"
+        authored_body_path.write_text(json.dumps(authored_body))
+        invalid_path_archive = self.root / "invalid-path.avtr"
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "baked body composite path is invalid"):
+            package.export_ios_light(
+                "cartoon", "Cartoon", self.authoring, self.runtime,
+                invalid_path_archive)
+        self.assertFalse(invalid_path_archive.exists())
+
+        authored_body["views"]["front"]["preview_image"] = "body-composite.png"
+        authored_body_path.write_text(json.dumps(authored_body))
+        png(self.runtime / "body.png", (512, 768), color=(1, 2, 3, 255))
+        stale_archive = self.root / "stale-runtime.avtr"
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "runtime is stale"):
+            package.export_ios_light(
+                "cartoon", "Cartoon", self.authoring, self.runtime,
+                stale_archive)
+        self.assertFalse(stale_archive.exists())
 
     def test_legacy_export_rejects_texture_dimension_above_8192(self):
         png(self.authoring / "keyframe.png", (package.MAX_IOS_DIMENSION + 1, 1))

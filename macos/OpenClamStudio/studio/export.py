@@ -28,6 +28,29 @@ NAME_MAP = {"sil": "closed", "PP": "PP", "FF": "FF", "TH": "TH", "DD": "DD",
             "aa": "ah", "E": "eh", "ih": "ih", "oh": "oh", "ou": "oo"}
 
 
+def _source_medium(manifest):
+    """Resolve detector routing from original intake evidence first.
+
+    ``source_metrics`` (or its legacy ``metrics`` name) describes the uploaded
+    source and is therefore authoritative.  A generated canonical head is only
+    a compatibility fallback for older manifests without an intake report.
+    Malformed, missing-field, unknown, and future report values stay on the
+    strict photographic route rather than inheriting a permissive head hint.
+    """
+    manifest = manifest if isinstance(manifest, dict) else {}
+    for key in ("source_metrics", "metrics"):
+        if key not in manifest:
+            continue
+        report = manifest.get(key)
+        if not isinstance(report, dict):
+            return "photograph"
+        return reg._source_medium(report)
+    head = manifest.get("head")
+    if isinstance(head, dict) and "source_medium" in head:
+        return reg._source_medium({"source_medium": head.get("source_medium")})
+    return "photograph"
+
+
 def _runtime_version(value):
     """Return a defensively parsed runtime version for a preserved bundle."""
     try:
@@ -391,14 +414,7 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
     with open(manifest_path) as handle:
         runtime = json.load(handle)
     source_manifest = reg.read_manifest(slug) or {}
-    source_report = (
-        source_manifest.get("source_metrics") or
-        source_manifest.get("metrics") or {}
-    )
-    source_medium = str(
-        (source_manifest.get("head") or {}).get("source_medium") or
-        source_report.get("source_medium") or "photograph"
-    ).strip().lower()
+    source_medium = _source_medium(source_manifest)
     cutout_meta = cutout.render(
         os.path.join(directory, "keyframe.png"),
         os.path.join(destination, "cutout.png"),
@@ -415,9 +431,21 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
         shutil.copy2(os.path.join(body_dir, "head-mask.png"), os.path.join(destination, "head-mask.png"))
         body_meta["image"] = "assets/body.png"
         body_meta["head_mask"] = "assets/head-mask.png"
+        clear_mask = str(body_meta.get("head_clear_mask") or "")
+        clear_mask_source = os.path.join(body_dir, os.path.basename(clear_mask))
+        if clear_mask and os.path.isfile(clear_mask_source):
+            shutil.copy2(clear_mask_source, os.path.join(destination, "head-clear-mask.png"))
+            body_meta["head_clear_mask"] = "assets/head-clear-mask.png"
+        else:
+            body_meta.pop("head_clear_mask", None)
+            body_meta.pop("head_clear_quality", None)
+            try:
+                os.remove(os.path.join(destination, "head-clear-mask.png"))
+            except FileNotFoundError:
+                pass
         _publish_body_extras(body_dir, body_meta, destination, log)
     else:
-        for name in ("body.png", "head-mask.png"):
+        for name in ("body.png", "head-mask.png", "head-clear-mask.png"):
             try:
                 os.remove(os.path.join(destination, name))
             except FileNotFoundError:
@@ -461,11 +489,7 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
     m = manifest_data or reg.read_manifest(slug)
     if not m or m.get("status") != "ready":
         raise ValueError(f"{slug} is not built yet")
-    source_report = m.get("source_metrics") or m.get("metrics") or {}
-    source_medium = str(
-        (m.get("head") or {}).get("source_medium") or
-        source_report.get("source_medium") or "photograph"
-    ).strip().lower()
+    source_medium = _source_medium(m)
     allow_stylized = source_medium != "photograph"
     vis = os.path.join(d, "visemes")
     key = cv2.imread(os.path.join(d, "keyframe.png"))
@@ -522,6 +546,18 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         shutil.copy2(os.path.join(body_dir, "head-mask.png"), os.path.join(dest, "head-mask.png"))
         body_meta["image"] = "assets/body.png"
         body_meta["head_mask"] = "assets/head-mask.png"
+        clear_mask = str(body_meta.get("head_clear_mask") or "")
+        clear_mask_source = os.path.join(body_dir, os.path.basename(clear_mask))
+        if clear_mask and os.path.isfile(clear_mask_source):
+            shutil.copy2(clear_mask_source, os.path.join(dest, "head-clear-mask.png"))
+            body_meta["head_clear_mask"] = "assets/head-clear-mask.png"
+        else:
+            body_meta.pop("head_clear_mask", None)
+            body_meta.pop("head_clear_quality", None)
+            try:
+                os.remove(os.path.join(dest, "head-clear-mask.png"))
+            except FileNotFoundError:
+                pass
         _publish_body_extras(body_dir, body_meta, dest, log)
         log("  full-body plate published")
     motion_meta = _publish_motion(home, dest, log)

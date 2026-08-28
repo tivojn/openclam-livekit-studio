@@ -89,12 +89,68 @@ assert.equal(classifyDisplayMode({manualMotionKind: 'idle'}), 'edge-idle');
 assert.equal(classifyDisplayMode({moveUntil: 200}), 'moves');
 assert.match(source, /#topline \{ display: none !important; \}/,
   'avatar lifecycle status must not occupy a floating chip in Chat\/Talk');
-assert.match(source, /id="chatHeaderNewButton"[^>]+>New chat<\/button>/,
-  'the window header must expose New chat beside the history control');
-assert.match(source, /id="newChatButton"[^>]+>[\s\S]{0,300}<span>New chat<\/span>[\s\S]{0,40}<\/button>/,
+assert.match(source, /id="chatHeaderNewButton"[^>]+aria-label="Start a new chat"[^>]*>[\s\S]{0,180}<svg/,
+  'the compact task header must expose an accessible New chat action');
+assert.match(source, /id="newChatButton"[^>]+>[\s\S]{0,620}<span>New chat<\/span>[\s\S]{0,260}<\/button>/,
   'the history drawer must expose a visible New chat label instead of a dark placeholder bar');
-assert.match(source, /id="historySettingsButton"[^>]+>Settings<\/button>/,
+assert.match(source, /id="historySettingsButton"[^>]+>[\s\S]{0,760}<span>Settings<\/span>[\s\S]{0,40}<\/button>/,
   'the history sidebar must expose Settings');
+assert.match(source, /<main id="chatWorkspace">[\s\S]*?<div id="conversation"/,
+  'the live conversation must remain inside the central Codex-style task pane');
+assert.match(source, /<aside id="workspaceInfoPanel" aria-label="Task details">/,
+  'the desktop shell must expose a dedicated task-details pane');
+assert.match(source, /grid-template-columns:\s*var\(--workspace-sidebar-track\) minmax\(0, 1fr\) var\(--workspace-info-track\)/,
+  'wide Chat\/Talk mode must use the approved three-pane desktop geometry');
+assert.match(source, /html\.workspace-sidebar-collapsed \{ --workspace-sidebar-track: 0px; \}/);
+assert.match(source, /html\.workspace-info-collapsed \{ --workspace-info-track: 0px; \}/);
+assert.match(source, /const setHistoryOpen = \(value, persist = true\) => \{/,
+  'the left sidebar must have one persistent fold controller');
+assert.match(source, /const applyWorkspaceInfoCollapsed = \(value, persist = true\) => \{/,
+  'the task-details pane must have one persistent collapse controller');
+assert.match(source, /id="workspaceInfoToggle"[^>]+aria-controls="workspaceInfoPanel"/,
+  'the central header must keep an accessible right split-pane toggle');
+assert.match(source, /id="chatHistoryButton"[^>]+aria-controls="chatHistoryPanel"/,
+  'the central header must keep an accessible left split-pane toggle');
+assert.match(source, /html\.chat-mode #settingsButton \{ display: none; \}/,
+  'Settings belongs in the left sidebar, not a duplicate rail gear');
+assert.match(source, /html\.chat-mode #rail\.rail-folded \.rail-fold svg \{ transform: rotate\(-90deg\); \}/,
+  'the one visible folded-rail chevron must point right');
+assert.match(source, /html\.chat-mode #rail \{ top: 66px; right: calc\(var\(--workspace-info-track\) \+ 14px\); \}/,
+  'the avatar rail must stay inside the central pane and clear an open details pane');
+assert.match(source, /html\.chat-mode \.message\.user \{[^}]*padding-right:\s*58px;/,
+  'right-aligned user turns must reserve a real gutter for the floating avatar rail');
+assert.match(source, /html\.chat-mode \.message\.assistant \{[^}]*flex-direction:\s*column;[^}]*align-items:\s*flex-start;/,
+  'assistant response actions must sit directly beneath the response, not beside it');
+assert.match(source, /html\.chat-mode \.message\.assistant \.response-actions \{[^}]*align-self:\s*flex-start;[^}]*justify-content:\s*flex-start;/,
+  'Copy and Read Aloud must remain left-aligned under each assistant response');
+assert.match(source, /#pendingAttachments \{[^}]*min-height:\s*42px;[^}]*scrollbar-width:\s*none;/,
+  'staged attachments must remain visible without adding another scrollbar');
+assert.match(source, /\.pending-attachment \{[^}]*border:\s*1px solid var\(--codex-border-heavy\);[^}]*color:\s*var\(--codex-text\);/,
+  'attachment chips must have sufficient light- and dark-theme contrast');
+assert.match(source, /const chatWorkspaceViewport = \(\) => \{/);
+assert.match(source, /const chatAvatarSafeViewport = \(\{ reserveComposer = true, reserveRail = true \} = \{\}\) => \{/,
+  'avatar fitting must derive a central-pane safe area instead of painting under controls');
+assert.match(source, /right = Math\.min\(right, railRect\.left - 16\)/,
+  'the avatar safe area must stop before the visible rail');
+assert.match(source, /bottom = Math\.min\(bottom, composerRect\.top - 16\)/,
+  'full-body and motion feet must stop above the floating composer');
+assert.match(source, /return fullChat \? clampChatCameraFit\(fit, viewport\) : fit;/,
+  'saved Standby placement must be clamped back inside the usable chat canvas');
+assert.match(source, /chatAvatarSafeViewport\(\{ reserveComposer: true, reserveRail: true \}\)/,
+  'chat Walk and Edge Idle must share the same rail/composer-safe canvas');
+assert.match(source, /if \(chatScoped && kind === 'idle'\) \{[\s\S]{0,420}const viewport = chatAvatarSafeViewport\(\{ reserveComposer: true, reserveRail: true \}\);/,
+  'per-frame Edge Idle anchoring must not regress to the raw rail-obscured workspace');
+assert.match(source, /const syncChatWorkspaceGeometry = \(\) => \{/);
+assert.match(source, /clip-path: inset\([\s\S]{0,220}--chat-workspace-left/,
+  'avatar pixels must be clipped to the central workspace rather than either sidebar');
+assert.doesNotMatch(source, /window\.prompt\('Type “rename” or “delete”/,
+  'history actions must use a real menu instead of blocking prompts');
+assert.match(source, /pin\.textContent = thread\.pinned \? 'Unpin' : 'Pin'/);
+assert.match(source, /remove\.textContent = 'Delete'/);
+assert.match(source, /\.history-thread:hover \.history-thread-more,[\s\S]{0,100}\.history-thread:focus-within \.history-thread-more/,
+  'thread ellipses must appear only for hover or keyboard focus');
+assert.doesNotMatch(source, /Start a chat, push to talk, or call your avatar/,
+  'an empty thread must remain visually quiet instead of rendering a default instruction');
 assert.match(source, /html:not\(\.chat-mode\) #topline,[\s\S]{0,220}html:not\(\.chat-mode\) #rail,[\s\S]{0,280}display: none !important;/,
   'Avatar mode must be one pure avatar surface without chat status or rail chrome');
 assert.match(source, /Chat &amp; Push to Talk/);
@@ -483,14 +539,42 @@ assert.match(source,
   /sendButton\.disabled = \(!composer\.value\.trim\(\) && !pendingComposerAttachments\.length\)[\s\S]{0,100}Boolean\(turnController\) \|\| Boolean\(live\)/,
   'OpenClaw file-only messages must remain sendable while active turns and Live Talk stay exclusive');
 
-// The Mac composer and thread support the same safe local-media workflow as
-// generated OpenClaw files: selected files are privately staged, sent as
-// handles, rendered by type, and exposed through native Open/Share/Save.
+// The Mac composer supports both transports: OpenClaw files use authenticated
+// handles, while ordinary local chat uses bounded image/text data and honest
+// metadata-only cards for unsupported binary content.
 for (const id of [
   'attachButton', 'attachmentMenu', 'addFilesButton', 'addPhotosButton',
-  'takePhotoButton', 'filePreviewDialog', 'cameraDialog',
+  'takePhotoButton', 'attachmentDisclosure', 'filePreviewDialog', 'cameraDialog',
 ]) assert.match(source, new RegExp(`id=["']${id}["']`), `missing media control ${id}`);
 assert.match(source, /input_handles: inputAttachments\.map\(attachment => attachment\.handle\)/);
+assert.match(source, /if \(!agentID\) return stageLocalFiles\(files\)/,
+  'ordinary local chat must stage attachments instead of disabling the Add button');
+assert.match(source, /attachButton\.disabled = Boolean\(turnController\) \|\| Boolean\(live\)[\s\S]{0,80}pendingComposerAttachments\.length >= 8/);
+assert.doesNotMatch(source, /attachButton\.disabled[^;]+!selectedOpenClawAgent\(\)/,
+  'the attachment menu must remain available for ordinary local chat');
+assert.match(source, /LOCAL_ATTACHMENT_MAX_IMAGE_CHARS = 900_000/);
+assert.match(source, /LOCAL_ATTACHMENT_MAX_TEXT_CHARS = 48_000/);
+assert.match(source, /const localTurnContent = \(value, attachments = \[\]\) => \{/);
+assert.match(source, /metadata only; this file’s bytes will not be sent to the selected model provider/i,
+  'unsupported binary cards must disclose that only metadata is available');
+assert.match(source, /Files are sent to the model provider shown in Settings only after you press Send\./,
+  'the attachment menu must disclose the external-provider boundary before a file is staged');
+assert.match(source, /const chatGPTTextOnly = !openClaw && provider === 'openai' && authMode === 'chatgpt'/,
+  'the composer must recognize the text-only ChatGPT OAuth chat route');
+assert.match(source, /addPhotosButton\.disabled = directAttachmentVisionTextOnly;[\s\S]{0,100}takePhotoButton\.disabled = directAttachmentVisionTextOnly;/,
+  'photo and camera input must be disabled when the selected route cannot carry pixels');
+assert.match(source, /ChatGPT OAuth chat is text-only\. Photo and Camera are unavailable; an image chosen as a File stays metadata-only\./,
+  'the unavailable vision boundary must be explained at the attachment controls');
+assert.match(source, /if \(directAttachmentVisionTextOnly\) \{[\s\S]{0,180}transport: 'metadata'[\s\S]{0,80}vision_omitted: true/,
+  'an image selected through File must fail closed to metadata on a text-only route');
+assert.match(source, /await refreshAttachmentRouteCapability\(\);[\s\S]{0,420}directAttachmentVisionTextOnly && attachment\.transport === 'image'[\s\S]{0,180}transport: 'metadata'/,
+  'the selected route must be rechecked and staged pixels re-sanitized immediately before send');
+assert.match(source, /<option value="local">OpenClam<\/option>/,
+  'the built-in provider route must not be mislabeled as on-device inference');
+assert.doesNotMatch(source, /<option value="local">On this Mac<\/option>/,
+  'the composer must not imply that cloud-routed model traffic stays on-device');
+assert.match(source, /if \(!pendingComposerAttachments\.length && inputAttachments\.length\) \{[\s\S]{0,180}pendingComposerAttachments = inputAttachments;[\s\S]{0,180}renderPendingAttachments\(\);/,
+  'failed built-in model requests must restore staged attachments for retry');
 assert.ok(source.includes('/^api\\/openclaw\\/(?:artifacts|uploads)\\/[A-Za-z0-9_-]{20,32}$/'),
   'thread media URLs must remain limited to authenticated same-origin artifact/upload handles');
 assert.match(source, /document\.createElement\('audio'\)/);
@@ -834,13 +918,13 @@ assert.match(source, /`\$\{spec\.label\} · Not built`/);
 assert.doesNotMatch(source, /notify\('Build an? (?:Walk|Edge Idle|Moves) clip/,
   'motion capability feedback belongs inside its picker, never in an avatar-covering dark toast');
 assert.match(source, /const chatWindowMotionFit = \(kind, meta, width, height, now, clip = null, edge = 'right'\) => \{/);
-assert.match(source, /const floor = Math\.max\(190, innerHeight - 4\);/,
-  'Chat\/Talk motion must use the chat canvas bottom as its lower edge');
+assert.match(source, /const viewport = chatAvatarSafeViewport\(\{ reserveComposer: true, reserveRail: true \}\);[\s\S]{0,100}const floor = Math\.max\(viewport\.y \+ 190, viewport\.bottom - 4\);/,
+  'Chat\/Talk motion must use the rail-cleared composer-safe workspace bottom as its lower edge');
 assert.match(source, /const motionTravelAtPhase = \(clip, phase\) => \{/);
 assert.match(source, /const motionTravelSincePhase = \(clip, startPhase, elapsedSeconds\) => \{[\s\S]{0,620}motionTravelAtPhase\(clip, phase\) - motionTravelAtPhase\(clip, initial\);/,
   'Horizon Walk screen travel must use the authored gait trajectory rather than a fixed conveyor-belt duration');
-assert.match(source, /const left = 3;[\s\S]{0,100}innerWidth - 3 - crop\.w \* scale/,
-  'Chat\/Talk Horizon Walk must traverse the full chat-window width');
+assert.match(source, /const left = viewport\.x \+ 3;[\s\S]{0,120}viewport\.right - 3 - crop\.w \* scale/,
+  'Chat\/Talk Horizon Walk must traverse the full central-workspace width');
 assert.match(source, /A saved conversational drag must not shift Walk[\s\S]{0,180}const offset = \{ x: 0, y: 0 \};/,
   'the chat-window motion lane must remain independent from the speaking pose offset');
 assert.match(source, /const advanceChatWalkState = \(state, now, walkClip, idleClip, span\) => \{[\s\S]{0,1500}runtime\.mode = `ledge-\$\{edge\}`;[\s\S]{0,180}motionRoundSeconds\(idleClip\) \* 1000/,
@@ -849,8 +933,8 @@ assert.match(source, /const chatWalk = inChat && manualMotionKind === 'walk'[\s\
   'the manual Walk control must render the state machine\'s Walk or Edge Idle presentation');
 assert.match(source, /const phase = chatScoped && kind === 'walk' \? fit\.phase/,
   'the traversing body frames and its lower-edge travel must share one gait phase');
-assert.match(source, /anchors\[`\$\{displayEdge\}_frames`\][\s\S]{0,520}innerWidth - 3 - rightSupport \* fit\.scale/,
-  'authored Edge Idle must pin its measured support point directly to either chat window side');
+assert.match(source, /anchors\[`\$\{displayEdge\}_frames`\][\s\S]{0,620}viewport\.right - 3 - rightSupport \* fit\.scale/,
+  'authored Edge Idle must pin its measured support point directly to either central-workspace side');
 assert.match(source, /drawAvatar\(now, `chat-edge-idle-\$\{idleEdge\}`\)/,
   'Edge Idle must fall back to a standing lean at the selected chat-window edge');
 assert.match(source, /html\.avatar-only-motion #rail[\s\S]{0,160}opacity: 0;[\s\S]{0,160}pointer-events: none;/);
@@ -1605,7 +1689,11 @@ const bodyHeadCompositeMode = new Function(
 )();
 assert.equal(bodyHeadCompositeMode({options: {medium: 'anime'}}), 'replace');
 assert.equal(bodyHeadCompositeMode({options: {medium: 'illustration'}}), 'replace');
-assert.equal(bodyHeadCompositeMode({options: {style: 'illustrated'}}), 'replace');
+assert.equal(bodyHeadCompositeMode({head_composite: 'replace'}), 'replace');
+assert.equal(bodyHeadCompositeMode({options: {style: 'illustrated'}}), 'blend',
+  'requested style alone must never opt a photo/legacy body into replacement');
+assert.equal(bodyHeadCompositeMode({options: {medium: 'corrupt-future-value', style: 'anime'}}), 'blend',
+  'unknown stored media must fail closed even when style requests anime');
 assert.equal(bodyHeadCompositeMode({options: {medium: 'photograph', style: 'illustrated'}}), 'blend',
   'an explicit photograph must retain the legacy soft compositor regardless of style metadata');
 assert.equal(bodyHeadCompositeMode({options: {medium: 'photograph'}}), 'blend',
@@ -1633,6 +1721,10 @@ assert.deepEqual([...replacementPixels], [
   255, 255, 255, 255,
   255, 255, 255, 255,
 ]);
+assert.match(source, /const replacementSource = cutoutImage \|\| headMask;/,
+  'stylized replacement must use the complete canonical head silhouette, not only the face oval');
+assert.match(source, /headReplacementContext\.drawImage\(\n          replacementSource/,
+  'the complete stylized silhouette must become the hard erase-and-draw matte');
 
 const drawBodyHeadSource = inline[1].match(
   /(const drawBodyHeadLayer = \(target, head, replacementMask, mode, width, height\) => \{[\s\S]*?\n    \};)/,
@@ -1662,6 +1754,14 @@ assert.match(source, /if \(cutoutImage && !headReplacementActive\) \{/,
   'cartoon replacement must not pre-soften its hard silhouette with the photographic cutout');
 assert.match(source, /const liveHeadMask = headReplacementActive \? headReplacementCanvas : headMask;/);
 assert.match(source, /prepareHeadReplacementMask\(manifest\.body\);/);
+assert.match(source, /loadImage\(manifest\.body\.head_clear_mask\)[\s\S]{0,100}bodyHeadClearMask = image/,
+  'current stylized packages must load their authored body-space anatomy eraser');
+assert.match(source, /const eraseBodyHeadAnatomy = \(target, clearMask, mode, width, height\) => \{/,
+  'body-space anatomy erasure must remain an explicit compositor stage');
+assert.match(source, /const erasedInBodySpace = eraseBodyHeadAnatomy\(\n          context, bodyHeadClearMask, compositeMode, width, height\);/,
+  'the provider ears, cheeks and jaw must be erased before the face transform');
+assert.match(source, /!erasedInBodySpace && headReplacementActive \? headReplacementCanvas : null/,
+  'the transformed legacy eraser must not run on top of the authored body-space mask');
 
 // Electron reports a macOS trackpad pinch as Ctrl+wheel. Only that modifier
 // path changes size; ordinary scrolling is left alone. Values use the same

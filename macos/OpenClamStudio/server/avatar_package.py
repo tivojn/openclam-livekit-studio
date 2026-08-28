@@ -27,7 +27,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 
 FORMAT = "openclam-avatar"
@@ -530,6 +530,148 @@ def _runtime_asset(runtime_root: Path, declared: object) -> Path:
     if not path.is_file() or path.is_symlink():
         raise AvatarPackageError("runtime asset is missing")
     return path
+
+
+_STYLISED_SOURCE_MEDIA = {
+    "game art": "game art",
+    "game-art": "game art",
+    "anime": "anime",
+    "illustration": "illustration",
+    "illustrated": "illustration",
+    "cartoon": "illustration",
+    "drawing": "illustration",
+    "3d render": "3d render",
+    "3d-render": "3d render",
+    "soft-3d": "3d render",
+}
+
+
+def _normalise_source_medium(value: object, legacy_mode: object = None) -> str:
+    """Whitelist the iPhone packaging branch; arbitrary labels are photos."""
+    medium = str(value or "").strip().lower()
+    if medium in _STYLISED_SOURCE_MEDIA:
+        return _STYLISED_SOURCE_MEDIA[medium]
+    legacy = str(legacy_mode or "").strip().lower()
+    if not medium and legacy.startswith("stylized"):
+        return "illustration"
+    return "photograph"
+
+
+def _authoritative_source_medium(authoring: Path) -> str:
+    """Read stored intake evidence, never body style/provider prompt output."""
+    manifest = _read_json_file(authoring / "manifest.json")
+    for key in ("source_metrics", "metrics"):
+        if key not in manifest:
+            continue
+        report = manifest.get(key)
+        if not isinstance(report, dict):
+            return "photograph"
+        return _normalise_source_medium(
+            report.get("source_medium"), report.get("source_mode"))
+    head = manifest.get("head")
+    if isinstance(head, dict) and "source_medium" in head:
+        return _normalise_source_medium(head.get("source_medium"))
+    return "photograph"
+
+
+def _authoring_body_asset(body_root: Path, declared: object, label: str) -> Path:
+    """Resolve one flat body-authoring asset without accepting traversal."""
+    if not isinstance(declared, str) or not declared \
+            or Path(declared).name != declared:
+        raise AvatarPackageError(f"authored iPhone {label} path is invalid")
+    path = body_root / declared
+    if not path.is_file() or path.is_symlink():
+        raise AvatarPackageError(f"authored iPhone {label} is missing")
+    return path
+
+
+def _image_has_alpha(path: Path) -> bool:
+    try:
+        with Image.open(path) as image:
+            image.load()
+            return "A" in image.getbands()
+    except Exception as error:
+        raise AvatarPackageError(
+            f"avatar image is invalid: {path.name}") from error
+
+
+def _ios_body_source(
+    authoring: Path,
+    runtime: Path,
+    body: Mapping[str, object],
+) -> Path:
+    """Choose a release-safe standing plate for the iPhone package.
+
+    Photographic, unknown, and legacy projects retain the established runtime
+    body byte-for-byte. An explicitly stylized replacement rig packages the
+    authoring-time baked composite instead: the canonical neutral head is then
+    already present beneath iOS' same aligned animated face, so generated ears,
+    cheeks, and chin cannot show through as duplicate anatomy.
+
+    Every comparison is fail-closed. A stale runtime, malformed path, missing
+    alpha channel, or mismatched transform rejects the export instead of
+    guessing which pixels belong to the current rig.
+    """
+    raw_runtime = _runtime_asset(runtime, body.get("image"))
+    if (_authoritative_source_medium(authoring) == "photograph"
+            or str(body.get("head_composite") or "").strip().lower()
+            != "replace"):
+        return raw_runtime
+
+    body_root = authoring / "body"
+    authored = _read_json_file(body_root / "body.json")
+    authored_medium = _normalise_source_medium(
+        (authored.get("options") or {}).get("medium")
+        if isinstance(authored.get("options"), dict) else None)
+    if (str(authored.get("head_composite") or "").strip().lower()
+            != "replace" or authored_medium == "photograph"):
+        raise AvatarPackageError(
+            "stylized iPhone body replacement metadata is incomplete")
+    if (authored.get("face_transform") != body.get("face_transform")
+            or (authored.get("alignment") or {}).get("face_bounds")
+            != (body.get("alignment") or {}).get("face_bounds")
+            or int(authored.get("width") or 0) != int(body.get("width") or 0)
+            or int(authored.get("height") or 0) != int(body.get("height") or 0)):
+        raise AvatarPackageError(
+            "stylized iPhone body and face registration are out of sync")
+
+    authored_raw = _authoring_body_asset(
+        body_root, authored.get("image") or "body.png", "body")
+    authored_head_mask = _authoring_body_asset(
+        body_root, authored.get("head_mask") or "head-mask.png", "head mask")
+    runtime_head_mask = _runtime_asset(runtime, body.get("head_mask"))
+    if (_sha256_path(authored_raw) != _sha256_path(raw_runtime)
+            or _sha256_path(authored_head_mask) != _sha256_path(runtime_head_mask)):
+        raise AvatarPackageError(
+            "stylized iPhone runtime is stale; republish it before export")
+
+    front = (authored.get("views") or {}).get("front") \
+        if isinstance(authored.get("views"), dict) else None
+    preview = front.get("preview_image") if isinstance(front, dict) else None
+    composite = _authoring_body_asset(
+        body_root, preview, "baked body composite")
+    raw_size = _image_details(authored_raw)[:2]
+    composite_size = _image_details(composite)[:2]
+    if composite_size != raw_size or not _image_has_alpha(composite):
+        raise AvatarPackageError(
+            "stylized iPhone baked body composite is invalid")
+    try:
+        with Image.open(authored_raw) as raw_image, Image.open(composite) as baked_image:
+            raw_rgba = raw_image.convert("RGBA")
+            baked_rgba = baked_image.convert("RGBA")
+            # Pillow's RGBA ``getbbox`` can collapse an RGB-only difference
+            # when the difference image's alpha band is zero everywhere.
+            if ImageChops.difference(
+                    raw_rgba.convert("RGB"), baked_rgba.convert("RGB")
+                    ).getbbox() is None:
+                raise AvatarPackageError(
+                    "stylized iPhone baked body composite contains no replacement")
+    except AvatarPackageError:
+        raise
+    except Exception as error:
+        raise AvatarPackageError(
+            "stylized iPhone baked body composite is invalid") from error
+    return composite
 
 
 def _box(value: object) -> dict:
@@ -1189,9 +1331,10 @@ def export_ios_light(
     with tempfile.TemporaryDirectory(prefix="openclam-ios-avtr-") as temporary:
         assets_root = Path(temporary) / "assets"
         assets_root.mkdir()
+        body_source = _ios_body_source(authoring, runtime, body)
         sources: dict[str, Path] = {
             "thumbnail": authoring / "keyframe.png",
-            "body": _runtime_asset(runtime, body.get("image")),
+            "body": body_source,
             "head-mask": _runtime_asset(runtime, body.get("head_mask")),
             "eye-left": _runtime_asset(runtime, eyes["l"].get("src")),
             "eye-right": _runtime_asset(runtime, eyes["r"].get("src")),

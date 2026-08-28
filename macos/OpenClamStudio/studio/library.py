@@ -544,6 +544,7 @@ def _body_content_sha(body_dir, metadata):
 
     add(metadata.get("image") or "body.png")
     add(metadata.get("head_mask") or "head-mask.png")
+    add(metadata.get("head_clear_mask"))
     views = metadata.get("views") or {}
     for view in ("front", "side", "back"):
         record = views.get(view) or {}

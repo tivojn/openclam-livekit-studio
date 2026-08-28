@@ -1613,10 +1613,9 @@ def _xai_responses_input(messages):
 def _bounded_xai_messages(messages, initial_text_chars=0):
     if not isinstance(messages, (list, tuple)) or len(messages) > 128:
         raise RuntimeError("xAI chat accepts at most 128 messages")
-    output = []
-    text_total = max(0, int(initial_text_chars))
-    image_total, image_count = 0, 0
-    for message in messages:
+    image_counts = {}
+    latest_image_user_index = None
+    for index, message in enumerate(messages):
         if not isinstance(message, dict):
             raise RuntimeError("xAI chat received an invalid message")
         role = str(message.get("role") or "")
@@ -1624,17 +1623,38 @@ def _bounded_xai_messages(messages, initial_text_chars=0):
             raise RuntimeError("xAI chat supports user and assistant messages")
         content = message.get("content")
         if isinstance(content, str):
+            continue
+        if not isinstance(content, list) or len(content) > 64:
+            raise RuntimeError("xAI chat received invalid message content")
+        image_count = 0
+        for block in content:
+            if not isinstance(block, dict):
+                raise RuntimeError("xAI chat received invalid message content")
+            kind = str(block.get("type") or "")
+            if kind not in {"text", "input_text", "image_url", "input_image"}:
+                raise RuntimeError("xAI chat received unsupported message content")
+            if kind in {"image_url", "input_image"}:
+                image_count += 1
+        if image_count:
+            image_counts[index] = image_count
+            if role == "user":
+                latest_image_user_index = index
+
+    output = []
+    text_total = max(0, int(initial_text_chars))
+    image_total, image_count = 0, 0
+    for index, message in enumerate(messages):
+        role = str(message.get("role") or "")
+        content = message.get("content")
+        if isinstance(content, str):
             text_total += len(content)
             if len(content) > _MAX_XAI_TEXT_CHARS:
                 raise RuntimeError("an xAI chat message is too long")
             output.append({"role": role, "content": content})
             continue
-        if not isinstance(content, list) or len(content) > 64:
-            raise RuntimeError("xAI chat received invalid message content")
         blocks = []
+        historical_marker_added = False
         for block in content:
-            if not isinstance(block, dict):
-                raise RuntimeError("xAI chat received invalid message content")
             kind = str(block.get("type") or "")
             if kind in {"text", "input_text"}:
                 value = str(block.get("text") or "")
@@ -1643,13 +1663,24 @@ def _bounded_xai_messages(messages, initial_text_chars=0):
                 text_total += len(value)
                 blocks.append({"type": "text", "text": value})
                 continue
-            if kind not in {"image_url", "input_image"}:
-                raise RuntimeError("xAI chat received unsupported message content")
+            if index != latest_image_user_index:
+                if not historical_marker_added:
+                    count = image_counts[index]
+                    marker = (
+                        f"[{count} previously attached image"
+                        f"{'s were' if count != 1 else ' was'} omitted from repeated "
+                        "model context. Only images from the newest image-bearing user "
+                        "turn are resent.]"
+                    )
+                    text_total += len(marker)
+                    blocks.append({"type": "text", "text": marker})
+                    historical_marker_added = True
+                continue
             image = block.get("image_url")
             url = image.get("url") if isinstance(image, dict) else image
             url = url or block.get("url")
-            if (not isinstance(url, str) or not url.startswith("data:image/")
-                    or ";base64," not in url):
+            if (not isinstance(url, str)
+                    or not re.match(r"^data:image/(?:png|jpeg|webp|gif);base64,", url)):
                 raise RuntimeError("xAI vision accepts bounded image data URLs")
             image_count += 1
             image_total += len(url)
@@ -1659,6 +1690,111 @@ def _bounded_xai_messages(messages, initial_text_chars=0):
         output.append({"role": role, "content": blocks})
     if text_total > _MAX_XAI_INPUT_CHARS:
         raise RuntimeError("xAI chat input is too large")
+    return output
+
+
+def _text_only_attachment_messages(messages):
+    """Flatten reviewed content blocks for a route without image transport.
+
+    The image bytes are deliberately omitted, and the replacement text makes
+    that limitation explicit so a text-only model cannot pretend it inspected
+    pixels that never reached it. Text-file contents already live in reviewed
+    text blocks and remain available.
+    """
+    output = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            output.append({"role": message["role"], "content": content})
+            continue
+        parts = []
+        image_count = 0
+        for block in content:
+            if block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif block.get("type") == "image_url":
+                image_count += 1
+        if image_count:
+            parts.append(
+                f"[{image_count} attached image{'s were' if image_count != 1 else ' was'} "
+                "not delivered by this text-only route. Do not claim to have inspected "
+                "the image pixels.]"
+            )
+        output.append({"role": message["role"], "content": "\n\n".join(
+            part for part in parts if part)})
+    return output
+
+
+def _ollama_attachment_messages(messages):
+    """Translate reviewed OpenAI-style image blocks to Ollama /api/chat."""
+    output = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            output.append({"role": message["role"], "content": content})
+            continue
+        text, images = [], []
+        for block in content:
+            if block.get("type") == "text":
+                text.append(str(block.get("text") or ""))
+            elif block.get("type") == "image_url":
+                image = block.get("image_url") or {}
+                url = image.get("url") if isinstance(image, dict) else ""
+                images.append(url.split(",", 1)[1])
+        row = {"role": message["role"], "content": "\n\n".join(text)}
+        if images:
+            row["images"] = images
+        output.append(row)
+    return output
+
+
+def _anthropic_attachment_messages(messages):
+    """Translate reviewed image blocks to Anthropic's base64 source shape."""
+    output = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            output.append({"role": message["role"], "content": content})
+            continue
+        blocks = []
+        for block in content:
+            if block.get("type") == "text":
+                blocks.append({"type": "text", "text": str(block.get("text") or "")})
+            elif block.get("type") == "image_url":
+                image = block.get("image_url") or {}
+                url = image.get("url") if isinstance(image, dict) else ""
+                header, data = url.split(",", 1)
+                media_type = header[5:].split(";", 1)[0]
+                blocks.append({"type": "image", "source": {
+                    "type": "base64", "media_type": media_type, "data": data,
+                }})
+        output.append({"role": message["role"], "content": blocks})
+    return output
+
+
+def _gemini_attachment_contents(messages):
+    """Translate reviewed image blocks to Gemini REST inlineData parts."""
+    output = []
+    for message in messages:
+        content = message.get("content")
+        parts = []
+        if isinstance(content, str):
+            parts.append({"text": content})
+        else:
+            for block in content:
+                if block.get("type") == "text":
+                    parts.append({"text": str(block.get("text") or "")})
+                elif block.get("type") == "image_url":
+                    image = block.get("image_url") or {}
+                    url = image.get("url") if isinstance(image, dict) else ""
+                    header, data = url.split(",", 1)
+                    parts.append({"inlineData": {
+                        "mimeType": header[5:].split(";", 1)[0], "data": data,
+                    }})
+        output.append({
+            "role": "model" if message["role"] == "assistant" else "user",
+            "parts": parts,
+        })
     return output
 
 
@@ -1848,9 +1984,11 @@ async def _chat_direct_stream(messages, c, system=""):
         async for snapshot in _xai_chat_direct_stream(messages, c, system):
             yield snapshot
         return
+    messages = _bounded_xai_messages(messages, len(str(system or "")))
     if p == "openai" and _openai_uses_chatgpt():
         text = await _openai_account_manager().chat_async(
-            messages, system, max_tokens=int(c.get("max_tokens", 160)))
+            _text_only_attachment_messages(messages), system,
+            max_tokens=int(c.get("max_tokens", 160)))
         if text:
             yield text
         return
@@ -1862,7 +2000,8 @@ async def _chat_direct_stream(messages, c, system=""):
 
     async with httpx.AsyncClient(timeout=180) as client:
         if p == "ollama":
-            msgs = ([{"role": "system", "content": system}] if system else []) + messages
+            msgs = ([{"role": "system", "content": system}] if system else []) \
+                + _ollama_attachment_messages(messages)
             async with client.stream(
                     "POST", f"{base or 'http://localhost:11434'}/api/chat", json={
                         "model": model, "messages": msgs, "stream": True, "think": False,
@@ -1880,7 +2019,9 @@ async def _chat_direct_stream(messages, c, system=""):
                     "x-api-key": key, "anthropic-version": "2023-06-01",
                     "content-type": "application/json", "accept": "text/event-stream"}, json={
                         "model": model, "max_tokens": maxtok, "temperature": temp,
-                        "system": system, "messages": messages, "stream": True}) as response:
+                        "system": system,
+                        "messages": _anthropic_attachment_messages(messages),
+                        "stream": True}) as response:
                 response.raise_for_status()
                 async for event in _stream_json_events(response):
                     if event.get("type") == "content_block_start":
@@ -1898,8 +2039,7 @@ async def _chat_direct_stream(messages, c, system=""):
             return
 
         if p == "gemini":
-            contents = [{"role": "model" if m["role"] == "assistant" else "user",
-                         "parts": [{"text": m["content"]}]} for m in messages]
+            contents = _gemini_attachment_contents(messages)
             body = {"contents": contents,
                     "generationConfig": {"temperature": temp, "maxOutputTokens": maxtok}}
             if system:
@@ -1952,9 +2092,11 @@ async def _chat_direct(messages, c, system=""):
     p = c.get("provider")
     if p == "xai":
         return await _xai_chat_direct(messages, c, system)
+    messages = _bounded_xai_messages(messages, len(str(system or "")))
     if p == "openai" and _openai_uses_chatgpt():
         return await _openai_account_manager().chat_async(
-            messages, system, max_tokens=int(c.get("max_tokens", 160)))
+            _text_only_attachment_messages(messages), system,
+            max_tokens=int(c.get("max_tokens", 160)))
     base, key = _base("llm", c), c.get("api_key") or ""
     model = (c.get("model") or "").strip() or FALLBACK_MODEL.get(p, "")
     temp = float(c.get("temperature", 0.8))
@@ -1962,7 +2104,8 @@ async def _chat_direct(messages, c, system=""):
 
     async with httpx.AsyncClient(timeout=180) as x:
         if p == "ollama":
-            msgs = ([{"role": "system", "content": system}] if system else []) + messages
+            msgs = ([{"role": "system", "content": system}] if system else []) \
+                + _ollama_attachment_messages(messages)
             r = await x.post(f"{base or 'http://localhost:11434'}/api/chat", json={
                 "model": model, "messages": msgs, "stream": False, "think": False,
                 "options": {"temperature": temp, "num_predict": maxtok}})
@@ -1976,13 +2119,12 @@ async def _chat_direct(messages, c, system=""):
                 "x-api-key": key, "anthropic-version": "2023-06-01",
                 "content-type": "application/json"}, json={
                 "model": model, "max_tokens": maxtok, "temperature": temp,
-                "system": system, "messages": messages})
+                "system": system, "messages": _anthropic_attachment_messages(messages)})
             r.raise_for_status()
             return "".join(b.get("text", "") for b in r.json().get("content", [])).strip()
 
         if p == "gemini":
-            contents = [{"role": "model" if m["role"] == "assistant" else "user",
-                         "parts": [{"text": m["content"]}]} for m in messages]
+            contents = _gemini_attachment_contents(messages)
             body = {"contents": contents,
                     "generationConfig": {"temperature": temp, "maxOutputTokens": maxtok}}
             if system:

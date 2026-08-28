@@ -512,6 +512,34 @@ class AlphaAccuracy(unittest.TestCase):
         self.assertEqual((245, 245, 245), tuple(current[31, 78, :3]))
         self.assertTrue(np.all(repaired[103:124, 75:82] == 0))
 
+    def test_stylized_eye_repair_restores_sclera_only_for_cartoon_path(self):
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[5:150, 45:112] = (76, 138, 216)
+        alpha = np.zeros((180, 160), np.uint8)
+        alpha[5:150, 45:112] = 255
+        # Deliberately white illustrated eyes, bounded by opaque black ink.
+        for center in ((66, 14), (90, 14)):
+            cv2.circle(source, center, 6, (255, 255, 255), cv2.FILLED)
+            cv2.circle(source, center, 2, (18, 18, 18), cv2.FILLED)
+            cv2.circle(alpha, center, 6, 0, cv2.FILLED)
+            cv2.circle(alpha, center, 2, 255, cv2.FILLED)
+        # A white negative-space cavity in the lower body must stay open.
+        source[104:124, 75:82] = 255
+        alpha[104:124, 75:82] = 0
+        segmented = np.dstack((source.copy(), alpha))
+        segmented[:, :, :3][alpha == 0] = 0
+
+        photographic = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source])[0]
+        stylized = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source],
+            allow_stylized=True)[0]
+
+        self.assertEqual(0, int(photographic[14, 62, 3]))
+        self.assertEqual(255, int(stylized[14, 62, 3]))
+        self.assertEqual((255, 255, 255), tuple(stylized[14, 62, :3]))
+        self.assertEqual(0, int(stylized[112, 78, 3]))
+
     def test_full_stabiliser_preserves_calf_gap_and_repairs_real_dropout(self):
         alpha = np.zeros((160, 120), np.uint8)
         alpha[10:150, 30:90] = 255
@@ -545,8 +573,10 @@ class AlphaAccuracy(unittest.TestCase):
                 json.dump(pose, handle)
             return {"ok": True}
 
-        def stabilise(segmented, poses, source_frames=None):
+        def stabilise(
+                segmented, poses, source_frames=None, allow_stylized=False):
             self.assertIs(frame, source_frames[0])
+            self.assertFalse(allow_stylized)
             return segmented
 
         with tempfile.TemporaryDirectory() as workspace:
@@ -583,8 +613,10 @@ class AlphaAccuracy(unittest.TestCase):
                 json.dump(pose, handle)
             return {"ok": True}
 
-        def stabilise(segmented, poses, source_frames=None):
+        def stabilise(
+                segmented, poses, source_frames=None, allow_stylized=False):
             self.assertIs(frame, source_frames[0])
+            self.assertFalse(allow_stylized)
             return segmented
 
         with tempfile.TemporaryDirectory() as workspace:

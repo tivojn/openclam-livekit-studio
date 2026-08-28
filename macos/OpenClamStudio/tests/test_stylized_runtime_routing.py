@@ -6,6 +6,7 @@ into that lower-threshold route implicitly.  These tests exercise the shared
 runtime helpers and both build orchestration paths so a future call-site
 addition cannot quietly weaken photo QA.
 """
+import json
 import os
 import tempfile
 import unittest
@@ -160,8 +161,11 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
             os.makedirs(viseme_dir)
             cv2.imwrite(os.path.join(directory, "keyframe.png"), image)
             cv2.imwrite(os.path.join(viseme_dir, "v_blink.jpg"), image)
-            for medium, expected in (("photograph", False),
-                                     ("illustration", True)):
+            for medium, expected in (
+                    ("photograph", False),
+                    ("unknown", False),
+                    ("corrupt-future-value", False),
+                    ("illustration", True)):
                 manifest = {
                     "status": "ready",
                     "source_metrics": {"source_medium": medium},
@@ -193,8 +197,11 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
                 self.assertEqual(intake.call_count, 1 if expected else 0)
 
     def test_pet_runtime_cutout_uses_declared_source_medium(self):
-        for medium, expected in (("photograph", False),
-                                 ("illustration", True)):
+        for medium, expected in (
+                ("photograph", False),
+                ("unknown", False),
+                ("corrupt-future-value", False),
+                ("illustration", True)):
             with self.subTest(medium=medium), \
                     tempfile.TemporaryDirectory() as directory:
                 runtime_dir = os.path.join(directory, "runtime")
@@ -221,14 +228,107 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
                     render_cutout.call_args.kwargs["allow_stylized"],
                     expected)
 
+    def test_pet_runtime_publishes_body_space_head_clear_mask_only_when_authored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_dir = os.path.join(directory, "runtime")
+            body_dir = os.path.join(directory, "body")
+            os.makedirs(runtime_dir)
+            os.makedirs(body_dir)
+            with open(os.path.join(runtime_dir, "manifest.json"), "w") as handle:
+                handle.write('{"v": %d}' % export.RUNTIME_VERSION)
+            for name in ("body.png", "head-mask.png", "head-clear-mask.png"):
+                cv2.imwrite(os.path.join(body_dir, name),
+                            np.full((16, 16, 4), 255, np.uint8))
+            with open(os.path.join(body_dir, "body.json"), "w") as handle:
+                handle.write(
+                    '{"image":"body.png","head_mask":"head-mask.png",'
+                    '"head_composite":"replace",'
+                    '"head_clear_mask":"head-clear-mask.png"}')
+            manifest = {
+                "status": "ready",
+                "source_metrics": {"source_medium": "anime"},
+            }
+            with mock.patch.object(export.reg, "adir", return_value=directory), \
+                    mock.patch.object(export.reg, "read_manifest",
+                                      return_value=manifest), \
+                    mock.patch.object(export.cutout, "render", return_value={}), \
+                    mock.patch.object(export, "_publish_body_extras"), \
+                    mock.patch.object(export, "_publish_motion", return_value=None):
+                export.publish_pet_assets(
+                    "routing-avatar", runtime_dir=runtime_dir,
+                    log=lambda _message: None)
+            with open(os.path.join(runtime_dir, "manifest.json")) as handle:
+                published = json.load(handle)
+            self.assertEqual(
+                "assets/head-clear-mask.png",
+                published["body"]["head_clear_mask"])
+            self.assertTrue(os.path.isfile(
+                os.path.join(runtime_dir, "head-clear-mask.png")))
+
 
 class BuildRoutingTests(unittest.TestCase):
+    def test_source_medium_whitelist_fails_closed(self):
+        for value, expected in (
+                (None, "photograph"),
+                ("", "photograph"),
+                ("unknown", "photograph"),
+                ("photograph", "photograph"),
+                ("photo", "photograph"),
+                ("corrupt-future-value", "photograph"),
+                ("illustration", "illustration"),
+                ("anime", "anime"),
+                ("soft-3d", "3d render")):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    expected, build._source_medium({"source_medium": value}))
+        self.assertEqual(
+            "illustration", build._source_medium({"source_mode": "stylized"}))
+        self.assertEqual(
+            "photograph", build._source_medium({
+                "source_medium": "unknown",
+                "source_mode": "stylized-cartoon",
+            }))
+
+    def test_export_original_source_report_precedes_generated_head(self):
+        for report, head_medium, expected in (
+                ({"source_medium": "photograph"}, "illustration", "photograph"),
+                ({"source_medium": "illustration"},
+                 "corrupt-future-value", "illustration"),
+                ({"source_mode": "stylized-cartoon"},
+                 "photograph", "illustration")):
+            with self.subTest(report=report, head_medium=head_medium):
+                self.assertEqual(expected, export._source_medium({
+                    "source_metrics": report,
+                    "head": {"source_medium": head_medium},
+                }))
+
+    def test_export_corrupt_original_report_fails_closed_without_fallback(self):
+        for report in (
+                {"source_medium": "unknown"},
+                {"source_medium": "corrupt-future-value"},
+                {},
+                "damaged-report"):
+            with self.subTest(report=report):
+                self.assertEqual("photograph", export._source_medium({
+                    "source_metrics": report,
+                    "metrics": {"source_medium": "illustration"},
+                    "head": {"source_medium": "illustration"},
+                }))
+
+    def test_export_legacy_head_medium_is_used_only_without_source_report(self):
+        self.assertEqual("illustration", export._source_medium({
+            "head": {"source_medium": "illustration"},
+        }))
+
     def test_recreated_source_keyframe_respects_declared_medium(self):
         # Regression: this recovery path formerly hardcoded
         # allow_stylized=True before source_medium was read, so a photo draft
         # could silently enter the permissive detector after cache loss.
-        for medium, expected in (("photograph", False),
-                                 ("illustration", True)):
+        for medium, expected in (
+                ("photograph", False),
+                ("unknown", False),
+                ("corrupt-future-value", False),
+                ("illustration", True)):
             with self.subTest(medium=medium), \
                     tempfile.TemporaryDirectory() as directory:
                 source = os.path.join(directory, "source.png")
@@ -262,8 +362,11 @@ class BuildRoutingTests(unittest.TestCase):
                     prepare_key.call_args.kwargs["allow_stylized"], expected)
 
     def test_full_build_propagates_medium_to_every_face_runtime_stage(self):
-        for medium, expected in (("photograph", False),
-                                 ("illustration", True)):
+        for medium, expected in (
+                ("photograph", False),
+                ("unknown", False),
+                ("corrupt-future-value", False),
+                ("illustration", True)):
             with self.subTest(medium=medium), \
                     tempfile.TemporaryDirectory() as directory:
                 source_key = os.path.join(directory, "source-keyframe.png")
@@ -336,8 +439,11 @@ class BuildRoutingTests(unittest.TestCase):
                     contact_sheet.call_args.kwargs["allow_stylized"], expected)
 
     def test_recompose_propagates_medium_through_all_stages(self):
-        for medium, expected in (("photograph", False),
-                                 ("illustration", True)):
+        for medium, expected in (
+                ("photograph", False),
+                ("unknown", False),
+                ("corrupt-future-value", False),
+                ("illustration", True)):
             with self.subTest(medium=medium), \
                     tempfile.TemporaryDirectory() as directory:
                 os.makedirs(os.path.join(directory, "raw"))

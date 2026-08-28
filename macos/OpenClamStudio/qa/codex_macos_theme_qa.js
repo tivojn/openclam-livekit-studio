@@ -47,8 +47,22 @@ assert.match(desktop, /\.message\.assistant \.bubble\s*\{[\s\S]{0,200}background
 assert.match(desktop, /\.message\.user \.bubble\s*\{[\s\S]{0,220}background:\s*var\(--codex-control\)/);
 assert.match(desktop, /#newChatButton\s*\{[\s\S]{0,360}background:\s*color-mix\(in srgb, var\(--codex-editor\) 98%, transparent\) !important;/,
   'the history New chat action must remain a labelled neutral control, never a blank dark bar');
-assert.match(desktop, /id="newChatButton"[\s\S]{0,300}<span>New chat<\/span>/,
+assert.match(desktop, /id="newChatButton"[\s\S]{0,620}<span>New chat<\/span>/,
   'the history New chat control must keep its visible label');
+assert.match(desktop, /--workspace-sidebar-width:\s*clamp\(238px, 18vw, 286px\)/);
+assert.match(desktop, /--workspace-info-width:\s*clamp\(278px, 21vw, 336px\)/);
+assert.match(desktop, /#chatWorkspace\s*\{[\s\S]{0,260}grid-template-rows:\s*54px minmax\(0, 1fr\) auto/,
+  'the task column must keep a compact title bar, scrolling thread, and floating composer');
+assert.match(desktop, /#workspaceInfoPanel\s*\{[\s\S]{0,520}border-left:\s*1px solid var\(--codex-line\)/,
+  'the right details pane must read as a quiet docked Codex panel');
+assert.match(desktop, /html\.workspace-info-collapsed #workspaceInfoPanel\s*\{[\s\S]{0,160}visibility:\s*hidden/,
+  'the details pane must collapse without removing the conversation surface');
+assert.match(desktop,
+  /html\.chat-mode #chatHistoryScrim,\s*html\.chat-mode\.history-open #chatHistoryScrim\s*\{[\s\S]{0,140}display:\s*none;[\s\S]{0,100}pointer-events:\s*none/,
+  'the persistent desktop sidebar must not leave the mobile blur scrim over the workspace');
+assert.match(desktop,
+  /@media \(max-width:\s*920px\)[\s\S]*?html\.chat-mode\.history-open #chatHistoryScrim\s*\{[\s\S]{0,120}display:\s*block;[\s\S]{0,100}pointer-events:\s*auto/,
+  'the history scrim should remain available for the responsive sidebar drawer');
 
 assert.ok(
   settings.indexOf('/* Codex macOS visual contract.') > settings.indexOf('.settings-intro'),

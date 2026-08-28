@@ -22,12 +22,14 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 from . import body, cutout
 
 
-# v15 makes the retained white plate a two-sided contract: strong, connected
+# v16 preserves enclosed white stylized sclera without relaxing the v15 plate
+# contract, and makes ipsilateral gait a non-relaxable biomechanics rejection.
+# v15 made the retained white plate a two-sided contract: strong, connected
 # current-frame detail (including one-pixel stiletto stems) is recovered, while
 # exterior-connected plate, floor shadows, and the real gaps between limbs and
 # the torso are release-blocking background. Older cuts can have those shadows
 # promoted to opaque pixels, so they must be re-cut before reuse.
-MOTION_VERSION = 15
+MOTION_VERSION = 16
 # Shadows are not harmless presentation on motion plates: a floor shadow can
 # merge into a stiletto stem, while a wall-contact shadow can attach to hair or
 # clothing and become indistinguishable from the subject to a semantic matte.
@@ -610,13 +612,21 @@ def normalise_presentation(value):
 
 
 def normalise_source_medium(value):
-    """Normalise legacy photo labels while preserving explicit art media."""
+    """Whitelist art media; unknown/corrupt manifests stay photographic."""
     value = _clean(value, 40).lower()
-    if not value or value in {
-            "unknown", "photo", "photograph", "photoreal",
-            "photorealistic"}:
-        return "photograph"
-    return value
+    aliases = {
+        "game art": "game art",
+        "game-art": "game art",
+        "anime": "anime",
+        "illustration": "illustration",
+        "illustrated": "illustration",
+        "cartoon": "illustration",
+        "drawing": "illustration",
+        "3d render": "3d render",
+        "3d-render": "3d render",
+        "soft-3d": "3d render",
+    }
+    return aliases.get(value, "photograph")
 
 
 def body_source_medium(avatar_dir):
@@ -837,7 +847,7 @@ def _walk_keyframe_prompt(outfit, walk_style=None, has_side_reference=True):
     if standard_gait:
         tracking_contract = """
 
-TRACKABLE WALK FRAMING — use a slight right-facing 25–30 degree three-quarter view, never a flat side profile. Keep both complete arms, elbows, wrists, and hands visible and spatially separated from the torso and from each other, with a narrow white-background gap around each forearm and wrist. Achieve that visibility through the torso angle, not by raising or spreading the arms. Choose a balanced gait pose that can be reproduced exactly as both the first and final frame of a seamless in-place loop."""
+TRACKABLE WALK FRAMING — use a slight right-facing 25–30 degree three-quarter view, never a flat side profile. Keep both complete arms, elbows, wrists, and hands visible and spatially separated from the torso and from each other, with a narrow white-background gap around each forearm and wrist. Achieve that visibility through the torso angle, not by raising or spreading the arms. The opening pose MUST show a small, unmistakable CONTRALATERAL stride: LEFT leg and foot slightly forward together with RIGHT arm and hand slightly forward; RIGHT leg and foot slightly behind with LEFT arm and hand slightly behind. Never pose the arm and leg on the same body side forward together (no ipsilateral / same-side / 顺拐 gait). This exact pose is reproducible as both the first and final frame of a seamless in-place loop."""
     reference_authority = (
         "Reference 1 is the generated canonical FRONT full-body plate and is the "
         "absolute authority for body proportions, hair silhouette, wardrobe, "
@@ -925,24 +935,22 @@ def _loop_walk_video_prompt(walk_style):
     else:
         cycle_contract = (
             "PRIORITY 0.5 — COMPLETE TWO-STEP GAIT CYCLES: one step is not "
-            "a cycle. In every cycle the left foot passes the right foot, "
-            "then the right foot passes the left foot, and each hand passes "
-            "IN FRONT OF its hip and then BEHIND its hip. Hold one steady "
-            "cadence and repeat identical cycles continuously so the whole "
-            "clip is walking; never pause, stand still, or change speed."
+            "a cycle. Left foot passes right, then right foot passes left. At "
+            "all times LEFT leg forward = RIGHT arm forward; RIGHT leg forward "
+            "= LEFT arm forward. Each hand passes IN FRONT OF its hip and then "
+            "BEHIND its hip. Reject every ipsilateral / same-side / 顺拐 arm-leg "
+            "swing. Repeat identical cycles at one cadence without pausing."
         )
     tracking_contract = ""
     if walk_style["validation"] in {"office-gait", "stylized-gait"}:
         tracking_contract = (
             "\n\nPRIORITY 0.75 — TRACKABLE THREE-QUARTER GAIT: keep the torso "
             "and head in a slight right-facing 25–30 degree three-quarter view "
-            "throughout, never a flat side profile. Both complete arms, elbows, "
-            "wrists, and hands remain continuously visible and spatially separated "
-            "from the torso and from each other, with a narrow white-background gap "
-            "around each forearm and wrist. Preserve compact natural arm swing while "
-            "each arm completes its full alternating contralateral cycle with the "
-            "opposite leg: forward, behind the hip, then back to the identical "
-            "starting pose and direction."
+            "throughout, never a flat side profile. Keep both complete arms, elbows, "
+            "wrists, and hands visible and spatially separated from the torso and "
+            "each other by a narrow white-background gap. Each arm completes its "
+            "full alternating contralateral cycle with the opposite leg and returns "
+            "to the identical starting pose."
         )
     return f"""{walk_style['loop_video']}
 
@@ -1961,7 +1969,8 @@ def _segment_frames(frames, workspace, log, allow_stylized=False):
     # same source evidence as the Vision fallback.
     source_frames = frames if not green_screen else None
     repaired = _stabilise_segmented(
-        segmented, poses, source_frames=source_frames)
+        segmented, poses, source_frames=source_frames,
+        allow_stylized=allow_stylized)
     if green_screen:
         repaired = [
             cutout._decontaminate_edges(_despill_green(frame))
@@ -2874,7 +2883,77 @@ def _refine_white_matte(source, rgba):
     return output
 
 
-def _stabilise_segmented(segmented, poses=None, source_frames=None):
+def _fill_stylized_eye_alpha_holes(current, alpha, source, pose):
+    """Restore enclosed white cartoon sclera after the final plate veto.
+
+    A white-plate take makes pure-white pixels authoritative background.  That
+    is correct everywhere around the silhouette, between limbs, and beneath
+    shoes, but an illustrated eye can intentionally use the exact same white.
+    Restrict this exception to small *enclosed* cavities in the tracked eye
+    band.  The stylized caller is the only caller allowed to opt in, so the
+    photographic matte and all lower-body/shadow gates remain unchanged.
+    """
+    if source is None:
+        return alpha
+    body_height = _pose_height(pose)
+    nose = _pose_point(pose, "nose", 0.20)
+    if body_height is None or nose is None:
+        return alpha
+
+    mask = (alpha >= 24).astype(np.uint8)
+    contours, hierarchy = cv2.findContours(
+        mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:
+        return alpha
+
+    # Cartoon sclera can be round and much larger than a photographic eye,
+    # but remains a small fraction of tracked body height.  The band ends at
+    # the nose, deliberately excluding teeth and every body/clothing cavity.
+    maximum_area = max(16.0, body_height * body_height * 0.015)
+    horizontal_limit = max(7.0, body_height * 0.14)
+    upper = nose[1] - body_height * 0.12
+    lower = nose[1] + body_height * 0.018
+    plate_confidence = _white_plate_confidence(source)
+    recovered = np.zeros(alpha.shape, dtype=np.uint8)
+    for index, contour in enumerate(contours):
+        # Only child contours are enclosed by existing subject alpha.  An
+        # exterior-connected white plate, hair gap, or floor shadow can never
+        # enter through this path.
+        if hierarchy[0][index][3] < 0:
+            continue
+        area = cv2.contourArea(contour)
+        moments = cv2.moments(contour)
+        if not moments["m00"] or not 2 <= area <= maximum_area:
+            continue
+        center_x = moments["m10"] / moments["m00"]
+        center_y = moments["m01"] / moments["m00"]
+        if not (
+                abs(center_x - nose[0]) <= horizontal_limit
+                and upper <= center_y <= lower):
+            continue
+        cavity = np.zeros(alpha.shape, dtype=np.uint8)
+        cv2.drawContours(cavity, [contour], -1, 1, thickness=cv2.FILLED)
+        pixels = cavity.astype(bool)
+        # A sclera cavity is predominantly authored white.  Requiring this
+        # evidence prevents an unrelated segmentation dropout in the face
+        # band from being painted opaque merely because it is enclosed.
+        if (
+                np.count_nonzero(pixels) < 3
+                or float(np.mean(plate_confidence[pixels] >= 0.78)) < 0.62):
+            continue
+        recovered[pixels] = 1
+
+    recovered = recovered.astype(bool)
+    if not recovered.any():
+        return alpha
+    output = alpha.copy()
+    output[recovered] = 255
+    current[:, :, :3][recovered] = source[:, :, :3][recovered]
+    return output
+
+
+def _stabilise_segmented(
+        segmented, poses=None, source_frames=None, allow_stylized=False):
     if source_frames is not None and len(source_frames) != len(segmented):
         raise ValueError("source and segmented frame counts differ")
     repaired = []
@@ -2973,6 +3052,13 @@ def _stabilise_segmented(segmented, poses=None, source_frames=None):
             stable_alpha = _veto_current_white_plate(
                 stable_alpha, source_confidence,
                 source_subject_alpha=source_subject_alpha)
+            if allow_stylized:
+                # This must run after the final full-frame white-plate veto:
+                # illustrated sclera is intentionally pure white and would be
+                # erased again if restored earlier.
+                stable_alpha = _fill_stylized_eye_alpha_holes(
+                    current, stable_alpha, source,
+                    poses[index] if poses else None)
         stable_alpha[stable_alpha < 8] = 0
         if source is not None:
             # Opaque current-source-supported subject pixels use the approved
@@ -3526,6 +3612,55 @@ def _pose_cycle_metrics(
         "foot_lift_max": foot_lift["lift_max"],
         "sides": side_metrics,
     }
+
+
+def _hard_contralateral_quality(pose_quality):
+    """Physical gait coordination that reliability mode may never relax.
+
+    The general pose-cycle receipt also contains style/taste constraints such
+    as foot height.  Reliability mode intentionally observes rather than
+    enforces those.  Ipsilateral walking is a biomechanics defect, however,
+    and must remain a hard rejection even when the rest of the loop ships via
+    the relaxed fallback.
+    """
+    side_metrics = (pose_quality or {}).get("sides") or {}
+    correlations = {
+        side: metrics.get("contralateral_correlation")
+        for side, metrics in side_metrics.items()
+        if metrics.get("contralateral_correlation") is not None
+    }
+    if not correlations:
+        return {
+            "available": False,
+            "valid": False,
+            "reason": "arm/leg coordination tracking unavailable",
+            "sides": {},
+        }
+    failed = [
+        side for side, correlation in correlations.items()
+        if correlation > 0.20
+    ]
+    return {
+        "available": True,
+        "valid": not failed,
+        "reason": (
+            "tracked arms oppose their same-side legs"
+            if not failed else
+            f"ipsilateral arm/leg motion on {', '.join(failed)} side"
+        ),
+        "sides": {
+            side: round(float(correlation), 4)
+            for side, correlation in correlations.items()
+        },
+    }
+
+
+def _enforce_hard_contralateral_gait(pose_quality):
+    quality = _hard_contralateral_quality(pose_quality)
+    if quality["available"] and not quality["valid"]:
+        raise RuntimeError(
+            f"walk video is ipsilateral ({quality['reason']}); regenerate it")
+    return quality
 
 
 def _pose_cycle_valid_except_single_untracked_arm(quality):
@@ -4743,12 +4878,14 @@ def _process_clip(
             observed = _pose_cycle_metrics(
                 poses, loop_start, loop_end,
                 profile=walk_style["validation"])
+            coordination_quality = _enforce_hard_contralateral_gait(observed)
             pose_quality = {
                 **observed,
                 "valid": True,
                 "reason": "relaxed loop shipping: gates observed, not enforced",
                 "observed_reason": observed.get("reason"),
                 "observed_valid": observed.get("valid"),
+                "contralateral_hard_gate": coordination_quality,
             }
         elif gait_validation:
             pose_quality = _pose_cycle_metrics(
