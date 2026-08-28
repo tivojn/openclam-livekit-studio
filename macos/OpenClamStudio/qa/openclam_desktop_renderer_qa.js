@@ -1592,6 +1592,77 @@ assert.match(source, /bodyMotionState, reducedMotion\.matches\)/);
 assert.match(source, /composeHead\(now\);/,
   'calming the silhouette must not bypass reactive face and lip composition');
 
+// Flat cartoon line art cannot use the photographic identity dissolve: the
+// generated body's ear/jaw strokes show through the live head as duplicate
+// anatomy. The replacement path is deliberately metadata-gated so Cleo and
+// every other photographic/legacy avatar retain their reviewed compositor.
+const bodyHeadModeSource = inline[1].match(
+  /(const bodyHeadCompositeMode = body => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(bodyHeadModeSource, 'body/head composite policy must remain independently testable');
+const bodyHeadCompositeMode = new Function(
+  `'use strict'; ${bodyHeadModeSource[1]}; return bodyHeadCompositeMode;`,
+)();
+assert.equal(bodyHeadCompositeMode({options: {medium: 'anime'}}), 'replace');
+assert.equal(bodyHeadCompositeMode({options: {medium: 'illustration'}}), 'replace');
+assert.equal(bodyHeadCompositeMode({options: {style: 'illustrated'}}), 'replace');
+assert.equal(bodyHeadCompositeMode({options: {medium: 'photograph', style: 'illustrated'}}), 'blend',
+  'an explicit photograph must retain the legacy soft compositor regardless of style metadata');
+assert.equal(bodyHeadCompositeMode({options: {medium: 'photograph'}}), 'blend',
+  'Cleo and other photographic rigs must remain pixel-path compatible');
+assert.equal(bodyHeadCompositeMode({}), 'blend',
+  'unknown and legacy packages must not opt themselves into cartoon replacement');
+
+const hardenMaskSource = inline[1].match(
+  /(const hardenMaskAlpha = \(pixels, threshold = 32\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(hardenMaskSource, 'stylized replacement matte must remain independently testable');
+const hardenMaskAlpha = new Function(
+  `'use strict'; ${hardenMaskSource[1]}; return hardenMaskAlpha;`,
+)();
+const replacementPixels = new Uint8ClampedArray([
+  1, 2, 3, 0,
+  4, 5, 6, 31,
+  7, 8, 9, 32,
+  10, 11, 12, 255,
+]);
+assert.equal(hardenMaskAlpha(replacementPixels), 2);
+assert.deepEqual([...replacementPixels], [
+  255, 255, 255, 0,
+  255, 255, 255, 0,
+  255, 255, 255, 255,
+  255, 255, 255, 255,
+]);
+
+const drawBodyHeadSource = inline[1].match(
+  /(const drawBodyHeadLayer = \(target, head, replacementMask, mode, width, height\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(drawBodyHeadSource, 'body/head draw order must remain independently testable');
+const drawBodyHeadLayer = new Function(
+  `'use strict'; ${drawBodyHeadSource[1]}; return drawBodyHeadLayer;`,
+)();
+const headDrawCalls = [];
+const headTarget = {
+  globalCompositeOperation: 'source-over',
+  stack: [],
+  save() { this.stack.push(this.globalCompositeOperation); },
+  restore() { this.globalCompositeOperation = this.stack.pop(); },
+  drawImage(image) { headDrawCalls.push([image, this.globalCompositeOperation]); },
+};
+drawBodyHeadLayer(headTarget, 'animated-head', 'replacement-matte', 'replace', 1024, 1024);
+assert.deepEqual(headDrawCalls, [
+  ['replacement-matte', 'destination-out'],
+  ['animated-head', 'source-over'],
+], 'cartoon matte must erase the provider face before the one animated face is painted');
+headDrawCalls.length = 0;
+drawBodyHeadLayer(headTarget, 'cleo-head', 'unused-matte', 'blend', 1024, 1024);
+assert.deepEqual(headDrawCalls, [['cleo-head', 'source-over']],
+  'photographic heads must keep the unchanged single soft-blend draw');
+assert.match(source, /if \(cutoutImage && !headReplacementActive\) \{/,
+  'cartoon replacement must not pre-soften its hard silhouette with the photographic cutout');
+assert.match(source, /const liveHeadMask = headReplacementActive \? headReplacementCanvas : headMask;/);
+assert.match(source, /prepareHeadReplacementMask\(manifest\.body\);/);
+
 // Electron reports a macOS trackpad pinch as Ctrl+wheel. Only that modifier
 // path changes size; ordinary scrolling is left alone. Values use the same
 // canonical stand/roam bounds as the persisted main-process geometry.

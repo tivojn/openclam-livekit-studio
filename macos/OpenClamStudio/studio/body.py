@@ -540,6 +540,26 @@ def _face_transform(keyframe, body_image, allow_stylized=False):
     }, key_landmarks
 
 
+def _canonical_head_replacement_core(body_shape, transform, key_landmarks):
+    """Return the guaranteed body-space core of the runtime head replacement.
+
+    ``_head_mask`` contains the complete canonical facial oval and expands it
+    before feathering.  Projecting that same oval with the saved body transform
+    therefore gives a conservative subset of the pixels the stylized runtime
+    removes.  Alpha QA may safely exempt a component only when every one of its
+    pixels lies in this core; hair, wardrobe, floor, and silhouette edges remain
+    under the unchanged hard gates.
+    """
+    height, width = body_shape[:2]
+    region = np.zeros((height, width), dtype=np.uint8)
+    oval = key_landmarks[face.FACE_OVAL].astype(np.float32)
+    projected = cv2.transform(
+        oval[None, :, :], np.asarray(transform, dtype=np.float32))[0]
+    hull = cv2.convexHull(np.round(projected).astype(np.int32))
+    cv2.fillConvexPoly(region, hull, 1)
+    return region.astype(bool)
+
+
 def _body_proportion_report(body_rgba, face_bounds, options, log=print):
     """Measure and enforce an explicitly requested editorial/runway ratio."""
     report = body_proportion.assess(body_rgba, face_bounds, options)
@@ -734,7 +754,20 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
                 or body_rgba.shape[2] != 4):
             raise RuntimeError(
                 "generated front body did not produce an RGBA plate")
-        body_rgba, alpha_quality = body_alpha.refine(source_bgr, body_rgba)
+        # Only an explicitly stylized front receives the runtime's
+        # replacement-head exemption.  Compute it from the exact canonical
+        # transform before alpha QA; photographic and unknown media retain the
+        # original gate and call order below.
+        identity = None
+        replacement_head = None
+        if allow_stylized:
+            identity = _face_transform(
+                keyframe, body_rgba[:, :, :3], allow_stylized=True)
+            replacement_head = _canonical_head_replacement_core(
+                body_rgba.shape, identity[0], identity[2])
+        body_rgba, alpha_quality = body_alpha.refine(
+            source_bgr, body_rgba,
+            replacement_head_mask=replacement_head)
         if not alpha_quality["valid"]:
             try:
                 archived = _archive_rejected_body_alpha(
@@ -748,9 +781,11 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
             raise GeneratedBodyAlphaError(
                 "generated front body failed alpha QA: "
                 f"{alpha_quality['reason']}")
-        _transform, alignment, _landmarks = _face_transform(
-            keyframe, body_rgba[:, :, :3],
-            allow_stylized=allow_stylized)
+        if identity is None:
+            identity = _face_transform(
+                keyframe, body_rgba[:, :, :3],
+                allow_stylized=allow_stylized)
+        _transform, alignment, _landmarks = identity
         proportion_quality = body_proportion.assess(
             body_rgba, alignment.get("face_bounds"), options)
         proportion_failure = body_proportion.failure(proportion_quality)
@@ -1299,6 +1334,7 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         log("removing all three backgrounds locally with macOS Vision")
         view_metadata = {}
         view_images = {}
+        front_identity = None
         purposes = {
             "front": "standing runtime body",
             "side": "Horizon Walk image reference",
@@ -1319,7 +1355,15 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             source_bgr = cv2.imread(staged_sources[view], cv2.IMREAD_COLOR)
             if source_bgr is None:
                 raise RuntimeError(f"generated {view} body source could not be decoded")
-            body_rgba, alpha_quality = body_alpha.refine(source_bgr, body_rgba)
+            replacement_head = None
+            if view == "front" and allow_stylized:
+                front_identity = _face_transform(
+                    keyframe, body_rgba[:, :, :3], allow_stylized=True)
+                replacement_head = _canonical_head_replacement_core(
+                    body_rgba.shape, front_identity[0], front_identity[2])
+            body_rgba, alpha_quality = body_alpha.refine(
+                source_bgr, body_rgba,
+                replacement_head_mask=replacement_head)
             if not alpha_quality["valid"]:
                 raise GeneratedBodyAlphaError(
                     f"generated {view} body failed alpha QA: "
@@ -1344,9 +1388,11 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
 
         log("locking the calibrated face onto the generated front body")
         _emit(progress, "identity", .80, "Locking the calibrated face to the front view")
-        transform, alignment, key_landmarks = _face_transform(
-            keyframe, view_images["front"][:, :, :3],
-            allow_stylized=allow_stylized)
+        if front_identity is None:
+            front_identity = _face_transform(
+                keyframe, view_images["front"][:, :, :3],
+                allow_stylized=allow_stylized)
+        transform, alignment, key_landmarks = front_identity
         proportion_quality = body_proportion.assess(
             view_images["front"], alignment.get("face_bounds"), options)
         proportion_failure = body_proportion.failure(proportion_quality)

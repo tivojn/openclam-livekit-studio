@@ -30,6 +30,10 @@ RUNWAY_TARGET_HEADS = (7.5, 8.0)
 MIN_RUNWAY_APPARENT_HEADS = 6.45
 ALPHA_THRESHOLD = 8
 MIN_SHOULDER_CONFIDENCE = 0.45
+STYLIZED_MEDIA = frozenset({
+    "game art", "anime", "illustration", "illustrated", "cartoon",
+    "drawing", "3d render", "soft-3d",
+})
 
 _RUNWAY_CUE = re.compile(
     r"(?:\brunway(?:[\s-]+model)?\b|\bsuper[\s-]*model\b|"
@@ -53,6 +57,12 @@ def runway_requirement(options: Optional[Mapping[str, Any]]) -> tuple[bool, str]
     ordinary body.
     """
     options = options if isinstance(options, Mapping) else {}
+    medium = _plain_text(options.get("medium")).lower()
+    if medium in STYLIZED_MEDIA:
+        # A one-click wardrobe fallback is still internal art direction. It
+        # must never make an explicitly drawn character pass photographic
+        # runway anatomy, even when that fallback mentions model proportions.
+        return False, f"stylized-medium:{medium}"
     style = _plain_text(options.get("style")).lower()
     if style == "editorial":
         return True, "style:editorial"
@@ -230,6 +240,7 @@ __all__ = [
     "MIN_RUNWAY_APPARENT_HEADS",
     "REPORT_VERSION",
     "RUNWAY_TARGET_HEADS",
+    "STYLIZED_MEDIA",
     "assess",
     "failure",
     "runway_requirement",

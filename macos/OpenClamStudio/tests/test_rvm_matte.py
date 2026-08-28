@@ -24,10 +24,11 @@ class RvmBackend(unittest.TestCase):
 
     def test_segment_frames_wiring(self):
         source = (ROOT / "studio" / "motion.py").read_text()
-        # RVM runs over the WHOLE take before per-frame work so its
-        # recurrent state carries; green takes keep the chroma key.
+        # RVM runs over the WHOLE photographic take before per-frame work so
+        # its recurrent state carries. Green takes keep the chroma key, while
+        # classified cartoons keep their deterministic stylized plate matte.
         self.assertIn(
-            "rvm_frames = None if green_screen else _rvm_matte(frames, log)",
+            "if green_screen or allow_stylized else _rvm_matte(frames, log)",
             source)
         self.assertIn('"robust-video-matting"', source)
         # Vision refinement and edge decontamination are fallback-only: the

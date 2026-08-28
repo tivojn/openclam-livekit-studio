@@ -859,6 +859,25 @@ def _normalise_presentation(value):
     return "androgynous"
 
 
+def _safe_fallback_traits(value):
+    """Keep only validated identity traits when generated wardrobe prose fails.
+
+    The outfit direction itself is discarded by the policy gate.  Medium and
+    visible presentation are separate classifier results, however, and losing
+    them used to route an anime portrait through the photographic body path.
+    """
+    if not isinstance(value, dict):
+        return {}
+    medium = _clean(value.get("medium"), 40).lower()
+    if medium not in {
+            "photograph", "game art", "anime", "illustration", "3d render"}:
+        return {}
+    return {
+        "presentation": _normalise_presentation(value.get("presentation")),
+        "medium": medium,
+    }
+
+
 def _presentation_rule(presentation, medium):
     medium = _clean(medium, 40).lower()
     if medium in {"game art", "anime", "illustration", "3d render"}:
@@ -1085,6 +1104,7 @@ def tailored_prompt(avatar_dir, refresh=False, log=None, progress=None):
             progress(name)
 
     stage("portrait")
+    traits = {}
     try:
         reference = _identity_reference(avatar_dir)
         digest = _digest(reference)
@@ -1121,7 +1141,8 @@ def tailored_prompt(avatar_dir, refresh=False, log=None, progress=None):
         note(f"portrait-tailored prompt unavailable, using the preset: {error}")
         stage("fallback")
         return {"prompt": preset_prompt(), "source": "preset",
-                "traits": {}, "error": str(error)[:300]}
+                "traits": _safe_fallback_traits(traits),
+                "error": str(error)[:300]}
 
     payload = {
         "version": CACHE_VERSION,

@@ -108,7 +108,7 @@ class BodyViewPreflightTests(unittest.TestCase):
 
         back_gates = []
 
-        def preflight(_avatar_dir, _source, view, **_options):
+        def preflight(_avatar_dir, _source, view, _body_options, **_options):
             if view == "back":
                 back_gates.append(view)
                 if len(back_gates) == 1:
@@ -192,7 +192,7 @@ class BodyViewPreflightTests(unittest.TestCase):
         reject_back = {"enabled": True}
         back_gate_count = []
 
-        def preflight(_avatar_dir, _source, view, **_options):
+        def preflight(_avatar_dir, _source, view, _body_options, **_options):
             if view == "back":
                 back_gate_count.append(view)
                 if reject_back["enabled"]:

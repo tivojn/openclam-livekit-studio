@@ -1029,6 +1029,40 @@ def _motion_thread(
         _finish_job(slug, job_id, failure)
 
 
+_PIPELINE_BODY_MEDIA = {
+    "photograph": "photorealistic",
+    "game art": "illustrated",
+    "anime": "anime",
+    "illustration": "illustrated",
+    "3d render": "soft-3d",
+}
+
+
+def _pipeline_body_medium(body_traits, manifest):
+    """Retain a rig's proven medium when wardrobe planning falls back.
+
+    The generated prose may be rejected for a bag, colour, or garment without
+    invalidating the independent source classifier.  Prefer the canonical head
+    metrics, then a validated planner trait, and fail closed to photograph.
+    """
+    candidates = []
+    if isinstance(manifest, dict):
+        for key in ("metrics", "source_metrics"):
+            report = manifest.get(key)
+            if isinstance(report, dict):
+                candidates.append(report.get("source_medium"))
+                candidates.append(report.get("source_mode"))
+    if isinstance(body_traits, dict):
+        candidates.append(body_traits.get("medium"))
+    for candidate in candidates:
+        medium = str(candidate or "").strip().lower()
+        if medium in _PIPELINE_BODY_MEDIA:
+            return medium
+        if medium.startswith("stylized"):
+            return "illustration"
+    return "photograph"
+
+
 def _pipeline_thread(slug, job_id, notes=""):
     """One click, everything: talking face (if not built) -> full body ->
     walk, edge idle, and moves - sequentially, in one background job."""
@@ -1083,13 +1117,15 @@ def _pipeline_thread(slug, job_id, notes=""):
             tailored = wardrobe.tailored_prompt(reg().adir(slug), log=writer)
             body_prompt = tailored.get("prompt") or wardrobe.preset_prompt()
             body_traits = tailored.get("traits") or {}
+            body_medium = _pipeline_body_medium(body_traits, manifest)
             _body_stage(
                 slug,
                 BodyProfileInput(
+                    style=_PIPELINE_BODY_MEDIA[body_medium],
                     prompt=body_prompt,
                     notes=notes,
                     presentation=body_traits.get("presentation") or "androgynous",
-                    medium=body_traits.get("medium") or "photograph",
+                    medium=body_medium,
                 ).model_dump(),
                 writer,
                 band(.30, .28, "One-click 2/3: "),

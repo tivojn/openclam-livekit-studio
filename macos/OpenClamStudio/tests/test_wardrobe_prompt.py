@@ -17,6 +17,7 @@ import numpy as np
 import cv2
 
 from studio import body, generate, wardrobe
+from server import app as server_app
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -733,6 +734,24 @@ class WardrobeRequestTests(unittest.TestCase):
 
 
 class WardrobeIntegrationTests(unittest.TestCase):
+    def test_one_click_prefers_proven_source_medium_over_fallback_traits(self):
+        manifest = {
+            "metrics": {"source_medium": "illustration"},
+            "source_metrics": {"source_medium": "unknown"},
+        }
+        self.assertEqual(
+            server_app._pipeline_body_medium(
+                {"medium": "3d render"}, manifest),
+            "illustration",
+        )
+        self.assertEqual(
+            server_app._pipeline_body_medium(
+                {"medium": "anime"},
+                {"metrics": {"source_medium": "photograph"}},
+            ),
+            "photograph",
+        )
+
     def test_body_prompt_accepts_a_tailored_direction(self):
         with tempfile.TemporaryDirectory() as directory:
             _portrait(directory)
@@ -771,8 +790,10 @@ class WardrobeIntegrationTests(unittest.TestCase):
             pipeline,
         )
         self.assertIn("body_traits = tailored.get(\"traits\") or {}", pipeline)
+        self.assertIn("body_medium = _pipeline_body_medium", pipeline)
+        self.assertIn("style=_PIPELINE_BODY_MEDIA[body_medium]", pipeline)
         self.assertIn("presentation=body_traits.get(\"presentation\")", pipeline)
-        self.assertIn("medium=body_traits.get(\"medium\")", pipeline)
+        self.assertIn("medium=body_medium", pipeline)
 
     def test_settings_places_generate_directly_below_the_prompt(self):
         settings = (ROOT / "web" / "settings.html").read_text()
@@ -867,6 +888,27 @@ class CarriedPropTests(unittest.TestCase):
         self.assertEqual(result["source"], "preset")
         self.assertEqual(result["prompt"], wardrobe.preset_prompt())
         self.assertIn("handbag", result["error"])
+
+    def test_rejected_stylized_outfit_keeps_only_safe_source_traits(self):
+        rogue = dict(HERO)
+        rogue["medium"] = "anime"
+        rogue["direction"] = (
+            "Preserve the drawn pirate costume and add a leather shoulder bag "
+            "while keeping the remaining cel-shaded outfit coherent and complete."
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            _portrait(directory)
+            with mock.patch.object(wardrobe, "_llm_route",
+                                   return_value=("llm/features/x/chat", "m")), \
+                 mock.patch.object(wardrobe, "_chat",
+                                   return_value=json.dumps(rogue)):
+                result = wardrobe.tailored_prompt(directory)
+        self.assertEqual(result["source"], "preset")
+        self.assertEqual(
+            result["traits"],
+            {"presentation": "masculine", "medium": "anime"},
+        )
+        self.assertNotIn("direction", result["traits"])
 
     def test_the_appended_rules_are_never_read_as_a_violation(self):
         """The rules must name the props they forbid without self-rejecting."""

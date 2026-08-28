@@ -1578,6 +1578,7 @@
     let bodyImage = null;
     let headMask = null;
     let cutoutImage = null;
+    let headReplacementActive = false;
     const visemeImages = new Map();
     const layers = { eyes: {}, gaze: {}, brow: {}, forehead: {}, cheek: {}, eyebag: {},
       smile: null, emotionMouth: null };
@@ -1755,6 +1756,8 @@
     const faceContext = faceCanvas.getContext('2d', { alpha: true });
     const headCanvas = document.createElement('canvas');
     const headContext = headCanvas.getContext('2d', { alpha: true });
+    const headReplacementCanvas = document.createElement('canvas');
+    const headReplacementContext = headReplacementCanvas.getContext('2d', { alpha: true });
     let lastBodyGeometry = null;
 
     let currentViseme = 'sil';
@@ -2549,6 +2552,80 @@
       shell.setPetMotionReady(motion.walk ? motionPlaybackProfile() : { ready: false });
     };
 
+    // A photographic identity plate can dissolve gently into a separately
+    // generated body without exposing two silhouettes. Flat cartoon art cannot:
+    // its black ear, cheek and jaw strokes remain visible underneath the live
+    // face and read as duplicate anatomy. Only an explicitly stylized body uses
+    // a replacement composite; photos and unknown/legacy manifests retain the
+    // reviewed soft blend.
+    const bodyHeadCompositeMode = body => {
+      const options = body && typeof body.options === 'object' ? body.options : {};
+      const medium = String(options.medium || '').trim().toLowerCase();
+      const style = String(options.style || '').trim().toLowerCase();
+      if (['photo', 'photograph', 'photoreal', 'photorealistic', 'editorial'].includes(medium)) {
+        return 'blend';
+      }
+      const value = medium || style;
+      return value.startsWith('stylized') || [
+        'anime', 'illustration', 'illustrated', 'cartoon', 'drawing', 'game art',
+      ].includes(value) ? 'replace' : 'blend';
+    };
+
+    const hardenMaskAlpha = (pixels, threshold = 32) => {
+      let opaque = 0;
+      for (let index = 0; index + 3 < pixels.length; index += 4) {
+        const alpha = pixels[index + 3] >= threshold ? 255 : 0;
+        pixels[index] = 255;
+        pixels[index + 1] = 255;
+        pixels[index + 2] = 255;
+        pixels[index + 3] = alpha;
+        if (alpha) opaque += 1;
+      }
+      return opaque;
+    };
+
+    const prepareHeadReplacementMask = body => {
+      headReplacementActive = false;
+      headReplacementCanvas.width = portraitWidth;
+      headReplacementCanvas.height = portraitHeight;
+      headReplacementContext.setTransform(1, 0, 0, 1, 0, 0);
+      headReplacementContext.globalCompositeOperation = 'source-over';
+      headReplacementContext.globalAlpha = 1;
+      headReplacementContext.clearRect(0, 0, portraitWidth, portraitHeight);
+      if (bodyHeadCompositeMode(body) !== 'replace' || !headMask) return;
+
+      try {
+        headReplacementContext.drawImage(
+          headMask, 0, 0, portraitWidth, portraitHeight);
+        if (cutoutImage) {
+          headReplacementContext.globalCompositeOperation = 'destination-in';
+          headReplacementContext.drawImage(
+            cutoutImage, 0, 0, portraitWidth, portraitHeight);
+          headReplacementContext.globalCompositeOperation = 'source-over';
+        }
+        const matte = headReplacementContext.getImageData(
+          0, 0, portraitWidth, portraitHeight);
+        headReplacementActive = hardenMaskAlpha(matte.data) > 0;
+        headReplacementContext.putImageData(matte, 0, 0);
+      } catch (_) {
+        // Same-origin runtime assets are readable. If an older custom package
+        // violates that contract, retain the legacy blend instead of hiding its
+        // face or failing the complete avatar load.
+        headReplacementActive = false;
+        headReplacementContext.clearRect(0, 0, portraitWidth, portraitHeight);
+      }
+    };
+
+    const drawBodyHeadLayer = (target, head, replacementMask, mode, width, height) => {
+      if (mode === 'replace' && replacementMask) {
+        target.save();
+        target.globalCompositeOperation = 'destination-out';
+        target.drawImage(replacementMask, 0, 0, width, height);
+        target.restore();
+      }
+      target.drawImage(head, 0, 0, width, height);
+    };
+
     async function loadAvatar() {
       setStatus('Loading avatar…', 'busy');
       try {
@@ -2599,6 +2676,7 @@
           layerJobs.push(loadImage(manifest.cutout.src).then(image => { cutoutImage = image; }));
         }
         await Promise.all(layerJobs);
+        prepareHeadReplacementMask(manifest.body);
         updateMotionControlsAvailability();
         // The authored atlas sheets are large. Loading one motion at a time
         // avoids a transient Chromium image-decoder spike that could leave
@@ -3518,7 +3596,7 @@
         }
       }
 
-      if (cutoutImage) {
+      if (cutoutImage && !headReplacementActive) {
         faceContext.globalCompositeOperation = 'destination-in';
         faceContext.drawImage(cutoutImage, 0, 0, portraitWidth, portraitHeight);
         faceContext.globalCompositeOperation = 'source-over';
@@ -3529,9 +3607,10 @@
       headContext.globalAlpha = 1;
       headContext.clearRect(0, 0, portraitWidth, portraitHeight);
       headContext.drawImage(faceCanvas, 0, 0);
-      if (headMask) {
+      const liveHeadMask = headReplacementActive ? headReplacementCanvas : headMask;
+      if (liveHeadMask) {
         headContext.globalCompositeOperation = 'destination-in';
-        headContext.drawImage(headMask, 0, 0, portraitWidth, portraitHeight);
+        headContext.drawImage(liveHeadMask, 0, 0, portraitWidth, portraitHeight);
         headContext.globalCompositeOperation = 'source-over';
       }
     };
@@ -3829,7 +3908,10 @@
         const matrix = manifest.body.face_transform;
         context.save();
         context.transform(matrix[0][0], matrix[1][0], matrix[0][1], matrix[1][1], matrix[0][2], matrix[1][2]);
-        context.drawImage(headCanvas, 0, 0, portraitWidth, portraitHeight);
+        drawBodyHeadLayer(
+          context, headCanvas,
+          headReplacementActive ? headReplacementCanvas : null,
+          bodyHeadCompositeMode(manifest.body), portraitWidth, portraitHeight);
         context.restore();
       }
       context.restore();

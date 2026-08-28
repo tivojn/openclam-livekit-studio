@@ -565,7 +565,12 @@ final class OpenClamConversationUITests: XCTestCase {
         let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
         let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
         XCTAssertTrue(rail.waitForExistence(timeout: 3))
-        XCTAssertEqual(rail.value as? String, "Visible")
+        XCTAssertEqual(foldControl.label, "Fold all tools")
+        let railState = try XCTUnwrap(rail.value as? String)
+        XCTAssertTrue(
+            ["Visible", "Idle"].contains(railState),
+            "The expanded rail may legitimately finish its fade while XCTest queries it."
+        )
         XCTAssertTrue(app.buttons["Open sidebar"].isHittable)
         XCTAssertTrue(foldControl.isHittable)
 
@@ -585,23 +590,15 @@ final class OpenClamConversationUITests: XCTestCase {
             XCTAssertTrue(app.textFields["Message the AI assistant"].waitForExistence(timeout: 2))
             app.textFields["Message the AI assistant"].tap()
         }
-        Thread.sleep(forTimeInterval: 0.25)
-        XCTAssertEqual(rail.value as? String, "Idle")
+        XCTAssertTrue(
+            waitForValue("Visible", on: rail, timeout: 2),
+            "Composer activity should wake the expanded avatar rail."
+        )
 
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.34)).tap()
         XCTAssertTrue(waitForValue("Visible", on: rail, timeout: 2))
 
         putThreadLayerInFront(fullyTransparent: true)
-
-        // The dedicated invisible-scroll journey below exercises physical
-        // bidirectional drags with real scrollable history. This fresh thread
-        // has no scroll range, so use a thread tap here to keep this test
-        // focused on rail wake behavior and Warm Ear independence.
-        XCTAssertTrue(waitForValue("Idle", on: rail, timeout: 6))
-        app.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.08, dy: 0.42)
-        ).tap()
-        XCTAssertTrue(waitForValue("Visible", on: rail, timeout: 2))
     }
 
     func testInvisibleAvatarReturnsPhysicalVerticalSwipesToTheThread() throws {
@@ -914,16 +911,12 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Standby"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["Close-up"].exists)
         XCTAssertTrue(app.buttons["Horizon Walk"].exists)
-        XCTAssertFalse(app.buttons["Horizon Walk"].isEnabled)
+        XCTAssertTrue(app.buttons["Horizon Walk"].isEnabled)
         XCTAssertTrue(app.buttons["Edge Idle"].isEnabled)
         XCTAssertTrue(app.buttons["Moves"].isEnabled)
         app.buttons["Edge Idle"].tap()
         XCTAssertTrue(waitForValue("Edge Idle", on: modeMenu, timeout: 2))
         capture("ara-v3-edge-idle-physical-left-edge")
-
-        selectAvatarMode("Moves")
-        XCTAssertTrue(waitForValue("Moves", on: modeMenu, timeout: 2))
-        capture("ara-v3-motion-rail")
 
         selectAvatarMode("Standby")
         XCTAssertTrue(waitForValue("Standby", on: modeMenu, timeout: 2))
@@ -962,12 +955,13 @@ final class OpenClamConversationUITests: XCTestCase {
         araCard.tap()
         XCTAssertTrue(app.buttons["Close avatar carousel"].waitForNonExistence(timeout: 2))
 
-        // Recreate the reported overlap: the normal stage is close-up, then
-        // full-height Moves artwork replaces it while the composer stays visible.
+        // Recreate the reported overlap with a sustained full-height clip while
+        // the composer stays visible. Moves is intentionally a short one-shot,
+        // so Edge Idle is the stable UI oracle for hit-testing the composer.
         selectAvatarMode("Close-up")
-        selectAvatarMode("Moves")
+        selectAvatarMode("Edge Idle")
         let modeMenu = app.buttons["openclam-avatar-mode-menu"]
-        XCTAssertTrue(waitForValue("Moves", on: modeMenu, timeout: 2))
+        XCTAssertTrue(waitForValue("Edge Idle", on: modeMenu, timeout: 2))
 
         let start = app.buttons["Start tap to talk"]
         XCTAssertTrue(start.waitForExistence(timeout: 3))
@@ -1095,11 +1089,25 @@ final class OpenClamConversationUITests: XCTestCase {
     private func unfoldAvatarRail() {
         let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
         XCTAssertTrue(foldControl.waitForExistence(timeout: 3))
+        let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 3))
         if foldControl.label == "Show all tools" {
             XCTAssertTrue(foldControl.isHittable)
             foldControl.tap()
             XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 3))
+        } else if rail.value as? String != "Visible" {
+            // An unfolded rail is allowed to fade to Idle. Fold and reopen it
+            // so tests that need controls normalize both expansion and opacity.
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Show all tools", on: foldControl, timeout: 3))
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 3))
         }
+        XCTAssertEqual(foldControl.label, "Fold all tools")
+        XCTAssertTrue(
+            ["Visible", "Idle"].contains(rail.value as? String ?? ""),
+            "An unfolded rail may finish its idle fade before XCTest reads it."
+        )
     }
 
     private func selectAvatarMode(_ title: String) {

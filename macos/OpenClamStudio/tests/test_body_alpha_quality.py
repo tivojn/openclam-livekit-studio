@@ -36,7 +36,68 @@ def _body_fixture():
     return source, alpha
 
 
+def _stylized_eye_fixture():
+    """Flat-colour body with one shaded-white cartoon sclera."""
+    source = np.full((240, 160, 3), 255, np.uint8)
+    alpha = np.zeros(source.shape[:2], np.uint8)
+    source[20:95, 45:115] = (80, 125, 220)
+    alpha[20:95, 45:115] = 255
+    source[90:220, 60:100] = (35, 40, 210)
+    alpha[90:220, 60:100] = 255
+    source[45:75, 55:90] = (232, 239, 244)
+    source[52:68, 62:83] = 250
+    replacement_head = np.zeros(alpha.shape, dtype=bool)
+    replacement_head[20:95, 45:115] = True
+    return source, alpha, replacement_head
+
+
 class BodyAlphaQualityTests(unittest.TestCase):
+    def test_stylized_eye_inside_canonical_head_replacement_is_allowed(self):
+        source, alpha, replacement_head = _stylized_eye_fixture()
+
+        refined, report = body_alpha.refine(
+            source, _rgba(source, alpha),
+            replacement_head_mask=replacement_head)
+
+        self.assertTrue(report["valid"], report)
+        self.assertFalse(report["ambiguous_white_subject_components"])
+        self.assertTrue(any(
+            item["kind"] == "canonical-head-replacement"
+            and item["bounds"] == [62, 52, 21, 16]
+            for item in report["protected_white_detail_components"]))
+        np.testing.assert_array_equal(alpha, refined[:, :, 3])
+
+    def test_stylized_white_clothing_outside_replaced_head_still_rejects(self):
+        source, alpha, replacement_head = _stylized_eye_fixture()
+        source[105:170, 65:95] = (232, 239, 244)
+        source[120:155, 72:88] = 250
+
+        _refined, report = body_alpha.refine(
+            source, _rgba(source, alpha),
+            replacement_head_mask=replacement_head)
+
+        self.assertFalse(report["valid"], report)
+        self.assertEqual(
+            [[72, 120, 16, 35]],
+            [item["bounds"]
+             for item in report["ambiguous_white_subject_components"]])
+        self.assertIn("non-white wardrobe", report["reason"])
+
+    def test_photorealistic_path_does_not_exempt_the_same_white_detail(self):
+        source, alpha, _replacement_head = _stylized_eye_fixture()
+
+        _refined, report = body_alpha.refine(
+            source, _rgba(source, alpha))
+
+        self.assertFalse(report["valid"], report)
+        self.assertEqual(
+            [[62, 52, 21, 16]],
+            [item["bounds"]
+             for item in report["ambiguous_white_subject_components"]])
+        self.assertFalse(any(
+            item["kind"] == "canonical-head-replacement"
+            for item in report["protected_white_detail_components"]))
+
     def test_exterior_arm_waist_plate_is_removed_without_touching_skin(self):
         source, alpha = _body_fixture()
         # Vision falsely bridges the pure-white opening from arm to waist.

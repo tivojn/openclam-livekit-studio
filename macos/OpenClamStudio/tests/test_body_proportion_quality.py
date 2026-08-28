@@ -63,6 +63,25 @@ class BodyProportionQualityTest(unittest.TestCase):
         self.assertTrue(report["gate_trigger"].startswith("brief:"))
         self.assertFalse(report["valid"])
 
+    def test_stylized_medium_never_inherits_the_photographic_runway_gate(self):
+        report = body_proportion.assess(
+            self._fresh_cleo_plate(),
+            [479, 83, 121, 171],
+            {
+                "style": "editorial",
+                "medium": "anime",
+                "prompt": (
+                    "Internal fallback mentions a 7.5-to-8-head runway model, "
+                    "but the uploaded character remains intentionally drawn."
+                ),
+            },
+        )
+        self.assertTrue(report["measurable"])
+        self.assertFalse(report["gate_required"])
+        self.assertEqual(report["gate_trigger"], "stylized-medium:anime")
+        self.assertTrue(report["valid"])
+        self.assertIsNone(body_proportion.failure(report))
+
     def test_balanced_editorial_fixture_passes(self):
         # Face bottom y227 gives a 210px apparent head: 1403/210 = 6.681.
         report = body_proportion.assess(

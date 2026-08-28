@@ -127,6 +127,116 @@ struct CaptainAyerLipSyncTimeline: Equatable, Sendable {
     }
 }
 
+/// A Live Talk-only mouth clock. LiveKit 2.16 publishes participant audio
+/// levels but does not expose phoneme timestamps, so the fallback deliberately
+/// uses a few stable articulation bands instead of changing plates at the
+/// audio-meter cadence. A provider-supplied timeline always takes precedence.
+struct CaptainAyerLiveTalkMouthDriver: Equatable, Sendable {
+    static let minimumVisemeHold: TimeInterval = 0.105
+    static let speechEnterLevel = 0.018
+    static let speechExitLevel = 0.010
+
+    private static let wideEnterLevel = 0.060
+    private static let wideExitLevel = 0.040
+    private static let openEnterLevel = 0.135
+    private static let openExitLevel = 0.090
+    private static let attackTimeConstant: TimeInterval = 0.060
+    private static let releaseTimeConstant: TimeInterval = 0.140
+
+    private enum Band: Equatable, Sendable {
+        case silence
+        case narrow
+        case wide
+        case open
+
+        var viseme: CaptainAyerViseme {
+            switch self {
+            case .silence: .silence
+            case .narrow: .narrow
+            case .wide: .wide
+            case .open: .open
+            }
+        }
+    }
+
+    private let startedAt: TimeInterval
+    private let timedTimeline: CaptainAyerLipSyncTimeline?
+    private var smoothedLevel = 0.0
+    private var lastSampleAt: TimeInterval?
+    private var band = Band.silence
+    private var previousViseme = CaptainAyerViseme.silence
+    private var currentViseme = CaptainAyerViseme.silence
+    private var transitionedAt: TimeInterval
+
+    init(
+        startedAt: TimeInterval,
+        timedTimeline: CaptainAyerLipSyncTimeline? = nil
+    ) {
+        self.startedAt = startedAt
+        self.timedTimeline = timedTimeline
+        transitionedAt = startedAt - Self.minimumVisemeHold
+    }
+
+    mutating func update(audioLevel: Float, at sampleTime: TimeInterval) {
+        guard timedTimeline == nil else { return }
+        let rawLevel = Double(audioLevel.isFinite ? min(1, max(0, audioLevel)) : 0)
+        if let lastSampleAt {
+            let elapsed = min(0.5, max(0, sampleTime - lastSampleAt))
+            let timeConstant = rawLevel > smoothedLevel
+                ? Self.attackTimeConstant
+                : Self.releaseTimeConstant
+            let coefficient = 1 - exp(-elapsed / timeConstant)
+            smoothedLevel += (rawLevel - smoothedLevel) * coefficient
+        } else {
+            smoothedLevel = rawLevel
+        }
+        lastSampleAt = sampleTime
+
+        let candidate = nextBand(for: smoothedLevel)
+        guard candidate != band,
+              sampleTime - transitionedAt >= Self.minimumVisemeHold else { return }
+        previousViseme = currentViseme
+        currentViseme = candidate.viseme
+        band = candidate
+        transitionedAt = sampleTime
+    }
+
+    func renderState(at sampleTime: TimeInterval) -> CaptainAyerAvatarRenderState {
+        if let timedTimeline {
+            return timedTimeline.renderState(at: max(0, sampleTime - startedAt))
+        }
+        guard previousViseme != currentViseme else {
+            return .init(previous: currentViseme, current: currentViseme, blend: 1)
+        }
+        let fade = CaptainAyerLipSyncTimeline.fadeDuration(
+            from: previousViseme,
+            to: currentViseme
+        )
+        let blend = min(1, max(0, (sampleTime - transitionedAt) / fade))
+        return .init(previous: previousViseme, current: currentViseme, blend: blend)
+    }
+
+    private func nextBand(for level: Double) -> Band {
+        switch band {
+        case .silence:
+            if level >= Self.openEnterLevel { return .open }
+            if level >= Self.wideEnterLevel { return .wide }
+            return level >= Self.speechEnterLevel ? .narrow : .silence
+        case .narrow:
+            if level < Self.speechExitLevel { return .silence }
+            if level >= Self.openEnterLevel { return .open }
+            return level >= Self.wideEnterLevel ? .wide : .narrow
+        case .wide:
+            if level < Self.speechExitLevel { return .silence }
+            if level >= Self.openEnterLevel { return .open }
+            return level < Self.wideExitLevel ? .narrow : .wide
+        case .open:
+            if level < Self.speechExitLevel { return .silence }
+            return level < Self.openExitLevel ? .wide : .open
+        }
+    }
+}
+
 /// A small, deterministic letter-class planner used when a TTS engine does
 /// not provide phoneme timestamps. Durations and pause weights match the
 /// avatar's original local fallback, then richer mouth classes are folded
@@ -1081,11 +1191,13 @@ final class CaptainAyerLipSyncController: ObservableObject {
     private var timeline: CaptainAyerLipSyncTimeline = .idle
     private var expressionPlan = CaptainAyerSpeechExpressionPlan.neutral
     private var expressionTimeline = CaptainAyerSpeechExpressionTimeline.neutral
+    private var expressionDuration: TimeInterval = 0
     private var expressionTransition = CaptainAyerSpeechExpressionTransitionState()
     private var anchor: Date?
     private var releaseAnchor: Date?
     private var releaseState: CaptainAyerFaceReactionRenderState = .idle
     private var releaseTask: Task<Void, Never>?
+    private var liveTalkMouthDriver: CaptainAyerLiveTalkMouthDriver?
 
     init(planner: CaptainAyerLipSyncPlanner = .init()) {
         self.planner = planner
@@ -1100,25 +1212,32 @@ final class CaptainAyerLipSyncController: ObservableObject {
             for: text,
             duration: timeline.duration
         )
+        expressionDuration = timeline.duration
         expressionTransition = .init()
         anchor = nil
         releaseAnchor = nil
         releaseState = .idle
         releaseTask?.cancel()
         releaseTask = nil
+        liveTalkMouthDriver = nil
         phase = .prepared
     }
 
     /// Starts the prepared generation. Cloud speech should pass its exact
     /// player duration; Apple speech can omit it and use the local estimate.
-    func begin(generation: Int, duration: TimeInterval? = nil) {
+    func begin(
+        generation: Int,
+        duration: TimeInterval? = nil,
+        at date: Date = Date()
+    ) {
         guard self.generation == generation else { return }
         timeline = planner.timeline(for: text, duration: duration)
         expressionTimeline = CaptainAyerSpeechExpressionPlanner.timeline(
             for: text,
             duration: timeline.duration
         )
-        let now = Date()
+        expressionDuration = timeline.duration
+        let now = date
         anchor = now
         expressionTransition = .init(at: now.timeIntervalSinceReferenceDate)
         expressionTransition.retarget(
@@ -1130,6 +1249,64 @@ final class CaptainAyerLipSyncController: ObservableObject {
         releaseTask?.cancel()
         releaseTask = nil
         phase = .speaking
+    }
+
+    /// Starts a Live Talk generation without changing the regular TTS path.
+    /// Exact provider viseme timing wins when present; current LiveKit sessions
+    /// pass nil and use the smoothed audio-level fallback instead.
+    func beginLiveTalk(
+        text: String,
+        generation: Int,
+        timedVisemeTimeline: CaptainAyerLipSyncTimeline? = nil,
+        at date: Date = Date()
+    ) {
+        prepare(text: text, generation: generation)
+        begin(
+            generation: generation,
+            duration: timedVisemeTimeline?.duration,
+            at: date
+        )
+        guard self.generation == generation, phase == .speaking else { return }
+        liveTalkMouthDriver = CaptainAyerLiveTalkMouthDriver(
+            startedAt: date.timeIntervalSinceReferenceDate,
+            timedTimeline: timedVisemeTimeline
+        )
+    }
+
+    func updateLiveTalkAudioLevel(_ level: Float, at date: Date = Date()) {
+        guard phase == .speaking, var driver = liveTalkMouthDriver else { return }
+        driver.update(
+            audioLevel: level,
+            at: date.timeIntervalSinceReferenceDate
+        )
+        liveTalkMouthDriver = driver
+    }
+
+    /// Updates only the semantic expression plan while a Live Talk answer is
+    /// streaming. The active audio-level/timed-viseme mouth driver, generation,
+    /// and speech clock remain untouched, so transcript growth cannot make the
+    /// lips restart or flutter back to the opening plate.
+    func retargetLiveTalkExpression(
+        text updatedText: String,
+        generation: Int,
+        at date: Date = Date()
+    ) {
+        let normalized = updatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard self.generation == generation,
+              phase == .speaking,
+              liveTalkMouthDriver != nil,
+              !normalized.isEmpty,
+              normalized != text,
+              let anchor else { return }
+        text = normalized
+        expressionPlan = CaptainAyerSpeechExpressionPlanner.plan(for: normalized)
+        let elapsed = max(0, date.timeIntervalSince(anchor))
+        let estimated = planner.timeline(for: normalized).duration
+        expressionDuration = max(estimated, elapsed + 0.5)
+        expressionTimeline = CaptainAyerSpeechExpressionPlanner.timeline(
+            for: normalized,
+            duration: expressionDuration
+        )
     }
 
     /// Reanchors estimated Apple speech at a word boundary without changing
@@ -1148,6 +1325,7 @@ final class CaptainAyerLipSyncController: ObservableObject {
                 for: fullText,
                 duration: timeline.duration
             )
+            expressionDuration = timeline.duration
         }
         let progress = planner.progress(forUTF16Location: spokenRange.location, in: fullText)
         anchor = Date().addingTimeInterval(-(timeline.duration * progress))
@@ -1160,6 +1338,7 @@ final class CaptainAyerLipSyncController: ObservableObject {
         self.generation = nil
         phase = .releasing
         releaseTask?.cancel()
+        liveTalkMouthDriver = nil
         releaseTask = Task { [weak self] in
             try? await Task.sleep(
                 nanoseconds: UInt64(
@@ -1178,6 +1357,11 @@ final class CaptainAyerLipSyncController: ObservableObject {
 
     func renderState(at date: Date = Date()) -> CaptainAyerAvatarRenderState {
         guard phase == .speaking, let anchor else { return .idle }
+        if let liveTalkMouthDriver {
+            return liveTalkMouthDriver.renderState(
+                at: date.timeIntervalSinceReferenceDate
+            )
+        }
         return timeline.renderState(at: date.timeIntervalSince(anchor))
     }
 
@@ -1196,7 +1380,7 @@ final class CaptainAyerLipSyncController: ObservableObject {
             )
             return state
         }
-        guard phase == .speaking, let anchor, timeline.duration > 0 else { return .idle }
+        guard phase == .speaking, let anchor, expressionDuration > 0 else { return .idle }
         let elapsed = max(0, date.timeIntervalSince(anchor))
         let phrase = expressionTimeline.state(at: elapsed)
         let target = expressionTimeline.cues.isEmpty ? expressionPlan : phrase.plan
@@ -1209,7 +1393,7 @@ final class CaptainAyerLipSyncController: ObservableObject {
             // Attack and release belong to the whole utterance. Phrase-local
             // envelopes would hit zero at every cue boundary and visibly pop
             // even while the semantic plan itself crossfades correctly.
-            progress: elapsed / timeline.duration,
+            progress: elapsed / expressionDuration,
             elapsed: elapsed,
             reduceMotion: reduceMotion
         )
@@ -1222,11 +1406,13 @@ final class CaptainAyerLipSyncController: ObservableObject {
         timeline = .idle
         expressionPlan = .neutral
         expressionTimeline = .neutral
+        expressionDuration = 0
         expressionTransition = .init()
         anchor = nil
         releaseAnchor = nil
         releaseState = .idle
         releaseTask?.cancel()
         releaseTask = nil
+        liveTalkMouthDriver = nil
     }
 }

@@ -110,6 +110,111 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertEqual(timeline.renderState(at: timeline.duration), .idle)
     }
 
+    func testLiveTalkFallbackSmoothsMeterJitterAndHoldsEachViseme() {
+        let start = 100.0
+        var driver = CaptainAyerLiveTalkMouthDriver(startedAt: start)
+
+        driver.update(audioLevel: 0.07, at: start)
+        XCTAssertEqual(driver.renderState(at: start + 0.08).current, .wide)
+
+        // Raw meter samples cross a band boundary several times, but none is
+        // allowed to publish another plate before the TTS-sized hold expires.
+        for (offset, level) in [
+            (0.01, Float(0.02)),
+            (0.03, Float(0.08)),
+            (0.05, Float(0.025)),
+            (0.08, Float(0.075)),
+            (0.10, Float(0.02)),
+        ] {
+            driver.update(audioLevel: level, at: start + offset)
+            XCTAssertEqual(driver.renderState(at: start + offset).current, .wide)
+        }
+        XCTAssertEqual(CaptainAyerLiveTalkMouthDriver.minimumVisemeHold, 0.105)
+    }
+
+    func testLiveTalkDriverPrefersExactTimedVisemesOverRMSFallback() {
+        let start = 200.0
+        let supplied = CaptainAyerLipSyncTimeline(
+            duration: 1,
+            cues: [
+                .init(offset: 0, viseme: .silence),
+                .init(offset: 0.2, viseme: .rounded),
+                .init(offset: 0.8, viseme: .silence),
+            ]
+        )
+        var driver = CaptainAyerLiveTalkMouthDriver(
+            startedAt: start,
+            timedTimeline: supplied
+        )
+
+        driver.update(audioLevel: 1, at: start + 0.25)
+        let state = driver.renderState(at: start + 0.25)
+
+        XCTAssertEqual(state.current, .rounded)
+        XCTAssertNotEqual(state.current, .open)
+    }
+
+    @MainActor
+    func testLiveTalkMouthOverrideIsClearedBeforeRegularTTS() {
+        let controller = CaptainAyerLipSyncController()
+        let start = Date()
+        controller.beginLiveTalk(
+            text: "Speaking naturally",
+            generation: 91,
+            at: start
+        )
+        controller.updateLiveTalkAudioLevel(0.2, at: start)
+        XCTAssertEqual(
+            controller.renderState(at: start.addingTimeInterval(0.08)).current,
+            .open
+        )
+
+        controller.prepare(text: "Photo", generation: 92)
+        controller.begin(generation: 92, duration: 1)
+        let regular = controller.renderState(at: Date())
+
+        XCTAssertEqual(regular.current, .labiodental)
+        XCTAssertNotEqual(regular.current, .open)
+    }
+
+    @MainActor
+    func testLiveTalkTranscriptRetargetsExpressionWithoutRestartingMouthClock() {
+        let controller = CaptainAyerLipSyncController()
+        let start = Date(timeIntervalSinceReferenceDate: 5_000)
+        controller.beginLiveTalk(
+            text: "Speaking naturally",
+            generation: 93,
+            at: start
+        )
+        controller.updateLiveTalkAudioLevel(0.07, at: start)
+        let retargetedAt = start.addingTimeInterval(0.2)
+        let mouthBefore = controller.renderState(at: retargetedAt)
+
+        controller.retargetLiveTalkExpression(
+            text: "I am horrified and terrified by this nightmare.",
+            generation: 93,
+            at: retargetedAt
+        )
+
+        XCTAssertEqual(controller.renderState(at: retargetedAt), mouthBefore)
+        XCTAssertEqual(
+            controller.preparedText,
+            "I am horrified and terrified by this nightmare."
+        )
+        _ = controller.expressionRenderState(
+            at: retargetedAt.addingTimeInterval(0.01)
+        )
+        let expressive = controller.expressionRenderState(
+            at: retargetedAt.addingTimeInterval(0.5)
+        )
+        XCTAssertGreaterThan(expressive.expressionLayers.horrorMouth, 0.05)
+        XCTAssertEqual(
+            controller.renderState(at: retargetedAt.addingTimeInterval(0.5)).current,
+            mouthBefore.current,
+            "Transcript growth must not restart or replace the audio-driven mouth"
+        )
+    }
+
     func testUTF16ProgressHandlesEmojiBeforeSpeechBoundary() {
         let planner = CaptainAyerLipSyncPlanner()
         let text = "🙂 hello world"

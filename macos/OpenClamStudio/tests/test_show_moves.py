@@ -123,17 +123,18 @@ class WhitePlateMatte(unittest.TestCase):
 class MoveRuntime(unittest.TestCase):
     def test_moves_remain_explicit_while_avatar_double_click_is_live_talk(self):
         renderer = (ROOT / "web" / "index.html").read_text()
-        self.assertIn("const toggleMove = async () => {", renderer)
-        self.assertIn("if (!await ensureMotion('move')) return", renderer)
-        self.assertIn("moveUntil = performance.now()", renderer)
+        self.assertIn("const selectMoveMode = async () => {", renderer)
+        self.assertIn("if (!await prepareTransientDisplayMode('move')) return", renderer)
+        self.assertIn("moveUntil = performance.now() +", renderer)
         self.assertIn("canvas.addEventListener('dblclick', event => {", renderer)
         self.assertIn("toggleLiveTalk();", renderer)
         self.assertIn(
-            "movesButton.addEventListener('click', () => { void toggleMove(); });",
+            "movesButton.addEventListener('click', () => {",
             renderer,
         )
+        self.assertIn("void selectMoveMode();", renderer)
         self.assertIn(
-            "shell.onPetMoves(() => { void toggleMove(); });",
+            "shell.onPetMoves(() => { void selectMoveMode(); });",
             renderer,
         )
         preload = (ROOT / "electron" / "preload.cjs").read_text()

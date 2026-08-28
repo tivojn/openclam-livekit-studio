@@ -1588,7 +1588,7 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertTrue(controller.canStart)
     }
 
-    func testTranscriptPanelIsBoundedAndRemoteAudioCanDriveAvatar() {
+    func testTranscriptPanelIsBoundedAndRemoteSpeechGateDebouncesAudio() throws {
         let messages = (0..<20).map { index in
             ReceivedMessage(
                 id: "m\(index)",
@@ -1607,14 +1607,65 @@ final class LiveTalkTests: XCTestCase {
 
         XCTAssertEqual(transcripts.count, 12)
         XCTAssertEqual(transcripts.first?.id, "m8")
+        var gate = LiveTalkRemoteSpeechGate()
         XCTAssertTrue(
-            LiveTalkRemoteAudioActivity.isActive(
+            gate.update(
+                agentSpeaking: false,
                 reportedSpeaking: false,
-                audioLevel: LiveTalkRemoteAudioActivity.audibleThreshold + 0.001
+                audioLevel: LiveTalkRemoteSpeechGate.enterLevel + 0.001,
+                at: 10
+            )
+        )
+        XCTAssertTrue(
+            gate.update(
+                agentSpeaking: false,
+                reportedSpeaking: false,
+                audioLevel: 0,
+                at: 10.05
+            ),
+            "A single quiet meter sample must not snap the mouth shut"
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(gate.nextEvaluationAt),
+            10.29,
+            accuracy: 0.0001
+        )
+        XCTAssertFalse(
+            gate.update(
+                agentSpeaking: false,
+                reportedSpeaking: false,
+                audioLevel: 0,
+                at: 10.30
+            )
+        )
+    }
+
+    func testRemoteSpeechGateHonorsReportedSpeechAndMinimumReleaseHold() {
+        var gate = LiveTalkRemoteSpeechGate()
+
+        XCTAssertTrue(
+            gate.update(
+                agentSpeaking: true,
+                reportedSpeaking: false,
+                audioLevel: 0,
+                at: 20
+            )
+        )
+        XCTAssertTrue(
+            gate.update(
+                agentSpeaking: false,
+                reportedSpeaking: false,
+                audioLevel: 0,
+                at: 20.17
             )
         )
         XCTAssertFalse(
-            LiveTalkRemoteAudioActivity.isActive(reportedSpeaking: false, audioLevel: 0)
+            gate.update(
+                agentSpeaking: false,
+                reportedSpeaking: false,
+                audioLevel: 0,
+                at: 20.25
+            )
         )
     }
 

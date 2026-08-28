@@ -424,11 +424,74 @@ struct LiveTalkTranscriptWindow: Equatable, Sendable {
     }
 }
 
-enum LiveTalkRemoteAudioActivity {
-    static let audibleThreshold: Float = 0.018
+struct LiveTalkRemoteSpeechGate: Equatable, Sendable {
+    static let enterLevel: Float = 0.018
+    static let exitLevel: Float = 0.010
+    static let minimumActiveDuration: TimeInterval = 0.18
+    static let releaseHold: TimeInterval = 0.24
 
-    static func isActive(reportedSpeaking: Bool, audioLevel: Float) -> Bool {
-        reportedSpeaking || audioLevel > audibleThreshold
+    private static let attackTimeConstant: TimeInterval = 0.045
+    private static let releaseTimeConstant: TimeInterval = 0.12
+
+    private(set) var isActive = false
+    private(set) var smoothedLevel: Float = 0
+    private var lastSampleAt: TimeInterval?
+    private var activeSince: TimeInterval?
+    private var lastEvidenceAt: TimeInterval?
+
+    var nextEvaluationAt: TimeInterval? {
+        guard isActive, let activeSince, let lastEvidenceAt else { return nil }
+        return max(
+            activeSince + Self.minimumActiveDuration,
+            lastEvidenceAt + Self.releaseHold
+        )
+    }
+
+    mutating func update(
+        agentSpeaking: Bool,
+        reportedSpeaking: Bool,
+        audioLevel: Float,
+        at sampleTime: TimeInterval
+    ) -> Bool {
+        let rawLevel = audioLevel.isFinite ? min(1, max(0, audioLevel)) : 0
+        if let lastSampleAt {
+            let elapsed = min(0.5, max(0, sampleTime - lastSampleAt))
+            let timeConstant = rawLevel > smoothedLevel
+                ? Self.attackTimeConstant
+                : Self.releaseTimeConstant
+            let coefficient = Float(1 - exp(-elapsed / timeConstant))
+            smoothedLevel += (rawLevel - smoothedLevel) * coefficient
+        } else {
+            smoothedLevel = rawLevel
+        }
+        self.lastSampleAt = sampleTime
+
+        let hasStrongEvidence = agentSpeaking || reportedSpeaking
+        let hasAudioEvidence = isActive
+            ? smoothedLevel > Self.exitLevel
+            : smoothedLevel >= Self.enterLevel
+        if hasStrongEvidence || hasAudioEvidence {
+            lastEvidenceAt = sampleTime
+            if !isActive {
+                isActive = true
+                activeSince = sampleTime
+            }
+            return true
+        }
+
+        guard isActive, let activeSince, let lastEvidenceAt else { return false }
+        let heldLongEnough = sampleTime - activeSince >= Self.minimumActiveDuration
+        let releaseSettled = sampleTime - lastEvidenceAt >= Self.releaseHold
+        if heldLongEnough, releaseSettled, smoothedLevel <= Self.exitLevel {
+            isActive = false
+            self.activeSince = nil
+            self.lastEvidenceAt = nil
+        }
+        return isActive
+    }
+
+    mutating func reset() {
+        self = .init()
     }
 }
 
@@ -760,7 +823,13 @@ final class LiveTalkSessionController: ObservableObject {
     private weak var avatarController: CaptainAyerLipSyncController?
     private var avatarGeneration = 40_000
     private var avatarIsSpeaking = false
+    private var remoteSpeechGate = LiveTalkRemoteSpeechGate()
+    private var avatarReleaseTask: Task<Void, Never>?
     private var lastAgentTranscript = ""
+    private var lastAgentTranscriptID: String?
+    private var avatarExpressionTranscriptID: String?
+    private var avatarExpressionText = ""
+    private var avatarExpressionTracksTranscript = false
     private var transcriptWindow = LiveTalkTranscriptWindow()
     private var emailDraftReplayWindow = LiveTalkToolReplayWindow()
 
@@ -784,6 +853,7 @@ final class LiveTalkSessionController: ObservableObject {
 
     deinit {
         startTask?.cancel()
+        avatarReleaseTask?.cancel()
     }
 
     var errorMessage: String? {
@@ -805,6 +875,9 @@ final class LiveTalkSessionController: ObservableObject {
         let attempt = UUID()
         activeAttempt = attempt
         self.avatarController = avatarController
+        remoteSpeechGate.reset()
+        avatarReleaseTask?.cancel()
+        avatarReleaseTask = nil
         isMuted = false
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
@@ -947,6 +1020,9 @@ final class LiveTalkSessionController: ObservableObject {
         transition(.end)
         activityTitle = "Ending Live Talk"
         clearSessionTranscripts()
+        avatarReleaseTask?.cancel()
+        avatarReleaseTask = nil
+        remoteSpeechGate.reset()
         let endingSession = session
         let endingAudioBridge = simulatorAudioBridge
         simulatorAudioBridge = nil
@@ -1096,9 +1172,10 @@ final class LiveTalkSessionController: ObservableObject {
         isMuted = !session.room.localParticipant.isMicrophoneEnabled()
         transcriptWindow.replace(with: Self.boundedTranscripts(from: session.messages))
         transcripts = transcriptWindow.items
-        if let latest = transcripts.last(where: { $0.role == .agent })?.text,
-           !latest.isEmpty {
-            lastAgentTranscript = latest
+        if let latest = transcripts.last(where: { $0.role == .agent }),
+           !latest.text.isEmpty {
+            lastAgentTranscript = latest.text
+            lastAgentTranscriptID = latest.id
         }
         updateAvatar(from: session)
         simulatorAudioBridge?.attachRemoteAudioIfNeeded(from: session)
@@ -1145,11 +1222,14 @@ final class LiveTalkSessionController: ObservableObject {
         let level = participant?.audioLevel ?? 0
         remoteAudioLevel = level
         let agentIsSpeaking = session.agent.agentState == .speaking
-        let speaks = agentIsSpeaking
-            || LiveTalkRemoteAudioActivity.isActive(
-                reportedSpeaking: participant?.isSpeaking == true,
-                audioLevel: level
-            )
+        let now = Date()
+        let speaks = remoteSpeechGate.update(
+            agentSpeaking: agentIsSpeaking,
+            reportedSpeaking: participant?.isSpeaking == true,
+            audioLevel: level,
+            at: now.timeIntervalSinceReferenceDate
+        )
+        scheduleAvatarReleaseCheck(for: session, now: now)
         do {
             try simulatorAudioBridge?.setRemoteAudioActive(agentIsSpeaking)
         } catch {
@@ -1161,16 +1241,58 @@ final class LiveTalkSessionController: ObservableObject {
         }
         guard let avatarController else { return }
         if speaks {
-            if !avatarIsSpeaking || avatarController.preparedText != lastAgentTranscript {
+            if !avatarIsSpeaking {
                 avatarGeneration += 1
-                let text = lastAgentTranscript.isEmpty ? "Speaking naturally" : lastAgentTranscript
-                avatarController.prepare(text: text, generation: avatarGeneration)
-                avatarController.begin(generation: avatarGeneration)
+                let transcriptIsFresh = lastAgentTranscriptID != nil
+                    && lastAgentTranscriptID != avatarExpressionTranscriptID
+                let text = transcriptIsFresh && !lastAgentTranscript.isEmpty
+                    ? lastAgentTranscript
+                    : "Speaking naturally"
+                avatarController.beginLiveTalk(
+                    text: text,
+                    generation: avatarGeneration,
+                    at: now
+                )
+                avatarExpressionText = text
+                avatarExpressionTracksTranscript = transcriptIsFresh
+                if transcriptIsFresh {
+                    avatarExpressionTranscriptID = lastAgentTranscriptID
+                }
+            } else if let transcriptID = lastAgentTranscriptID,
+                      transcriptID != avatarExpressionTranscriptID
+                        || (avatarExpressionTracksTranscript
+                            && lastAgentTranscript != avatarExpressionText) {
+                avatarController.retargetLiveTalkExpression(
+                    text: lastAgentTranscript,
+                    generation: avatarGeneration,
+                    at: now
+                )
+                avatarExpressionTranscriptID = transcriptID
+                avatarExpressionText = lastAgentTranscript
+                avatarExpressionTracksTranscript = true
             }
+            avatarController.updateLiveTalkAudioLevel(level, at: now)
             avatarIsSpeaking = true
         } else if avatarIsSpeaking {
             avatarController.finish(generation: avatarGeneration)
             avatarIsSpeaking = false
+        }
+    }
+
+    private func scheduleAvatarReleaseCheck(for observedSession: Session, now: Date) {
+        avatarReleaseTask?.cancel()
+        avatarReleaseTask = nil
+        guard let deadline = remoteSpeechGate.nextEvaluationAt else { return }
+        let delay = max(0, deadline - now.timeIntervalSinceReferenceDate)
+        avatarReleaseTask = Task { [weak self, weak observedSession] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(delay * 1_000_000_000)
+            )
+            guard !Task.isCancelled,
+                  let self,
+                  let observedSession,
+                  self.session === observedSession else { return }
+            self.updateAvatar(from: observedSession)
         }
     }
 
@@ -1204,6 +1326,9 @@ final class LiveTalkSessionController: ObservableObject {
         emailDraftReplayWindow.clear()
         avatarController?.cancelAll()
         avatarIsSpeaking = false
+        remoteSpeechGate.reset()
+        avatarReleaseTask?.cancel()
+        avatarReleaseTask = nil
         transition(.end)
         activityTitle = "Ending Live Talk"
         Task { [weak self, sessionEnder] in
@@ -1235,6 +1360,9 @@ final class LiveTalkSessionController: ObservableObject {
         avatarController?.cancelAll()
         avatarController = nil
         avatarIsSpeaking = false
+        remoteSpeechGate.reset()
+        avatarReleaseTask?.cancel()
+        avatarReleaseTask = nil
         transition(.ended)
         activityTitle = "Ready to talk"
     }
@@ -1243,6 +1371,10 @@ final class LiveTalkSessionController: ObservableObject {
         transcriptWindow.clear()
         transcripts = transcriptWindow.items
         lastAgentTranscript = ""
+        lastAgentTranscriptID = nil
+        avatarExpressionTranscriptID = nil
+        avatarExpressionText = ""
+        avatarExpressionTracksTranscript = false
     }
 
     private func transition(_ event: LiveTalkLifecycle.Event) {

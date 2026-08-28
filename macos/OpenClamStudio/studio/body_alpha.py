@@ -300,9 +300,29 @@ def _compact_supported_highlights(source, alpha):
     return labels, mask, protected
 
 
-def _plate_leaks(source, rgba):
+def _replacement_head_region(mask, alpha):
+    """Validate the caller's body-space canonical-head replacement region.
+
+    This is intentionally an opt-in input.  Photographic bodies and legacy
+    callers pass no region, so their white-garment and plate gates retain the
+    exact reviewed behaviour.  The stylized front-body pipeline supplies only
+    the facial-oval core that the runtime later removes before drawing the
+    calibrated head.
+    """
+    if mask is None:
+        return None
+    region = np.asarray(mask, dtype=bool)
+    if region.shape != alpha.shape:
+        raise ValueError(
+            "replacement head region and body alpha dimensions differ")
+    return region
+
+
+def _plate_leaks(source, rgba, *, replacement_head_mask=None):
     """Classify strict-white alpha as repairable plate or protected detail."""
     alpha = rgba[:, :, 3]
+    replacement_head = _replacement_head_region(
+        replacement_head_mask, alpha)
     plate = _strict_plate(source)
     source_labels_count, source_labels = cv2.connectedComponents(
         plate.astype(np.uint8), connectivity=8)
@@ -344,6 +364,23 @@ def _plate_leaks(source, rgba):
         white_ambiguity = _white_subject_ambiguity(
             source, alpha, component, alpha_labels)
         if white_ambiguity:
+            # Flat cartoon eyes can be a large exact-white island surrounded
+            # by shaded sclera, which deliberately resembles the otherwise
+            # forbidden white-garment signature.  Accept it only when every
+            # pixel lies inside the body-space region that the stylized runtime
+            # erases before drawing the canonical animated head.  Protect that
+            # complete region from near-white edge checks because none of it is
+            # published from the generated body.  Clothing remains outside the
+            # region and therefore keeps the hard rejection below.
+            if (replacement_head is not None
+                    and bool(np.all(replacement_head[component]))):
+                protected |= replacement_head
+                protected_white.append({
+                    "kind": "canonical-head-replacement",
+                    "bounds": record["bounds"],
+                    "visible_pixels": record["visible_pixels"],
+                })
+                continue
             alpha_component_ids = np.unique(alpha_labels[component])
             alpha_component_ids = alpha_component_ids[alpha_component_ids > 0]
             ambiguity_block |= np.isin(alpha_labels, alpha_component_ids)
@@ -820,11 +857,13 @@ def _decontaminate_white_matte(source, rgba, blocked=None):
 
 
 def quality(
-        source, rgba, *, baseline_alpha=None, baseline_highlights=None):
+        source, rgba, *, baseline_alpha=None, baseline_highlights=None,
+        replacement_head_mask=None):
     """Audit one final body cutout and return JSON-safe hard-gate metrics."""
     _validate(source, rgba)
     contract = _plate_contract(source)
-    plate = _plate_leaks(source, rgba)
+    plate = _plate_leaks(
+        source, rgba, replacement_head_mask=replacement_head_mask)
     shadow = _floor_shadow(source, rgba)
     alpha = rgba[:, :, 3]
     protected = plate["protected_mask"] | plate["ambiguity_block_mask"]
@@ -951,7 +990,7 @@ def quality(
     }
 
 
-def refine(source, rgba):
+def refine(source, rgba, *, replacement_head_mask=None):
     """Remove only proven plate pixels, then run the body hard gate.
 
     Cast shadows are reported but deliberately not cut: a dark neutral pixel
@@ -960,7 +999,8 @@ def refine(source, rgba):
     """
     _validate(source, rgba)
     baseline = rgba[:, :, 3].copy()
-    plate = _plate_leaks(source, rgba)
+    plate = _plate_leaks(
+        source, rgba, replacement_head_mask=replacement_head_mask)
     output = rgba.copy()
     strict_remove = plate["exterior_mask"] | plate["enclosed_mask"]
     blocked = plate["protected_mask"] | plate["ambiguity_block_mask"]
@@ -984,7 +1024,8 @@ def refine(source, rgba):
         source, output, blocked=blocked)
     report = quality(
         source, output, baseline_alpha=baseline,
-        baseline_highlights=plate["supported_highlight_mask"])
+        baseline_highlights=plate["supported_highlight_mask"],
+        replacement_head_mask=replacement_head_mask)
     report["repaired_exterior_plate_components"] = plate["exterior"]
     report["repaired_enclosed_plate_components"] = plate["enclosed"]
     report["preserved_ambiguous_white_subject_components"] = (
