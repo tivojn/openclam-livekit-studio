@@ -451,7 +451,9 @@ def _plate_leaks(source, rgba, *, replacement_head_mask=None):
     }
 
 
-def _floor_shadow(source, rgba):
+def _floor_shadow(
+        source, rgba, *, replacement_head_mask=None,
+        verified_stylized=False):
     """Conservative source evidence for floor, contact, or wall shadows.
 
     Neutral anatomy is ambiguous, so this function never edits it.  It rejects
@@ -460,6 +462,8 @@ def _floor_shadow(source, rgba):
     attachment to a real foot; a thin shadow attached only to a heel does not.
     """
     alpha = rgba[:, :, 3]
+    replacement_head = _replacement_head_region(
+        replacement_head_mask, alpha)
     if not _plate_contract(source)["valid"]:
         return {"mask": np.zeros(alpha.shape, bool), "components": []}
     points = cv2.findNonZero((alpha >= VISIBLE_ALPHA).astype(np.uint8))
@@ -495,6 +499,15 @@ def _floor_shadow(source, rgba):
                 and record["alpha_mass"] <= FLOOR_SHADOW_MIN_ALPHA_MASS):
             continue
         component = _record_mask(labels, record)
+        # A stylized front view is composited with the canonical animation
+        # head at runtime. Neutral eye/line-art islands inside that exact
+        # replacement core are therefore not evidence of a detached cast
+        # shadow. This exemption is reachable only when the caller supplied
+        # locally verified stylized intake evidence; photographic and unknown
+        # sources continue to pass no mask and retain the strict gate.
+        if (replacement_head is not None
+                and bool(np.all(replacement_head[component]))):
+            continue
         ring = cv2.dilate(
             component.astype(np.uint8), np.ones((3, 3), np.uint8),
             iterations=1).astype(bool) & ~component
@@ -554,10 +567,21 @@ def _floor_shadow(source, rgba):
             and (uniform or smooth_gradient)
             and y_span / max(1, component_height) >= 0.30
         )
+        # Opaque flat-colour garment/line-art islands are common in verified
+        # cartoon and 3D-render plates.  Above the floor band they cannot be a
+        # floor-contact shadow, and opacity rules out the translucent wall
+        # shadow branch.  Keep the legacy detached-neutral rejection for every
+        # photograph/unknown source and for anything in the floor band.
+        stylized_opaque_detail = (
+            bool(verified_stylized)
+            and top + component_height < floor_start
+            and not translucent
+        )
         detached_elongated = (
             not len(contact_x)
             and max(width / max(1, component_height),
                     component_height / max(1, width)) >= 1.8
+            and not stylized_opaque_detail
         )
         kind = (
             "floor-contact" if floor_shadow else
@@ -858,13 +882,15 @@ def _decontaminate_white_matte(source, rgba, blocked=None):
 
 def quality(
         source, rgba, *, baseline_alpha=None, baseline_highlights=None,
-        replacement_head_mask=None):
+        replacement_head_mask=None, verified_stylized=False):
     """Audit one final body cutout and return JSON-safe hard-gate metrics."""
     _validate(source, rgba)
     contract = _plate_contract(source)
     plate = _plate_leaks(
         source, rgba, replacement_head_mask=replacement_head_mask)
-    shadow = _floor_shadow(source, rgba)
+    shadow = _floor_shadow(
+        source, rgba, replacement_head_mask=replacement_head_mask,
+        verified_stylized=verified_stylized)
     alpha = rgba[:, :, 3]
     protected = plate["protected_mask"] | plate["ambiguity_block_mask"]
     protected_margin = cv2.dilate(
@@ -990,7 +1016,9 @@ def quality(
     }
 
 
-def refine(source, rgba, *, replacement_head_mask=None):
+def refine(
+        source, rgba, *, replacement_head_mask=None,
+        verified_stylized=False):
     """Remove only proven plate pixels, then run the body hard gate.
 
     Cast shadows are reported but deliberately not cut: a dark neutral pixel
@@ -1025,7 +1053,8 @@ def refine(source, rgba, *, replacement_head_mask=None):
     report = quality(
         source, output, baseline_alpha=baseline,
         baseline_highlights=plate["supported_highlight_mask"],
-        replacement_head_mask=replacement_head_mask)
+        replacement_head_mask=replacement_head_mask,
+        verified_stylized=verified_stylized)
     report["repaired_exterior_plate_components"] = plate["exterior"]
     report["repaired_enclosed_plate_components"] = plate["enclosed"]
     report["preserved_ambiguous_white_subject_components"] = (

@@ -28,6 +28,37 @@ def _white_cartoon(size=112, background=(255, 255, 255)):
 
 
 class StylizedFlatPlateTests(unittest.TestCase):
+    def test_light_neutral_plate_does_not_feather_through_3d_skin(self):
+        size = 160
+        plate = np.full((size, size, 3), (226, 227, 230), np.uint8)
+        # The skin is intentionally within the old broad 96-point feather
+        # radius.  It touches the plate, as a rendered face necessarily does,
+        # but its interior must remain a fully opaque subject on dark themes.
+        cv2.ellipse(
+            plate, (80, 82), (48, 58), 0, 0, 360,
+            (171, 190, 214), -1, cv2.LINE_AA)
+        cv2.ellipse(
+            plate, (80, 82), (48, 58), 0, 0, 360,
+            (70, 95, 130), 2, cv2.LINE_AA)
+        cv2.circle(plate, (62, 72), 8, (250, 250, 250), -1)
+        cv2.circle(plate, (98, 72), 8, (250, 250, 250), -1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "source.png")
+            destination = os.path.join(directory, "cutout.png")
+            cv2.imwrite(source, plate)
+            with mock.patch.object(cutout, "helper_path", return_value=None):
+                result = cutout.render(
+                    source, destination, log=lambda _message: None,
+                    allow_stylized=True)
+            rgba = cv2.imread(destination, cv2.IMREAD_UNCHANGED)
+
+        self.assertEqual(
+            "border-connected-light-neutral-plate", result["method"])
+        self.assertEqual(0, int(rgba[2, 2, 3]))
+        self.assertEqual(255, int(rgba[82, 80, 3]))
+        self.assertEqual(255, int(rgba[72, 62, 3]))
+
     def test_uniform_light_neutral_plate_removes_only_external_background(self):
         source_image = _white_cartoon(background=(226, 227, 230))
         with tempfile.TemporaryDirectory() as directory:

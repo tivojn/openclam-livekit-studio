@@ -93,6 +93,44 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         self.assertEqual(255, int(preview[133, 90, 3]))
         self.assertGreater(receipt["anatomy_pixels"], 0)
 
+    def test_body_clear_removes_larger_shifted_donor_hat(self):
+        portrait = _stylized_portrait()
+        landmarks = _oval_landmarks()
+        body_rgba = np.zeros((220, 180, 4), np.uint8)
+        donor = (20, 30, 190, 255)
+        # The donor crown and brim extend beyond the canonical portrait—the
+        # real 3D Luffy mismatch that previously rendered as a double hat.
+        cv2.ellipse(body_rgba, (90, 28), (82, 31), 0, 0, 360, donor, -1)
+        cv2.ellipse(body_rgba, (90, 84), (50, 46), 0, 0, 360, donor, -1)
+        cv2.rectangle(body_rgba, (70, 124), (110, 170), donor, -1)
+        transform = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            clear_path = os.path.join(directory, "head-clear-mask.png")
+            preview_path = os.path.join(directory, "preview.png")
+            body_path = os.path.join(directory, "body.png")
+            body._stylized_head_mask(portrait, landmarks, mask_path)
+            cv2.imwrite(body_path, body_rgba)
+            receipt = body._stylized_head_clear_mask(
+                body_rgba, mask_path, transform, landmarks,
+                [52, 43, 76, 84], clear_path)
+            clear = cv2.imread(clear_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            body._runtime_composite_preview(
+                body_path, portrait[:, :, :3], mask_path, transform,
+                preview_path, replace=True, clear_mask_path=clear_path)
+            preview = cv2.imread(preview_path, cv2.IMREAD_UNCHANGED)
+
+        self.assertEqual(0, int(mask[8, 90]))
+        self.assertEqual(255, int(clear[8, 90]))
+        self.assertEqual(0, int(preview[8, 90, 3]))
+        self.assertEqual(255, int(preview[20, 90, 3]))
+        self.assertGreater(receipt["silhouette_pixels"], 0)
+        # The expansion remains clipped above the chin and never erases neck.
+        self.assertEqual(0, int(clear[150, 90]))
+
     def test_photographic_preview_retains_legacy_soft_blend_exactly(self):
         body_rgba = np.zeros((12, 12, 4), np.uint8)
         body_rgba[:, :, :3] = (10, 40, 200)

@@ -52,6 +52,27 @@ def _stylized_eye_fixture():
 
 
 class BodyAlphaQualityTests(unittest.TestCase):
+    def test_stylized_neutral_eye_is_not_a_detached_shadow(self):
+        source, alpha, replacement_head = _stylized_eye_fixture()
+        # A narrow neutral eyelid/pupil detail is surrounded by a pale sclera.
+        # It has the exact detached, elongated geometry used by the general
+        # wall/shadow audit, but the complete region will be replaced by the
+        # already validated canonical cartoon head at runtime.
+        source[55:60, 68:77] = (180, 180, 180)
+
+        strict = body_alpha._floor_shadow(source, _rgba(source, alpha))
+        self.assertTrue(any(
+            item["kind"] == "detached-neutral"
+            for item in strict["components"]))
+
+        refined, report = body_alpha.refine(
+            source, _rgba(source, alpha),
+            replacement_head_mask=replacement_head)
+
+        self.assertTrue(report["valid"], report)
+        self.assertFalse(report["floor_shadow_components"])
+        np.testing.assert_array_equal(alpha, refined[:, :, 3])
+
     def test_stylized_eye_inside_canonical_head_replacement_is_allowed(self):
         source, alpha, replacement_head = _stylized_eye_fixture()
 
@@ -448,6 +469,39 @@ class BodyAlphaQualityTests(unittest.TestCase):
 
         self.assertTrue(report["valid"], report)
         self.assertFalse(report["floor_shadow_components"])
+
+    def test_verified_stylized_opaque_detached_cuff_is_not_a_shadow(self):
+        source = np.full((240, 180, 3), 255, np.uint8)
+        alpha = np.zeros((240, 180), np.uint8)
+        source[20:220, 75:105] = (40, 45, 205)
+        alpha[20:220, 75:105] = 255
+        # A 10x5 rolled-cuff highlight is detached in low-chroma colour space
+        # but fully opaque and well above the floor band. This reproduces the
+        # retained 3D Luffy side component [570, 980, 10, 5].
+        source[100:105, 50:60] = (82, 82, 82)
+        alpha[100:105, 50:60] = 255
+
+        _refined, report = body_alpha.refine(
+            source, _rgba(source, alpha), verified_stylized=True)
+
+        self.assertTrue(report["valid"], report)
+        self.assertFalse(report["floor_shadow_components"])
+
+    def test_photo_path_still_rejects_same_opaque_detached_component(self):
+        source = np.full((240, 180, 3), 255, np.uint8)
+        alpha = np.zeros((240, 180), np.uint8)
+        source[20:220, 75:105] = (40, 45, 205)
+        alpha[20:220, 75:105] = 255
+        source[100:105, 50:60] = (82, 82, 82)
+        alpha[100:105, 50:60] = 255
+
+        _refined, report = body_alpha.refine(
+            source, _rgba(source, alpha))
+
+        self.assertFalse(report["valid"], report)
+        self.assertEqual(
+            "detached-neutral",
+            report["floor_shadow_components"][0]["kind"])
 
     def test_broad_translucent_shadow_directly_under_pump_is_rejected(self):
         source = np.full((240, 180, 3), 255, np.uint8)

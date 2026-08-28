@@ -1254,6 +1254,30 @@ class EyewearLockTests(unittest.TestCase):
                 body_plate, mask_path, transform, [390, 61, 90, 127])
         self.assertIn("live head silhouette is too large", failure)
 
+    def test_verified_stylized_composite_accepts_bounded_chibi_head(self):
+        body_plate = np.zeros((1152, 864, 4), dtype=np.uint8)
+        body_plate[20:1128, 296:580, :3] = 180
+        body_plate[20:1128, 296:580, 3] = 255
+        transform = np.array(
+            [[0.30, 0.0, 286.0], [0.0, 0.30, -6.0]],
+            dtype=np.float64,
+        )
+        # 0.384 wide x 0.158 tall deliberately reproduces the accepted 3D
+        # Luffy body that the photographic 0.15 face-height ceiling rejects.
+        face_bounds = [390, 61, 109, 175]
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            mask = np.full((1024, 1024, 4), 255, dtype=np.uint8)
+            cv2.imwrite(mask_path, mask)
+            strict_failure = body._composite_head_proportion_failure(
+                body_plate, mask_path, transform, face_bounds)
+            stylized_failure = body._composite_head_proportion_failure(
+                body_plate, mask_path, transform, face_bounds,
+                verified_stylized=True)
+
+        self.assertIn("generated head is too large", strict_failure)
+        self.assertIsNone(stylized_failure)
+
     def test_masculine_plate_rejects_a_positive_heel_assignment(self):
         with self.assertRaisesRegex(ValueError, "non-feminine presentation"):
             body._prompt({

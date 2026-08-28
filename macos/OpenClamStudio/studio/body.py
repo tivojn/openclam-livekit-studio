@@ -816,7 +816,8 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
                 body_rgba.shape, identity[0], identity[2])
         body_rgba, alpha_quality = body_alpha.refine(
             source_bgr, body_rgba,
-            replacement_head_mask=replacement_head)
+            replacement_head_mask=replacement_head,
+            verified_stylized=allow_stylized)
         if not alpha_quality["valid"]:
             try:
                 archived = _archive_rejected_body_alpha(
@@ -891,7 +892,9 @@ def _preflight_alpha_source(
                 or body_rgba.shape[2] != 4):
             raise RuntimeError(
                 f"generated {view} body did not produce an RGBA plate")
-        refined, alpha_quality = body_alpha.refine(source_bgr, body_rgba)
+        refined, alpha_quality = body_alpha.refine(
+            source_bgr, body_rgba,
+            verified_stylized=allow_stylized)
         if not alpha_quality["valid"]:
             try:
                 archived = _archive_rejected_body_alpha(
@@ -1158,6 +1161,15 @@ def _stylized_head_clear_mask(
         anatomy,
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)))
+    # The generated donor can carry a larger or vertically shifted hat/hair
+    # silhouette than the canonical animation head. Clearing only the exact
+    # canonical support leaves that donor crown or brim visible behind it as a
+    # second head. Full-silhouette replacement means the canonical head owns
+    # every body pixel above its projected chin, so clear all donor alpha in
+    # that hard band. Photographic soft blending never authors or consumes this
+    # clear mask, and the projected-chin cutoff preserves the body neck/collar.
+    donor_silhouette = (
+        facial_band & (body_image[:, :, 3] > 8) & ~canonical)
     band = np.zeros((height, width), dtype=np.uint8)
     top = max(0, int(np.floor(face_y - face_height * 0.08)))
     # Stop above the generated chin.  The canonical silhouette already removes
@@ -1174,13 +1186,16 @@ def _stylized_head_clear_mask(
     donor_anatomy = (
         (anatomy > 0) & (band > 0) & (body_image[:, :, 3] > 8)
         & ~canonical)
-    clear_alpha = np.where(canonical | donor_anatomy, 255, 0).astype(np.uint8)
+    clear_alpha = np.where(
+        canonical | donor_silhouette | donor_anatomy,
+        255, 0).astype(np.uint8)
     rgba = np.full((height, width, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = clear_alpha
     if not cv2.imwrite(destination, rgba):
         raise RuntimeError("the stylized body clear mask could not be written")
     return {
         "canonical_pixels": int(np.sum(clear_alpha > 4)),
+        "silhouette_pixels": int(np.sum(donor_silhouette)),
         "anatomy_pixels": int(np.sum(donor_anatomy)),
         "bounds": _alpha_bounds(rgba),
     }
@@ -1220,8 +1235,9 @@ def _constrain_head_mask(mask_path, body_image, transform, face_bounds):
         raise RuntimeError("the identity overlay mask could not be written")
 
 
-def _composite_head_proportion_failure(body_image, mask_path, transform,
-                                       face_bounds):
+def _composite_head_proportion_failure(
+        body_image, mask_path, transform, face_bounds,
+        verified_stylized=False):
     """Return a user-facing failure when the final live overlay is oversized."""
     if not face_bounds:
         return "generated face alignment is missing"
@@ -1231,7 +1247,10 @@ def _composite_head_proportion_failure(body_image, mask_path, transform,
     _face_x, _face_y, face_width, face_height = [float(v) for v in face_bounds]
     face_width_ratio = face_width / person_width
     face_height_ratio = face_height / person_height
-    if face_width_ratio > 0.43 or face_height_ratio > 0.15:
+    face_width_limit = 0.58 if verified_stylized else 0.43
+    face_height_limit = 0.26 if verified_stylized else 0.15
+    if (face_width_ratio > face_width_limit
+            or face_height_ratio > face_height_limit):
         return (
             "generated head is too large for the body "
             f"(face ratios {face_width_ratio:.3f} wide, "
@@ -1249,7 +1268,10 @@ def _composite_head_proportion_failure(body_image, mask_path, transform,
     _x, _y, overlay_width, overlay_height = cv2.boundingRect(points)
     width_ratio = overlay_width / person_width
     height_ratio = overlay_height / person_height
-    if width_ratio > 0.76 or height_ratio > 0.22:
+    overlay_width_limit = 1.15 if verified_stylized else 0.76
+    overlay_height_limit = 0.40 if verified_stylized else 0.22
+    if (width_ratio > overlay_width_limit
+            or height_ratio > overlay_height_limit):
         return (
             "live head silhouette is too large for the body "
             f"({width_ratio:.3f} wide, {height_ratio:.3f} tall)")
@@ -1630,7 +1652,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                     body_rgba.shape, front_identity[0], front_identity[2])
             body_rgba, alpha_quality = body_alpha.refine(
                 source_bgr, body_rgba,
-                replacement_head_mask=replacement_head)
+                replacement_head_mask=replacement_head,
+                verified_stylized=allow_stylized)
             if not alpha_quality["valid"]:
                 raise GeneratedBodyAlphaError(
                     f"generated {view} body failed alpha QA: "
@@ -1712,7 +1735,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                     head_mask_path, view_images["front"], transform,
                     face_bounds)
             proportion_failure = _composite_head_proportion_failure(
-                view_images["front"], head_mask_path, transform, face_bounds)
+                view_images["front"], head_mask_path, transform, face_bounds,
+                verified_stylized=allow_stylized)
             if proportion_failure:
                 raise GeneratedBodyIdentityError(proportion_failure)
         if head_composite != "replace":

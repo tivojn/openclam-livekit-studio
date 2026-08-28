@@ -139,18 +139,33 @@ def _flat_plate_cutout(image):
     # through pale skin or clothing. Green gets a little more room because
     # chroma subsampling spreads its saturated edge further than white.
     edge_limit = max(noise + 20.0, 112.0 if kind == "green" else 96.0)
-    connected = _border_connected(distance <= edge_limit)
-    if float(connected[border].mean()) < 0.52:
+
+    # Prove the removable plate with a deliberately tight colour core first.
+    # Using the full feather radius for connectivity lets a light-neutral 3D
+    # character's skin become a bridge from the plate into the face: the
+    # entire cheek/forehead then receives partial alpha on dark backgrounds.
+    # Grow only a narrow antialias ring from the already-proven outside core.
+    # This branch is stylized-only; photographs never reach this extractor.
+    core_margin = 28.0 if kind == "green" else 18.0
+    core_limit = min(edge_limit - 1.0, noise + core_margin)
+    core = _border_connected(distance <= core_limit)
+    if float(core[border].mean()) < 0.52:
         return None
 
+    feather_steps = max(2, min(6, int(round(min(image.shape[:2]) * .005))))
+    kernel = np.ones((3, 3), np.uint8)
+    near_core = cv2.dilate(
+        core.astype(np.uint8), kernel, iterations=feather_steps).astype(bool)
+    feather = near_core & ~core & (distance <= edge_limit)
+
     alpha = np.full(image.shape[:2], 255, np.uint8)
-    span = max(1.0, edge_limit - noise)
-    transition = np.clip((distance - noise) / span, 0.0, 1.0)
+    span = max(1.0, edge_limit - core_limit)
+    transition = np.clip((distance - core_limit) / span, 0.0, 1.0)
     # A squared ramp follows the low-opacity side of an antialiased contour
     # more faithfully than a hard chroma threshold and avoids bright halos.
     soft = np.rint(255.0 * transition * transition).astype(np.uint8)
-    alpha[connected] = soft[connected]
-    alpha[connected & (distance <= noise)] = 0
+    alpha[core] = 0
+    alpha[feather] = soft[feather]
 
     foreground = alpha > 8
     coverage = float(foreground.mean())
