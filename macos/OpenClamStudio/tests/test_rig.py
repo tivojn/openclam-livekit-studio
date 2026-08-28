@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -700,6 +701,81 @@ class RigProfileTests(unittest.TestCase):
             with open(target, "rb") as handle:
                 self.assertEqual(handle.read(), b"safe FF plate")
             self.assertIn("restoring the published FF safety plate", messages[0])
+
+    def test_nn_safety_fallback_uses_neutral_width_donor(self):
+        self.assertEqual(build.SAFE_CONSONANT_DONORS["nn"][0], "ih")
+        self.assertEqual(visemes.TARGETS["nn"][1], 1.0)
+        self.assertEqual(visemes.TARGETS["ih"][1], 1.03)
+
+        with tempfile.TemporaryDirectory() as raw:
+            target = os.path.join(raw, "v_nn.png")
+            donor = os.path.join(raw, "v_ih.png")
+            with open(target, "wb") as handle:
+                handle.write(b"unsafe generated nn")
+            with open(donor, "wb") as handle:
+                handle.write(b"safe near-neutral ih")
+            repairs = build._stage_safe_consonants(
+                raw, [{"name": "nn"}], lambda _message: None)
+            self.assertEqual(repairs, {"nn": "ih"})
+            with open(target, "rb") as handle:
+                self.assertEqual(handle.read(), b"safe near-neutral ih")
+
+    def test_safe_donor_map_covers_every_required_speech_shape(self):
+        self.assertEqual(
+            set(build.SAFE_VISEME_DONORS), set(visemes.SPEECH_ORDER))
+        self.assertEqual(build.SAFE_VISEME_DONORS["PP"][0], "closed")
+        self.assertEqual(build.SAFE_VISEME_DONORS["RR"][0], "closed")
+        self.assertEqual(build.SAFE_VISEME_DONORS["ah"][0], "eh")
+        self.assertEqual(build.SAFE_VISEME_DONORS["ih"][0], "closed")
+        self.assertEqual(build.SAFE_VISEME_DONORS["oh"][0], "DD")
+        self.assertEqual(build.SAFE_VISEME_DONORS["oo"][0], "closed")
+
+    def test_missing_uncomposable_ch_uses_safe_donor_without_touching_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            retained = os.path.join(directory, "retained")
+            staged = os.path.join(directory, "staged")
+            os.makedirs(retained)
+            for name in ("RR", "FF", "closed"):
+                with open(os.path.join(retained, f"v_{name}.png"), "wb") as handle:
+                    handle.write(f"provider {name}".encode())
+            shutil.copytree(retained, staged)
+
+            # CH is absent from the composition report and RR is independently
+            # unsafe, so CH must skip RR and select the neighbouring FF plate.
+            gaps = build._required_speech_gaps(
+                [{"name": name} for name in visemes.SPEECH_ORDER
+                 if name != "CH"])
+            self.assertEqual(gaps, ["CH"])
+            repairs = build._stage_safe_visemes(
+                staged, [{"name": "CH"}, {"name": "RR"}],
+                lambda _message: None)
+
+            self.assertEqual(repairs, {"CH": "FF", "RR": "closed"})
+            with open(os.path.join(staged, "v_CH.png"), "rb") as handle:
+                self.assertEqual(handle.read(), b"provider FF")
+            self.assertFalse(os.path.exists(os.path.join(retained, "v_CH.png")))
+            with open(os.path.join(retained, "v_RR.png"), "rb") as handle:
+                self.assertEqual(handle.read(), b"provider RR")
+
+    def test_luffy_failure_set_has_safe_nonfailed_donor_for_every_plate(self):
+        rejected = {"PP", "CH", "SS", "RR", "ah", "ih", "oh", "oo"}
+        expected = {
+            "PP": "closed", "CH": "FF", "SS": "FF", "RR": "closed",
+            "ah": "eh", "ih": "closed", "oh": "DD", "oo": "closed",
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            for name in visemes.SPEECH_ORDER:
+                if name == "CH":
+                    continue
+                with open(os.path.join(raw, f"v_{name}.png"), "wb") as handle:
+                    handle.write(f"provider {name}".encode())
+            repairs = build._stage_safe_visemes(
+                raw, [{"name": name} for name in rejected],
+                lambda _message: None)
+            self.assertEqual(repairs, expected)
+            for name, donor in expected.items():
+                with open(os.path.join(raw, f"v_{name}.png"), "rb") as handle:
+                    self.assertEqual(handle.read(), f"provider {donor}".encode())
 
 
 class PublishTransactionTests(unittest.TestCase):

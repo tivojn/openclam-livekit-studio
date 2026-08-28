@@ -609,6 +609,29 @@ def normalise_presentation(value):
         else "androgynous"
 
 
+def normalise_source_medium(value):
+    """Normalise legacy photo labels while preserving explicit art media."""
+    value = _clean(value, 40).lower()
+    if not value or value in {
+            "unknown", "photo", "photograph", "photoreal",
+            "photorealistic"}:
+        return "photograph"
+    return value
+
+
+def body_source_medium(avatar_dir):
+    """Read the medium that authored the body; old manifests stay strict."""
+    path = os.path.join(avatar_dir, "body", "body.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, ValueError):
+        return "photograph"
+    options = metadata.get("options") if isinstance(metadata, dict) else None
+    return normalise_source_medium(
+        options.get("medium") if isinstance(options, dict) else None)
+
+
 def body_presentation(avatar_dir):
     """Read the presentation that authored the active body, without guessing.
 
@@ -1167,7 +1190,8 @@ def _wardrobe_color_quality(keyframe, references, hue_limit=14.0):
     }
 
 
-def _keyframe_person(source, destination, log, label):
+def _keyframe_person(
+        source, destination, log, label, allow_stylized=False):
     """The keyframe's subject as a tightly-cropped RGBA cutout."""
     source_image = cv2.imread(source, cv2.IMREAD_COLOR)
     if source_image is None:
@@ -1176,7 +1200,9 @@ def _keyframe_person(source, destination, log, label):
         rgba = _chroma_key_frame(source_image)
     else:
         alpha_path = os.path.splitext(destination)[0] + "-alpha.png"
-        if not cutout.render(source, alpha_path, log=log, tight=True):
+        if not cutout.render(
+                source, alpha_path, log=log, tight=True,
+                allow_stylized=allow_stylized):
             raise RuntimeError(f"could not alpha-cut the {label} keyframe")
         rgba = cv2.imread(alpha_path, cv2.IMREAD_UNCHANGED)
         os.remove(alpha_path)
@@ -1212,8 +1238,11 @@ IDLE_PLATE = {
 }
 
 
-def _idle_loop_keyframe(source, destination, log):
-    person = _keyframe_person(source, destination, log, "idle loop")
+def _idle_loop_keyframe(
+        source, destination, log, allow_stylized=False):
+    person = _keyframe_person(
+        source, destination, log, "idle loop",
+        allow_stylized=allow_stylized)
     plate = IDLE_PLATE
     scale = min(
         plate["subject_height"] / person.shape[0],
@@ -1236,8 +1265,11 @@ def _idle_loop_keyframe(source, destination, log):
     return destination
 
 
-def _loop_walk_keyframe(source, destination, log):
-    person = _keyframe_person(source, destination, log, "walk loop")
+def _loop_walk_keyframe(
+        source, destination, log, allow_stylized=False):
+    person = _keyframe_person(
+        source, destination, log, "walk loop",
+        allow_stylized=allow_stylized)
     plate = LOOP_WALK_PLATE
     scale = min(
         plate["subject_height"] / person.shape[0],
@@ -1260,9 +1292,12 @@ def _loop_walk_keyframe(source, destination, log):
     return destination
 
 
-def _wide_walk_keyframe(source, destination, log, walk_frame=None):
+def _wide_walk_keyframe(
+        source, destination, log, walk_frame=None, allow_stylized=False):
     walk_frame = resolve_walk_frame(walk_frame)
-    person = _keyframe_person(source, destination, log, "walk traversal")
+    person = _keyframe_person(
+        source, destination, log, "walk traversal",
+        allow_stylized=allow_stylized)
     height, width = person.shape[:2]
     scale = min(
         walk_frame["subject_height"] / height,
@@ -1335,8 +1370,10 @@ def _generate_keyframes(
 def _generate_videos(
         cache, video_config, video_provider, keyframes, prompts, log,
         kinds=("walk", "idle"), walk_frame=None, walk_style=None,
-        body_sources=None):
+        body_sources=None, source_medium="photograph"):
     walk_frame = resolve_walk_frame(walk_frame)
+    allow_stylized = normalise_source_medium(source_medium) != "photograph"
+    stylized_options = {"allow_stylized": True} if allow_stylized else {}
     loop_walk = (
         walk_mode(walk_style) == "loop" if walk_style is not None else False)
     video_dir = os.path.join(cache, "videos")
@@ -1376,6 +1413,7 @@ def _generate_videos(
                 source_keyframe,
                 os.path.join(video_dir, "walk-loop-keyframe.png"),
                 log,
+                **stylized_options,
             )
             aspect_ratio = LOOP_WALK_PLATE["aspect_ratio"]
         elif kind == "walk":
@@ -1384,6 +1422,7 @@ def _generate_videos(
                 os.path.join(video_dir, "walk-traversal-keyframe.png"),
                 log,
                 walk_frame,
+                **stylized_options,
             )
             aspect_ratio = walk_frame["aspect_ratio"]
         elif kind in ("idle", "move"):
@@ -1391,6 +1430,7 @@ def _generate_videos(
                 source_keyframe,
                 os.path.join(video_dir, f"{kind}-loop-keyframe.png"),
                 log,
+                **stylized_options,
             )
             aspect_ratio = IDLE_PLATE["aspect_ratio"]
         generated = media_gen.generate_video_from_image_sync(
@@ -1832,7 +1872,7 @@ def _repair_pose_extremities(index, current, segmented, poses, stable_alpha):
     return stable_alpha
 
 
-def _segment_frames(frames, workspace, log):
+def _segment_frames(frames, workspace, log, allow_stylized=False):
     source_dir = os.path.join(workspace, "source-frames")
     alpha_dir = os.path.join(workspace, "alpha-frames")
     pose_dir = os.path.join(workspace, "pose-frames")
@@ -1844,7 +1884,11 @@ def _segment_frames(frames, workspace, log):
     # White-plate takes: prefer RVM's temporally-coherent matte with clean
     # predicted foreground colors. Vision still runs per frame regardless -
     # the pose skeleton comes from it - and remains the matte fallback.
-    rvm_frames = None if green_screen else _rvm_matte(frames, log)
+    # A classified cartoon/illustration uses the deterministic plate matte.
+    # RVM was trained on natural video and can soften drawn outlines or erase
+    # deliberately white eyes/teeth; photographs keep the proven RVM default.
+    rvm_frames = None \
+        if green_screen or allow_stylized else _rvm_matte(frames, log)
     for index, frame in enumerate(frames):
         source = os.path.join(source_dir, f"{index:04d}.jpg")
         cv2.imwrite(source, frame, [cv2.IMWRITE_JPEG_QUALITY, 96])
@@ -1855,7 +1899,8 @@ def _segment_frames(frames, workspace, log):
         pose_destination = os.path.join(pose_dir, f"{index:04d}.json")
         rendered = cutout.render(
             sources[index], destination, log=lambda _message: None, tight=False,
-            pose_destination=pose_destination)
+            pose_destination=pose_destination,
+            allow_stylized=allow_stylized)
         # On a green-screen clip the Vision mask is discarded in favour of the
         # chroma key below, so an empty mask must not fail the build. Vision
         # returns nothing for inverted or non-human subjects (cartwheels,
@@ -1876,22 +1921,29 @@ def _segment_frames(frames, workspace, log):
                 pose = json.load(handle)
         except (OSError, json.JSONDecodeError) as error:
             raise RuntimeError(f"frame {index + 1} did not produce body-pose metadata") from error
-        return image, pose
+        method = (
+            rendered.get("method")
+            if isinstance(rendered, dict) else None
+        ) or "macos-vision-person-segmentation"
+        return image, pose, method
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(segment, range(len(frames))))
+    segmented = [result[0] for result in results]
+    poses = [result[1] for result in results]
+    frame_methods = {result[2] for result in results}
     matte_method = (
         "chroma-key-green-screen"
         if green_screen else
         "robust-video-matting"
         if rvm_frames is not None else
-        "macos-vision-person-segmentation"
+        next(iter(frame_methods))
+        if len(frame_methods) == 1 else
+        "mixed-stylized-plate-and-macos-vision"
     )
     log(
         f"alpha-cutting {len(frames)} frames with {matte_method}; "
         "tracking body pose with macOS Vision")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(segment, range(len(frames))))
-    segmented = [result[0] for result in results]
-    poses = [result[1] for result in results]
     if not green_screen and rvm_frames is None:
         # Vision fallback on white-plate takes: color sharpens the coarse
         # semantic boundary BEFORE temporal repair, so the fine matte is
@@ -4602,12 +4654,14 @@ def _relaxed_walk_selection(frames, poses, fps, loop, pose_profile):
 
 def _process_clip(
         kind, video, fps, stage, log, idle_validation="back-heel",
-        walk_style=None):
+        walk_style=None, source_medium="photograph"):
     walk_style = resolve_walk_style(walk_style) if kind == "walk" else None
     frames = _decode_video(video, fps)
     with tempfile.TemporaryDirectory(prefix=f".{kind}-frames-", dir=stage) as workspace:
         alpha_frames, poses, matte_method, color_quality = _segment_frames(
-            frames, workspace, log)
+            frames, workspace, log,
+            allow_stylized=(
+                normalise_source_medium(source_medium) != "photograph"))
     alpha_integrity_quality = color_quality.pop("alpha_integrity_quality", None) or {
         "available": False,
         "valid": False,
@@ -4915,6 +4969,7 @@ def _build_context(
     image_config, image_provider = body.image_provider_selection()
     video_config, video_provider = body.video_provider_selection()
     body_options = body_manifest.get("options") or {}
+    source_medium = normalise_source_medium(body_options.get("medium"))
     outfit = _clean(
         body_options.get("prompt") or body_options.get("outfit"), 800
     ) or "the exact outfit shown in the generated body plates"
@@ -4940,6 +4995,7 @@ def _build_context(
         json.dumps(_move_style_receipt(move_style), sort_keys=True),
         _provider_id(image_provider), str(image_provider.get("model")),
         _provider_id(video_provider), str(video_provider.get("model")),
+        source_medium,
         *prompts.values(),
     ))
     signature = hashlib.sha256(signature_source.encode("utf-8")).hexdigest()
@@ -4979,6 +5035,7 @@ def _build_context(
         "walk_style": walk_style,
         "walk_frame": walk_frame,
         "move_style": move_style,
+        "source_medium": source_medium,
         "prompts": prompts,
         "signature": signature,
         "cache_root": cache_root,
@@ -4987,7 +5044,8 @@ def _build_context(
 
 
 def _process_approved_original_walk(
-        original_video, matte_video, source_loop, previous_walk, stage, log):
+        original_video, matte_video, source_loop, previous_walk, stage, log,
+        source_medium="photograph"):
     start, end = (int(value) for value in source_loop)
     if start < 0 or end <= start:
         raise RuntimeError("approved walk loop must be START:END with END after START")
@@ -5009,10 +5067,14 @@ def _process_approved_original_walk(
     matte_cycle = matte_frames[start:end + 1]
     with tempfile.TemporaryDirectory(prefix="walk-original-", dir=stage) as workspace:
         original_segmented, original_poses, original_method, _ = _segment_frames(
-            original_cycle, workspace, log)
+            original_cycle, workspace, log,
+            allow_stylized=(
+                normalise_source_medium(source_medium) != "photograph"))
     with tempfile.TemporaryDirectory(prefix="walk-matte-", dir=stage) as workspace:
         matte_segmented, matte_poses, matte_method, _ = _segment_frames(
-            matte_cycle, workspace, log)
+            matte_cycle, workspace, log,
+            allow_stylized=(
+                normalise_source_medium(source_medium) != "photograph"))
 
     authoritative, alignment_quality, color_quality = _pose_aligned_color_authority(
         matte_segmented,
@@ -5111,6 +5173,10 @@ def reprocess_approved_walk(
     progress = progress or (lambda *_: None)
     progress("approved-walk", 0.05, "decoding approved original and matte")
     with tempfile.TemporaryDirectory(prefix=".approved-walk-", dir=motion_dir) as stage:
+        source_medium = body_source_medium(avatar_dir)
+        process_options = (
+            {"source_medium": source_medium}
+            if source_medium != "photograph" else {})
         walk = _process_approved_original_walk(
             original_source,
             matte_source,
@@ -5118,6 +5184,7 @@ def reprocess_approved_walk(
             previous_walk,
             stage,
             log,
+            **process_options,
         )
         updated = dict(metadata)
         updated["v"] = MOTION_VERSION
@@ -5224,6 +5291,9 @@ def recut(avatar_dir, kind, log=print, progress=None):
             f"the retained raw {kind} take is missing; regenerate instead")
 
     process_options = {}
+    source_medium = body_source_medium(avatar_dir)
+    if source_medium != "photograph":
+        process_options["source_medium"] = source_medium
     if kind == "walk":
         walk_style = resolve_walk_style(metadata.get("walk_style"))
         if walk_style["id"] != DEFAULT_WALK_STYLE:
@@ -5560,6 +5630,7 @@ def build(
         context.get("walk_frame") or walk_frame)
     move_style = resolve_move_style(
         context.get("move_style") or move_style)
+    source_medium = normalise_source_medium(context.get("source_medium"))
     prompts = context["prompts"]
     signature = context["signature"]
     cache_root = context["cache_root"]
@@ -5598,11 +5669,14 @@ def build(
             log, requested_kinds)
         if not retry_count:
             _emit(progress, "video", 0.32, f"Animating {selected_label}")
+        video_options = (
+            {"source_medium": source_medium}
+            if source_medium != "photograph" else {})
         videos = _generate_videos(
             cache, video_config, video_provider, keyframes,
             {kind: prompts[f"{kind}_video"] for kind in requested_kinds},
             log, requested_kinds,
-            walk_frame, walk_style, body_sources)
+            walk_frame, walk_style, body_sources, **video_options)
 
         stage = tempfile.mkdtemp(prefix=".motion-stage-", dir=avatar_dir)
         if os.path.isdir(destination):
@@ -5643,6 +5717,8 @@ def build(
                         process_options["idle_validation"] = "free"
                     if kind == "walk" and walk_style["id"] != DEFAULT_WALK_STYLE:
                         process_options["walk_style"] = walk_style
+                    if source_medium != "photograph":
+                        process_options["source_medium"] = source_medium
                     clips[kind] = _process_clip(
                         kind, videos[kind], fps, stage, log, **process_options)
                 except Exception as error:

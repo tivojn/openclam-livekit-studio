@@ -79,7 +79,7 @@ def blink_overlay(frames, lids, fps, seed=7, speaking=True, log=print):
     return frames
 
 
-def preview(viseme_dir, path, fps=48, log=print):
+def preview(viseme_dir, path, fps=48, log=print, allow_stylized=False):
     # 48 fps with a doubled hold keeps the mouth cadence identical to the old
     # 24 fps preview while giving a ~315 ms blink the ~15 frames it needs to
     # read as a lid falling instead of a frame dropping.
@@ -87,18 +87,26 @@ def preview(viseme_dir, path, fps=48, log=print):
     key = os.path.join(os.path.dirname(viseme_dir.rstrip("/")), "keyframe.png")
     shut = os.path.join(viseme_dir, "v_blink.jpg")
     if os.path.exists(key) and os.path.exists(shut):
-        lids = blinkmod.build(cv2.imread(key), cv2.imread(shut), log=log)
+        lids = blinkmod.build(
+            cv2.imread(key), cv2.imread(shut), log=log,
+            allow_stylized=allow_stylized)
         blink_overlay(frames, lids, fps, log=log)
     else:
         log("  no keyframe/blink frame - preview will not blink")
     return write_video(frames, path, fps)
 
 
-def contact_sheet(viseme_dir, keyframe, path, cols=4, cell=300):
+def contact_sheet(viseme_dir, keyframe, path, cols=4, cell=300,
+                  allow_stylized=False):
     """Mouth-zoom grid of the whole bank - the fastest way to eyeball tongue errors."""
     from . import face
     key = cv2.imread(keyframe)
-    klm, _ = face.detect(key)
+    if allow_stylized:
+        klm, _, _metadata = face.detect_for_intake(key)
+    else:
+        klm, _ = face.detect(key)
+    if klm is None:
+        raise ValueError("no face in keyframe")
     lip = klm[face.OUTER_LIP]
     cx, cy = lip.mean(0)
     half = max(90.0, float(lip[:, 0].max() - lip[:, 0].min()) * 1.15)

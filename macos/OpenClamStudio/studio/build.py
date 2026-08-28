@@ -465,38 +465,83 @@ def _stage_safe_th(raw_dir, emit):
     return True
 
 
-SAFE_CONSONANT_DONORS = {
-    # These are intentionally nearby mouth families, not arbitrary neutral
-    # frames. They preserve intelligibility while preferring a coherent face
-    # over a conspicuous tongue, gum, or black-cavity generation defect.
+SAFE_VISEME_DONORS = {
+    # Every speech shape has a conservative neighbouring family.  These are
+    # deliberately ordinary generated plates, not a synthetic repaint: when a
+    # provider result remains anatomically unsafe or cannot be composed, the
+    # first build may substitute one of these only in its disposable raw copy.
+    # The paid provider render in raw/ is retained byte-for-byte for diagnosis
+    # or a future rebuild.
+    "closed": ("PP", "FF"),
+    "PP": ("closed", "FF"),
+    "FF": ("SS", "closed", "ih"),
     "TH": ("FF", "RR", "closed"),
     "DD": ("RR", "ih", "closed"),
-    "nn": ("RR", "ih", "closed"),
+    # IH and closed preserve the near-neutral width NN requires. RR is
+    # deliberately narrower (target 0.90) and can keep a broken NN below its
+    # hard 0.82x width floor even after the fallback.
+    "nn": ("ih", "closed", "RR"),
     "kk": ("ih", "RR", "closed"),
     "CH": ("RR", "FF", "closed"),
     "SS": ("FF", "RR", "closed"),
+    "RR": ("closed", "ih", "FF"),
+    "ah": ("eh", "ih", "closed"),
+    "eh": ("ih", "ah", "closed"),
+    "ih": ("closed", "FF", "eh"),
+    "oh": ("DD", "ih", "closed"),
+    # Cartoon providers often draw OO wider rather than rounder.  Neutral is
+    # the safest narrow fallback; DD/PP can be wider than OO's hard ceiling.
+    "oo": ("closed", "DD", "RR", "PP"),
 }
 
+# Backward-compatible name used by older local tests and rollback manifests.
+SAFE_CONSONANT_DONORS = SAFE_VISEME_DONORS
 
-def _stage_safe_consonants(raw_dir, rejected, emit):
-    """Replace irreparable generated consonants in the private stage only."""
+
+def _required_speech_gaps(report):
+    published = {str(row.get("name") or "") for row in (report or [])}
+    return [name for name in visemes.SPEECH_ORDER if name not in published]
+
+
+def _replace_staged_render(raw_dir, target_name, donor_path):
+    """Install a donor in a disposable raw directory with a valid suffix."""
+    donor_extension = os.path.splitext(donor_path)[1].lower()
+    if donor_extension not in {".png", ".jpg"}:
+        donor_extension = ".png"
+    target = os.path.join(raw_dir, f"v_{target_name}{donor_extension}")
+    # If the failed provider plate used the other extension, remove it from the
+    # private stage so _raw_render_path cannot select it ahead of the donor.
+    for extension in (".png", ".jpg"):
+        stale = os.path.join(raw_dir, f"v_{target_name}{extension}")
+        if stale != target and os.path.isfile(stale):
+            os.unlink(stale)
+    shutil.copy2(donor_path, target)
+    return target
+
+
+def _stage_safe_visemes(raw_dir, rejected, emit):
+    """Replace irreparable or uncomposable speech plates in a private stage."""
     unsafe = {str(row.get("name") or "") for row in (rejected or [])}
     repairs = {}
-    for name in sorted(unsafe):
-        target = _raw_render_path(raw_dir, name)
-        if not target or name not in SAFE_CONSONANT_DONORS:
+    for name in visemes.SPEECH_ORDER:
+        if name not in unsafe or name not in SAFE_VISEME_DONORS:
             continue
-        donor_name = next((candidate for candidate in SAFE_CONSONANT_DONORS[name]
+        donor_name = next((candidate for candidate in SAFE_VISEME_DONORS[name]
                            if candidate not in unsafe
                            and _raw_render_path(raw_dir, candidate)), None)
         if not donor_name:
             continue
         donor = _raw_render_path(raw_dir, donor_name)
-        shutil.copy2(donor, target)
+        _replace_staged_render(raw_dir, name, donor)
         repairs[name] = donor_name
-        emit(f"  {name}: generated anatomy stayed unsafe at minimum calibration "
-             f"- using nearby {donor_name} consonant plate in this rebuild")
+        emit(f"  {name}: generated plate stayed unsafe or uncomposable "
+             f"- using nearby {donor_name} speech plate in this private rebuild")
     return repairs
+
+
+def _stage_safe_consonants(raw_dir, rejected, emit):
+    """Compatibility wrapper for the original consonant-only repair API."""
+    return _stage_safe_visemes(raw_dir, rejected, emit)
 
 
 def _apply_recorded_stage_repairs(raw_dir, repairs, emit):
@@ -510,15 +555,14 @@ def _apply_recorded_stage_repairs(raw_dir, repairs, emit):
     """
     applied = {}
     for target_name, donor_name in dict(repairs or {}).items():
-        if target_name not in SAFE_CONSONANT_DONORS:
+        if target_name not in SAFE_VISEME_DONORS:
             continue
-        if donor_name not in SAFE_CONSONANT_DONORS[target_name]:
+        if donor_name not in SAFE_VISEME_DONORS[target_name]:
             continue
-        target = _raw_render_path(raw_dir, target_name)
         donor = _raw_render_path(raw_dir, donor_name)
-        if not target or not donor:
+        if not donor:
             continue
-        shutil.copy2(donor, target)
+        _replace_staged_render(raw_dir, target_name, donor)
         applied[target_name] = donor_name
         emit(f"  {target_name}: restoring the published {donor_name} safety "
              "plate in this private rebuild")
@@ -599,9 +643,20 @@ def recompose_avatar(slug, profile, log=print, progress=None):
         raise ValueError(f"{slug} is not ready for calibration")
     profile = rig.normalize(profile)
     gaps = raw_render_gaps(slug)
-    if gaps:
-        raise ValueError(f"missing retained renders: {', '.join(gaps)}")
     directory = adir(slug)
+    source_report = manifest.get("source_metrics") or manifest.get("metrics") or {}
+    allow_stylized = _source_medium(source_report) != "photograph"
+    recorded_repairs = dict(manifest.get("local_viseme_repairs") or {})
+    unrecoverable_gaps = []
+    for name in gaps:
+        donor_name = recorded_repairs.get(name)
+        if (name not in SAFE_VISEME_DONORS or
+                donor_name not in SAFE_VISEME_DONORS[name] or
+                not _raw_render_path(os.path.join(directory, "raw"), donor_name)):
+            unrecoverable_gaps.append(name)
+    if unrecoverable_gaps:
+        raise ValueError(
+            f"missing retained renders: {', '.join(unrecoverable_gaps)}")
     stage = tempfile.mkdtemp(prefix=".rig-stage-", dir=directory)
     lines = []
 
@@ -626,13 +681,13 @@ def recompose_avatar(slug, profile, log=print, progress=None):
             os.path.join(directory, "keyframe.png"), stage_keyframe)
         shutil.copytree(os.path.join(directory, "raw"), stage_raw)
         local_viseme_repairs.update(_apply_recorded_stage_repairs(
-            stage_raw, manifest.get("local_viseme_repairs"), emit))
+            stage_raw, recorded_repairs, emit))
         _stage_safe_th(stage_raw, emit)
         advance("compose", .08, "Recomposing retained local renders")
         report, key_metrics = compose.compose_all(
             stage_keyframe, stage_raw,
             stage_visemes, diag_dir=stage_diag, log=emit,
-            profile=profile)
+            profile=profile, allow_stylized=allow_stylized)
         expected = len(visemes.ORDER)
         if len(report) != expected:
             raise AssertionError(
@@ -640,7 +695,8 @@ def recompose_avatar(slug, profile, log=print, progress=None):
         advance("articulation", .48, "Checking mouth articulation")
         aperture, over = measure.audit(
             stage_keyframe, stage_visemes, log=emit,
-            names=visemes.SPEECH_ORDER)
+            names=visemes.SPEECH_ORDER,
+            allow_stylized=allow_stylized)
         hard_overs = _hard_articulation_rows(over)
         if hard_overs:
             repair = articulation_repair(profile, hard_overs)
@@ -654,10 +710,12 @@ def recompose_avatar(slug, profile, log=print, progress=None):
             profile = repair["profile"]
             report, key_metrics = compose.compose_all(
                 stage_keyframe, stage_raw, stage_visemes,
-                diag_dir=stage_diag, log=emit, profile=profile)
+                diag_dir=stage_diag, log=emit, profile=profile,
+                allow_stylized=allow_stylized)
             aperture, over = measure.audit(
                 stage_keyframe, stage_visemes, log=emit,
-                names=visemes.SPEECH_ORDER)
+                names=visemes.SPEECH_ORDER,
+                allow_stylized=allow_stylized)
             hard_overs = _hard_articulation_rows(over)
             if hard_overs:
                 local_viseme_repairs.update(_stage_safe_consonants(
@@ -665,10 +723,12 @@ def recompose_avatar(slug, profile, log=print, progress=None):
                 if local_viseme_repairs:
                     report, key_metrics = compose.compose_all(
                         stage_keyframe, stage_raw, stage_visemes,
-                        diag_dir=stage_diag, log=emit, profile=profile)
+                        diag_dir=stage_diag, log=emit, profile=profile,
+                        allow_stylized=allow_stylized)
                     aperture, over = measure.audit(
                         stage_keyframe, stage_visemes, log=emit,
-                        names=visemes.SPEECH_ORDER)
+                        names=visemes.SPEECH_ORDER,
+                        allow_stylized=allow_stylized)
                     hard_overs = _hard_articulation_rows(over)
             if hard_overs:
                 repair = articulation_repair(profile, hard_overs)
@@ -689,13 +749,16 @@ def recompose_avatar(slug, profile, log=print, progress=None):
                  f"{_band_suggestion(experimental)}")
         advance("preview", .58, "Rendering local preview")
         render.preview(
-            stage_visemes, os.path.join(stage, "preview.mp4"))
+            stage_visemes, os.path.join(stage, "preview.mp4"),
+            allow_stylized=allow_stylized)
         render.contact_sheet(
             stage_visemes, stage_keyframe,
-            os.path.join(stage, "sheet.jpg"))
+            os.path.join(stage, "sheet.jpg"),
+            allow_stylized=allow_stylized)
         advance("anatomy", .70, "Running anatomy QA")
         qa = anatomy.validate(
-            stage_keyframe, stage_visemes, profile, diag_dir=stage_diag)
+            stage_keyframe, stage_visemes, profile, diag_dir=stage_diag,
+            allow_stylized=allow_stylized)
         emit("anatomy QA passed: " + anatomy.summary(qa))
         for warning in ((qa.get("structure_warnings") or [])
                         + (qa.get("dental_warnings") or [])):
@@ -774,13 +837,16 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
     write_manifest(slug, m)
 
     try:
+        source_report = m.get("source_metrics") or m.get("metrics") or {}
+        source_medium = _source_medium(source_report)
         source_keyframe = os.path.join(
             d, m.get("source_keyframe") or "source-keyframe.png")
         if not os.path.isfile(source_keyframe):
             source_image = os.path.join(d, m.get("source") or "")
             if os.path.isfile(source_image):
                 prep.build_keyframe(
-                    source_image, source_keyframe, allow_stylized=True)
+                    source_image, source_keyframe,
+                    allow_stylized=(source_medium != "photograph"))
             else:
                 shutil.copy2(key, source_keyframe)
             m["source_keyframe"] = os.path.basename(source_keyframe)
@@ -793,8 +859,6 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         staged_keyframe = os.path.join(d, ".head-keyframe.png")
         best = None
         pose_note = ""
-        source_report = m.get("source_metrics") or m.get("metrics") or {}
-        source_medium = _source_medium(source_report)
         for pose_attempt in range(3):
             generate.generate_head(
                 source_keyframe, head_path, provider=head_provider,
@@ -802,7 +866,8 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
                 keep=notes, overwrite=bool(pose_attempt),
                 source_medium=source_medium)
             head_metrics = prep.build_keyframe(
-                head_path, staged_keyframe, diag_dir=diag)
+                head_path, staged_keyframe, diag_dir=diag,
+                allow_stylized=(source_medium != "photograph"))
             issues = _frontality_issues(head_metrics)
             score = _frontality_score(head_metrics)
             if best is None or score < best[0]:
@@ -867,7 +932,8 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         # feedback, then fail safe to a hidden-tongue alveolar plate rather
         # than ever publishing the conspicuous lateral-tongue defect.
         if "TH" in names and got.get("TH"):
-            tongue_issue = measure.th_tongue_issue(got["TH"])
+            tongue_issue = measure.th_tongue_issue(
+                got["TH"], allow_stylized=(source_medium != "photograph"))
             if tongue_issue:
                 emit("  TH tongue is off-centre "
                      f"({tongue_issue['offset']:+.2f} mouth widths) - regenerating")
@@ -881,7 +947,9 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
                         "on the facial midline. No tongue may touch either mouth corner."),
                 )
                 got["TH"] = corrected
-                tongue_issue = measure.th_tongue_issue(corrected)
+                tongue_issue = measure.th_tongue_issue(
+                    corrected,
+                    allow_stylized=(source_medium != "photograph"))
                 if tongue_issue:
                     donor = got.get("DD") or got.get("SS")
                     if not donor or not os.path.isfile(donor):
@@ -899,14 +967,18 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         write_manifest(slug, m)
         profile = rig.from_manifest(m)
         report, kmet = compose.compose_all(
-            key, raw, out, diag_dir=diag, log=emit, profile=profile)
+            key, raw, out, diag_dir=diag, log=emit, profile=profile,
+            allow_stylized=(source_medium != "photograph"))
 
         emit("checking mouth amplitude...")
-        aperture, over = measure.audit(key, out, log=emit)
+        aperture, over = measure.audit(
+            key, out, log=emit, names=visemes.SPEECH_ORDER,
+            allow_stylized=(source_medium != "photograph"))
         if over:
             emit("over-articulated: " + ", ".join(r["name"] for r in over))
         hard_overs = _hard_articulation_rows(over)
         repair = articulation_repair(profile, hard_overs) if hard_overs else None
+        local_viseme_repairs = {}
         if repair:
             changed = ", ".join(
                 f"{row['label']} {row['before']:.0f}%->{row['after']:.0f}%"
@@ -918,22 +990,68 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
             emit("applying the safe slider plan locally before publication...")
             profile = repair["profile"]
             report, kmet = compose.compose_all(
-                key, raw, out, diag_dir=diag, log=emit, profile=profile)
-            aperture, over = measure.audit(key, out, log=emit)
+                key, raw, out, diag_dir=diag, log=emit, profile=profile,
+                allow_stylized=(source_medium != "photograph"))
+            aperture, over = measure.audit(
+                key, out, log=emit, names=visemes.SPEECH_ORDER,
+                allow_stylized=(source_medium != "photograph"))
             hard_overs = _hard_articulation_rows(over)
-            if hard_overs:
-                repair = articulation_repair(profile, hard_overs)
-                raise CalibrationRejected(
-                    "Unsafe mouth articulation remains in "
-                    + ", ".join(row["name"] for row in hard_overs), repair)
+
+        # A provider file can exist yet be unusable (for example MediaPipe
+        # cannot find a face in CH), so generation success alone is not enough.
+        # Combine those report gaps with hard amplitude failures and repair all
+        # of them in one private copy, excluding every failed plate as a donor.
+        report_gaps = _required_speech_gaps(report)
+        failed_rows = list(hard_overs) + [
+            {"name": name} for name in report_gaps
+            if name not in {row["name"] for row in hard_overs}
+        ]
+        if failed_rows:
+            with tempfile.TemporaryDirectory(
+                    prefix=".safe-visemes-", dir=d) as safe_raw:
+                shutil.copytree(raw, safe_raw, dirs_exist_ok=True)
+                local_viseme_repairs.update(
+                    _stage_safe_visemes(safe_raw, failed_rows, emit))
+                if local_viseme_repairs:
+                    report, kmet = compose.compose_all(
+                        key, safe_raw, out, diag_dir=diag, log=emit,
+                        profile=profile,
+                        allow_stylized=(source_medium != "photograph"))
+                    aperture, over = measure.audit(
+                        key, out, log=emit, names=visemes.SPEECH_ORDER,
+                        allow_stylized=(source_medium != "photograph"))
+                    hard_overs = _hard_articulation_rows(over)
+                    report_gaps = _required_speech_gaps(report)
+
+        if report_gaps:
+            raise CalibrationRejected(
+                "Required speech shapes remain missing or uncomposable: "
+                + ", ".join(report_gaps),
+                dict(kind="viseme_fallback", profile=profile, changes=[],
+                     rejected_items=report_gaps,
+                     reasons=[f"{name} has no composable speech plate"
+                              for name in report_gaps]))
+        if hard_overs:
+            repair = articulation_repair(profile, hard_overs)
+            raise CalibrationRejected(
+                "Unsafe mouth articulation remains in "
+                + ", ".join(row["name"] for row in hard_overs), repair)
+        if failed_rows:
+            repair = None
+            emit("automatic local viseme repair passed all 15 speech shapes")
+        elif repair:
             repair = None
             emit("automatic local articulation repair passed")
 
         emit("rendering preview...")
         m["progress"] = dict(done=len(names), total=len(names), stage="preview")
         write_manifest(slug, m)
-        render.preview(out, os.path.join(d, "preview.mp4"))
-        render.contact_sheet(out, key, os.path.join(d, "sheet.jpg"))
+        render.preview(
+            out, os.path.join(d, "preview.mp4"),
+            allow_stylized=(source_medium != "photograph"))
+        render.contact_sheet(
+            out, key, os.path.join(d, "sheet.jpg"),
+            allow_stylized=(source_medium != "photograph"))
 
         worst = max((r["resid_px"] for r in report), default=0)
         drift = max((r["outside_delta"] for r in report), default=0)
@@ -943,6 +1061,7 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
         m.update(status="ready", visemes=report, keyframe_metrics=kmet,
                  aperture=aperture, over_articulated=[r["name"] for r in over],
                  rig_profile=profile,
+                 local_viseme_repairs=local_viseme_repairs,
                  preview="preview.mp4", sheet="sheet.jpg",
                  quality=dict(worst_resid_px=worst, worst_off_region_delta=drift,
                               shapes=len(report), missing=missing))

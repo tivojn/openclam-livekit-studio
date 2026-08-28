@@ -218,17 +218,25 @@ def lid_state(key, shut, klm, blm, side, t, s, box, alpha):
                       (a * 255).astype(np.uint8)])
 
 
-def build(key, shut, n=N_STATES, pad=10, log=print):
+def _detect(image, allow_stylized=False):
+    if allow_stylized:
+        landmarks, transform, _metadata = face.detect_for_intake(image)
+        return landmarks, transform
+    return face.detect(image)
+
+
+def build(key, shut, n=N_STATES, pad=10, log=print,
+          allow_stylized=False):
     """-> dict(states=[t...], eyes={side: dict(box=[x,y,w,h], patches=[RGBA...])})"""
-    klm, _ = face.detect(key)
-    blm, _ = face.detect(shut)
+    klm, _ = _detect(key, allow_stylized)
+    blm, _ = _detect(shut, allow_stylized)
     if klm is None or blm is None:
         raise ValueError("no face landmarks on keyframe or blink frame")
     H, W = key.shape[:2]
     s = max(H, W) / 1024.0
     for _ in range(2):
         shut = clean_source(shut, blm, log=log)
-        cleaned_lm, _ = face.detect(shut)
+        cleaned_lm, _ = _detect(shut, allow_stylized)
         if cleaned_lm is not None:
             blm = cleaned_lm
 

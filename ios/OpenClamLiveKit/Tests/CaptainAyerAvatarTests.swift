@@ -559,6 +559,8 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertEqual(CaptainAyerInteractionLayer.allCases, [.avatar, .thread])
         XCTAssertTrue(CaptainAyerInteractionLayer.avatar.allowsAvatarGestures)
         XCTAssertFalse(CaptainAyerInteractionLayer.thread.allowsAvatarGestures)
+        XCTAssertEqual(CaptainAyerInteractionLayer.avatar.toggled, .thread)
+        XCTAssertEqual(CaptainAyerInteractionLayer.thread.toggled, .avatar)
     }
 
     func testFullyTransparentAvatarCanRecoverWithUpwardOpacitySwipe() throws {
@@ -871,7 +873,13 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertNil(session.activeKind)
 
         XCTAssertEqual(session.request(.edgeIdle, canStart: true), .start(.edgeIdle))
-        XCTAssertEqual(session.request(.edgeIdle, canStart: true), .stop(.edgeIdle))
+        XCTAssertEqual(session.request(.edgeIdle, canStart: true), .none)
+        XCTAssertEqual(
+            session.activeKind,
+            .edgeIdle,
+            "Re-selecting a display mode must be idempotent, not a hidden toggle"
+        )
+        XCTAssertEqual(session.interrupt(), .stop(.edgeIdle))
         XCTAssertNil(session.activeKind)
 
         for _ in 0 ..< 4 {
@@ -880,6 +888,103 @@ final class CaptainAyerAvatarTests: XCTestCase {
             XCTAssertNil(session.activeKind)
         }
         XCTAssertEqual(session.interrupt(), .none)
+    }
+
+    func testFiveAvatarModesMapToOneStandbyCloseupAndThreeMotionKinds() {
+        XCTAssertEqual(
+            OpenClamAvatarDisplayMode.allCases,
+            [.standby, .closeUp, .horizonWalk, .edgeIdle, .moves]
+        )
+        XCTAssertNil(OpenClamAvatarDisplayMode.standby.motionKind)
+        XCTAssertNil(OpenClamAvatarDisplayMode.closeUp.motionKind)
+        XCTAssertEqual(OpenClamAvatarDisplayMode.horizonWalk.motionKind, .walk)
+        XCTAssertEqual(OpenClamAvatarDisplayMode.edgeIdle.motionKind, .edgeIdle)
+        XCTAssertEqual(OpenClamAvatarDisplayMode.moves.motionKind, .moves)
+        XCTAssertEqual(
+            OpenClamAvatarDisplayMode(motionKind: .walk),
+            .horizonWalk
+        )
+    }
+
+    func testAvatarOrThreadActivityReturnsOnlyTransientMotionToStandby() {
+        XCTAssertEqual(OpenClamAvatarDisplayMode.horizonWalk.afterUserActivity, .standby)
+        XCTAssertEqual(OpenClamAvatarDisplayMode.edgeIdle.afterUserActivity, .standby)
+        XCTAssertEqual(OpenClamAvatarDisplayMode.moves.afterUserActivity, .standby)
+        XCTAssertEqual(OpenClamAvatarDisplayMode.standby.afterUserActivity, .standby)
+        XCTAssertEqual(OpenClamAvatarDisplayMode.closeUp.afterUserActivity, .closeUp)
+    }
+
+    func testStandbyTransformPersistsScaleAndNormalizedPositionDefensively() {
+        let moved = OpenClamAvatarStandbyTransformPolicy.translated(
+            from: CGPoint(x: 0.10, y: -0.20),
+            by: CGSize(width: 80, height: 120),
+            in: CGSize(width: 400, height: 800)
+        )
+        XCTAssertEqual(moved.x, 0.30, accuracy: 0.0001)
+        XCTAssertEqual(moved.y, -0.05, accuracy: 0.0001)
+
+        let sanitized = OpenClamAvatarStandbyTransformPolicy.sanitized(
+            scale: 99,
+            normalizedOffset: CGPoint(x: 4, y: -4)
+        )
+        XCTAssertEqual(
+            sanitized.scale,
+            CaptainAyerOverlayTuning.maximumScale,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            sanitized.normalizedOffset.x,
+            OpenClamAvatarStandbyTransformPolicy.maximumNormalizedOffset,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            sanitized.normalizedOffset.y,
+            -OpenClamAvatarStandbyTransformPolicy.maximumNormalizedOffset,
+            accuracy: 0.0001
+        )
+    }
+
+    func testFactoryStandbyResetMatchesDefaultSizeAndLocation() {
+        XCTAssertEqual(OpenClamAvatarStandbyTransform.factory.scale, 1)
+        XCTAssertEqual(
+            OpenClamAvatarStandbyTransform.factory.normalizedOffset,
+            .zero
+        )
+    }
+
+    func testStandbyDragUsesPositionWhileCloseupRetainsGaze() {
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 30, height: 8),
+                supportsOpacity: true,
+                supportsPosition: true
+            ),
+            .position
+        )
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 30, height: 8),
+                supportsOpacity: true,
+                supportsPosition: false
+            ),
+            .gaze
+        )
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 2, height: 30),
+                supportsOpacity: true,
+                supportsPosition: true
+            ),
+            .position
+        )
+        XCTAssertEqual(
+            CaptainAyerAvatarGesturePolicy.dragIntent(
+                translation: CGSize(width: 2, height: 30),
+                supportsOpacity: true,
+                supportsPosition: false
+            ),
+            .opacity
+        )
     }
 
     func testMotionPlaybackModeIsKeyDerivedAndNotPackageControlled() {

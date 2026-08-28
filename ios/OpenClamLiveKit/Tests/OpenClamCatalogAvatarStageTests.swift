@@ -95,9 +95,18 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
                 pixelSize: source
             )
 
-            XCTAssertEqual(layout.playerFrame.height, available.height, accuracy: 0.001)
             XCTAssertEqual(layout.playerFrame.midX, available.width / 2, accuracy: 0.001)
-            XCTAssertEqual(layout.playerFrame.minY, 0, accuracy: 0.001)
+            let content = OpenClamAvatarMotionLayoutPolicy.movesContentBounds
+            XCTAssertEqual(
+                layout.playerFrame.minY + layout.playerFrame.height * content.minY,
+                0,
+                accuracy: 0.001
+            )
+            XCTAssertEqual(
+                layout.playerFrame.minY + layout.playerFrame.height * content.maxY,
+                available.height,
+                accuracy: 0.001
+            )
             XCTAssertEqual(
                 layout.playerFrame.width / layout.playerFrame.height,
                 source.width / source.height,
@@ -142,11 +151,14 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
                 available.width - expectedInset + 0.001,
                 "Every retained Edge Idle frame must fit without clipping, including narrow Split View."
             )
-            XCTAssertLessThanOrEqual(layout.playerFrame.height, available.height + 0.001)
-            XCTAssertEqual(layout.playerFrame.midY, available.height / 2, accuracy: 0.001)
-            if available.width >= 390 {
-                XCTAssertEqual(layout.playerFrame.height, available.height, accuracy: 0.001)
-            }
+            let visibleTop = layout.playerFrame.minY
+                + layout.playerFrame.height
+                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleContentBounds.minY
+            let visibleBottom = layout.playerFrame.minY
+                + layout.playerFrame.height
+                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleContentBounds.maxY
+            XCTAssertGreaterThanOrEqual(visibleTop, -0.001)
+            XCTAssertEqual(visibleBottom, available.height, accuracy: 0.001)
             XCTAssertGreaterThanOrEqual(
                 contactX,
                 visibleSubjectLeadingX,
@@ -194,7 +206,7 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
         )
         XCTAssertTrue(tiny.playerFrame.minX.isFinite)
         XCTAssertTrue(tiny.playerFrame.width.isFinite)
-        XCTAssertEqual(tiny.playerFrame.height, 1, accuracy: 0.001)
+        XCTAssertGreaterThan(tiny.playerFrame.height, 0)
         XCTAssertEqual(
             tiny.playerFrame.minX
                 + tiny.playerFrame.width
@@ -202,7 +214,86 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
             0.01,
             accuracy: 0.001
         )
+        XCTAssertEqual(
+            tiny.playerFrame.minY
+                + tiny.playerFrame.height
+                    * OpenClamAvatarMotionLayoutPolicy.edgeIdleContentBounds.maxY,
+            1,
+            accuracy: 0.001
+        )
         XCTAssertEqual(tiny.clippingBounds, CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
+    func testConversationCanvasEndsAboveMeasuredComposerAndDrivesEveryMotion() {
+        let bounds = OpenClamAvatarConversationCanvasPolicy.bounds(
+            overlaySize: CGSize(width: 390, height: 844),
+            overlayGlobalMinY: 0,
+            composerTopGlobal: 730,
+            topInset: 42
+        )
+
+        XCTAssertEqual(bounds, CGRect(x: 0, y: 42, width: 390, height: 684))
+        for kind in OpenClamAvatarMotionKind.allCases {
+            let motion = OpenClamAvatarMotionLayoutPolicy.layout(
+                kind: kind,
+                availableSize: bounds.size,
+                pixelSize: CGSize(width: 720, height: 1_088)
+            )
+            XCTAssertEqual(motion.clippingBounds.size, bounds.size)
+            let content = OpenClamAvatarMotionLayoutPolicy.contentBounds(for: kind)
+            XCTAssertEqual(
+                motion.playerFrame.minY + motion.playerFrame.height * content.maxY,
+                bounds.height,
+                accuracy: 0.001
+            )
+            XCTAssertGreaterThanOrEqual(
+                motion.playerFrame.minY + motion.playerFrame.height * content.minY,
+                -0.001
+            )
+        }
+    }
+
+    func testBundledFullBodiesFillConversationAndVisibleFeetMeetComposerFloor() throws {
+        let canvas = CGRect(x: 0, y: 42, width: 390, height: 684)
+        let expectedFractions: [String: CGFloat] = [
+            "captain-ayer": 1_587.0 / 1_672.0,
+            "ara": 1_406.0 / 1_448.0,
+        ]
+
+        for (id, expectedFraction) in expectedFractions {
+            let avatar = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: id))
+            let fraction = OpenClamAvatarConversationCanvasPolicy
+                .fullBodyVisibleBottomFraction(for: avatar)
+            let layout = OpenClamAvatarConversationCanvasPolicy.layout(
+                crop: OpenClamCatalogAvatarStage.Presentation.expanded.crop(for: avatar),
+                in: canvas,
+                alignsVisibleFeet: true,
+                visibleBottomFraction: fraction
+            )
+
+            XCTAssertEqual(fraction, expectedFraction, accuracy: 0.000_001, id)
+            XCTAssertEqual(layout.bounds, canvas, id)
+            XCTAssertEqual(layout.stageFrame.midX, canvas.midX, accuracy: 0.001, id)
+            XCTAssertGreaterThan(layout.stageFrame.height, canvas.height, id)
+            XCTAssertEqual(
+                layout.stageFrame.minY + layout.stageFrame.height * fraction,
+                canvas.maxY,
+                accuracy: 0.001,
+                id
+            )
+        }
+    }
+
+    func testCompactPresetIsHeadAndShouldersInsteadOfHalfBody() {
+        for avatar in OpenClamAvatarCatalog.avatars {
+            let face = avatar.geometry.faceBoundsInBody.cgRect
+            let body = avatar.geometry.bodySize.cgSize
+            let crop = OpenClamCatalogAvatarStage.Presentation.compact.crop(for: avatar)
+
+            XCTAssertTrue(crop.contains(face), avatar.displayName)
+            XCTAssertLessThanOrEqual(crop.height, face.height * 3.5 + 0.001)
+            XCTAssertLessThan(crop.maxY, body.height * 0.5, avatar.displayName)
+        }
     }
 
     func testCaptainTransformMatchesMigratedStageGeometry() throws {

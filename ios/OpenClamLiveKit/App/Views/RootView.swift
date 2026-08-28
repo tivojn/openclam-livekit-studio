@@ -21,7 +21,6 @@ struct RootView: View {
                 ConversationView(
                     onShowSidebar: showSidebar,
                     onSelectAvatar: switchAvatarFromCarousel,
-                    onShowSettings: { show(.settings) },
                     onShowAISettings: { show(.aiServices) },
                     onShowAgentConnections: { show(.agentConnections) }
                 )

@@ -45,8 +45,10 @@ struct OpenClamAvatarMotionSessionState: Equatable, Sendable {
     ) -> OpenClamAvatarMotionSessionAction {
         guard canStart else { return .none }
         if activeKind == kind {
-            activeKind = nil
-            return .stop(kind)
+            // Display modes are selections, not toggle buttons. Selecting an
+            // already-active motion is therefore idempotent; Standby is the
+            // explicit way to leave it.
+            return .none
         }
         if let previous = activeKind {
             activeKind = kind
@@ -71,12 +73,224 @@ struct OpenClamAvatarMotionSessionState: Equatable, Sendable {
     }
 }
 
+enum OpenClamAvatarDisplayMode: String, CaseIterable, Sendable {
+    case standby
+    case closeUp = "close-up"
+    case horizonWalk = "horizon-walk"
+    case edgeIdle = "edge-idle"
+    case moves
+
+    var title: String {
+        switch self {
+        case .standby: "Standby"
+        case .closeUp: "Close-up"
+        case .horizonWalk: "Horizon Walk"
+        case .edgeIdle: "Edge Idle"
+        case .moves: "Moves"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .standby: "figure.stand"
+        case .closeUp: "person.crop.circle"
+        case .horizonWalk: "figure.walk"
+        case .edgeIdle: "figure.stand.line.dotted.figure.stand"
+        case .moves: "figure.dance"
+        }
+    }
+
+    var motionKind: OpenClamAvatarMotionKind? {
+        switch self {
+        case .standby, .closeUp: nil
+        case .horizonWalk: .walk
+        case .edgeIdle: .edgeIdle
+        case .moves: .moves
+        }
+    }
+
+    var isMotion: Bool { motionKind != nil }
+
+    /// Touching the avatar or interacting with the conversation dismisses a
+    /// transient clip, but intentionally leaves an explicit Close-up intact.
+    var afterUserActivity: Self { isMotion ? .standby : self }
+
+    init(motionKind: OpenClamAvatarMotionKind) {
+        switch motionKind {
+        case .walk: self = .horizonWalk
+        case .edgeIdle: self = .edgeIdle
+        case .moves: self = .moves
+        }
+    }
+}
+
+struct OpenClamAvatarStandbyTransform: Equatable, Sendable {
+    static let factory = Self(scale: 1, normalizedOffset: .zero)
+
+    let scale: CGFloat
+    let normalizedOffset: CGPoint
+}
+
+enum OpenClamAvatarStandbyTransformPolicy {
+    static let maximumNormalizedOffset: CGFloat = 0.48
+
+    static func sanitized(
+        scale: CGFloat,
+        normalizedOffset: CGPoint
+    ) -> OpenClamAvatarStandbyTransform {
+        OpenClamAvatarStandbyTransform(
+            scale: CaptainAyerOverlayTuning.clampedScale(scale),
+            normalizedOffset: CGPoint(
+                x: clampOffset(normalizedOffset.x),
+                y: clampOffset(normalizedOffset.y)
+            )
+        )
+    }
+
+    static func translated(
+        from startingOffset: CGPoint,
+        by translation: CGSize,
+        in canvasSize: CGSize
+    ) -> CGPoint {
+        guard canvasSize.width.isFinite,
+              canvasSize.height.isFinite,
+              canvasSize.width > 0,
+              canvasSize.height > 0 else {
+            return CGPoint(
+                x: clampOffset(startingOffset.x),
+                y: clampOffset(startingOffset.y)
+            )
+        }
+        return CGPoint(
+            x: clampOffset(startingOffset.x + translation.width / canvasSize.width),
+            y: clampOffset(startingOffset.y + translation.height / canvasSize.height)
+        )
+    }
+
+    private static func clampOffset(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite else { return 0 }
+        return min(maximumNormalizedOffset, max(-maximumNormalizedOffset, value))
+    }
+}
+
 struct OpenClamAvatarMotionLayout: Equatable, Sendable {
     let playerFrame: CGRect
     let clippingBounds: CGRect
 }
 
+struct OpenClamAvatarConversationCanvasLayout: Equatable, Sendable {
+    let bounds: CGRect
+    let stageFrame: CGRect
+}
+
+enum OpenClamAvatarConversationCanvasPolicy {
+    static let composerGap: CGFloat = 4
+    /// Generated body plates retain a narrow transparent production margin
+    /// below the shoes. Bleeding only that margin outside the clip makes the
+    /// visible heels meet the conversation floor without distorting the body.
+    static let fullBodyVisibleBottomFraction: CGFloat = 0.975
+    /// Captain Ayer predates the current production canvas contract and keeps
+    /// a larger transparent footer than Ara. Use each reviewed bundled
+    /// plate's measured alpha union so both avatars meet the same visual floor.
+    static let captainAyerVisibleBottomFraction: CGFloat = 1_587.0 / 1_672.0
+    static let araVisibleBottomFraction: CGFloat = 1_406.0 / 1_448.0
+
+    static func fullBodyVisibleBottomFraction(
+        for avatar: OpenClamAvatarDescriptor
+    ) -> CGFloat {
+        switch avatar.id {
+        case OpenClamAvatarID.captainAyer.rawValue:
+            captainAyerVisibleBottomFraction
+        case OpenClamAvatarID.ara.rawValue:
+            araVisibleBottomFraction
+        default:
+            fullBodyVisibleBottomFraction
+        }
+    }
+
+    static func bounds(
+        overlaySize: CGSize,
+        overlayGlobalMinY: CGFloat,
+        composerTopGlobal: CGFloat?,
+        topInset: CGFloat
+    ) -> CGRect {
+        let width = finiteNonnegative(overlaySize.width)
+        let height = finiteNonnegative(overlaySize.height)
+        let top = min(height, max(0, finiteNonnegative(topInset)))
+        let measuredBottom: CGFloat
+        if let composerTopGlobal,
+           composerTopGlobal.isFinite,
+           overlayGlobalMinY.isFinite {
+            measuredBottom = composerTopGlobal
+                - overlayGlobalMinY
+                - composerGap
+        } else {
+            measuredBottom = height
+        }
+        let bottom = min(height, max(top, measuredBottom))
+        return CGRect(x: 0, y: top, width: width, height: bottom - top)
+    }
+
+    static func layout(
+        crop: CGRect,
+        in bounds: CGRect,
+        alignsVisibleFeet: Bool,
+        visibleBottomFraction: CGFloat = fullBodyVisibleBottomFraction
+    ) -> OpenClamAvatarConversationCanvasLayout {
+        guard bounds.width > 0,
+              bounds.height > 0,
+              crop.width.isFinite,
+              crop.height.isFinite,
+              crop.width > 0,
+              crop.height > 0 else {
+            return OpenClamAvatarConversationCanvasLayout(
+                bounds: bounds,
+                stageFrame: .zero
+            )
+        }
+
+        // Portrait body plates deliberately carry generous transparent side
+        // margins. Height-fill is therefore the correct conversation framing:
+        // it fills the thread vertically while clipping only empty side canvas.
+        let resolvedVisibleBottomFraction = alignsVisibleFeet
+            ? min(1, max(0.01, visibleBottomFraction))
+            : 1
+        let stageHeight = bounds.height / resolvedVisibleBottomFraction
+        let stageWidth = stageHeight * crop.width / crop.height
+        let stageFrame = CGRect(
+            x: bounds.midX - stageWidth / 2,
+            y: bounds.maxY - stageHeight * resolvedVisibleBottomFraction,
+            width: stageWidth,
+            height: stageHeight
+        )
+        return OpenClamAvatarConversationCanvasLayout(
+            bounds: bounds,
+            stageFrame: stageFrame
+        )
+    }
+
+    private static func finiteNonnegative(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite, value > 0 else { return 0 }
+        return value
+    }
+}
+
 enum OpenClamAvatarMotionLayoutPolicy {
+    /// Retained-alpha unions measured across the production motion twins.
+    /// Vertical alignment must use the visible subject, not the transparent
+    /// 720 x 1088 video plate, or shoes float above the composer floor.
+    static let walkContentBounds = CGRect(
+        x: 0,
+        y: 73.0 / 1_088.0,
+        width: 1,
+        height: 980.0 / 1_088.0
+    )
+    static let movesContentBounds = CGRect(
+        x: 0,
+        y: 58.0 / 1_088.0,
+        width: 1,
+        height: 989.0 / 1_088.0
+    )
     /// Measured from all 73 retained frames of Ara's 720 x 1088 Edge Idle
     /// clip. The foreground union is x=188..<532, y=48..<1064 and the stable
     /// screen-left contact is x=192 in 66/73 frames. Pin the contact, not the
@@ -90,6 +304,14 @@ enum OpenClamAvatarMotionLayoutPolicy {
     )
     static let edgeIdleLeftContactFraction: CGFloat = 192.0 / 720.0
     static let edgeIdlePreferredInset: CGFloat = 3
+
+    static func contentBounds(for kind: OpenClamAvatarMotionKind) -> CGRect {
+        switch kind {
+        case .walk: walkContentBounds
+        case .edgeIdle: edgeIdleContentBounds
+        case .moves: movesContentBounds
+        }
+    }
 
     static func layout(
         kind: OpenClamAvatarMotionKind,
@@ -115,11 +337,12 @@ enum OpenClamAvatarMotionLayoutPolicy {
             )
         }
 
-        // Use the largest native-aspect canvas that preserves the intended
-        // motion composition. Moves and Walk fill the available height. Edge
-        // Idle does too unless a very narrow Split View would crop retained
-        // subject alpha; only then does it scale down just enough to fit.
-        let fullHeightScale = availableHeight / sourceHeight
+        // Fill by the retained subject alpha rather than by the transparent
+        // media canvas. Edge Idle may scale down in narrow Split View to keep
+        // all horizontal alpha, but its shoes still stay on the same floor.
+        let contentBounds = contentBounds(for: kind)
+        let fullHeightScale = availableHeight
+            / (sourceHeight * contentBounds.height)
         let playerScale: CGFloat
         let originX: CGFloat
         let originY: CGFloat
@@ -145,12 +368,13 @@ enum OpenClamAvatarMotionLayoutPolicy {
             // tall phones, iPad, Split View, or tiny defensive layouts.
             originX = visibleContentInset
                 - playerWidth * edgeIdleContentBounds.minX
-            originY = (availableHeight - sourceHeight * playerScale) / 2
+            originY = availableHeight
+                - sourceHeight * playerScale * contentBounds.maxY
         case .walk, .moves:
             playerScale = fullHeightScale
             let playerWidth = sourceWidth * playerScale
             originX = (availableWidth - playerWidth) / 2
-            originY = 0
+            originY = -sourceHeight * playerScale * contentBounds.minY
         }
 
         let playerWidth = sourceWidth * playerScale
@@ -317,6 +541,13 @@ enum CaptainAyerInteractionLayer: String, CaseIterable, Sendable {
         switch self {
         case .avatar: "person.crop.rectangle.stack.fill"
         case .thread: "text.bubble.fill"
+        }
+    }
+
+    var toggled: Self {
+        switch self {
+        case .avatar: .thread
+        case .thread: .avatar
         }
     }
 }
@@ -617,6 +848,8 @@ struct CaptainAyerAvatarOverlay: View {
     let avatar: OpenClamAvatarDescriptor
     let isTTSEnabled: Bool
     let liveTalkPhase: LiveTalkConnectionPhase
+    let composerTopGlobal: CGFloat?
+    @Binding var isRailFolded: Bool
     let onPlayLatest: () -> Void
     let onStop: () -> Void
     let onToggleLiveTalk: () -> Void
@@ -626,8 +859,14 @@ struct CaptainAyerAvatarOverlay: View {
     private var storedOpacity = CaptainAyerOverlayTuning.initialOpacity
     @AppStorage("captainAyer.overlay.framing")
     private var storedFraming = "closeup"
-    @AppStorage("captainAyer.overlay.railFolded")
-    private var storedRailFolded = false
+    @AppStorage("captainAyer.overlay.mode")
+    private var storedDisplayMode = ""
+    @AppStorage("captainAyer.overlay.standbyScale")
+    private var storedStandbyScale = Double(CaptainAyerOverlayTuning.initialScale)
+    @AppStorage("captainAyer.overlay.standbyOffsetX")
+    private var storedStandbyOffsetX = 0.0
+    @AppStorage("captainAyer.overlay.standbyOffsetY")
+    private var storedStandbyOffsetY = 0.0
     @AppStorage("captainAyer.overlay.hidden")
     private var storedAvatarHidden = false
     @AppStorage("captainAyer.overlay.interactionLayer")
@@ -635,12 +874,13 @@ struct CaptainAyerAvatarOverlay: View {
 
     @State private var opacity = CaptainAyerOverlayTuning.initialOpacity
     @State private var scale = CaptainAyerOverlayTuning.initialScale
-    @State private var isHeadAnchored = false
+    @State private var displayMode = OpenClamAvatarDisplayMode.closeUp
+    @State private var standbyOffset = CGPoint.zero
+    @State private var standbyOffsetAtDragStart: CGPoint?
     @State private var gestureState = CaptainAyerOverlayGestureState()
     @State private var scaleAtPinchStart: CGFloat?
     @State private var isAvatarHidden = false
     @State private var interactionLayer = CaptainAyerInteractionLayer.avatar
-    @State private var isRailFolded = false
     @State private var showsOpacityPanel = false
     @State private var isRailDimmed = false
     @State private var showsAvatarCarousel = false
@@ -648,34 +888,65 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var lastAvatarWakeSignal = -TimeInterval.infinity
     @State private var motionSession = OpenClamAvatarMotionSessionState()
     @State private var motionCompletionTask: Task<Void, Never>?
-    @State private var scaleBeforeMotion: CGFloat?
-    @State private var headAnchoredBeforeMotion: Bool?
+
+    private var isHeadAnchored: Bool { displayMode == .closeUp }
 
     var body: some View {
         GeometryReader { proxy in
-            let topClearance = max(58, proxy.safeAreaInsets.top + 46)
-            let bottomClearance = max(116, proxy.safeAreaInsets.bottom + 92)
-            let railHeight = max(
-                220,
-                proxy.size.height - topClearance - bottomClearance
-            )
-            let bodySize = avatar.geometry.bodySize.cgSize
-            let stageWidth = proxy.size.width
-            let stageHeight = max(
-                1,
-                stageWidth * bodySize.height / max(1, bodySize.width)
-            )
+            let overlayGlobalMinY = proxy.frame(in: .global).minY
             let stageTop = max(0, proxy.safeAreaInsets.top + 42)
+            let subjectBounds = OpenClamAvatarConversationCanvasPolicy.bounds(
+                overlaySize: proxy.size,
+                overlayGlobalMinY: overlayGlobalMinY,
+                composerTopGlobal: composerTopGlobal,
+                topInset: stageTop
+            )
+            let backdropBounds = OpenClamAvatarConversationCanvasPolicy.bounds(
+                overlaySize: proxy.size,
+                overlayGlobalMinY: overlayGlobalMinY,
+                composerTopGlobal: nil,
+                topInset: stageTop
+            )
+            let topClearance = max(58, proxy.safeAreaInsets.top + 46)
+            let bottomClearance = max(0, proxy.size.height - subjectBounds.maxY)
+            let railHeight = max(
+                1,
+                subjectBounds.maxY - topClearance
+            )
+            let presentation: OpenClamCatalogAvatarStage.Presentation = isHeadAnchored
+                ? .compact
+                : .expanded
+            // Close-up is a visual backdrop and may continue behind the
+            // translucent composer. Full-body standby and every motion share
+            // the measured composer-top floor so their visible feet remain
+            // immediately above the input shell.
+            let stageBounds = isHeadAnchored ? backdropBounds : subjectBounds
+            let stageLayout = OpenClamAvatarConversationCanvasPolicy.layout(
+                crop: presentation.crop(for: avatar),
+                in: stageBounds,
+                alignsVisibleFeet: !isHeadAnchored,
+                visibleBottomFraction: OpenClamAvatarConversationCanvasPolicy
+                    .fullBodyVisibleBottomFraction(for: avatar)
+            )
 
             ZStack(alignment: .trailing) {
                 if !isAvatarHidden {
                     avatarStage(
-                        width: stageWidth,
-                        height: stageHeight
+                        presentation: presentation,
+                        width: stageLayout.stageFrame.width,
+                        height: stageLayout.stageFrame.height
                     )
                     .position(
-                        x: proxy.size.width / 2,
-                        y: stageTop + stageHeight / 2
+                        x: stageLayout.stageFrame.midX,
+                        y: stageLayout.stageFrame.midY
+                    )
+                    .offset(
+                        x: displayMode == .standby
+                            ? standbyOffset.x * subjectBounds.width
+                            : 0,
+                        y: displayMode == .standby
+                            ? standbyOffset.y * subjectBounds.height
+                            : 0
                     )
                     // Keep the narrow silhouette gesture surface alive at 0%
                     // opacity so an upward swipe can recover the avatar. The
@@ -690,8 +961,9 @@ struct CaptainAyerAvatarOverlay: View {
                             kind: kind,
                             fileURL: fileURL,
                             pixelSize: asset.pixelSize.cgSize,
-                            availableSize: proxy.size
+                            availableSize: subjectBounds.size
                         )
+                        .position(x: subjectBounds.midX, y: subjectBounds.midY)
                         .zIndex(10)
                         .transition(.opacity)
                     }
@@ -717,6 +989,12 @@ struct CaptainAyerAvatarOverlay: View {
                 }
 
             }
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height,
+                alignment: .topLeading
+            )
+            .clipped()
         }
         .onAppear {
             // Older builds persisted a separate Hide flag. Migrate that state
@@ -727,21 +1005,39 @@ struct CaptainAyerAvatarOverlay: View {
                 storedAvatarHidden = false
             }
             opacity = CaptainAyerOverlayTuning.clampedOpacity(storedOpacity)
-            isHeadAnchored = storedFraming != "full"
-            scale = isHeadAnchored ? 3.4 : CaptainAyerOverlayTuning.initialScale
+            if let persistedMode = OpenClamAvatarDisplayMode(
+                rawValue: storedDisplayMode
+            ), !persistedMode.isMotion {
+                displayMode = persistedMode
+            } else {
+                displayMode = storedFraming == "full" ? .standby : .closeUp
+            }
+            storedDisplayMode = displayMode.rawValue
+            let standby = OpenClamAvatarStandbyTransformPolicy.sanitized(
+                scale: CGFloat(storedStandbyScale),
+                normalizedOffset: CGPoint(
+                    x: storedStandbyOffsetX,
+                    y: storedStandbyOffsetY
+                )
+            )
+            storedStandbyScale = Double(standby.scale)
+            storedStandbyOffsetX = Double(standby.normalizedOffset.x)
+            storedStandbyOffsetY = Double(standby.normalizedOffset.y)
+            standbyOffset = standby.normalizedOffset
+            scale = displayMode == .standby
+                ? standby.scale
+                : CaptainAyerOverlayTuning.initialScale
             isAvatarHidden = false
             interactionLayer = CaptainAyerInteractionLayer(
                 rawValue: storedInteractionLayer
             ) ?? .avatar
-            isRailFolded = storedRailFolded
-            interactions.connect(wakeRail)
+            interactions.connect(noteThreadInteraction)
             wakeRail()
             connectionFeedback.synchronize(with: liveTalkPhase)
             motionSession = OpenClamAvatarMotionSessionState()
             motionCompletionTask?.cancel()
             motionCompletionTask = nil
-            scaleBeforeMotion = nil
-            headAnchoredBeforeMotion = nil
+            standbyOffsetAtDragStart = nil
         }
         .onDisappear {
             stopAvatarMotion(restoreFraming: false)
@@ -758,6 +1054,11 @@ struct CaptainAyerAvatarOverlay: View {
             }
             if !LiveTalkAvatarSwitchPolicy.allowsSwitch(during: phase) {
                 showsAvatarCarousel = false
+            }
+        }
+        .onChange(of: isRailFolded) { _, folded in
+            if folded {
+                showsOpacityPanel = false
             }
         }
         .onChange(of: controller.isSpeaking) { _, isSpeaking in
@@ -815,13 +1116,29 @@ struct CaptainAyerAvatarOverlay: View {
         }
     }
 
-    private func avatarStage(width: CGFloat, height: CGFloat) -> some View {
-        OpenClamCatalogAvatarStage(
+    private func avatarStage(
+        presentation: OpenClamCatalogAvatarStage.Presentation,
+        width: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        let allowsPositioning = displayMode == .standby
+        let positionChanged: ((CGSize) -> Void)? = allowsPositioning
+            ? { translation in
+                updateStandbyPosition(
+                    translation: translation,
+                    canvasSize: CGSize(width: width, height: height)
+                )
+            }
+            : nil
+        let positionEnded: (() -> Void)? = allowsPositioning
+            ? { endStandbyPosition() }
+            : nil
+        return OpenClamCatalogAvatarStage(
             avatar: avatar,
             controller: controller,
             reactions: faceReactions,
             faceMirror: faceMirror,
-            presentation: .expanded,
+            presentation: presentation,
             allowsGazeTracking: !faceMirror.isEnabled
                 && !gestureState.isPinching
                 && !gestureState.hasOpacityDrag,
@@ -831,10 +1148,12 @@ struct CaptainAyerAvatarOverlay: View {
             onVerticalOpacityEnded: endOpacityDrag,
             onMagnificationChanged: updatePinch,
             onMagnificationEnded: endPinch,
+            onPositionChanged: positionChanged,
+            onPositionEnded: positionEnded,
             onInteraction: noteAvatarInteraction
         )
         .frame(width: width, height: height)
-        .scaleEffect(scale, anchor: isHeadAnchored ? .top : .center)
+        .scaleEffect(scale, anchor: isHeadAnchored ? .top : .bottom)
         .compositingGroup()
         // The artwork spans most of the screen but only a narrow silhouette is
         // interactive. Do not publish a full-stage accessibility replacement:
@@ -842,6 +1161,9 @@ struct CaptainAyerAvatarOverlay: View {
         // UI automation. The compact rail control below owns the adjustable
         // opacity semantics; physical vertical swiping remains on the stage.
         .accessibilityHidden(true)
+        .onHover { hovering in
+            if hovering { noteAvatarInteraction() }
+        }
     }
 
     private func motionLayer(
@@ -909,12 +1231,35 @@ struct CaptainAyerAvatarOverlay: View {
         scale = CaptainAyerOverlayTuning.clampedScale(
             scaleAtPinchStart * magnification
         )
-        isHeadAnchored = scale > 1.4
     }
 
     private func endPinch() {
         scaleAtPinchStart = nil
         gestureState.endPinch()
+        guard displayMode == .standby else { return }
+        storedStandbyScale = Double(scale)
+    }
+
+    private func updateStandbyPosition(
+        translation: CGSize,
+        canvasSize: CGSize
+    ) {
+        guard displayMode == .standby else { return }
+        if standbyOffsetAtDragStart == nil {
+            standbyOffsetAtDragStart = standbyOffset
+            wakeRail()
+        }
+        standbyOffset = OpenClamAvatarStandbyTransformPolicy.translated(
+            from: standbyOffsetAtDragStart ?? standbyOffset,
+            by: translation,
+            in: canvasSize
+        )
+    }
+
+    private func endStandbyPosition() {
+        standbyOffsetAtDragStart = nil
+        storedStandbyOffsetX = Double(standbyOffset.x)
+        storedStandbyOffsetY = Double(standbyOffset.y)
     }
 
     private var toolRail: some View {
@@ -923,21 +1268,6 @@ struct CaptainAyerAvatarOverlay: View {
                 liveTalkControl
                 avatarToolRail
             }
-
-            railButton(
-                systemImage: isRailFolded ? "chevron.up" : "chevron.down",
-                label: isRailFolded ? "Show all tools" : "Fold all tools",
-                isBare: true
-            ) {
-                animate(.toggle) {
-                    isRailFolded.toggle()
-                    storedRailFolded = isRailFolded
-                    if isRailFolded {
-                        showsOpacityPanel = false
-                    }
-                }
-            }
-            .accessibilityIdentifier("openclam-avatar-rail-fold-button")
         }
         .frame(maxHeight: .infinity, alignment: .center)
         .accessibilityElement(children: .contain)
@@ -962,20 +1292,7 @@ struct CaptainAyerAvatarOverlay: View {
                     showsAvatarCarousel = true
                 }
 
-                railButton(
-                    systemImage: isHeadAnchored ? "person.fill" : "person.crop.circle",
-                    label: isHeadAnchored ? "Show full body" : "Show face closeup",
-                    value: "\(Int(scale * 100)) percent"
-                ) {
-                    stopAvatarMotion()
-                    animate(.framing) {
-                        isHeadAnchored.toggle()
-                        scale = isHeadAnchored ? 3.4 : CaptainAyerOverlayTuning.initialScale
-                        storedFraming = isHeadAnchored ? "closeup" : "full"
-                    }
-                }
-
-                motionMenu
+                avatarModeMenu
 
                 railButton(
                     systemImage: controller.isSpeaking
@@ -989,7 +1306,7 @@ struct CaptainAyerAvatarOverlay: View {
                     controller.isSpeaking ? onStop() : onPlayLatest()
                 }
 
-                interactionLayerMenu
+                interactionLayerButton
 
                 railButton(
                     systemImage: "drop.fill",
@@ -1027,78 +1344,64 @@ struct CaptainAyerAvatarOverlay: View {
         )
     }
 
-    private var motionMenu: some View {
+    private var avatarModeMenu: some View {
         Menu {
-            motionMenuButton(.walk, systemImage: "figure.walk")
-            motionMenuButton(
-                .edgeIdle,
-                systemImage: "figure.stand.line.dotted.figure.stand"
-            )
-            motionMenuButton(.moves, systemImage: "figure.dance")
+            ForEach(OpenClamAvatarDisplayMode.allCases, id: \.self) { mode in
+                avatarModeMenuButton(mode)
+            }
+            Divider()
+            Button {
+                resetStandbyTransform()
+            } label: {
+                Label("Reset Standby Size & Position", systemImage: "arrow.counterclockwise")
+            }
         } label: {
             railMenuLabel(
-                systemImage: motionSession.activeKind == nil
-                    ? "figure.walk.motion"
-                    : "stop.fill",
-                isActive: motionSession.activeKind != nil
+                systemImage: "person.crop.artframe",
+                isActive: displayMode != .standby
             )
         }
-        .accessibilityLabel("Avatar motion")
-        .accessibilityValue(motionSession.activeKind.map(motionLabel) ?? "Stopped")
-        .accessibilityHint("Choose Walk, Edge idle, or Moves")
-        .accessibilityIdentifier("openclam-avatar-motion-menu")
+        .accessibilityLabel("Avatar mode")
+        .accessibilityValue(displayMode.title)
+        .accessibilityHint("Choose Standby, Close-up, Horizon Walk, Edge Idle, or Moves")
+        .accessibilityIdentifier("openclam-avatar-mode-menu")
     }
 
-    private func motionMenuButton(
-        _ kind: OpenClamAvatarMotionKind,
-        systemImage: String
+    private func avatarModeMenuButton(
+        _ mode: OpenClamAvatarDisplayMode
     ) -> some View {
-        let disabledReason = motionDisabledReason(for: kind)
-        let isActive = motionSession.activeKind == kind
+        let disabledReason = mode.motionKind.flatMap(motionDisabledReason)
+        let isActive = displayMode == mode
         return Button {
             wakeRail()
-            toggleAvatarMotion(kind)
+            selectAvatarMode(mode)
         } label: {
             Label(
-                isActive ? "Stop \(motionLabel(kind))" : motionLabel(kind),
-                systemImage: isActive ? "stop.fill" : systemImage
+                mode.title,
+                systemImage: isActive ? "checkmark" : mode.systemImage
             )
         }
         .disabled(disabledReason != nil)
     }
 
-    private func motionLabel(_ kind: OpenClamAvatarMotionKind) -> String {
-        switch kind {
-        case .walk: "Walk"
-        case .edgeIdle: "Edge idle"
-        case .moves: "Moves"
-        }
-    }
-
-    private var interactionLayerMenu: some View {
-        Menu {
-            ForEach(CaptainAyerInteractionLayer.allCases, id: \.rawValue) { layer in
-                Button {
-                    wakeRail()
-                    interactionLayer = layer
-                    storedInteractionLayer = layer.rawValue
-                    if layer == .thread {
-                        gestureState = CaptainAyerOverlayGestureState()
-                        scaleAtPinchStart = nil
-                    }
-                } label: {
-                    Label(layer.title, systemImage: layer.systemImage)
-                }
+    private var interactionLayerButton: some View {
+        railButton(
+            systemImage: interactionLayer.systemImage,
+            label: interactionLayer.toggled.title,
+            value: interactionLayer.title,
+            isActive: interactionLayer == .avatar
+        ) {
+            wakeRail()
+            interactionLayer = interactionLayer.toggled
+            storedInteractionLayer = interactionLayer.rawValue
+            if interactionLayer == .thread {
+                gestureState = CaptainAyerOverlayGestureState()
+                scaleAtPinchStart = nil
             }
-        } label: {
-            railMenuLabel(
-                systemImage: interactionLayer.systemImage,
-                isActive: interactionLayer == .avatar
-            )
         }
         .accessibilityLabel("Interaction layer")
         .accessibilityValue(interactionLayer.title)
-        .accessibilityHint(interactionLayer.detail)
+        .accessibilityHint("Tap to switch to \(interactionLayer.toggled.title.lowercased())")
         .accessibilityIdentifier("openclam-avatar-layer-menu")
     }
 
@@ -1250,28 +1553,6 @@ struct CaptainAyerAvatarOverlay: View {
         .opacity(isEnabled ? 1 : 0.55)
     }
 
-    private func motionRailButton(
-        kind: OpenClamAvatarMotionKind,
-        systemImage: String
-    ) -> some View {
-        let disabledReason = motionDisabledReason(for: kind)
-        let isActive = motionSession.activeKind == kind
-        let label: String = switch kind {
-        case .walk: "Walk"
-        case .edgeIdle: "Edge idle"
-        case .moves: "Moves"
-        }
-        return railButton(
-            systemImage: isActive ? "stop.fill" : systemImage,
-            label: isActive ? "Stop \(label.lowercased())" : "Play \(label.lowercased())",
-            value: isActive ? "Playing" : (disabledReason ?? "Ready"),
-            isActive: isActive,
-            isEnabled: disabledReason == nil
-        ) {
-            toggleAvatarMotion(kind)
-        }
-    }
-
     private var avatarSpeechAccessibilityValue: String {
         if faceMirror.isEnabled {
             return faceMirror.statusText
@@ -1297,10 +1578,19 @@ struct CaptainAyerAvatarOverlay: View {
     }
 
     private func noteAvatarInteraction() {
-        stopAvatarMotion()
+        if displayMode.afterUserActivity != displayMode {
+            stopAvatarMotion()
+        }
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastAvatarWakeSignal >= 0.15 else { return }
         lastAvatarWakeSignal = now
+        wakeRail()
+    }
+
+    private func noteThreadInteraction() {
+        if displayMode.afterUserActivity != displayMode {
+            stopAvatarMotion()
+        }
         wakeRail()
     }
 
@@ -1319,12 +1609,39 @@ struct CaptainAyerAvatarOverlay: View {
         )
     }
 
-    private func toggleAvatarMotion(_ kind: OpenClamAvatarMotionKind) {
+    private func selectAvatarMode(_ mode: OpenClamAvatarDisplayMode) {
+        guard let kind = mode.motionKind else {
+            stopAvatarMotion(restoreFraming: false)
+            let standby = restoredStandbyTransform
+            animate(.framing) {
+                displayMode = mode
+                scale = mode == .standby
+                    ? standby.scale
+                    : CaptainAyerOverlayTuning.initialScale
+                if mode == .standby {
+                    standbyOffset = standby.normalizedOffset
+                }
+            }
+            storedDisplayMode = mode.rawValue
+            storedFraming = mode == .standby ? "full" : "closeup"
+            return
+        }
+
         let action = motionSession.request(
             kind,
             canStart: motionDisabledReason(for: kind) == nil
         )
         applyMotionAction(action)
+    }
+
+    private func resetStandbyTransform() {
+        let factory = OpenClamAvatarStandbyTransform.factory
+        storedStandbyScale = Double(factory.scale)
+        storedStandbyOffsetX = Double(factory.normalizedOffset.x)
+        storedStandbyOffsetY = Double(factory.normalizedOffset.y)
+        standbyOffset = factory.normalizedOffset
+        standbyOffsetAtDragStart = nil
+        selectAvatarMode(.standby)
     }
 
     private func stopAvatarMotion(restoreFraming: Bool = true) {
@@ -1342,32 +1659,39 @@ struct CaptainAyerAvatarOverlay: View {
         case .none:
             return
         case let .start(kind):
-            beginAvatarMotion(kind, savesFraming: true)
+            beginAvatarMotion(kind)
         case let .replace(_, kind):
-            beginAvatarMotion(kind, savesFraming: false)
+            beginAvatarMotion(kind)
         case .stop:
             motionCompletionTask?.cancel()
             motionCompletionTask = nil
-            if restoreFraming,
-               let scaleBeforeMotion,
-               let headAnchoredBeforeMotion {
+            if restoreFraming {
+                let standby = restoredStandbyTransform
                 animate(.framing) {
-                    scale = scaleBeforeMotion
-                    isHeadAnchored = headAnchoredBeforeMotion
+                    displayMode = .standby
+                    scale = standby.scale
+                    standbyOffset = standby.normalizedOffset
                 }
+                storedDisplayMode = OpenClamAvatarDisplayMode.standby.rawValue
+                storedFraming = "full"
             }
-            self.scaleBeforeMotion = nil
-            self.headAnchoredBeforeMotion = nil
             if !reduceMotion && !faceMirror.isCapturing {
                 faceReactions.startAmbientMotion()
             }
         }
     }
 
-    private func beginAvatarMotion(
-        _ kind: OpenClamAvatarMotionKind,
-        savesFraming: Bool
-    ) {
+    private var restoredStandbyTransform: OpenClamAvatarStandbyTransform {
+        OpenClamAvatarStandbyTransformPolicy.sanitized(
+            scale: CGFloat(storedStandbyScale),
+            normalizedOffset: CGPoint(
+                x: storedStandbyOffsetX,
+                y: storedStandbyOffsetY
+            )
+        )
+    }
+
+    private func beginAvatarMotion(_ kind: OpenClamAvatarMotionKind) {
         guard let asset = avatar.motion(kind),
               motionFileURL(for: kind) != nil else {
             _ = motionSession.interrupt()
@@ -1375,10 +1699,7 @@ struct CaptainAyerAvatarOverlay: View {
         }
         motionCompletionTask?.cancel()
         motionCompletionTask = nil
-        if savesFraming {
-            scaleBeforeMotion = scale
-            headAnchoredBeforeMotion = isHeadAnchored
-        }
+        displayMode = OpenClamAvatarDisplayMode(motionKind: kind)
         faceReactions.cancelAll()
 
         guard !kind.loops else { return }

@@ -42,6 +42,8 @@ const api = Object.freeze({
   setPetZoomLive: (payload) => ipcRenderer.send('openclam:pet-zoom-live', payload),
   setPetLock: (value) => ipcRenderer.invoke('openclam:set-pet-lock', Boolean(value)),
   setPetRoam: (value) => ipcRenderer.invoke('openclam:set-pet-roam', Boolean(value)),
+  setDisplayMode: (value) => ipcRenderer.invoke(
+    'openclam:set-display-mode', String(value || '')),
   setPetMotionReady: (value) => ipcRenderer.send('openclam:pet-motion-ready', value),
   showSpeechBubble: (value) => ipcRenderer.send('openclam:show-speech-bubble', String(value || '')),
   dockPet: () => ipcRenderer.send('openclam:pet-dock'),

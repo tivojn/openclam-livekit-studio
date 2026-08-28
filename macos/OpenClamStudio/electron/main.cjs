@@ -118,6 +118,7 @@ let chatMode = false;
 let chatCloseUp = false;
 let chatCloseUpBaseZoom = 1;
 let chatPoseRevision = 0;
+let factoryResetRevision = 0;
 let desktopCloseUp = false;
 let companionHold = null;
 let avatarStoreInstance = null;
@@ -801,6 +802,7 @@ function shellState() {
     chatCloseUp,
     chatCloseUpBaseZoom,
     chatPoseRevision,
+    factoryResetRevision,
     desktopCloseUp,
     pet: {
       enabled: Boolean(state && state.petMode),
@@ -2029,7 +2031,7 @@ function guardNavigation(window, kind) {
         && !input.control && !input.alt) {
       if (input.key === '0' || input.key === ')') {
         event.preventDefault();
-        standbyCompanionMode();
+        factoryResetCompanionMode();
       } else if (input.key === '9' || input.key === '(') {
         event.preventDefault();
         deskCompanionMode();
@@ -2450,52 +2452,54 @@ function showChat() {
   return value;
 }
 
-function recoverCompanion() {
+function factoryResetCompanionMode() {
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+  const defaults = defaultState();
+  companionHold = null;
+  factoryResetRevision += 1;
   if (chatMode) {
     chatCloseUp = false;
-    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
+    state.petZoom = defaults.petZoom;
+    chatCloseUpBaseZoom = defaults.petZoom;
+    chatPoseRevision += 1;
+    saveStateSoon();
     broadcastState();
-    return;
+    return shellState();
   }
   desktopCloseUp = false;
-  // Reset the zoom before anything re-applies it: keeping the current size
-  // once "recovered" a pinch-blown window to a spot still off every edge.
-  // Recovery is the safe reset: whole figure, and a zoom that provably
-  // fits this display - blind zoom=1 (560x760) overflowed short screens
-  // now that enableLargerThanScreen removed the OS clamp.
-  state.petView = 'full';
-  state.petZoom = 1;
+  // Cmd+Shift+0 is the deliberate factory geometry reset. Standby itself is
+  // a separate display mode and must preserve the user's last drag/resize.
+  state.petView = defaults.petView;
+  state.petZoom = defaults.petZoom;
   if (state.petRoam) {
     state.petRoam = false;
-    stopPetRoamMotion(true);
+    stopPetRoamMotion(false);
     state.petHomeBounds = null;
   }
-  state.petOpacity = 0.5;
-  state.petLocked = false;
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const area = display.workArea;
   state.petZoom = clampPetZoom(
     fitPetZoomToArea(
-      PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom, area, PET_DOCK_MARGIN),
+      PET_BASE_SIZE, PET_NORMAL_MINIMUM, defaults.petZoom, area, PET_DOCK_MARGIN),
     PET_ZOOM_RANGE);
   const size = petZoomSize(PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom);
   mainWindow.setBounds(dockedPetBounds(size, area, PET_DOCK_MARGIN));
   state.bounds = mainWindow.getBounds();
-  mainWindow.setOpacity(0.5);
+  mainWindow.setOpacity(state.petOpacity);
   // Through setPetHit so the interactive flag stays honest: a direct
   // setIgnoreMouseEvents here desyncs the dedupe and later claims no-op.
   petPointerInteractive = null;
-  setPetHit(true, 'recover');
-  mainWindow.show();
-  mainWindow.focus();
+  setPetHit(true, 'factory-reset');
+  if (state.petOpacity > 0.001) mainWindow.showInactive();
+  else mainWindow.hide();
   saveStateSoon();
   broadcastState();
+  return shellState();
 }
 
 function installRecoveryShortcut() {
   const accelerator = 'CommandOrControl+Shift+0';
-  if (!globalShortcut.register(accelerator, standbyCompanionMode)) {
+  if (!globalShortcut.register(accelerator, factoryResetCompanionMode)) {
     writeBackendLog(`[shortcut unavailable] ${accelerator}\n`);
   }
   // Cmd+Shift+9: the owner's close-up composition. Avatar mode uses the
@@ -2508,17 +2512,23 @@ function installRecoveryShortcut() {
 }
 
 function standbyCompanionMode() {
-  companionHold = null;
+  // Standby is also the escape hatch for renderer-local Edge Idle and Moves.
+  // Publish a revision in both Chat/Talk and Avatar mode so tray/context-menu
+  // selections cannot leave a transient clip running merely because the
+  // Electron window geometry itself did not change.
+  chatPoseRevision += 1;
   if (chatMode) {
     chatCloseUp = false;
     chatCloseUpBaseZoom = Number(state.petZoom) || 1;
-    chatPoseRevision += 1;
-    applyPetOpacity(1, false);
-    return;
+    broadcastState();
+    return shellState();
   }
+  if (state.petRoam) applyPetRoam(false);
+  else if (desktopCloseUp) restoreCompanionHold();
   desktopCloseUp = false;
-  recoverCompanion();
-  applyPetOpacity(1);
+  saveStateSoon();
+  broadcastState();
+  return shellState();
 }
 
 function restoreCompanionHold() {
@@ -2673,10 +2683,11 @@ function buildTrayMenu() {
       click: (item) => applyPetRoam(item.checked) },
     { label: 'Lock Position', type: 'checkbox', checked: state.petLocked,
       enabled: !state.petRoam, click: (item) => applyPetLock(item.checked) },
-    { label: 'Standby Size', accelerator: 'CommandOrControl+Shift+0',
-      registerAccelerator: false, click: standbyCompanionMode },
+    { label: 'Standby', click: standbyCompanionMode },
     { label: 'Close-Up Companion', accelerator: 'CommandOrControl+Shift+9',
       registerAccelerator: false, click: deskCompanionMode },
+    { label: 'Reset Avatar Size & Position', accelerator: 'CommandOrControl+Shift+0',
+      registerAccelerator: false, click: factoryResetCompanionMode },
     { label: 'Restart Voice Engine', enabled: ownsBackend, click: restartBackend },
     { type: 'separator' },
     // Which build am I actually running? A question the owner should
@@ -2729,9 +2740,10 @@ function showPetMenu() {
       }
     } },
     { type: 'separator' },
-    { name: 'Standby Size', hint: '⌘⇧0', click: standbyCompanionMode },
+    { name: 'Standby', hint: 'remembered size & position', click: standbyCompanionMode },
     { name: companionHold ? 'Restore Previous Size' : 'Close-Up Companion',
       hint: companionHold ? '' : '⌘⇧9', click: deskCompanionMenuAction },
+    { name: 'Reset Size & Position', hint: '⌘⇧0', click: factoryResetCompanionMode },
     { name: 'Resize & Adjust…', hint: 'avatar · animation · opacity %',
       click: showAppearanceWindow },
     { name: 'Always on Top', type: 'checkbox', checked: state.alwaysOnTop,
@@ -2838,6 +2850,14 @@ function installIpc() {
         || (chatWindow && event.sender === chatWindow.webContents)) applyPetZoomLive(payload);
   });
   ipcMain.handle('openclam:set-pet-lock', (_event, value) => applyPetLock(value));
+  ipcMain.handle('openclam:set-display-mode', (_event, value) => {
+    if (value === 'standby') return standbyCompanionMode();
+    if (value === 'close-up') {
+      deskCompanionMode();
+      return shellState();
+    }
+    return shellState();
+  });
   ipcMain.handle('openclam:set-pet-roam', (event, value) => (
     isBuddySender(event) ? applyBuddyRoam(value) : applyPetRoam(value)));
   ipcMain.on('openclam:bubble-hold', (event, value) => {

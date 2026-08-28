@@ -36,7 +36,7 @@ final class OpenClamConversationUITests: XCTestCase {
         app.buttons["New chat"].tap()
         XCTAssertTrue(app.navigationBars["New chat"].waitForExistence(timeout: 3))
 
-        app.buttons["Settings"].tap()
+        openSettingsThroughSidebar()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["Chat & tap-to-talk AI"].exists)
         XCTAssertTrue(app.staticTexts["Screen & Shared Context"].exists)
@@ -106,6 +106,7 @@ final class OpenClamConversationUITests: XCTestCase {
     }
 
     func testLocalReadAloudKeepsAvatarSpeechControlsResponsive() throws {
+        unfoldAvatarRail()
         let opacityControl = app.buttons["openclam-avatar-opacity-control"]
         XCTAssertTrue(opacityControl.waitForExistence(timeout: 3))
         if opacityControl.label == "Open opacity control" {
@@ -120,11 +121,7 @@ final class OpenClamConversationUITests: XCTestCase {
         // Normalize the first pass to the face crop. This makes the smoke a
         // repeatable visual oracle for mouth/head stability even when a prior
         // UI test or user session persisted full-body framing.
-        let showFaceCloseup = app.buttons["Show face closeup"]
-        if showFaceCloseup.exists {
-            showFaceCloseup.tap()
-            XCTAssertTrue(app.buttons["Show full body"].waitForExistence(timeout: 2))
-        }
+        selectAvatarMode("Close-up")
 
         func exerciseSpeech(_ attachmentName: String) {
             let play = app.buttons["Play latest reply"]
@@ -148,25 +145,40 @@ final class OpenClamConversationUITests: XCTestCase {
 
         exerciseSpeech("avatar-speaking-closeup")
 
-        let showFullBody = app.buttons["Show full body"]
-        XCTAssertTrue(showFullBody.waitForExistence(timeout: 2))
-        showFullBody.tap()
-        XCTAssertTrue(app.buttons["Show face closeup"].waitForExistence(timeout: 2))
+        selectAvatarMode("Standby")
         exerciseSpeech("avatar-speaking-full-body")
     }
 
     func testComposerKeyboardDoesNotHideNavigationOrModelChooser() throws {
         XCTAssertFalse(app.buttons["Text to speech"].exists)
+        let modelMenu = app.buttons["Language model"]
+        XCTAssertFalse(
+            modelMenu.exists,
+            "The collapsed composer must keep provider and model details hidden."
+        )
 
         let attachmentMenu = app.buttons["openclam-attachment-menu"]
         XCTAssertTrue(attachmentMenu.waitForExistence(timeout: 3))
+        let compactPrompt = app.buttons["Message the AI assistant"]
+        XCTAssertTrue(compactPrompt.waitForExistence(timeout: 3))
+        let compactAction = app.buttons["Start tap to talk"]
+        XCTAssertTrue(compactAction.waitForExistence(timeout: 3))
+        XCTAssertGreaterThanOrEqual(
+            compactAction.frame.maxX - attachmentMenu.frame.minX,
+            app.frame.width * 0.78,
+            "The resting composer should float at a normal near-full-screen width."
+        )
+        XCTAssertGreaterThanOrEqual(
+            compactPrompt.frame.width,
+            app.frame.width * 0.40,
+            "Hiding model details should give the resting prompt the freed composer width."
+        )
         attachmentMenu.tap()
         XCTAssertTrue(app.buttons["Take Photo"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["Choose photo or video"].exists)
         XCTAssertTrue(app.buttons["Choose file"].exists)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
 
-        let compactPrompt = app.buttons["Message the AI assistant"]
         if compactPrompt.waitForExistence(timeout: 1) {
             compactPrompt.tap()
         }
@@ -179,9 +191,8 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["openclam-tts-button"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["Open sidebar"].isHittable)
-        XCTAssertTrue(app.buttons["Settings"].isHittable)
+        XCTAssertTrue(app.buttons["openclam-avatar-rail-fold-button"].isHittable)
 
-        let modelMenu = app.buttons["Language model"]
         XCTAssertTrue(modelMenu.exists)
         XCTAssertTrue(modelMenu.isHittable)
         XCTAssertGreaterThanOrEqual(modelMenu.frame.height, 44)
@@ -214,6 +225,20 @@ final class OpenClamConversationUITests: XCTestCase {
 
     func testModelMenuOffersProviderChoicesAndAISettings() throws {
         let modelMenu = app.buttons["Language model"]
+        XCTAssertFalse(
+            modelMenu.exists,
+            "The model chooser must remain hidden until the composer is focused."
+        )
+
+        let compactPrompt = app.buttons["Message the AI assistant"]
+        if compactPrompt.waitForExistence(timeout: 1) {
+            compactPrompt.tap()
+        } else {
+            let composer = app.textFields["Message the AI assistant"]
+            XCTAssertTrue(composer.waitForExistence(timeout: 2))
+            composer.tap()
+        }
+        XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 3))
         XCTAssertTrue(modelMenu.waitForExistence(timeout: 3))
         modelMenu.tap()
 
@@ -228,12 +253,13 @@ final class OpenClamConversationUITests: XCTestCase {
     }
 
     func testChatPTTAndAvatarLiveTalkSettingsExplainTheirBoundaries() throws {
+        unfoldAvatarRail()
         XCTAssertTrue(
             app.buttons["openclam-live-talk-rail-button"].waitForExistence(timeout: 2)
         )
         capture("conversation-single-live-talk-phone")
 
-        app.buttons["Settings"].tap()
+        openSettingsThroughSidebar()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["Chat & tap-to-talk AI"].exists)
         XCTAssertTrue(app.staticTexts["Avatar agents"].exists)
@@ -423,7 +449,7 @@ final class OpenClamConversationUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
 
-        app.buttons["Settings"].tap()
+        openSettingsThroughSidebar()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
         app.descendants(matching: .any)[
             "openclam-avatar-agent-settings-link"
@@ -445,8 +471,8 @@ final class OpenClamConversationUITests: XCTestCase {
             app.navigationBars[fixtureName].waitForNonExistence(timeout: 5),
             "Activating an avatar should dismiss settings and return to its conversation."
         )
-        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 3))
-        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 3))
+        openSettingsThroughSidebar()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
         app.descendants(matching: .any)[
             "openclam-avatar-agent-settings-link"
@@ -485,11 +511,12 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(confirmDelete.waitForExistence(timeout: 2))
         confirmDelete.tap()
         XCTAssertTrue(app.navigationBars[fixtureName].waitForNonExistence(timeout: 5))
+        unfoldAvatarRail()
         let activeAvatar = app.buttons["Choose avatar"]
         XCTAssertTrue(activeAvatar.waitForExistence(timeout: 5))
         XCTAssertEqual(activeAvatar.value as? String, "Captain Ayer")
 
-        app.buttons["Settings"].tap()
+        openSettingsThroughSidebar()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
         app.descendants(matching: .any)[
             "openclam-avatar-agent-settings-link"
@@ -510,7 +537,7 @@ final class OpenClamConversationUITests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
-        app.buttons["Settings"].tap()
+        openSettingsThroughSidebar()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
         app.descendants(matching: .any)[
             "openclam-avatar-agent-settings-link"
@@ -531,26 +558,16 @@ final class OpenClamConversationUITests: XCTestCase {
     }
 
     func testAvatarStartsOnBeneathConversationAndWarmEarIsIndependent() throws {
-        let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
-        XCTAssertTrue(rail.waitForExistence(timeout: 3))
-
         // The rail intentionally fades to its idle opacity after a few seconds,
         // and a preceding UI test can leave that timer elapsed. Normalize the
         // rail to its visible, unfolded state without resetting app data.
+        unfoldAvatarRail()
         let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
-        XCTAssertTrue(foldControl.waitForExistence(timeout: 2))
-        if foldControl.label == "Show all tools" {
-            foldControl.tap()
-            XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 2))
-        } else if rail.value as? String != "Visible" {
-            foldControl.tap()
-            XCTAssertTrue(waitForLabel("Show all tools", on: foldControl, timeout: 2))
-            foldControl.tap()
-            XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 2))
-        }
+        let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 3))
         XCTAssertEqual(rail.value as? String, "Visible")
         XCTAssertTrue(app.buttons["Open sidebar"].isHittable)
-        XCTAssertTrue(app.buttons["Settings"].isHittable)
+        XCTAssertTrue(foldControl.isHittable)
 
         let ear = app.buttons["openclam-warm-ear-button"]
         XCTAssertTrue(ear.waitForExistence(timeout: 2))
@@ -696,15 +713,9 @@ final class OpenClamConversationUITests: XCTestCase {
 
         putAvatarLayerInFront()
 
-        // Use the full-body frame so this test has both a known opaque body
-        // target and a real transparent canvas beside it. The closeup frame
-        // legitimately fills much more of a phone-width stage.
-        let showFullBody = app.buttons["Show full body"]
-        if showFullBody.exists {
-            XCTAssertTrue(showFullBody.isHittable)
-            showFullBody.tap()
-            XCTAssertTrue(app.buttons["Show face closeup"].waitForExistence(timeout: 2))
-        }
+        // Close-up keeps vertical direct manipulation assigned to opacity.
+        // Standby reserves direct dragging for its remembered position.
+        selectAvatarMode("Close-up")
 
         let opacityControl = app.buttons["openclam-avatar-opacity-control"]
         XCTAssertTrue(opacityControl.waitForExistence(timeout: 2))
@@ -763,8 +774,6 @@ final class OpenClamConversationUITests: XCTestCase {
     }
 
     func testAvatarCarouselActivatesTheFrontCardWithoutAnExtraUseStep() throws {
-        let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
-        XCTAssertTrue(rail.waitForExistence(timeout: 3))
         let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
         XCTAssertTrue(foldControl.waitForExistence(timeout: 2))
         if foldControl.label == "Show all tools" {
@@ -772,6 +781,8 @@ final class OpenClamConversationUITests: XCTestCase {
             foldControl.tap()
             XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 3))
         }
+        let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 3))
         let chooseAvatar = app.buttons["Choose avatar"]
         XCTAssertTrue(chooseAvatar.exists)
         XCTAssertTrue(chooseAvatar.isEnabled)
@@ -846,7 +857,7 @@ final class OpenClamConversationUITests: XCTestCase {
         capture("avatar-carousel-direct-selection-result")
     }
 
-    func testAraMotionRailUsesOnlyValidatedV3Clips() throws {
+    func testAraUnifiedAvatarModeMenuUsesOnlyValidatedV3Clips() throws {
         let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
         XCTAssertTrue(foldControl.waitForExistence(timeout: 3))
         if foldControl.label == "Show all tools" {
@@ -864,10 +875,14 @@ final class OpenClamConversationUITests: XCTestCase {
                 "openclam-avatar-carousel-card-"
             )
         )
-        XCTAssertEqual(cards.count, 2, "The shipped picker must contain Ayer and Ara only.")
-        XCTAssertEqual(
-            Set(cards.allElementsBoundByIndex.map(\.label)),
-            Set(["Captain Ayer", "Ara"])
+        let cardLabels = Set(cards.allElementsBoundByIndex.map(\.label))
+        XCTAssertTrue(
+            cardLabels.isSuperset(of: ["Captain Ayer", "Ara"]),
+            "The merged picker must always include both shipped avatars."
+        )
+        XCTAssertFalse(
+            app.buttons["openclam-avatar-carousel-card-ui-test-deletable-avatar"].exists,
+            "The disposable UI-test avatar must be removed before launch."
         )
 
         let araCard = app.buttons["openclam-avatar-carousel-card-ara"]
@@ -893,31 +908,25 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Close avatar carousel"].waitForNonExistence(timeout: 2))
         XCTAssertTrue(waitForValue("Ara", on: chooseAvatar, timeout: 2))
 
-        let walk = app.buttons["openclam-avatar-walk-button"]
-        let edgeIdle = app.buttons["openclam-avatar-edge-idle-button"]
-        let moves = app.buttons["openclam-avatar-moves-button"]
-        XCTAssertTrue(walk.waitForExistence(timeout: 2))
-        XCTAssertFalse(walk.isEnabled)
-        XCTAssertEqual(String(describing: walk.value ?? ""), "Not included in this avatar")
-        XCTAssertTrue(edgeIdle.isEnabled)
-        XCTAssertEqual(String(describing: edgeIdle.value ?? ""), "Ready")
-        XCTAssertTrue(moves.isEnabled)
-        XCTAssertEqual(String(describing: moves.value ?? ""), "Ready")
-
-        edgeIdle.tap()
-        XCTAssertTrue(waitForValue("Playing", on: edgeIdle, timeout: 2))
-        XCTAssertEqual(edgeIdle.label, "Stop edge idle")
+        let modeMenu = app.buttons["openclam-avatar-mode-menu"]
+        XCTAssertTrue(modeMenu.waitForExistence(timeout: 2))
+        modeMenu.tap()
+        XCTAssertTrue(app.buttons["Standby"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Close-up"].exists)
+        XCTAssertTrue(app.buttons["Horizon Walk"].exists)
+        XCTAssertFalse(app.buttons["Horizon Walk"].isEnabled)
+        XCTAssertTrue(app.buttons["Edge Idle"].isEnabled)
+        XCTAssertTrue(app.buttons["Moves"].isEnabled)
+        app.buttons["Edge Idle"].tap()
+        XCTAssertTrue(waitForValue("Edge Idle", on: modeMenu, timeout: 2))
         capture("ara-v3-edge-idle-physical-left-edge")
 
-        moves.tap()
-        XCTAssertTrue(waitForValue("Playing", on: moves, timeout: 2))
-        XCTAssertEqual(moves.label, "Stop moves")
-        XCTAssertEqual(edgeIdle.label, "Play edge idle")
-
-        moves.tap()
-        XCTAssertTrue(waitForValue("Ready", on: moves, timeout: 2))
-        XCTAssertEqual(moves.label, "Play moves")
+        selectAvatarMode("Moves")
+        XCTAssertTrue(waitForValue("Moves", on: modeMenu, timeout: 2))
         capture("ara-v3-motion-rail")
+
+        selectAvatarMode("Standby")
+        XCTAssertTrue(waitForValue("Standby", on: modeMenu, timeout: 2))
     }
 
     func testAraMotionCannotBlockComposerTapToTalkAndEmptySpeechIsExplained() throws {
@@ -926,6 +935,7 @@ final class OpenClamConversationUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 8))
         startFreshChat()
+        unfoldAvatarRail()
 
         let chooseAvatar = app.buttons["Choose avatar"]
         XCTAssertTrue(chooseAvatar.waitForExistence(timeout: 3))
@@ -954,15 +964,10 @@ final class OpenClamConversationUITests: XCTestCase {
 
         // Recreate the reported overlap: the normal stage is close-up, then
         // full-height Moves artwork replaces it while the composer stays visible.
-        let showFaceCloseup = app.buttons["Show face closeup"]
-        if showFaceCloseup.waitForExistence(timeout: 1) {
-            showFaceCloseup.tap()
-            XCTAssertTrue(app.buttons["Show full body"].waitForExistence(timeout: 2))
-        }
-        let moves = app.buttons["openclam-avatar-moves-button"]
-        XCTAssertTrue(moves.waitForExistence(timeout: 2))
-        moves.tap()
-        XCTAssertTrue(waitForValue("Playing", on: moves, timeout: 2))
+        selectAvatarMode("Close-up")
+        selectAvatarMode("Moves")
+        let modeMenu = app.buttons["openclam-avatar-mode-menu"]
+        XCTAssertTrue(waitForValue("Moves", on: modeMenu, timeout: 2))
 
         let start = app.buttons["Start tap to talk"]
         XCTAssertTrue(start.waitForExistence(timeout: 3))
@@ -996,6 +1001,7 @@ final class OpenClamConversationUITests: XCTestCase {
 
     func testLiveTalkUsesOnePersistentPhoneControlOnTheAvatarRail() throws {
         startFreshChat()
+        unfoldAvatarRail()
 
         let phone = app.buttons["openclam-live-talk-rail-button"]
         let rail = app.descendants(matching: .any)["openclam-avatar-tool-rail"]
@@ -1060,37 +1066,21 @@ final class OpenClamConversationUITests: XCTestCase {
     }
 
     private func putAvatarLayerInFront() {
-        let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
-        XCTAssertTrue(foldControl.waitForExistence(timeout: 3))
-        if foldControl.label == "Show all tools" {
-            foldControl.tap()
-            XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 2))
-        }
+        unfoldAvatarRail()
         let layer = app.buttons["openclam-avatar-layer-menu"]
         XCTAssertTrue(layer.waitForExistence(timeout: 2))
         if layer.value as? String != "Avatar in front" {
             layer.tap()
-            let avatarChoice = app.buttons["Avatar in front"]
-            XCTAssertTrue(avatarChoice.waitForExistence(timeout: 2))
-            avatarChoice.tap()
             XCTAssertTrue(waitForValue("Avatar in front", on: layer, timeout: 2))
         }
     }
 
     private func putThreadLayerInFront(fullyTransparent: Bool = false) {
-        let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
-        XCTAssertTrue(foldControl.waitForExistence(timeout: 3))
-        if foldControl.label == "Show all tools" {
-            foldControl.tap()
-            XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 2))
-        }
+        unfoldAvatarRail()
         let layer = app.buttons["openclam-avatar-layer-menu"]
         XCTAssertTrue(layer.waitForExistence(timeout: 2))
         if layer.value as? String != "Thread in front" {
             layer.tap()
-            let threadChoice = app.buttons["Thread in front"]
-            XCTAssertTrue(threadChoice.waitForExistence(timeout: 2))
-            threadChoice.tap()
             XCTAssertTrue(waitForValue("Thread in front", on: layer, timeout: 2))
         }
         guard fullyTransparent else { return }
@@ -1100,6 +1090,46 @@ final class OpenClamConversationUITests: XCTestCase {
         let opacity = app.sliders["openclam-avatar-opacity"]
         XCTAssertTrue(opacity.waitForExistence(timeout: 2))
         opacity.adjust(toNormalizedSliderPosition: 0)
+    }
+
+    private func unfoldAvatarRail() {
+        let foldControl = app.buttons["openclam-avatar-rail-fold-button"]
+        XCTAssertTrue(foldControl.waitForExistence(timeout: 3))
+        if foldControl.label == "Show all tools" {
+            XCTAssertTrue(foldControl.isHittable)
+            foldControl.tap()
+            XCTAssertTrue(waitForLabel("Fold all tools", on: foldControl, timeout: 3))
+        }
+    }
+
+    private func selectAvatarMode(_ title: String) {
+        unfoldAvatarRail()
+        let menu = app.buttons["openclam-avatar-mode-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 3))
+        if String(describing: menu.value ?? "") == title { return }
+        menu.tap()
+        let choice = app.buttons[title]
+        XCTAssertTrue(choice.waitForExistence(timeout: 2))
+        XCTAssertTrue(choice.isEnabled)
+        choice.tap()
+        XCTAssertTrue(waitForValue(title, on: menu, timeout: 2))
+    }
+
+    private func openSettingsThroughSidebar() {
+        if app.navigationBars["Settings"].exists { return }
+
+        let sidebarSettings = app.buttons["Sidebar settings"]
+        if !sidebarSettings.exists {
+            let sidebar = app.buttons["Open sidebar"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 3))
+            XCTAssertTrue(sidebar.isHittable)
+            sidebar.tap()
+        }
+
+        XCTAssertTrue(sidebarSettings.waitForExistence(timeout: 3))
+        XCTAssertTrue(sidebarSettings.isHittable)
+        sidebarSettings.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
     }
 
     private func startFreshChat() {

@@ -125,7 +125,9 @@ final class AvatarAgentSaveDismissUITests: XCTestCase {
     }
 
     private func openAvatarAgents() {
-        app.buttons["Settings"].tap()
+        app.buttons["Open sidebar"].tap()
+        XCTAssertTrue(app.buttons["Sidebar settings"].waitForExistence(timeout: 3))
+        app.buttons["Sidebar settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
         app.descendants(matching: .any)[
             "openclam-avatar-agent-settings-link"

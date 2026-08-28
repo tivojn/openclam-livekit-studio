@@ -129,8 +129,42 @@ class CartoonDetectorTests(unittest.TestCase):
 
 
 class CartoonKeyframeTests(unittest.TestCase):
-    def test_source_mesh_projects_into_keyframe_without_redetection(self):
+    def test_strict_cartoon_keeps_complete_square_instead_of_human_face_crop(self):
+        image = np.full((80, 120, 3), (20, 40, 80), np.uint8)
+        landmarks = plausible_mesh(120, 80)
+        detection = {
+            "detection_mode": "strict",
+            "source_medium": "illustration",
+            "medium_score": 0.9,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, "key.png")
+            with mock.patch.object(prep, "read_image_bgr", return_value=image), \
+                    mock.patch.object(
+                        face, "detect_for_intake",
+                        return_value=(landmarks, np.eye(4), detection)) as intake, \
+                    mock.patch.object(prep, "silhouette_top") as silhouette, \
+                    mock.patch.object(
+                        face, "detect",
+                        side_effect=AssertionError(
+                            "approved illustration was redetected after contain")):
+                metrics = prep.build_keyframe(
+                    "unused.png", output, allow_stylized=True)
+            keyframe = cv2.imread(output, cv2.IMREAD_COLOR)
+
+        self.assertEqual(keyframe.shape, (1024, 1024, 3))
+        self.assertEqual(metrics["crop"], {
+            "x0": 0, "y0": -20, "size": 120, "source": [120, 80]})
+        self.assertEqual(metrics["source_medium"], "illustration")
+        silhouette.assert_not_called()
+        intake.assert_called_once_with(image)
+
+    def test_confident_cartoon_fallback_keeps_complete_source_and_headwear(self):
         image = np.zeros((100, 200, 3), np.uint8)
+        # Identity-bearing illustrated headwear deliberately sits outside the
+        # detector's right-half window.  The canonical provider reference must
+        # keep it even though only the detected face supplies landmarks.
+        image[5:15, 8:70] = (20, 180, 240)
         local = plausible_mesh(100, 80)
         source_landmarks = local + np.asarray((100, 20), np.float32)
         detection = {
@@ -158,11 +192,48 @@ class CartoonKeyframeTests(unittest.TestCase):
         self.assertEqual(metrics["detection_mode"], "crop-fallback")
         self.assertEqual(metrics["source_medium"], "illustration")
         self.assertEqual(metrics["detection_crop"], detection["detection_crop"])
-        # The proven crop expands to a 100px square at x=100,y=0.
+        self.assertEqual(metrics["crop"], {
+            "x0": 0, "y0": -50, "size": 200, "source": [200, 100]})
+        # The complete 2:1 illustration is centred vertically on the square;
+        # the far-left hat remains in the 1024px provider reference.
+        hat = keyframe[282:333, 41:358]
+        self.assertGreater(int(np.count_nonzero(hat[:, :, 2] > 200)), 1000)
+
+        # Project the proven source mesh through the complete-source square.
         projected = source_landmarks.copy()
-        projected[:, 0] = (projected[:, 0] - 100) * 10.24
-        projected[:, 1] *= 10.24
+        projected[:, 0] *= 5.12
+        projected[:, 1] = (projected[:, 1] + 50) * 5.12
         expected_width = float(np.ptp(projected[face.OUTER_LIP, 0]))
+        self.assertAlmostEqual(metrics["mouth_width_px"], expected_width, places=3)
+
+    def test_uncertain_fallback_keeps_the_proven_detector_square(self):
+        image = np.zeros((100, 200, 3), np.uint8)
+        local = plausible_mesh(100, 80)
+        source_landmarks = local + np.asarray((100, 20), np.float32)
+        detection = {
+            "detection_mode": "crop-fallback",
+            "source_medium": "unknown",
+            "medium_score": 0.66,
+            "detection_crop": {
+                "x": 100, "y": 20, "width": 100, "height": 80,
+                "source": [200, 100]},
+            "topology": {"face_area": 0.3},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, "key.png")
+            with mock.patch.object(prep, "read_image_bgr", return_value=image), \
+                    mock.patch.object(
+                        face, "detect_for_intake",
+                        return_value=(source_landmarks, np.eye(4), detection)), \
+                    mock.patch.object(
+                        face, "detect",
+                        side_effect=AssertionError("fallback was redetected")):
+                metrics = prep.build_keyframe(
+                    "unused.png", output, allow_stylized=True)
+
+        self.assertEqual(metrics["crop"], {
+            "x0": 100, "y0": 0, "size": 100, "source": [200, 100]})
+        expected_width = float(np.ptp(local[face.OUTER_LIP, 0])) * 10.24
         self.assertAlmostEqual(metrics["mouth_width_px"], expected_width, places=3)
 
 

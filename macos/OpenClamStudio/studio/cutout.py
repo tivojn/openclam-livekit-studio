@@ -49,11 +49,122 @@ def _decontaminate_edges(image):
     return image
 
 
-def render(source, destination, log=print, tight=False, pose_destination=None):
-    helper = helper_path()
-    if not helper:
-        log("  cutout unavailable: macOS Vision helper is not installed")
+def _border_mask(height, width):
+    """The narrow outside band used to prove a deliberately flat plate."""
+    band = max(2, min(12, round(min(height, width) * 0.015)))
+    mask = np.zeros((height, width), np.uint8)
+    mask[:band, :] = 1
+    mask[-band:, :] = 1
+    mask[:, :band] = 1
+    mask[:, -band:] = 1
+    return mask.astype(bool)
+
+
+def _flat_plate_model(image):
+    """Return a trusted border colour for a white/neutral/green studio plate.
+
+    This is deliberately unavailable to ordinary photographs.  Callers must
+    opt in after source-medium classification; even then a real, uniform,
+    border-supported plate is required before any pixel is made transparent.
+    """
+    height, width = image.shape[:2]
+    if min(height, width) < 16:
         return None
+    border = image[_border_mask(height, width)].astype(np.int16)
+    low = border.min(axis=1)
+    high = border.max(axis=1)
+    chroma = high - low
+
+    white_seed = (low >= 225) & (chroma <= 24)
+    white_support = float(((low >= 238) & (chroma <= 16)).mean())
+    if white_support >= 0.52 and int(white_seed.sum()) >= 32:
+        colour = np.median(border[white_seed], axis=0).astype(np.float32)
+        return "white", colour, white_support
+
+    # Canonical stylized heads are sometimes normalized onto a deliberately
+    # light neutral-gray plate rather than RGB-255 white. This path remains
+    # opt-in and requires much stronger border uniformity than the white plate
+    # so an ordinary bright photograph can never qualify by accident.
+    neutral_seed = (low >= 200) & (chroma <= 24)
+    neutral_support = float(((low >= 210) & (chroma <= 16)).mean())
+    if neutral_support >= 0.72 and int(neutral_seed.sum()) >= 32:
+        colour = np.median(border[neutral_seed], axis=0).astype(np.float32)
+        return "light-neutral", colour, neutral_support
+
+    blue, green, red = (border[:, index] for index in range(3))
+    green_seed = (
+        (green >= 105)
+        & (green - red >= 28)
+        & (green - blue >= 28)
+    )
+    green_support = float(green_seed.mean())
+    if green_support >= 0.52 and int(green_seed.sum()) >= 32:
+        colour = np.median(border[green_seed], axis=0).astype(np.float32)
+        return "green", colour, green_support
+    return None
+
+
+def _border_connected(mask):
+    """Keep only candidate background that is connected to the image edge."""
+    count, labels = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+    if count <= 1:
+        return np.zeros_like(mask, dtype=bool)
+    edge_labels = np.unique(np.concatenate((
+        labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1],
+    )))
+    edge_labels = edge_labels[edge_labels > 0]
+    if edge_labels.size == 0:
+        return np.zeros_like(mask, dtype=bool)
+    return np.isin(labels, edge_labels)
+
+
+def _flat_plate_cutout(image):
+    """Extract a soft matte from a proven flat illustration plate.
+
+    Colour similarity alone is unsafe because cartoons commonly contain white
+    eyes, teeth, and highlights.  Only the similar-colour component connected
+    to the outside border is removed, so enclosed white anatomy stays opaque.
+    """
+    model = _flat_plate_model(image)
+    if model is None:
+        return None
+    kind, background, support = model
+    pixels = image.astype(np.float32)
+    distance = np.linalg.norm(pixels - background[None, None, :], axis=2)
+    border = _border_mask(*image.shape[:2])
+    border_distance = distance[border]
+    noise = float(np.percentile(border_distance, 96))
+    noise = min(18.0, max(3.0, noise + 1.5))
+    # A modest colour radius includes JPEG/antialias fringe without walking
+    # through pale skin or clothing. Green gets a little more room because
+    # chroma subsampling spreads its saturated edge further than white.
+    edge_limit = max(noise + 20.0, 112.0 if kind == "green" else 96.0)
+    connected = _border_connected(distance <= edge_limit)
+    if float(connected[border].mean()) < 0.52:
+        return None
+
+    alpha = np.full(image.shape[:2], 255, np.uint8)
+    span = max(1.0, edge_limit - noise)
+    transition = np.clip((distance - noise) / span, 0.0, 1.0)
+    # A squared ramp follows the low-opacity side of an antialiased contour
+    # more faithfully than a hard chroma threshold and avoids bright halos.
+    soft = np.rint(255.0 * transition * transition).astype(np.uint8)
+    alpha[connected] = soft[connected]
+    alpha[connected & (distance <= noise)] = 0
+
+    foreground = alpha > 8
+    coverage = float(foreground.mean())
+    points = cv2.findNonZero(foreground.astype(np.uint8))
+    if points is None or not (0.01 <= coverage <= 0.97):
+        return None
+    _x, _y, width, height = cv2.boundingRect(points)
+    if width < 4 or height < 4:
+        return None
+    rgba = np.dstack((image.copy(), alpha))
+    return rgba, kind, support
+
+
+def _run_helper(helper, source, destination, pose_destination, log):
     try:
         command = [helper, source, destination]
         if pose_destination:
@@ -67,15 +178,58 @@ def render(source, destination, log=print, tight=False, pose_destination=None):
         )
     except Exception as error:
         log(f"  cutout failed: {error}")
-        return None
+        return False
     if result.returncode or not os.path.exists(destination):
         detail = (result.stderr or result.stdout or "unknown error").strip()[-240:]
         log(f"  cutout failed: {detail}")
-        return None
+        return False
     if pose_destination and not os.path.isfile(pose_destination):
         log("  cutout failed: helper did not produce body-pose metadata")
-        return None
-    image = cv2.imread(destination, cv2.IMREAD_UNCHANGED)
+        return False
+    return True
+
+
+def render(
+        source, destination, log=print, tight=False, pose_destination=None,
+        allow_stylized=False):
+    """Create an RGBA subject cutout, with an explicit cartoon plate path.
+
+    The default remains macOS Vision person segmentation.  A caller that has
+    already classified the source as non-photographic may opt into a local,
+    border-connected white/neutral/green extractor. Body-pose requests run
+    Vision for their pose receipt; only the semantic matte is replaced.
+    """
+    flat = None
+    if allow_stylized:
+        source_image = cv2.imread(source, cv2.IMREAD_COLOR)
+        if source_image is not None:
+            flat = _flat_plate_cutout(source_image)
+
+    helper_required = pose_destination is not None or flat is None
+    if helper_required:
+        helper = helper_path()
+        if not helper:
+            log("  cutout unavailable: macOS Vision helper is not installed")
+            return None
+        if not _run_helper(
+                helper, source, destination, pose_destination, log):
+            return None
+
+    method = "macos-vision-person-segmentation"
+    if flat is not None:
+        image, plate_kind, plate_support = flat
+        method = f"border-connected-{plate_kind}-plate"
+        directory = os.path.dirname(os.path.abspath(destination))
+        os.makedirs(directory, exist_ok=True)
+        if not cv2.imwrite(destination, image):
+            log("  cutout failed: could not write stylized plate matte")
+            return None
+        log(
+            f"  stylized {plate_kind} plate detected: "
+            f"{plate_support * 100:.1f}% border support")
+    else:
+        image = cv2.imread(destination, cv2.IMREAD_UNCHANGED)
+
     if image is None or image.ndim != 3 or image.shape[2] != 4:
         log("  cutout failed: helper did not produce an RGBA image")
         return None
@@ -103,4 +257,5 @@ def render(source, destination, log=print, tight=False, pose_destination=None):
         "src": "assets/cutout.png",
         "bounds": [int(x), int(y), int(width), int(height)],
         "coverage": round(coverage, 4),
+        "method": method,
     }

@@ -46,6 +46,30 @@ enum ConversationComposerLayout {
     static let textHorizontalInset: CGFloat = 12
     static let textVerticalInset: CGFloat = 8
     static let minimumExpandedTextHeight: CGFloat = 62
+    static let restingReservedHeight: CGFloat = 72
+    static let threadClearance: CGFloat = 8
+}
+
+private struct ConversationComposerTopPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat? = nil
+
+    static func reduce(
+        value: inout CGFloat?,
+        nextValue: () -> CGFloat?
+    ) {
+        value = nextValue() ?? value
+    }
+}
+
+private struct ConversationComposerHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(
+        value: inout CGFloat,
+        nextValue: () -> CGFloat
+    ) {
+        value = nextValue()
+    }
 }
 
 enum ConversationSpeechStatusCopy {
@@ -249,14 +273,17 @@ struct ConversationView: View {
     @State private var expandedWorkSteps: Set<String> = []
     @State private var remoteWorkStartedAt: [UUID: Date] = [:]
     @State private var warmEarEnabled = OpenClamWarmEarControl.isEnabled
+    @AppStorage("captainAyer.overlay.railFolded.v2")
+    private var isAvatarRailFolded = true
     @StateObject private var avatarInteractions = CaptainAyerOverlayInteractionRelay()
     @StateObject private var liveTalk = LiveTalkSessionController()
     @State private var liveTalkPTTNotice: String?
+    @State private var composerTopGlobal: CGFloat?
+    @State private var composerHeight = ConversationComposerLayout.restingReservedHeight
     @FocusState private var isComposerFocused: Bool
 
     let onShowSidebar: () -> Void
     let onSelectAvatar: (_ id: String, _ displayName: String) -> Void
-    let onShowSettings: () -> Void
     let onShowAISettings: () -> Void
     let onShowAgentConnections: () -> Void
 
@@ -279,12 +306,29 @@ struct ConversationView: View {
         }
         .navigationTitle(conversation.currentThreadTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom) {
+        .overlay(alignment: .bottom) {
             composer
-                // Motion artwork may visually extend into the safe area. Keep
-                // the native composer above that artwork for rendering and hit testing.
+                // The composer floats over the shared thread/avatar canvas.
+                // Text reserves its own scroll margin below, while close-up
+                // artwork may remain visible through the material shell.
                 .zIndex(100)
                 .contentShape(Rectangle())
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: ConversationComposerHeightPreferenceKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                }
+        }
+        .onPreferenceChange(ConversationComposerTopPreferenceKey.self) { top in
+            guard let top, top.isFinite else { return }
+            composerTopGlobal = top
+        }
+        .onPreferenceChange(ConversationComposerHeightPreferenceKey.self) { height in
+            guard height.isFinite, height > 0 else { return }
+            composerHeight = height
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -330,19 +374,22 @@ struct ConversationView: View {
 
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    dismissKeyboard()
-                    if let reason = ConversationLiveTalkNavigationPolicy
-                        .sidebarBlockReason(liveTalkPhase: liveTalk.phase) {
-                        liveTalkPTTNotice = reason
-                        return
+                    avatarInteractions.noteThreadInteraction()
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
+                        isAvatarRailFolded.toggle()
                     }
-                    onShowSettings()
                 } label: {
-                    Label("Settings", systemImage: "gearshape")
-                        .labelStyle(.iconOnly)
+                    Image(systemName: isAvatarRailFolded ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 17, weight: .semibold))
                         .frame(width: 44, height: 44)
+                        .contentTransition(.symbolEffect(.replace))
                 }
-                .accessibilityHint("Opens AI services and iPhone tool settings")
+                .accessibilityLabel(isAvatarRailFolded ? "Show all tools" : "Fold all tools")
+                .accessibilityValue(isAvatarRailFolded ? "Folded" : "Expanded")
+                .accessibilityHint("Shows or hides the avatar tool rail")
+                .accessibilityIdentifier("openclam-avatar-rail-fold-button")
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
         }
     }
@@ -396,6 +443,10 @@ struct ConversationView: View {
             input = transcript
         }
         .onChange(of: input) { _, _ in
+            // Typing and dictation are conversation activity too: leave only
+            // transient Walk / Edge Idle / Moves, while an explicit Close-up
+            // remains selected.
+            avatarInteractions.noteThreadInteraction()
             if !liveTalk.phase.isSessionActive {
                 conversation.stopSpeechOutput()
             }
@@ -542,6 +593,11 @@ struct ConversationView: View {
         .accessibilityIdentifier("openclam-conversation-thread")
         .defaultScrollAnchor(isFreshConversation ? .top : .bottom)
         .scrollDismissesKeyboard(.interactively)
+        .contentMargins(
+            .bottom,
+            composerHeight + ConversationComposerLayout.threadClearance,
+            for: .scrollContent
+        )
         .background(assistantBackground)
     }
 
@@ -600,6 +656,9 @@ struct ConversationView: View {
             }
             .onChange(of: isComposerFocused) { _, focused in
                 expandsComposerForEditing = focused
+                if focused {
+                    avatarInteractions.noteThreadInteraction()
+                }
                 if focused, threadPositioning.shouldFollowLatest {
                     scrollToLatest(using: proxy)
                 }
@@ -989,7 +1048,7 @@ struct ConversationView: View {
                 }
             }
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.primary.opacity(0.68))
 
             Divider()
 
@@ -2136,18 +2195,30 @@ struct ConversationView: View {
     private var composer: some View {
         ViewThatFits(in: .horizontal) {
             compactComposer
-                .fixedSize(horizontal: true, vertical: false)
+                .frame(maxWidth: .infinity)
                 .frame(minWidth: shouldUseExpandedComposer ? 10_000 : nil)
             expandedComposer
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(.quaternary, lineWidth: 1)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.08), radius: 16, y: 5)
+        .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ConversationComposerTopPreferenceKey.self,
+                    value: proxy.frame(in: .global).minY
+                )
+            }
+        }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
@@ -2181,8 +2252,6 @@ struct ConversationView: View {
             compactComposerPrompt
                 .frame(minWidth: 72)
                 .layoutPriority(2)
-            modelSelectionMenu(expandsToWidth: false, compact: true)
-                .layoutPriority(1)
             composerActionButton
         }
     }
@@ -2233,6 +2302,7 @@ struct ConversationView: View {
                     textToSpeechButton
                     Spacer(minLength: 2)
                     modelSelectionMenu(expandsToWidth: false)
+                        .layoutPriority(1)
                     composerActionButton
                 }
             }
@@ -2397,7 +2467,11 @@ struct ConversationView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .foregroundStyle(.secondary)
+            // Menu labels can inherit a nearly transparent hierarchical tint
+            // from the floating material on iOS 26. Use a concrete color so
+            // the selected model remains visibly present once the composer is
+            // expanded, while still reading as secondary information.
+            .foregroundStyle(Color.primary.opacity(0.68))
             .frame(
                 minWidth: expandsToWidth ? nil : (compact ? 128 : 116),
                 maxWidth: expandsToWidth ? .infinity : (compact ? 136 : 156),
@@ -2452,7 +2526,7 @@ struct ConversationView: View {
             )
             .contentShape(Rectangle())
         }
-        .tint(.secondary)
+        .tint(Color.primary.opacity(0.68))
         .disabled(isRequestActive)
         .accessibilityLabel("Language model")
         .accessibilityValue("\(configuredProviderName), \(configuredModelName)")
@@ -2571,6 +2645,8 @@ struct ConversationView: View {
             avatar: activeAvatarDescriptor,
             isTTSEnabled: conversation.isTTSEnabled,
             liveTalkPhase: liveTalk.phase,
+            composerTopGlobal: composerTopGlobal,
+            isRailFolded: $isAvatarRailFolded,
             onPlayLatest: {
                 guard reserveAppAudioLane() else { return }
                 if !conversation.isTTSEnabled {
@@ -2983,6 +3059,9 @@ struct ConversationView: View {
 
     private func sendInput(_ submittedValue: String? = nil) {
         guard !conversation.isWorking, !isChatTransitioning else { return }
+        // A deliberate conversation turn always brings the remembered
+        // Standby companion back from a transient walk, edge idle, or move.
+        avatarInteractions.noteThreadInteraction()
         conversation.stopSpeechOutput()
         confirmedActionNotice = nil
         if speech.isListening {

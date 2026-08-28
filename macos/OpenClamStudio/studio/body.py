@@ -168,6 +168,18 @@ def _presentation_context(options, style):
         presentation, medium)
 
 
+def _allow_stylized_source(options):
+    """Enable permissive local geometry only for an explicit non-photo rig."""
+    options = options if isinstance(options, dict) else {}
+    style = options.get("style") if options.get("style") in STYLES \
+        else "photorealistic"
+    _presentation, medium, _rule = _presentation_context(options, style)
+    return medium not in {
+        "", "unknown", "photo", "photograph", "photoreal",
+        "photorealistic",
+    }
+
+
 def image_provider_selection():
     """The direct image lane selected in OpenClam, including its transient key."""
     return media_gen.selected_config("image", media_gen.IMAGE_EDIT_PROVIDERS)
@@ -473,7 +485,7 @@ SOURCE PLATE—Uniform RGB-255 white continues behind and beneath the figure. Fl
     return _fit_full_body_prompt(prompt)
 
 
-def _detect(image, label):
+def _detect(image, label, allow_stylized=False):
     height, width = image.shape[:2]
     regions = [(0, 0, width, height)]
     if height > width:
@@ -483,7 +495,11 @@ def _detect(image, label):
         for scale in (1.0, 2.0, 3.5):
             candidate = crop if scale == 1.0 else cv2.resize(
                 crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_LANCZOS4)
-            landmarks, _ = face.detect(candidate)
+            if allow_stylized:
+                landmarks, _transform, _metadata = face.detect_for_intake(
+                    candidate)
+            else:
+                landmarks, _transform = face.detect(candidate)
             if landmarks is not None:
                 landmarks = landmarks / scale
                 landmarks[:, 0] += x
@@ -492,10 +508,12 @@ def _detect(image, label):
     raise RuntimeError(f"no face detected in the {label}")
 
 
-def _face_transform(keyframe, body_image):
-    key_landmarks = _detect(keyframe, "identity portrait")
+def _face_transform(keyframe, body_image, allow_stylized=False):
+    key_landmarks = _detect(
+        keyframe, "identity portrait", allow_stylized=allow_stylized)
     try:
-        body_landmarks = _detect(body_image, "generated body")
+        body_landmarks = _detect(
+            body_image, "generated body", allow_stylized=allow_stylized)
     except RuntimeError as error:
         raise GeneratedBodyIdentityError(str(error)) from error
     source = key_landmarks[face.RIGID].astype(np.float32)
@@ -705,8 +723,11 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
         raise RuntimeError("generated front body source could not be decoded")
     stage = tempfile.mkdtemp(prefix=".body-front-preflight-", dir=avatar_dir)
     try:
+        allow_stylized = _allow_stylized_source(options)
         cutout_path = os.path.join(stage, "front.png")
-        if not cutout.render(source, cutout_path, log=log, tight=True):
+        if not cutout.render(
+                source, cutout_path, log=log, tight=True,
+                allow_stylized=allow_stylized):
             raise RuntimeError("local person cutout failed for the front view")
         body_rgba = cv2.imread(cutout_path, cv2.IMREAD_UNCHANGED)
         if (body_rgba is None or body_rgba.ndim != 3
@@ -728,7 +749,8 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
                 "generated front body failed alpha QA: "
                 f"{alpha_quality['reason']}")
         _transform, alignment, _landmarks = _face_transform(
-            keyframe, body_rgba[:, :, :3])
+            keyframe, body_rgba[:, :, :3],
+            allow_stylized=allow_stylized)
         proportion_quality = body_proportion.assess(
             body_rgba, alignment.get("face_bounds"), options)
         proportion_failure = body_proportion.failure(proportion_quality)
@@ -757,7 +779,8 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def _preflight_alpha_source(avatar_dir, source, view, log=print):
+def _preflight_alpha_source(
+        avatar_dir, source, view, options=None, log=print):
     """Reject an unsafe generated view before requesting the next plate.
 
     Front has a stronger identity/proportion preflight.  Side and back still
@@ -773,8 +796,11 @@ def _preflight_alpha_source(avatar_dir, source, view, log=print):
     stage = tempfile.mkdtemp(
         prefix=f".body-{view}-alpha-preflight-", dir=avatar_dir)
     try:
+        allow_stylized = _allow_stylized_source(options)
         cutout_path = os.path.join(stage, f"{view}.png")
-        if not cutout.render(source, cutout_path, log=log, tight=True):
+        if not cutout.render(
+                source, cutout_path, log=log, tight=True,
+                allow_stylized=allow_stylized):
             raise RuntimeError(f"local person cutout failed for the {view} view")
         body_rgba = cv2.imread(cutout_path, cv2.IMREAD_UNCHANGED)
         if (body_rgba is None or body_rgba.ndim != 3
@@ -801,6 +827,31 @@ def _preflight_alpha_source(avatar_dir, source, view, log=print):
         return alpha_quality
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+def _identity_cutout(
+        keyframe_path, keyframe, destination, allow_stylized, log=print):
+    """Build the temporary identity colour source used by ``_head_mask``.
+
+    Vision person segmentation is meaningful for a photographic portrait, but
+    on an oversized cartoon head it can return a tiny arbitrary body fragment.
+    The following head mask is already bounded by the detected facial oval, so
+    a stylized rig safely starts from opaque BGRA geometry instead.
+    """
+    if allow_stylized:
+        opaque = np.dstack((
+            keyframe,
+            np.full(keyframe.shape[:2], 255, np.uint8),
+        ))
+        if not cv2.imwrite(destination, opaque):
+            raise RuntimeError("could not write the stylized identity overlay")
+        return opaque
+    if not cutout.render(keyframe_path, destination, log=log):
+        raise RuntimeError("could not build the identity overlay mask")
+    rendered = cv2.imread(destination, cv2.IMREAD_UNCHANGED)
+    if rendered is None or rendered.ndim != 3 or rendered.shape[2] != 4:
+        raise RuntimeError("identity overlay mask is not RGBA")
+    return rendered
 
 
 def _head_mask(cutout_image, landmarks, destination):
@@ -1225,6 +1276,11 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
     identity_reference = _identity_reference(avatar_dir)
     if not os.path.isfile(identity_reference):
         raise RuntimeError("avatar identity head is missing")
+    stored_style = options.get("style") \
+        if options.get("style") in STYLES else "photorealistic"
+    stored_presentation, stored_medium, _stored_rule = \
+        _presentation_context(options, stored_style)
+    allow_stylized = _allow_stylized_source(options)
     for view in BODY_VIEWS:
         if not os.path.isfile(str(sources.get(view) or "")):
             raise RuntimeError(f"the generated {view} body source is missing")
@@ -1254,7 +1310,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                 f"Cutting out {view} full-body view")
             body_path = os.path.join(stage, f"body-{view}.png")
             if not cutout.render(
-                    staged_sources[view], body_path, log=log, tight=True):
+                    staged_sources[view], body_path, log=log, tight=True,
+                    allow_stylized=allow_stylized):
                 raise RuntimeError(f"local person cutout failed for the {view} view")
             body_rgba = cv2.imread(body_path, cv2.IMREAD_UNCHANGED)
             if body_rgba is None or body_rgba.ndim != 3 or body_rgba.shape[2] != 4:
@@ -1288,7 +1345,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         log("locking the calibrated face onto the generated front body")
         _emit(progress, "identity", .80, "Locking the calibrated face to the front view")
         transform, alignment, key_landmarks = _face_transform(
-            keyframe, view_images["front"][:, :, :3])
+            keyframe, view_images["front"][:, :, :3],
+            allow_stylized=allow_stylized)
         proportion_quality = body_proportion.assess(
             view_images["front"], alignment.get("face_bounds"), options)
         proportion_failure = body_proportion.failure(proportion_quality)
@@ -1315,9 +1373,9 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                 "apparent heads tall")
         alignment["body_proportion"] = proportion_quality
         portrait_cutout_path = os.path.join(stage, "portrait-cutout.png")
-        if not cutout.render(keyframe_path, portrait_cutout_path, log=lambda _message: None):
-            raise RuntimeError("could not build the identity overlay mask")
-        portrait_cutout = cv2.imread(portrait_cutout_path, cv2.IMREAD_UNCHANGED)
+        portrait_cutout = _identity_cutout(
+            keyframe_path, keyframe, portrait_cutout_path, allow_stylized,
+            log=lambda _message: None)
         head_mask_path = os.path.join(stage, "head-mask.png")
         _head_mask(portrait_cutout, key_landmarks, head_mask_path)
         face_bounds = alignment.get("face_bounds")
@@ -1349,10 +1407,6 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         view_metadata["front"]["alignment"] = alignment
         if preview_name:
             view_metadata["front"]["preview_image"] = preview_name
-        stored_style = options.get("style") \
-            if options.get("style") in STYLES else "photorealistic"
-        stored_presentation, stored_medium, _stored_rule = \
-            _presentation_context(options, stored_style)
         metadata = {
             "v": 3,
             "image": "body.png",
@@ -1485,7 +1539,7 @@ def build(avatar_dir, options, log=print, progress=None):
                         avatar_dir, generated, options, log=log)
                 else:
                     _preflight_alpha_source(
-                        avatar_dir, generated, view, log=log)
+                        avatar_dir, generated, view, options, log=log)
             except GeneratedBodyAlphaError as alpha_error:
                 if view == "front":
                     shutil.rmtree(cache_dir, ignore_errors=True)
@@ -1509,7 +1563,7 @@ def build(avatar_dir, options, log=print, progress=None):
                     generated = generate_view(view, retry_prompt, retry=True)
                     sources[view] = generated
                     _preflight_alpha_source(
-                        avatar_dir, generated, view, log=log)
+                        avatar_dir, generated, view, options, log=log)
                 except Exception:
                     # Never leave a rejected retry eligible for cache reuse.
                     # The earlier accepted members and signature remain exact,

@@ -87,7 +87,7 @@ def _tooth_mask(img, cavity, lm=None, upper_only=False, row=None):
     return clean
 
 
-def _scan_tooth_donors(viseme_dir, row="upper"):
+def _scan_tooth_donors(viseme_dir, row="upper", allow_stylized=False):
     """Detect the enamel row on every candidate frame: the election and the
     calibration panel's donor dropdown (name + detected pixels) share one
     scan instead of running face detection twice per frame."""
@@ -99,7 +99,7 @@ def _scan_tooth_donors(viseme_dir, row="upper"):
         donor = cv2.imread(path)
         if donor is None:
             continue
-        donor_lm, _ = face.detect(donor)
+        donor_lm, _ = _detect_composition_face(donor, allow_stylized)
         if donor_lm is None:
             continue
         band = _dental_band(donor.shape, donor_lm)
@@ -127,17 +127,20 @@ def _elect_tooth_donor(candidates, row, choice="auto"):
     return best
 
 
-def _select_tooth_donor(viseme_dir, row="upper", choice="auto"):
-    return _elect_tooth_donor(_scan_tooth_donors(viseme_dir, row), row, choice)
+def _select_tooth_donor(viseme_dir, row="upper", choice="auto",
+                        allow_stylized=False):
+    return _elect_tooth_donor(
+        _scan_tooth_donors(viseme_dir, row, allow_stylized), row, choice)
 
 
-def _select_dental_donors(viseme_dir, profile=None):
+def _select_dental_donors(viseme_dir, profile=None, allow_stylized=False):
     profile = rig.normalize(profile)
     return {
         row: selected
         for row in DENTAL_ROWS
         if (selected := _select_tooth_donor(
-            viseme_dir, row, profile[f"{row}_teeth_donor"])) is not None
+            viseme_dir, row, profile[f"{row}_teeth_donor"],
+            allow_stylized=allow_stylized)) is not None
     }
 
 
@@ -183,7 +186,7 @@ def _row_assets(donor, donor_lm, master, target_lm, row):
 
 
 def canonicalize_teeth(viseme_dir, diag_dir=None, log=print, selected=None,
-                       profile=None):
+                       profile=None, allow_stylized=False):
     """Lock skull-attached upper teeth and jaw-attached lower teeth."""
     profile = rig.normalize(profile)
     strength = profile["teeth"] / 100.0
@@ -191,7 +194,8 @@ def canonicalize_teeth(viseme_dir, diag_dir=None, log=print, selected=None,
         log("  dental lock released: strength 0, every frame keeps its own teeth")
         return []
     if selected is None:
-        selected = _select_dental_donors(viseme_dir, profile)
+        selected = _select_dental_donors(
+            viseme_dir, profile, allow_stylized=allow_stylized)
     if not selected:
         log("  dental lock skipped: no canonical dental rows found")
         return []
@@ -230,7 +234,7 @@ def canonicalize_teeth(viseme_dir, diag_dir=None, log=print, selected=None,
         img = cv2.imread(path)
         if img is None:
             continue
-        lm, _ = face.detect(img)
+        lm, _ = _detect_composition_face(img, allow_stylized)
         if lm is None:
             continue
         cavity = _mouth_cavity(img.shape, lm)
@@ -304,7 +308,7 @@ def canonicalize_teeth(viseme_dir, diag_dir=None, log=print, selected=None,
     return report
 
 
-def soften_oral_shadows(viseme_dir, log=print):
+def soften_oral_shadows(viseme_dir, log=print, allow_stylized=False):
     """Soften near-black cavity pixels and ink-like inner-lip contours."""
     report = []
     cavity_target = np.array([52.0, 58.0, 98.0], np.float32)
@@ -317,7 +321,7 @@ def soften_oral_shadows(viseme_dir, log=print):
         img = cv2.imread(path)
         if img is None:
             continue
-        lm, _ = face.detect(img)
+        lm, _ = _detect_composition_face(img, allow_stylized)
         if lm is None:
             continue
         cavity = _mouth_cavity(img.shape, lm)
@@ -458,12 +462,26 @@ def _alpha_ring(mask, face_m, scale, profile=None):
     return alpha, ring
 
 
+def _detect_composition_face(image, allow_stylized=False):
+    """Return a production mesh, with an explicit cartoon-only fallback.
+
+    The permissive path is still topology-gated by ``detect_for_intake`` and
+    must be opted into by a build whose source medium was already classified
+    as non-photographic.  Photo builds therefore keep the original strict
+    production detector.
+    """
+    if allow_stylized:
+        landmarks, transform, _metadata = face.detect_for_intake(image)
+        return landmarks, transform
+    return face.detect(image)
+
+
 def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
-                profile=None):
+                profile=None, allow_stylized=False):
     key = cv2.imread(keyframe_path)
     H, W = key.shape[:2]
     scale = max(H, W) / 1024.0
-    klm, kM = face.detect(key)
+    klm, kM = _detect_composition_face(key, allow_stylized)
     if klm is None:
         raise ValueError("no face in keyframe")
     kmet = face.metrics(klm, kM)
@@ -496,7 +514,7 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
         src = cv2.imread(src_path)
         if src.shape[:2] != (H, W):
             src = cv2.resize(src, (W, H), interpolation=cv2.INTER_LANCZOS4)
-        slm, sM = face.detect(src)
+        slm, sM = _detect_composition_face(src, allow_stylized)
         if slm is None:
             log(f"  {name}: no face in render, skipped")
             continue
@@ -520,7 +538,7 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
 
         d = np.abs(out.astype(np.float32) - kl).mean(axis=2)
         outside = float(d[alpha < 0.02].mean())
-        olm, _ = face.detect(out)
+        olm, _ = _detect_composition_face(out, allow_stylized)
         fs = float(face.foreshortening(olm)) if olm is not None else None
         report.append(dict(name=name, resid_px=round(resid, 2),
                            outside_delta=round(outside, 4),
@@ -529,10 +547,13 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
         log(f"  {name:7s} rigid residual {resid:5.2f}px   off-region delta {outside:.4f}"
             + (f"   foreshortening {fs:.2f}" if fs else ""))
 
-    dental_donors = _select_dental_donors(out_dir, profile)
-    oral_shadows = soften_oral_shadows(out_dir, log)
+    dental_donors = _select_dental_donors(
+        out_dir, profile, allow_stylized=allow_stylized)
+    oral_shadows = soften_oral_shadows(
+        out_dir, log, allow_stylized=allow_stylized)
     teeth = canonicalize_teeth(
-        out_dir, diag_dir, log, selected=dental_donors, profile=profile)
+        out_dir, diag_dir, log, selected=dental_donors, profile=profile,
+        allow_stylized=allow_stylized)
     if diag_dir:
         json.dump(dict(keyframe=kmet, visemes=report, teeth=teeth,
                        oral_shadows=oral_shadows, rig_profile=profile),

@@ -1350,8 +1350,8 @@
     <button id="avatarModeButton" class="round-button chat-only-control" type="button" aria-label="Switch to Avatar mode" title="Avatar mode">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h5v2H5v4H3V4a1 1 0 0 1 1-1Zm11 0h5a1 1 0 0 1 1 1v5h-2V5h-4V3ZM3 15h2v4h4v2H4a1 1 0 0 1-1-1v-5Zm16 0h2v5a1 1 0 0 1-1 1h-5v-2h4v-4ZM12 7a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm-5 10c.35-2.25 2.03-3.5 5-3.5s4.65 1.25 5 3.5H7Z"/></svg>
     </button>
-    <button id="motionMenuButton" class="round-button" type="button" aria-expanded="false" aria-controls="motionPicker" aria-label="Choose avatar motion" title="Choose avatar motion">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 4.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4zm-1.2 4.4 2.2 2.1v4.1h2v-5l-2-2 1.1-2.3c1.2 1.4 2.9 2.3 4.9 2.3v-2c-1.7 0-3.1-.9-3.9-2.2l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.2L8 3.4v5.2h2V4.7l1.8-.7-3.2 6.5-5.1-1-.4 1.9 6.5 1.3 1-2.1-1.6 4.9-4.7 4.2L5.6 21l5.2-4.7 1.5-4.5 1.2 1.2v5h2v-5.8l-3.2-3.6z"/></svg>
+    <button id="motionMenuButton" class="round-button" type="button" aria-expanded="false" aria-controls="motionPicker" aria-label="Choose avatar display mode" title="Avatar display modes">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v14h16V5H4Zm8 2.1a3.1 3.1 0 1 1 0 6.2 3.1 3.1 0 0 1 0-6.2ZM6.8 17c.5-2 2.25-3 5.2-3s4.7 1 5.2 3H6.8Z"/></svg>
     </button>
     <button id="speakerButton" class="round-button chat-only-control" type="button" aria-label="Read latest reply aloud" title="Read latest reply aloud">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm11.5-.8a5 5 0 0 1 0 7.6l-1.2-1.6a3 3 0 0 0 0-4.4l1.2-1.6Zm2.4-3.1a9 9 0 0 1 0 13.8l-1.2-1.6a7 7 0 0 0 0-10.6l1.2-1.6Z"/></svg>
@@ -1373,10 +1373,12 @@
     </button>
   </nav>
 
-  <div id="motionPicker" class="rail-picker" role="menu" aria-label="Avatar motion" hidden>
-    <button id="walkButton" type="button" role="menuitemcheckbox" aria-checked="false">Horizon Walk</button>
-    <button id="edgeIdleButton" type="button" role="menuitemcheckbox" aria-checked="false">Edge Idle</button>
-    <button id="movesButton" type="button" role="menuitemcheckbox" aria-checked="false">Moves</button>
+  <div id="motionPicker" class="rail-picker" role="menu" aria-label="Avatar display mode" hidden>
+    <button id="standbyButton" type="button" role="menuitemradio" aria-checked="true">Standby</button>
+    <button id="closeUpButton" type="button" role="menuitemradio" aria-checked="false">Close-up</button>
+    <button id="walkButton" type="button" role="menuitemradio" aria-checked="false">Horizon Walk</button>
+    <button id="edgeIdleButton" type="button" role="menuitemradio" aria-checked="false">Edge Idle</button>
+    <button id="movesButton" type="button" role="menuitemradio" aria-checked="false">Moves</button>
   </div>
   <div id="opacityPanel" class="rail-picker opacity-picker" hidden>
     <label for="avatarOpacityRange">Avatar opacity <output id="avatarOpacityValue">100%</output></label>
@@ -1515,6 +1517,8 @@
     const opacityPanel = document.getElementById('opacityPanel');
     const avatarOpacityRange = document.getElementById('avatarOpacityRange');
     const avatarOpacityValue = document.getElementById('avatarOpacityValue');
+    const standbyButton = document.getElementById('standbyButton');
+    const closeUpButton = document.getElementById('closeUpButton');
     const movesButton = document.getElementById('movesButton');
     const walkButton = document.getElementById('walkButton');
     const edgeIdleButton = document.getElementById('edgeIdleButton');
@@ -1583,6 +1587,7 @@
     let pixelRatio = 1;
     let shellState = { onBattery: false, chatCloseUp: false, chatCloseUpBaseZoom: 1,
       chatPoseRevision: 0,
+      factoryResetRevision: 0,
       desktopCloseUp: false,
       pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
     let roamState = { enabled: false, mode: 'idle', direction: 1, phase: 0, edge: null };
@@ -2001,13 +2006,70 @@
       toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
     };
 
-    const markActivity = () => {
+    const displayModeButtons = Object.freeze({
+      standby: standbyButton,
+      'close-up': closeUpButton,
+      walk: walkButton,
+      'edge-idle': edgeIdleButton,
+      moves: movesButton,
+    });
+    let transientDisplayExitPending = false;
+
+    const activeDisplayMode = () => {
+      if (manualMotionKind === 'walk' || Boolean(shellState.pet && shellState.pet.roam)) return 'walk';
+      if (manualMotionKind === 'idle' || idleDocked) return 'edge-idle';
+      if (manualMotionKind === 'move' || moveUntil > performance.now()) return 'moves';
+      if (shellState.chatCloseUp || shellState.desktopCloseUp) return 'close-up';
+      return 'standby';
+    };
+
+    const syncDisplayModeControls = () => {
+      const active = activeDisplayMode();
+      for (const [mode, button] of Object.entries(displayModeButtons)) {
+        button.setAttribute('aria-checked', String(mode === active));
+      }
+      motionMenuButton.dataset.mode = active;
+    };
+
+    const clearLocalTransientDisplayMode = () => {
+      const wasDocked = idleDocked;
+      manualMotionKind = null;
+      manualMotionStartedAt = 0;
+      chatWalkState = null;
+      moveUntil = 0;
+      idleDocked = false;
+      movesButton.classList.remove('showing');
+      if (wasDocked && !root.classList.contains('chat-mode')
+          && shell && typeof shell.undockPet === 'function') shell.undockPet();
+      lastFrame = 0;
+      syncDisplayModeControls();
+    };
+
+    const exitTransientDisplayMode = () => {
+      const roaming = Boolean(shellState.pet && shellState.pet.roam);
+      const transient = roaming || manualMotionKind || moveUntil > performance.now() || idleDocked;
+      if (!transient) return false;
+      clearLocalTransientDisplayMode();
+      if (roaming && shell && typeof shell.setDisplayMode === 'function'
+          && !transientDisplayExitPending) {
+        transientDisplayExitPending = true;
+        Promise.resolve(shell.setDisplayMode('standby'))
+          .then(applyShellState)
+          .catch(() => {})
+          .finally(() => { transientDisplayExitPending = false; });
+      }
+      return true;
+    };
+
+    const markActivity = ({ preserveDisplayMode = false } = {}) => {
       lastActivity = performance.now();
+      if (!preserveDisplayMode && exitTransientDisplayMode()) return;
       if (idleDocked) {
         idleDocked = false;
         if (!root.classList.contains('chat-mode')
             && shell && typeof shell.undockPet === 'function') shell.undockPet();
       }
+      syncDisplayModeControls();
     };
 
     // Edge Idle is a temporary presentation, never a new camera state. Any
@@ -2137,10 +2199,7 @@
       setHistoryOpen(false);
       hideSelectionActions(true);
       closeRailPickers();
-      manualMotionKind = null;
-      walkButton.setAttribute('aria-checked', 'false');
-      edgeIdleButton.setAttribute('aria-checked', 'false');
-      movesButton.setAttribute('aria-checked', 'false');
+      clearLocalTransientDisplayMode();
       root.classList.remove('chat-open', 'chat-mode', 'avatar-layer-top', 'thread-layer-top');
       updateMotionControlsAvailability();
       composer.blur();
@@ -3831,6 +3890,7 @@
         }
         manualMotionKind = null;
         chatWalkState = null;
+        syncDisplayModeControls();
       }
 
       if (roamState.enabled) {
@@ -3844,12 +3904,14 @@
       if (moveUntil && now >= moveUntil) {
         moveUntil = 0;
         movesButton.classList.remove('showing');
+        syncDisplayModeControls();
       }
       if (edgeIdleActive(now)) {
         const inChat = root.classList.contains('chat-mode');
         const idleEdge = inChat ? chatStandbyEdge(chatAvatarOffset) : side;
         if (!idleDocked) {
           idleDocked = true;
+          syncDisplayModeControls();
           if (!inChat && shell && typeof shell.dockPet === 'function') shell.dockPet();
         }
         if (inChat) {
@@ -3863,6 +3925,7 @@
         if (drawPresentedMotion('idle', now, idleEdge)) return;
       } else if (idleDocked) {
         idleDocked = false;
+        syncDisplayModeControls();
         if (!root.classList.contains('chat-mode')
           && shell && typeof shell.undockPet === 'function') shell.undockPet();
       }
@@ -6064,59 +6127,74 @@
       reportControlRects(true);
     }
 
-    const toggleMove = async () => {
-      if (!await ensureMotion('move')) return;
+    const selectShellDisplayMode = async mode => {
+      if (!shell || typeof shell.setDisplayMode !== 'function') return shellState;
+      const state = await shell.setDisplayMode(mode);
+      applyShellState(state);
+      return state;
+    };
+
+    const selectStandbyMode = async () => {
+      clearLocalTransientDisplayMode();
+      await selectShellDisplayMode('standby');
+      markActivity({ preserveDisplayMode: true });
+      syncDisplayModeControls();
+    };
+
+    const selectCloseUpMode = async () => {
+      clearLocalTransientDisplayMode();
+      await selectShellDisplayMode('close-up');
+      markActivity({ preserveDisplayMode: true });
+      syncDisplayModeControls();
+    };
+
+    const prepareTransientDisplayMode = async kind => {
+      const chatFallback = kind === 'idle'
+        && root.classList.contains('chat-mode') && !authoredMotion('idle');
+      if (!chatFallback && !await ensureMotion(kind)) return false;
+      clearLocalTransientDisplayMode();
+      await selectShellDisplayMode('standby');
+      return true;
+    };
+
+    const selectMoveMode = async () => {
+      if (!await prepareTransientDisplayMode('move')) return;
+      const clip = motion.move;
+      if (clip.video) clip.video.currentTime = 0;
       if (root.classList.contains('chat-mode')) {
-        manualMotionKind = manualMotionKind === 'move' ? null : 'move';
-        manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
-        chatWalkState = null;
-        movesButton.setAttribute('aria-checked', String(manualMotionKind === 'move'));
-        walkButton.setAttribute('aria-checked', 'false');
-        edgeIdleButton.setAttribute('aria-checked', 'false');
-        if (manualMotionKind && motion.move.video) motion.move.video.currentTime = 0;
-        markActivity();
-        return;
-      }
-      if (moveUntil > performance.now()) {
-        moveUntil = 0;
-        movesButton.classList.remove('showing');
+        manualMotionKind = 'move';
+        manualMotionStartedAt = performance.now();
       } else {
-        const clip = motion.move;
-        if (clip.video) clip.video.currentTime = 0;
-        const duration = Math.max(1, Number(clip.frames || 1) / Math.max(1, Number(clip.fps || 1)));
+        const duration = Math.max(1,
+          Number(clip.frames || 1) / Math.max(1, Number(clip.fps || 1)));
         moveUntil = performance.now() + Math.min(12000, duration * 1000);
         movesButton.classList.add('showing');
-        markActivity();
       }
+      markActivity({ preserveDisplayMode: true });
+      syncDisplayModeControls();
     };
 
-    const toggleWalk = async () => {
-      if (!await ensureMotion('walk')) return;
+    const selectWalkMode = async () => {
+      if (!await prepareTransientDisplayMode('walk')) return;
+      const startedAt = performance.now();
       if (root.classList.contains('chat-mode')) {
-        manualMotionKind = manualMotionKind === 'walk' ? null : 'walk';
-        manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
-        chatWalkState = manualMotionKind
-          ? createChatWalkState(manualMotionStartedAt) : null;
-        walkButton.setAttribute('aria-checked', String(manualMotionKind === 'walk'));
-        edgeIdleButton.setAttribute('aria-checked', 'false');
-        movesButton.setAttribute('aria-checked', 'false');
-        markActivity();
-        return;
+        manualMotionKind = 'walk';
+        manualMotionStartedAt = startedAt;
+        chatWalkState = createChatWalkState(startedAt);
+      } else if (shell && typeof shell.setPetRoam === 'function') {
+        applyShellState(await shell.setPetRoam(true));
       }
-      if (!shell || typeof shell.setPetRoam !== 'function') return;
-      await shell.setPetRoam(!(shellState.pet && shellState.pet.roam));
+      markActivity({ preserveDisplayMode: true });
+      syncDisplayModeControls();
     };
 
-    const toggleEdgeIdle = async () => {
-      const chatFallback = root.classList.contains('chat-mode') && !authoredMotion('idle');
-      if (!chatFallback && !await ensureMotion('idle')) return;
-      manualMotionKind = manualMotionKind === 'idle' ? null : 'idle';
-      manualMotionStartedAt = manualMotionKind ? performance.now() : 0;
+    const selectEdgeIdleMode = async () => {
+      if (!await prepareTransientDisplayMode('idle')) return;
+      manualMotionKind = 'idle';
+      manualMotionStartedAt = performance.now();
       chatWalkState = null;
-      edgeIdleButton.setAttribute('aria-checked', String(manualMotionKind === 'idle'));
-      walkButton.setAttribute('aria-checked', 'false');
-      movesButton.setAttribute('aria-checked', 'false');
-      markActivity();
+      markActivity({ preserveDisplayMode: true });
+      syncDisplayModeControls();
     };
 
     const adjustAvatarOpacity = async direction => {
@@ -6141,10 +6219,18 @@
       const chatCloseUpChanged = Boolean(value.chatCloseUp) !== Boolean(shellState.chatCloseUp);
       const chatPoseRevisionChanged = Number(value.chatPoseRevision || 0)
         !== Number(shellState.chatPoseRevision || 0);
+      const factoryResetChanged = Number(value.factoryResetRevision || 0)
+        !== Number(shellState.factoryResetRevision || 0);
       const closeUpChanged = chatCloseUpChanged
         || Boolean(value.desktopCloseUp) !== Boolean(shellState.desktopCloseUp);
       shellState = value;
-      if (chatCloseUpChanged) {
+      if (factoryResetChanged) {
+        chatAvatarOffsets.standard = { x: 0, y: 0 };
+        chatAvatarOffsets.closeUp = { x: 0, y: 0 };
+        localStorage.removeItem('openclam.chat.avatar-offset.v1');
+        localStorage.removeItem('openclam.chat.close-up-offset.v1');
+        chatAvatarOffset = { x: 0, y: 0 };
+      } else if (chatCloseUpChanged) {
         const presentation = value.chatCloseUp ? 'closeUp' : 'standard';
         chatAvatarOffset = boundedChatAvatarOffset({ ...chatAvatarOffsets[presentation] });
       }
@@ -6153,8 +6239,6 @@
       root.classList.toggle('chat-open', Boolean(value.chatMode) || root.classList.contains('chat-open'));
       root.classList.toggle('pet-mode', Boolean(pet.enabled));
       root.classList.toggle('roaming', Boolean(pet.roam));
-      walkButton.setAttribute('aria-checked', String(Boolean(pet.roam) || manualMotionKind === 'walk'));
-      walkButton.setAttribute('aria-pressed', String(Boolean(pet.roam) || manualMotionKind === 'walk'));
       const opacity = Math.max(0, Math.min(1, Number(pet.opacity) || 0));
       canvas.style.opacity = value.chatMode ? String(opacity) : '1';
       avatarOpacityRange.value = String(Math.round(opacity * 100));
@@ -6163,16 +6247,12 @@
         applyInteractionLayer(interactionLayer);
         applyRailFold(railFolded);
       }
-      if (closeUpChanged || chatPoseRevisionChanged) {
-        manualMotionKind = null;
-        manualMotionStartedAt = 0;
-        chatWalkState = null;
-        walkButton.setAttribute('aria-checked', 'false');
-        edgeIdleButton.setAttribute('aria-checked', 'false');
-        movesButton.setAttribute('aria-checked', 'false');
-        markActivity();
+      if (closeUpChanged || chatPoseRevisionChanged || factoryResetChanged) {
+        clearLocalTransientDisplayMode();
+        markActivity({ preserveDisplayMode: true });
         lastFrame = 0;
       }
+      syncDisplayModeControls();
       if (motion.walk) publishMotionReadiness();
     };
 
@@ -6443,11 +6523,26 @@
       motionMenuButton.setAttribute('aria-expanded', String(next));
       reportControlRects(true);
     });
-    movesButton.addEventListener('click', () => { void toggleMove(); });
-    movesButton.addEventListener('click', closeRailPickers);
-    walkButton.addEventListener('click', toggleWalk);
-    walkButton.addEventListener('click', closeRailPickers);
-    edgeIdleButton.addEventListener('click', () => { void toggleEdgeIdle(); closeRailPickers(); });
+    standbyButton.addEventListener('click', () => {
+      closeRailPickers();
+      void selectStandbyMode();
+    });
+    closeUpButton.addEventListener('click', () => {
+      closeRailPickers();
+      void selectCloseUpMode();
+    });
+    walkButton.addEventListener('click', () => {
+      closeRailPickers();
+      void selectWalkMode();
+    });
+    edgeIdleButton.addEventListener('click', () => {
+      closeRailPickers();
+      void selectEdgeIdleMode();
+    });
+    movesButton.addEventListener('click', () => {
+      closeRailPickers();
+      void selectMoveMode();
+    });
     speakerButton.addEventListener('click', () => {
       if (latestAssistantText) void readAloud(latestAssistantText);
       else notify('There is no assistant reply to read yet.');
@@ -6543,7 +6638,10 @@
       event.preventDefault();
       showSelectionActions(candidate);
     });
-    conversation.addEventListener('scroll', () => hideSelectionActions(false), { passive: true });
+    conversation.addEventListener('scroll', () => {
+      hideSelectionActions(false);
+      markActivity();
+    }, { passive: true });
     selectionActions.addEventListener('pointerdown', event => event.preventDefault());
     selectionCopy.addEventListener('click', () => {
       const text = selectedFeedback && selectedFeedback.text;
@@ -6648,7 +6746,7 @@
         roamPresentationKey = nextPresentationKey;
         roamState = nextRoamState;
       });
-      if (typeof shell.onPetMoves === 'function') shell.onPetMoves(() => { void toggleMove(); });
+      if (typeof shell.onPetMoves === 'function') shell.onPetMoves(() => { void selectMoveMode(); });
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
       if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(toggleLiveTalk);
     } else {

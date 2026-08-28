@@ -62,16 +62,27 @@ def tongue_balance(image, lm):
     )
 
 
-def th_tongue_issue(path, limit=.13):
+def _detect(image, allow_stylized=False):
+    if allow_stylized:
+        landmarks, transform, _metadata = face.detect_for_intake(image)
+        return landmarks, transform
+    return face.detect(image)
+
+
+def th_tongue_issue(path, limit=.13, allow_stylized=False):
     image = cv2.imread(path) if path and os.path.isfile(path) else None
-    lm, _ = face.detect(image) if image is not None else (None, None)
+    lm, _ = (_detect(image, allow_stylized)
+             if image is not None else (None, None))
     result = tongue_balance(image, lm)
     return result if result["visible"] and abs(result["offset"]) > limit else None
 
 
-def audit(keyframe_path, viseme_dir, log=None, names=None):
+def audit(keyframe_path, viseme_dir, log=None, names=None,
+          allow_stylized=False):
     key = cv2.imread(keyframe_path)
-    klm, _ = face.detect(key)
+    klm, _ = _detect(key, allow_stylized)
+    if klm is None:
+        raise ValueError("no face in keyframe")
     neutral_w = float(np.linalg.norm(klm[C_L] - klm[C_R]))
 
     rows, over = [], []
@@ -79,7 +90,7 @@ def audit(keyframe_path, viseme_dir, log=None, names=None):
         p = os.path.join(viseme_dir, f"v_{name}.jpg")
         if not os.path.exists(p):
             continue
-        lm, _ = face.detect(cv2.imread(p))
+        lm, _ = _detect(cv2.imread(p), allow_stylized)
         if lm is None:
             continue
         m = mouth_metrics(lm)

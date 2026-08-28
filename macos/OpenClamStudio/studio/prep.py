@@ -169,6 +169,28 @@ def _stylized_reference_square(img, detection_crop):
     return square, x0, y0, size
 
 
+def _contained_reference_square(img):
+    """Place a complete illustrated head on a square background.
+
+    A strict detector can recognize a large cartoon on the provider's full
+    square and then lose it after the ordinary photographic face crop.  That
+    crop also cuts identity-bearing hats and exaggerated hair because neither
+    is represented by the face oval.  Canonical illustration renders are
+    already framed as complete heads, so contain the whole render instead of
+    re-cropping it around human proportions.  The returned origin preserves
+    the same coordinate contract as ``take_square`` for landmark projection.
+    """
+    height, width = img.shape[:2]
+    size = max(height, width)
+    x0 = int(round((width - size) / 2.0))
+    y0 = int(round((height - size) / 2.0))
+    canvas = np.empty((size, size, 3), dtype=img.dtype)
+    canvas[:] = _border_colour(img)
+    left, top = -x0, -y0
+    canvas[top:top + height, left:left + width] = img
+    return canvas, x0, y0, size
+
+
 def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
     img = read_image_bgr(src_path)
     if img is None:
@@ -183,14 +205,35 @@ def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
 
     crop_fallback = bool(detection and
                          detection.get("detection_mode") == "crop-fallback")
-    if crop_fallback:
-        # Preserve the complete illustration (including identity-bearing hats,
-        # ears and linework) for the canonical-head provider.  Re-running the
-        # human full-frame detector on this square is intentionally avoided:
-        # its known failure is why the bounded intake fallback was needed.
-        # The already topology-gated source mesh is projected exactly instead.
+    fallback_illustration = bool(
+        crop_fallback and
+        str(detection.get("source_medium") or "").lower() in {
+            "illustration", "cartoon", "drawing"})
+    strict_illustration = bool(
+        detection and not crop_fallback and
+        detection.get("source_medium") == "illustration")
+    if fallback_illustration:
+        # The crop detector proves the face topology, not the visual extent of
+        # a drawn character.  Its window can omit a wide hat brim, exaggerated
+        # hair, ears or other identity-bearing linework.  Once the independent
+        # medium classifier is confident this is artwork, retain the complete
+        # provider reference and project the already-approved source mesh into
+        # it.  Do not re-run the human full-frame detector: that known failure
+        # is why the bounded fallback was needed.
+        crop, x0, y0, size = _contained_reference_square(img)
+        crown_y = None
+    elif crop_fallback:
+        # An uncertain or photographic fallback still uses the proven detector
+        # window.  Containing an arbitrary full scene could shrink its face or
+        # introduce unrelated people and props into the provider reference.
         crop, x0, y0, size = _stylized_reference_square(
             img, detection["detection_crop"])
+        crown_y = None
+    elif strict_illustration:
+        # The full provider render is the reliable strict-detection frame.
+        # Keep it intact; a human-proportion crop can both remove headwear and
+        # make MediaPipe lose an otherwise valid oversized illustrated face.
+        crop, x0, y0, size = _contained_reference_square(img)
         crown_y = None
     else:
         crown_y = silhouette_top(img, lm)
@@ -202,7 +245,13 @@ def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
     key = cv2.resize(crop, (KEY_SIZE, KEY_SIZE), interpolation=interp)
     cv2.imwrite(out_path, key, [cv2.IMWRITE_PNG_COMPRESSION, 3])
 
-    if crop_fallback:
+    if crop_fallback or strict_illustration:
+        # Both paths already carry a source-space mesh approved by
+        # detect_for_intake.  Project that proven geometry through the exact
+        # square transform instead of asking the strict human detector to find
+        # the face again after an illustrated head was contained.  The latter
+        # can lose a perfectly valid oversized cartoon simply because padding
+        # changed its apparent scale.
         scale = KEY_SIZE / float(size)
         klm = lm.copy()
         klm[:, 0] = (klm[:, 0] - x0) * scale
@@ -217,7 +266,8 @@ def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
     lip = klm[face.OUTER_LIP]
     m["mouth_width_px"] = float(lip[:, 0].max() - lip[:, 0].min())
     m["crop"] = dict(x0=x0, y0=y0, size=size, source=[int(img.shape[1]), int(img.shape[0])])
-    key_crown = None if crop_fallback else silhouette_top(key, klm)
+    key_crown = (None if crop_fallback or strict_illustration
+                 else silhouette_top(key, klm))
     m["source_crown_y"] = None if crown_y is None else float(crown_y)
     m["crown_clearance"] = (None if key_crown is None
                             else round(float(key_crown) / KEY_SIZE, 4))

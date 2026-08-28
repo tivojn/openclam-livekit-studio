@@ -53,6 +53,40 @@ assert.equal((source.match(/id="chatButton"/g) || []).length, 0);
 assert.equal((source.match(/id="emptyChat"/g) || []).length, 1);
 assert.match(source, /aria-label="Switch to next avatar"/);
 assert.match(source, /aria-label="Switch to Avatar mode"/);
+const displayModeMenu = source.match(
+  /<div id="motionPicker"[^>]*aria-label="Avatar display mode"[^>]*>([\s\S]*?)<\/div>/,
+);
+assert.ok(displayModeMenu, 'the avatar rail must expose one display-mode menu');
+const displayModeItems = [...displayModeMenu[1].matchAll(
+  /<button id="([^"]+)"[^>]*role="menuitemradio"[^>]*>([^<]+)<\/button>/g,
+)].map(match => [match[1], match[2].trim()]);
+assert.deepEqual(displayModeItems, [
+  ['standbyButton', 'Standby'],
+  ['closeUpButton', 'Close-up'],
+  ['walkButton', 'Horizon Walk'],
+  ['edgeIdleButton', 'Edge Idle'],
+  ['movesButton', 'Moves'],
+], 'the display-mode menu must contain exactly the five owner-approved modes');
+assert.equal((source.match(/id="motionMenuButton"/g) || []).length, 1);
+assert.match(source, /id="motionMenuButton"[^>]+aria-label="Choose avatar display mode"[\s\S]{0,180}<svg[^>]*>[\s\S]{0,80}<path /,
+  'one avatar-in-a-frame icon must own the complete display-mode menu');
+const activeDisplayModeSource = inline[1].match(
+  /(const activeDisplayMode = \(\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(activeDisplayModeSource, 'display-mode classification must remain independently testable');
+const classifyDisplayMode = (overrides = {}) => new Function(
+  'manualMotionKind', 'shellState', 'idleDocked', 'moveUntil', 'performance',
+  `'use strict'; ${activeDisplayModeSource[1]}; return activeDisplayMode();`,
+)(
+  overrides.manualMotionKind || null,
+  overrides.shellState || {pet: {roam: false}, chatCloseUp: false, desktopCloseUp: false},
+  Boolean(overrides.idleDocked), Number(overrides.moveUntil) || 0, {now: () => 100},
+);
+assert.equal(classifyDisplayMode(), 'standby');
+assert.equal(classifyDisplayMode({shellState: {pet: {roam: false}, chatCloseUp: true}}), 'close-up');
+assert.equal(classifyDisplayMode({shellState: {pet: {roam: true}}}), 'walk');
+assert.equal(classifyDisplayMode({manualMotionKind: 'idle'}), 'edge-idle');
+assert.equal(classifyDisplayMode({moveUntil: 200}), 'moves');
 assert.match(source, /#topline \{ display: none !important; \}/,
   'avatar lifecycle status must not occupy a floating chip in Chat\/Talk');
 assert.match(source, /id="chatHeaderNewButton"[^>]+>New chat<\/button>/,
@@ -1161,8 +1195,12 @@ assert.match(source, /openclam\.chat\.close-up-offset\.v1/,
   'the close-up drag position must persist independently from standard framing');
 assert.match(source, /const chatPoseRevisionChanged = Number\(value\.chatPoseRevision \|\| 0\)[\s\S]{0,160}Number\(shellState\.chatPoseRevision \|\| 0\)/,
   'an explicit close-up or standby selection must remain observable when its Boolean state is unchanged');
-assert.match(source, /if \(closeUpChanged \|\| chatPoseRevisionChanged\) \{[\s\S]{0,420}markActivity\(\);/,
+assert.match(source, /if \(closeUpChanged \|\| chatPoseRevisionChanged \|\| factoryResetChanged\) \{[\s\S]{0,220}clearLocalTransientDisplayMode\(\);[\s\S]{0,140}markActivity\(\{ preserveDisplayMode: true \}\);/,
   're-selecting a saved pose must immediately leave its temporary edge-idle presentation');
+assert.match(source, /const factoryResetChanged = Number\(value\.factoryResetRevision \|\| 0\)[\s\S]{0,180}Number\(shellState\.factoryResetRevision \|\| 0\)/,
+  'Cmd+Shift+0 must publish a reset revision even when the current mode Boolean is unchanged');
+assert.match(source, /if \(factoryResetChanged\) \{[\s\S]{0,420}chatAvatarOffsets\.standard = \{ x: 0, y: 0 \};[\s\S]{0,320}localStorage\.removeItem\('openclam\.chat\.avatar-offset\.v1'\)/,
+  'factory reset must clear the remembered Chat\/Talk drag position rather than restoring it');
 assert.match(source, /const resumeChatSpeakingPose = \(\) => \{[\s\S]{0,100}markActivity\(\);[\s\S]{0,80}lastFrame = 0;/,
   'conversation activity must resume the saved speaking pose from temporary Edge Idle');
 assert.match(source, /const submitComposer = \(\) => \{[\s\S]{0,420}resumeChatSpeakingPose\(\);/,
@@ -1179,6 +1217,16 @@ assert.match(source, /const edgeIdleActive = now => \{[\s\S]{0,420}\(motion\.idl
   'Chat\/Talk must retain a standing-lean fallback when no authored idle clip is loaded');
 assert.match(source, /if \(hit && !root\.classList\.contains\('chat-mode'\)\) markActivity\(\);/,
   'a stationary cursor inside Chat\/Talk must not keep resetting its idle timer');
+assert.match(source, /const markActivity = \(\{ preserveDisplayMode = false \} = \{\}\) => \{[\s\S]{0,220}!preserveDisplayMode && exitTransientDisplayMode\(\)/,
+  'avatar hover and ordinary chat activity must leave Walk, Edge Idle, or Moves');
+assert.match(source, /const exitTransientDisplayMode = \(\) => \{[\s\S]{0,260}roaming \|\| manualMotionKind \|\| moveUntil > performance\.now\(\) \|\| idleDocked[\s\S]{0,260}clearLocalTransientDisplayMode\(\)/,
+  'all temporary display modes must share one exit-to-Standby path');
+assert.match(source, /Promise\.resolve\(shell\.setDisplayMode\('standby'\)\)/,
+  'desktop Horizon Walk hover must ask Electron to restore its remembered Standby window');
+assert.match(source, /const prepareTransientDisplayMode = async kind => \{[\s\S]{0,360}clearLocalTransientDisplayMode\(\);[\s\S]{0,120}await selectShellDisplayMode\('standby'\);/,
+  'every temporary mode must start from remembered Standby, never mutate its camera geometry');
+assert.match(source, /const saveChatAvatarOffset = \(\) => \{[\s\S]{0,420}chatAvatarOffsets\[presentation\] = \{ \.\.\.chatAvatarOffset \};[\s\S]{0,220}localStorage\.setItem\(key, JSON\.stringify\(chatAvatarOffset\)\)/,
+  'a user drag in Standby must remain the next remembered Standby position');
 assert.match(drawMotionSource[1], /anchors\[`\$\{displayEdge\}_frames`\]/,
   'Chat\/Talk Edge Idle must use authored anchors for both window edges');
 assert.match(source, /#conversation::\-webkit-scrollbar \{[\s\S]{0,100}display: none;[\s\S]{0,100}width: 0;/,

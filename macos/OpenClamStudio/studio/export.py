@@ -391,10 +391,19 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
     with open(manifest_path) as handle:
         runtime = json.load(handle)
     source_manifest = reg.read_manifest(slug) or {}
+    source_report = (
+        source_manifest.get("source_metrics") or
+        source_manifest.get("metrics") or {}
+    )
+    source_medium = str(
+        (source_manifest.get("head") or {}).get("source_medium") or
+        source_report.get("source_medium") or "photograph"
+    ).strip().lower()
     cutout_meta = cutout.render(
         os.path.join(directory, "keyframe.png"),
         os.path.join(destination, "cutout.png"),
         log=log,
+        allow_stylized=source_medium != "photograph",
     )
     body_meta = None
     body_dir = os.path.join(directory, "body")
@@ -452,6 +461,12 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
     m = manifest_data or reg.read_manifest(slug)
     if not m or m.get("status") != "ready":
         raise ValueError(f"{slug} is not built yet")
+    source_report = m.get("source_metrics") or m.get("metrics") or {}
+    source_medium = str(
+        (m.get("head") or {}).get("source_medium") or
+        source_report.get("source_medium") or "photograph"
+    ).strip().lower()
+    allow_stylized = source_medium != "photograph"
     vis = os.path.join(d, "visemes")
     key = cv2.imread(os.path.join(d, "keyframe.png"))
     shut = cv2.imread(os.path.join(vis, "v_blink.jpg"))
@@ -459,7 +474,9 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         raise ValueError("missing blink frame")
 
     log("synthesising eyelid travel")
-    lids = blink.build(key, shut, n=states, log=log)
+    lids = blink.build(
+        key, shut, n=states, log=log,
+        allow_stylized=allow_stylized)
 
     # Measure exactly which pixels the viseme bank repaints, and forbid the
     # cheek layer from touching them.  A dilated lip hull is a guess; this is
@@ -474,7 +491,12 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
     avoid = (touched > 6).astype(np.float32)
 
     log("synthesising gaze, brow, forehead, cheek and under-eye layers")
-    klm, _ = face.detect(key)
+    if allow_stylized:
+        klm, _, _metadata = face.detect_for_intake(key)
+    else:
+        klm, _ = face.detect(key)
+    if klm is None:
+        raise ValueError("no face landmarks on keyframe")
     expr = expression.build(key, klm, avoid=avoid, log=log)
 
     os.makedirs(dest, exist_ok=True)
@@ -488,6 +510,7 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         os.path.join(d, "keyframe.png"),
         os.path.join(dest, "cutout.png"),
         log=log,
+        allow_stylized=allow_stylized,
     )
     body_meta = None
     body_dir = os.path.join(home, "body")

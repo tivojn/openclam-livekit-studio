@@ -357,10 +357,24 @@ struct OpenClamCatalogAvatarStage: View {
                 return CGRect(origin: .zero, size: body)
             case .compact:
                 let face = avatar.geometry.faceBoundsInBody.cgRect
-                let height = min(body.height, max(face.height * 5.8, body.height * 0.47))
-                let width = min(body.width, height * 0.677)
+                // A true head-and-shoulders plate. The old compact crop kept
+                // almost half the body and the conversation overlay then
+                // magnified that full-body plate 3.4x. Besides making the
+                // preset avatar-specific, that could crop the forehead while
+                // still showing the waist. Deriving this crop from the face
+                // registration keeps hair, shoulders, and upper chest for
+                // every validated catalog avatar.
+                let height = min(body.height, face.height * 3.5)
+                let width = min(
+                    body.width,
+                    max(face.width * 3.2, height * 0.72)
+                )
                 let x = min(max(0, face.midX - width / 2), max(0, body.width - width))
-                return CGRect(x: x, y: 0, width: width, height: height)
+                let y = min(
+                    max(0, face.minY - face.height * 0.75),
+                    max(0, body.height - height)
+                )
+                return CGRect(x: x, y: y, width: width, height: height)
             }
         }
     }
@@ -386,6 +400,8 @@ struct OpenClamCatalogAvatarStage: View {
     /// pinch cannot silently make the transparent canvas interactive again.
     let onMagnificationChanged: ((CGFloat) -> Void)?
     let onMagnificationEnded: (() -> Void)?
+    let onPositionChanged: ((CGSize) -> Void)?
+    let onPositionEnded: (() -> Void)?
     let onInteraction: () -> Void
     private let imageStore: OpenClamAvatarAssetStore
 
@@ -402,6 +418,8 @@ struct OpenClamCatalogAvatarStage: View {
         onVerticalOpacityEnded: (() -> Void)? = nil,
         onMagnificationChanged: ((CGFloat) -> Void)? = nil,
         onMagnificationEnded: (() -> Void)? = nil,
+        onPositionChanged: ((CGSize) -> Void)? = nil,
+        onPositionEnded: (() -> Void)? = nil,
         imageStore: OpenClamAvatarAssetStore? = nil,
         onInteraction: @escaping () -> Void = {}
     ) {
@@ -417,6 +435,8 @@ struct OpenClamCatalogAvatarStage: View {
         self.onVerticalOpacityEnded = onVerticalOpacityEnded
         self.onMagnificationChanged = onMagnificationChanged
         self.onMagnificationEnded = onMagnificationEnded
+        self.onPositionChanged = onPositionChanged
+        self.onPositionEnded = onPositionEnded
         self.imageStore = imageStore ?? .shared
         self.onInteraction = onInteraction
     }
@@ -545,7 +565,9 @@ struct OpenClamCatalogAvatarStage: View {
                 dragSession.update(
                     translation: value.translation,
                     supportsOpacity: onVerticalOpacityChanged != nil
-                        && onVerticalOpacityEnded != nil
+                        && onVerticalOpacityEnded != nil,
+                    supportsPosition: onPositionChanged != nil
+                        && onPositionEnded != nil
                 )
                 if dragSession.intent == .opacity {
                     reactions.cancelGaze()
@@ -553,6 +575,12 @@ struct OpenClamCatalogAvatarStage: View {
 
                 if dragSession.intent == .opacity {
                     onVerticalOpacityChanged?(value.translation.height)
+                    onInteraction()
+                    return
+                }
+                if dragSession.intent == .position {
+                    reactions.cancelGaze()
+                    onPositionChanged?(value.translation)
                     onInteraction()
                     return
                 }
@@ -582,6 +610,12 @@ struct OpenClamCatalogAvatarStage: View {
                 if completion == .opacity {
                     reactions.cancelGaze()
                     onVerticalOpacityEnded?()
+                    onInteraction()
+                    return
+                }
+                if completion == .position {
+                    reactions.cancelGaze()
+                    onPositionEnded?()
                     onInteraction()
                     return
                 }

@@ -65,8 +65,15 @@ def _dental_reference(diag_dir, row, name):
     return mask, zone, reference
 
 
+def _detect(image, allow_stylized=False):
+    if allow_stylized:
+        landmarks, transform, _metadata = face.detect_for_intake(image)
+        return landmarks, transform
+    return face.detect(image)
+
+
 def _dental_row_metrics(row, selected, viseme_dir, diag_dir=None,
-                        advisory=False):
+                        advisory=False, allow_stylized=False):
     donor_name, _, donor_lm, master = selected
     comparisons = []
     counts = {}
@@ -74,7 +81,7 @@ def _dental_row_metrics(row, selected, viseme_dir, diag_dir=None,
         image = cv2.imread(os.path.join(viseme_dir, f"v_{name}.jpg"))
         if image is None:
             continue
-        landmarks, _ = face.detect(image)
+        landmarks, _ = _detect(image, allow_stylized)
         if landmarks is None:
             raise AssertionError(f"no face detected in {name}")
         staged = _dental_reference(diag_dir, row, name)
@@ -174,7 +181,8 @@ def _dental_row_metrics(row, selected, viseme_dir, diag_dir=None,
     )
 
 
-def validate(keyframe_path, viseme_dir, profile=None, diag_dir=None):
+def validate(keyframe_path, viseme_dir, profile=None, diag_dir=None,
+             allow_stylized=False):
     profile = rig.normalize(profile)
     if diag_dir is None:
         candidate = os.path.join(os.path.dirname(viseme_dir), "diag")
@@ -182,7 +190,8 @@ def validate(keyframe_path, viseme_dir, profile=None, diag_dir=None):
     # The same donor election the composition used - including an owner's
     # per-avatar donor override - so the audit never compares frames
     # against a donor they were told not to wear.
-    selected = compose._select_dental_donors(viseme_dir, profile)
+    selected = compose._select_dental_donors(
+        viseme_dir, profile, allow_stylized=allow_stylized)
     missing = [row for row in compose.DENTAL_ROWS if row not in selected]
     # Some faces never show a full tooth row in any speech shape, and
     # canonicalize_teeth already degrades gracefully then (the lock is
@@ -196,14 +205,14 @@ def validate(keyframe_path, viseme_dir, profile=None, diag_dir=None):
     dental_rows = {
         row: _dental_row_metrics(
             row, selected[row], viseme_dir, diag_dir=diag_dir,
-            advisory=advisory)
+            advisory=advisory, allow_stylized=allow_stylized)
         for row in selected
     }
 
     keyframe = cv2.imread(keyframe_path)
     if keyframe is None:
         raise AssertionError("missing keyframe for nose-lock QA")
-    key_landmarks, _ = face.detect(keyframe)
+    key_landmarks, _ = _detect(keyframe, allow_stylized)
     if key_landmarks is None:
         raise AssertionError("no face detected in keyframe")
     masks, face_mask = compose._masks(keyframe, key_landmarks, profile)
@@ -253,7 +262,11 @@ def validate(keyframe_path, viseme_dir, profile=None, diag_dir=None):
         image = cv2.imread(os.path.join(viseme_dir, f"v_{name}.jpg"))
         if image is None:
             raise AssertionError(f"missing viseme {name}")
-        landmarks, _ = face.detect(image)
+        landmarks, _ = _detect(image, allow_stylized)
+        if landmarks is None:
+            structure_warnings.append(
+                f"{name} landmarks unavailable for oral-shadow QA")
+            continue
         cavity = compose._mouth_cavity(image.shape, landmarks) > 0
         if not np.any(cavity):
             # A fully closed frame (deliberate low-articulation profiles

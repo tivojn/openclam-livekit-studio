@@ -54,6 +54,28 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         XCTAssertTrue(reloaded.first?.motions.isEmpty == true)
     }
 
+    @MainActor
+    func testLibraryKeepsImportedAvatarAlongsideTwoBundledAvatars() async throws {
+        let root = try temporaryDirectory()
+        let library = OpenClamAvatarLibrary(storageRoot: root)
+
+        XCTAssertEqual(
+            library.avatars.map(\.id),
+            ["captain-ayer", "ara"]
+        )
+
+        _ = try await library.importAvatar(from: goldenFixtureURL)
+
+        XCTAssertEqual(
+            library.avatars.map(\.id),
+            ["captain-ayer", "ara", "golden-guide"]
+        )
+        XCTAssertEqual(
+            OpenClamAvatarLibrary(storageRoot: root).avatars.map(\.id),
+            ["captain-ayer", "ara", "golden-guide"]
+        )
+    }
+
     func testLegacyNineVisemePackageAliasesEveryNewProductionShape() throws {
         let root = try temporaryDirectory()
         let descriptor = try OpenClamAvatarPackageStore(storageRoot: root)
