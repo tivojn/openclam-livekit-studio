@@ -97,6 +97,357 @@ def _runtime_face_asset(destination, reference, label):
         raise ValueError(f"runtime {label} asset is missing")
 
 
+_STYLIZED_SOURCE_MEDIA = frozenset({
+    "anime", "illustration", "illustrated", "cartoon", "drawing",
+    "game art", "game-art", "3d render", "3d-render", "soft-3d",
+})
+
+
+def _is_stylized_source_medium(value):
+    """Recognize only the reviewed non-photographic intake categories."""
+    return str(value or "").strip().lower() in _STYLIZED_SOURCE_MEDIA
+
+
+def _stylized_mouth_geometry(shape, landmarks):
+    """Return the one provider-redraw region a stylized runtime may replace.
+
+    The photo expression boxes intentionally include cheek/under-eye context.
+    Reusing either of them for a cartoon viseme lets the generated phoneme
+    repaint the lower edges of oversized eyes (and, on the retained 3-D Luffy,
+    produced white wedges below both sclerae).  This box is derived only from
+    the canonical outer lip.  Its proportions were checked against every one
+    of the 15 retained visemes for both flat and soft-3-D Luffy banks.
+    """
+    if landmarks is None:
+        return None
+    try:
+        points = np.asarray(landmarks[face.OUTER_LIP], np.float64)
+    except (IndexError, TypeError, ValueError):
+        return None
+    if points.shape != (len(face.OUTER_LIP), 2) or not np.isfinite(points).all():
+        return None
+    width = float(np.ptp(points[:, 0]))
+    if width < 4.0:
+        return None
+    centre_x, centre_y = points.mean(axis=0)
+    image_height, image_width = shape[:2]
+    x0 = max(0, int(np.floor(centre_x - 0.75 * width)))
+    x1 = min(image_width, int(np.ceil(centre_x + 0.75 * width)))
+    y0 = max(0, int(np.floor(centre_y - 0.28 * width)))
+    y1 = min(image_height, int(np.ceil(centre_y + 0.48 * width)))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return {"box": [x0, y0, x1 - x0, y1 - y0],
+            "basis": "canonical-outer-lip-v1"}
+
+
+def _remove_stylized_blink_assets(destination):
+    for side in blink.SIDES:
+        try:
+            os.remove(os.path.join(destination, f"stylized-blink-{side}.png"))
+        except FileNotFoundError:
+            pass
+
+
+def _stylized_eye_alpha(neutral, geometry):
+    """Return a feathered alpha around a drawn sclera, not a human mesh oval."""
+    try:
+        x, y, width, height = [int(round(float(value)))
+                               for value in geometry.get("box")]
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    image_height, image_width = neutral.shape[:2]
+    pad_x = max(16, int(round(width * 0.28)))
+    pad_y = max(20, int(round(height * 0.75)))
+    x0 = max(0, x - pad_x)
+    y0 = max(0, y - pad_y)
+    x1 = min(image_width, x + width + pad_x)
+    y1 = min(image_height, y + height + pad_y)
+    crop = neutral[y0:y1, x0:x1]
+    if not crop.size:
+        return None
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    white = ((hsv[:, :, 1] < 85) & (hsv[:, :, 2] > 135)).astype(np.uint8) * 255
+    guard = np.zeros_like(white)
+    centre = (int(round(x + width * 0.5 - x0)),
+              int(round(y + height * 0.65 - y0)))
+    radii = (max(12, int(round(width * 0.62))),
+             max(12, int(round(height * 0.95))))
+    cv2.ellipse(guard, centre, radii, 0, 0, 360, 255, -1)
+    white = cv2.bitwise_and(white, guard)
+    opening = max(3, min(13, int(round(min(width, height) * 0.12)))) | 1
+    white = cv2.morphologyEx(
+        white, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (opening, opening)))
+
+    count, labels, stats, centres = cv2.connectedComponentsWithStats(white)
+    minimum_area = max(24, width * height * 0.05)
+    candidates = [index for index in range(1, count)
+                  if float(stats[index, cv2.CC_STAT_AREA]) >= minimum_area]
+    if not candidates:
+        return None
+    cx, cy = centre
+    selected = min(candidates, key=lambda index: (
+        ((centres[index, 0] - cx) / max(width, 1)) ** 2
+        + ((centres[index, 1] - cy) / max(height, 1)) ** 2
+        - float(stats[index, cv2.CC_STAT_AREA]) / (width * height) * 0.15))
+    solid = (labels == selected).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(
+        solid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    solid.fill(0)
+    cv2.drawContours(solid, [max(contours, key=cv2.contourArea)], -1, 255, -1)
+    dilation = max(5, min(15, int(round(min(width, height) * 0.10)))) | 1
+    solid = cv2.dilate(
+        solid,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation, dilation)))
+
+    # Hair and eyebrow strokes can cross a cartoon sclera. Preserve only dark
+    # components connected to the search boundary; the enclosed pupil is the
+    # one dark component that must be replaced by the closed-lid source.
+    dark = (cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) < 55).astype(np.uint8)
+    dark_count, dark_labels = cv2.connectedComponents(dark)
+    border_labels = np.unique(np.concatenate((
+        dark_labels[0], dark_labels[-1], dark_labels[:, 0], dark_labels[:, -1])))
+    border_labels = border_labels[border_labels > 0]
+    if dark_count > 1 and border_labels.size:
+        preserve = np.isin(dark_labels, border_labels).astype(np.uint8) * 255
+        preserve = cv2.dilate(
+            preserve, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        solid[preserve > 0] = 0
+
+    alpha = cv2.GaussianBlur(solid, (0, 0), 1.5)
+    rows, columns = np.nonzero(alpha > 1)
+    if not len(rows):
+        return None
+    margin = 12
+    local_x0 = max(0, int(columns.min()) - margin)
+    local_y0 = max(0, int(rows.min()) - margin)
+    local_x1 = min(alpha.shape[1], int(columns.max()) + margin + 1)
+    local_y1 = min(alpha.shape[0], int(rows.max()) + margin + 1)
+    return ([x0 + local_x0, y0 + local_y0,
+             local_x1 - local_x0, local_y1 - local_y0],
+            alpha[local_y0:local_y1, local_x0:local_x1])
+
+
+def _stylized_sclera_fraction(image, box, alpha):
+    """Measure visible white eye paint inside one authored cartoon sclera."""
+    x, y, width, height = box
+    patch = image[y:y + height, x:x + width]
+    if patch.shape[:2] != alpha.shape[:2]:
+        return 1.0
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    core = alpha > 128
+    count = int(np.count_nonzero(core))
+    if count < 24:
+        return 1.0
+    white = (hsv[:, :, 1] < 72) & (hsv[:, :, 2] > 155)
+    return float(np.count_nonzero(white & core)) / count
+
+
+def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
+                                     source_medium, log=print):
+    """Publish a seam-gated closed-eye plate for a reviewed cartoon.
+
+    The ordinary eyelid synthesizer is deliberately optimized for a human eye
+    opening.  On an oversized drawn sclera its landmark-derived mask can cover
+    only the inner part of the eye, which looks like a second, smaller eye
+    blinking inside a static one.  A stylized avatar instead gets a late-switch
+    pair of semantic-eye RGBA plates locally registered from the original
+    generated blink.
+
+    This path is fail-closed: photographs and unknown media never enter the
+    permissive intake detector, and a weak affine fit or insufficiently closed
+    source produces no alternative blink asset at all.  The web renderer then
+    keeps the canonical eyes static rather than falling back to human strips.
+    """
+    if not _is_stylized_source_medium(source_medium):
+        _remove_stylized_blink_assets(destination)
+        return None
+    if not isinstance(eyes, dict):
+        return None
+
+    raw_path = next((
+        os.path.join(avatar_home, "raw", f"v_blink.{extension}")
+        for extension in ("png", "jpg", "jpeg", "webp")
+        if os.path.isfile(os.path.join(
+            avatar_home, "raw", f"v_blink.{extension}"))
+    ), None)
+    if raw_path is None:
+        log("  stylized blink source missing; keeping calibrated eyelid strip")
+        return None
+
+    source = cv2.imread(raw_path, cv2.IMREAD_COLOR)
+    if neutral is None or source is None:
+        return None
+    height, width = neutral.shape[:2]
+    if source.shape[:2] != (height, width):
+        source = cv2.resize(
+            source, (width, height), interpolation=cv2.INTER_LANCZOS4)
+
+    key_landmarks, _, _ = face.detect_for_intake(neutral)
+    source_landmarks, _, _ = face.detect_for_intake(source)
+    if key_landmarks is None or source_landmarks is None:
+        log("  stylized blink source rejected: face registration failed")
+        return None
+    transform, _ = cv2.estimateAffine2D(
+        source_landmarks[face.RIGID], key_landmarks[face.RIGID],
+        method=cv2.LMEDS, refineIters=50)
+    if transform is None or not np.isfinite(transform).all():
+        log("  stylized blink source rejected: affine registration failed")
+        return None
+    determinant = float(np.linalg.det(transform[:, :2]))
+    projected = ((transform[:, :2] @ source_landmarks[face.RIGID].T).T
+                 + transform[:, 2])
+    residuals = np.linalg.norm(projected - key_landmarks[face.RIGID], axis=1)
+    if (not 0.5 <= determinant <= 1.8
+            or float(np.max(residuals)) > max(height, width) * 0.10):
+        log("  stylized blink source rejected: unstable face registration")
+        return None
+
+    aligned = cv2.warpAffine(
+        source, transform, (width, height), flags=cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_REPLICATE)
+    aligned_landmarks, _, _ = face.detect_for_intake(aligned)
+    if aligned_landmarks is None:
+        log("  stylized blink source rejected: aligned face was lost")
+        return None
+    eye_masks = {}
+    for side in blink.SIDES:
+        geometry = eyes.get(side) if isinstance(eyes.get(side), dict) else {}
+        mask = _stylized_eye_alpha(neutral, geometry)
+        if mask is None:
+            log(f"  stylized blink source rejected: {side} sclera was not isolated")
+            return None
+        eye_masks[side] = mask
+        open_aperture = blink._aperture(key_landmarks, side)
+        shut_aperture = blink._aperture(aligned_landmarks, side)
+        box, alpha = mask
+        open_sclera = _stylized_sclera_fraction(neutral, box, alpha)
+        shut_sclera = _stylized_sclera_fraction(aligned, box, alpha)
+        # MediaPipe's lid curve is noisy on oversized hand-drawn eyes.  The
+        # new soft-3-D Luffy measures 0.815 on one side even though 100% of the
+        # white eye paint disappears.  Sclera disappearance is direct rendered
+        # evidence; aperture remains a broad registration sanity bound only.
+        # This route is stylized-only and cannot weaken photographic blink QA.
+        visually_closed = (shut_aperture <= open_aperture * 1.25
+                           and shut_sclera <= 0.045
+                           and shut_sclera <= open_sclera * 0.10)
+        if (not np.isfinite(open_aperture) or not np.isfinite(shut_aperture)
+                or open_aperture <= 1.0
+                or not visually_closed):
+            log(f"  stylized blink source rejected: {side} eye is not closed")
+            return None
+
+    os.makedirs(destination, exist_ok=True)
+    prepared = {}
+    for side in blink.SIDES:
+        box, alpha = eye_masks[side]
+        x0, y0, patch_width, patch_height = box
+        # Global face registration is intentionally not used as the plate:
+        # a provider can turn a stylized head while preserving a valid closed
+        # eye. Register this eye and brow locally, then hard-gate the result by
+        # its rendered topology. Vertical hair shards and circular skin stamps
+        # fail here and cause the safe static-eye fallback.
+        indices = np.asarray(blink.EYE[side] + blink.BROW[side], np.int32)
+        local_transform, _ = cv2.estimateAffinePartial2D(
+            source_landmarks[indices], key_landmarks[indices],
+            method=cv2.LMEDS, refineIters=50)
+        if local_transform is None or not np.isfinite(local_transform).all():
+            log(f"  stylized blink source rejected: {side} local registration failed")
+            return None
+        local_determinant = float(np.linalg.det(local_transform[:, :2]))
+        if not 0.45 <= local_determinant <= 2.2:
+            log(f"  stylized blink source rejected: {side} local registration drifted")
+            return None
+        local = cv2.warpAffine(
+            source, local_transform, (width, height),
+            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
+        patch = local[y0:y0 + patch_height, x0:x0 + patch_width].copy()
+        neutral_patch = neutral[y0:y0 + patch_height,
+                                x0:x0 + patch_width]
+
+        core = alpha > 96
+        rows, columns = np.nonzero(core)
+        if not len(rows):
+            return None
+        core_x0, core_x1 = int(columns.min()), int(columns.max())
+        core_y0, core_y1 = int(rows.min()), int(rows.max())
+        core_width = core_x1 - core_x0 + 1
+        core_height = core_y1 - core_y0 + 1
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+        dark = ((gray < 100) & core).astype(np.uint8) * 255
+        dark = cv2.morphologyEx(
+            dark, cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3)))
+        count, labels, stats, centres = cv2.connectedComponentsWithStats(dark)
+        lid_candidates = []
+        for index in range(1, count):
+            component_width = int(stats[index, cv2.CC_STAT_WIDTH])
+            component_height = int(stats[index, cv2.CC_STAT_HEIGHT])
+            centre_y = float(centres[index, 1])
+            if (component_width >= core_width * 0.45
+                    and component_height <= core_height * 0.28
+                    and centre_y >= core_y0 + core_height * 0.52
+                    and centre_y <= core_y0 + core_height * 0.97):
+                lid_candidates.append(index)
+        if not lid_candidates:
+            log(f"  stylized blink source rejected: {side} lid stroke is not clean")
+            return None
+        lid_index = max(
+            lid_candidates,
+            key=lambda index: int(stats[index, cv2.CC_STAT_AREA]))
+        foreign_limit = max(48, int(np.count_nonzero(core) * 0.012))
+        for index in range(1, count):
+            if index == lid_index:
+                continue
+            area = int(stats[index, cv2.CC_STAT_AREA])
+            component_width = int(stats[index, cv2.CC_STAT_WIDTH])
+            component_height = int(stats[index, cv2.CC_STAT_HEIGHT])
+            if (area > foreign_limit and (
+                    component_height > core_height * 0.25
+                    or component_width > core_width * 0.25)):
+                log(f"  stylized blink source rejected: {side} contains foreign dark art")
+                return None
+
+        # The plate is byte-identical to the canonical neutral throughout its
+        # feather. Provider pixels reach only the semantic sclera interior;
+        # this makes the edge delta exactly zero and prevents a circular skin
+        # halo even on a dark Chat/Talk canvas.
+        interior = np.clip((alpha.astype(np.float32) - 24.0) / 96.0,
+                           0.0, 1.0)[:, :, None]
+        patch = np.clip(
+            patch.astype(np.float32) * interior
+            + neutral_patch.astype(np.float32) * (1.0 - interior),
+            0, 255).astype(np.uint8)
+        feather = (alpha > 2) & (alpha < 24)
+        if np.any(feather):
+            seam_delta = np.abs(
+                patch.astype(np.int16) - neutral_patch.astype(np.int16)).max(2)
+            if float(np.percentile(seam_delta[feather], 99)) > 2.0:
+                log(f"  stylized blink source rejected: {side} feather seam")
+                return None
+        prepared[side] = (box, np.dstack((patch, alpha)))
+
+    os.makedirs(destination, exist_ok=True)
+    result = {"mode": "semantic-eye-switch"}
+    for side in blink.SIDES:
+        box, rgba = prepared[side]
+        filename = f"stylized-blink-{side}.png"
+        cv2.imwrite(os.path.join(destination, filename), rgba,
+                    [cv2.IMWRITE_PNG_COMPRESSION, 9])
+        result[side] = {
+            "src": f"assets/{filename}",
+            "box": box,
+        }
+    log("  stylized semantic-eye blink plates published")
+    return result
+
+
 def _validate_current_face_layers(runtime, destination):
     """Prove a preserved bank can render every current upper-face layer.
 
@@ -456,6 +807,36 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
     # actually drives, especially the forehead and independent under-eye strips.
     if _runtime_version(runtime.get("v")) < RUNTIME_VERSION:
         _validate_current_face_layers(runtime, destination)
+    neutral_reference = ((((runtime.get("frames") or {}).get("sil") or {})
+                          .get("open")) or "")
+    neutral_path = os.path.join(
+        destination, os.path.basename(str(neutral_reference)))
+    keyframe_path = os.path.join(directory, "keyframe.png")
+    keyframe = (cv2.imread(keyframe_path) if os.path.isfile(keyframe_path)
+                else None)
+    # A provider may repaint a cartoon's whole face even for the nominal
+    # closed-mouth viseme.  That was the static outer face / moving inner face
+    # artifact: every runtime part was calibrated against a different neutral
+    # identity.  Keep the authored canonical keyframe as the stylized neutral;
+    # mouth animation remains the bounded viseme crop in the web compositor.
+    if (_is_stylized_source_medium(source_medium) and keyframe is not None
+            and neutral_reference):
+        cv2.imwrite(neutral_path, keyframe,
+                    [cv2.IMWRITE_JPEG_QUALITY, 92])
+        neutral = keyframe
+    else:
+        neutral = (cv2.imread(neutral_path) if neutral_reference
+                   and os.path.isfile(neutral_path) else None)
+    if neutral is None:
+        neutral = keyframe
+    stylized_mouth = None
+    if (_is_stylized_source_medium(source_medium) and keyframe is not None):
+        mouth_landmarks, _, _ = face.detect_for_intake(keyframe)
+        stylized_mouth = _stylized_mouth_geometry(
+            keyframe.shape, mouth_landmarks)
+    stylized_blink = _publish_stylized_blink_source(
+        neutral, directory, runtime.get("eyes"), destination,
+        source_medium, log=log)
     runtime.update(
         # This branch preserves a proven face bank when an imported avatar no
         # longer carries source visemes.  It must still cross the current
@@ -466,8 +847,17 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
         cutout=cutout_meta,
         body=body_meta,
         motion=motion_meta,
+        source_medium=source_medium,
         built=source_manifest.get("updated", runtime.get("built")),
     )
+    if stylized_blink:
+        runtime["stylized_blink"] = stylized_blink
+    else:
+        runtime.pop("stylized_blink", None)
+    if stylized_mouth:
+        runtime["stylized_mouth"] = stylized_mouth
+    else:
+        runtime.pop("stylized_mouth", None)
     temporary = manifest_path + ".tmp"
     with open(temporary, "w") as handle:
         json.dump(runtime, handle, indent=1)
@@ -570,7 +960,13 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
             continue
         img = cv2.imread(src)
         out = os.path.join(dest, f"{rt}_open.jpg")
-        cv2.imwrite(out, img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        # Stylized mouths are composited over one immutable identity plate in
+        # Chat/Talk.  Publish the canonical keyframe for that neutral instead
+        # of a provider-redrawn `v_closed` face; photographs keep the original
+        # viseme frame byte-for-byte through this branch.
+        published = (key if rt == "sil"
+                     and _is_stylized_source_medium(source_medium) else img)
+        cv2.imwrite(out, published, [cv2.IMWRITE_JPEG_QUALITY, quality])
         frames[rt] = dict(open=f"assets/{rt}_open.jpg")
         names.append(rt)
         viseme_bank.append((rt, img))
@@ -608,6 +1004,12 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
 
     eyes = _strip(lids["eyes"], "eye",
                   dict(states=[round(t, 4) for t in lids["states"]]))
+    neutral = (key if _is_stylized_source_medium(source_medium) else
+               next((image for name, image in viseme_bank if name == "sil"), key))
+    stylized_mouth = (_stylized_mouth_geometry(key.shape, klm)
+                      if _is_stylized_source_medium(source_medium) else None)
+    stylized_blink = _publish_stylized_blink_source(
+        neutral, home, eyes, dest, source_medium, log=log)
     gaze = _strip(expr["gaze"], "gaze",
                   dict(dxs=expr["gaze"]["dxs"], dys=expr["gaze"]["dys"]))
     brow = _strip(expr["brow"], "brow", dict(dys=expr["brow"]["dys"],
@@ -632,6 +1034,9 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
                     cheek=cheek, eyebag=eyebag,
                     neck=expression.neck(klm), cutout=cutout_meta,
                     body=body_meta, motion=motion_meta, blink=timing,
+                    source_medium=source_medium,
+                    stylized_mouth=stylized_mouth,
+                    stylized_blink=stylized_blink,
                     built=m.get("updated"), quality=m.get("quality"),
                     rig_profile=_runtime_rig_profile(m))
     with open(os.path.join(dest, "manifest.json"), "w") as f:

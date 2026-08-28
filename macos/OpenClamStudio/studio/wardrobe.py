@@ -1051,7 +1051,11 @@ def _read_cache(avatar_dir, digest):
     legacy = cached.get("version") == 3
     prompt = migrate_legacy_prompt(
         prompt, stored=legacy, ensure_rule=True)
-    editable = prompt.replace(ACCESSORY_RULE, " ")
+    editable = (
+        prompt
+        .replace(ACCESSORY_RULE, " ")
+        .replace(STYLISED_RULE, " ")
+    )
     # A current cache was produced after the policy gate and must never require
     # silent cleanup.  Reject corruption or hand-edited policy violations so the
     # normal tailor/fallback path runs; only the explicitly legacy v3 source is

@@ -259,6 +259,74 @@ def _stylized_windows(width, height):
                         yield box
 
 
+def _large_white_eye_evidence(bgr, landmarks):
+    """Return bounded visual evidence for soft-3D/cartoon eye topology.
+
+    Smoothly shaded 3D character art can sit inside the texture classifier's
+    deliberately uncertain band: it has more tonal variation than a drawing,
+    but far less photographic micro-texture.  The user's Luffy sources have a
+    second, unusually strong signal that photographs do not: two very large,
+    neutral-white eye interiors spanning most of the face width.
+
+    This helper is intentionally insufficient on its own.  The caller may use
+    it only for an otherwise ambiguous source, and only after a coherent
+    478-point face mesh has already been established.  Requiring bilateral
+    geometry and neutral-white pixels prevents a white background, clothing,
+    teeth, or a single specular highlight from opting a photograph into the
+    stylized pipeline.
+    """
+    image = np.asarray(bgr)
+    lm = np.asarray(landmarks)
+    if (image.ndim != 3 or image.shape[2] < 3 or
+            lm.shape != (478, 2) or not np.isfinite(lm).all()):
+        return dict(stylized_eye_evidence=False)
+
+    oval_width = float(np.ptp(lm[FACE_OVAL, 0]))
+    if oval_width <= 1e-6:
+        return dict(stylized_eye_evidence=False)
+
+    white_fractions = []
+    width_ratios = []
+    height, width = image.shape[:2]
+    for indices in (EYE_R, EYE_L):
+        points = np.round(lm[indices]).astype(np.int32)
+        hull = cv2.convexHull(points)
+        if hull is None or len(hull) < 3:
+            return dict(stylized_eye_evidence=False)
+        mask = np.zeros((height, width), np.uint8)
+        cv2.fillConvexPoly(mask, hull, 255)
+        pixels = image[mask > 0, :3]
+        if pixels.shape[0] < 24:
+            return dict(stylized_eye_evidence=False)
+        lab = cv2.cvtColor(
+            pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3)
+        hsv = cv2.cvtColor(
+            pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
+        # LAB lightness >= 210 and low saturation identify actual sclera-like
+        # neutral white.  They deliberately exclude pale skin and bright,
+        # saturated cartoon iris colours.
+        neutral_white = (lab[:, 0] >= 210) & (hsv[:, 1] <= 45)
+        white_fractions.append(float(np.mean(neutral_white)))
+        width_ratios.append(float(np.ptp(lm[indices, 0])) / oval_width)
+
+    eye_span_ratio = float(
+        np.linalg.norm(lm[EYE_L_OUT] - lm[EYE_R_OUT]) / oval_width)
+    evidence = (
+        min(white_fractions) >= 0.40 and
+        float(np.mean(white_fractions)) >= 0.55 and
+        min(width_ratios) >= 0.18 and
+        0.66 <= eye_span_ratio <= 0.80
+    )
+    return dict(
+        stylized_eye_evidence=bool(evidence),
+        eye_white_fraction_right=round(white_fractions[0], 6),
+        eye_white_fraction_left=round(white_fractions[1], 6),
+        eye_width_ratio_right=round(width_ratios[0], 6),
+        eye_width_ratio_left=round(width_ratios[1], 6),
+        eye_span_oval_ratio=round(eye_span_ratio, 6),
+    )
+
+
 def classify_source_medium(bgr, landmarks):
     """Classify the face artwork as photo, illustration, or uncertain.
 
@@ -306,18 +374,26 @@ def classify_source_medium(bgr, landmarks):
     flat_fraction = float(np.mean(delta < 2.0))
     strong_edge_fraction = float(np.mean(delta > 20.0))
     score = flat_fraction + 2.0 * strong_edge_fraction
+    eye_evidence = _large_white_eye_evidence(image, lm)
     if score >= 0.72:
         medium = "illustration"
     elif score <= 0.62:
         medium = "photograph"
+    elif eye_evidence.get("stylized_eye_evidence"):
+        # A narrow soft-3D recovery branch.  It cannot override a confidently
+        # photographic texture score, and it still requires bilateral visual
+        # evidence attached to an anatomically coherent mesh.
+        medium = "3d render"
     else:
         medium = "unknown"
+    features = dict(
+        flat_fraction=round(flat_fraction, 6),
+        strong_edge_fraction=round(strong_edge_fraction, 6))
+    features.update(eye_evidence)
     return dict(
         source_medium=medium,
         medium_score=round(float(score), 6),
-        medium_features=dict(
-            flat_fraction=round(flat_fraction, 6),
-            strong_edge_fraction=round(strong_edge_fraction, 6)))
+        medium_features=features)
 
 
 def detect_for_intake(bgr):

@@ -85,9 +85,16 @@ def _flat_plate_model(image):
     # light neutral-gray plate rather than RGB-255 white. This path remains
     # opt-in and requires much stronger border uniformity than the white plate
     # so an ordinary bright photograph can never qualify by accident.
-    neutral_seed = (low >= 200) & (chroma <= 24)
-    neutral_support = float(((low >= 210) & (chroma <= 16)).mean())
-    if neutral_support >= 0.72 and int(neutral_seed.sum()) >= 32:
+    # Soft-3D generators also use a deliberately uniform medium-light gray
+    # studio plate (the retained Luffy head measures BGR 203--210 around the
+    # complete border).  Keep this branch stylized-only and demand nearly the
+    # whole border be neutral, but do not require that neutral to be close to
+    # paper white.  Ordinary photographs never reach this opt-in extractor.
+    neutral_seed = (low >= 195) & (chroma <= 12)
+    neutral_support = float(((low >= 200) & (chroma <= 8)).mean())
+    neutral_range = float(np.percentile(low, 99) - np.percentile(low, 1))
+    if (neutral_support >= 0.90 and neutral_range <= 12.0
+            and int(neutral_seed.sum()) >= 32):
         colour = np.median(border[neutral_seed], axis=0).astype(np.float32)
         return "light-neutral", colour, neutral_support
 

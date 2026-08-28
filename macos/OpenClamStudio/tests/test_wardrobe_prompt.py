@@ -533,6 +533,37 @@ class WardrobeFallbackTests(unittest.TestCase):
 
 
 class WardrobeCacheTests(unittest.TestCase):
+    def test_current_stylized_cache_does_not_reject_its_own_policy_rule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            portrait = _portrait(directory)
+            traits = {
+                "presentation": "masculine",
+                "medium": "3d render",
+                "register": "stylized action hero",
+            }
+            prompt = wardrobe._finalise(
+                HERO["direction"], traits["presentation"], traits["medium"])
+            self.assertIn(wardrobe.STYLISED_RULE, prompt)
+            with open(os.path.join(directory, wardrobe.CACHE_NAME), "w") as handle:
+                json.dump({
+                    "version": wardrobe.CACHE_VERSION,
+                    "digest": wardrobe._digest(portrait),
+                    "prompt": prompt,
+                    "traits": traits,
+                    "variation_id": "cached-stylized-v9",
+                }, handle)
+
+            with mock.patch.object(wardrobe, "_llm_route") as route, \
+                    mock.patch.object(wardrobe, "_chat") as chat:
+                result = wardrobe.cached_prompt(directory)
+
+        route.assert_not_called()
+        chat.assert_not_called()
+        self.assertIsNotNone(result)
+        self.assertTrue(result["cached"])
+        self.assertEqual(prompt, result["prompt"])
+        self.assertEqual(traits, result["traits"])
+
     def test_v3_gold_cache_is_projected_safely_without_mutating_user_data(self):
         with tempfile.TemporaryDirectory() as directory:
             portrait = _portrait(directory)

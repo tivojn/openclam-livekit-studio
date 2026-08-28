@@ -1920,7 +1920,7 @@
     <button id="motionMenuButton" class="round-button" type="button" aria-expanded="false" aria-controls="motionPicker" aria-label="Choose avatar display mode" title="Avatar display modes">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v14h16V5H4Zm8 2.1a3.1 3.1 0 1 1 0 6.2 3.1 3.1 0 0 1 0-6.2ZM6.8 17c.5-2 2.25-3 5.2-3s4.7 1 5.2 3H6.8Z"/></svg>
     </button>
-    <button id="speakerButton" class="round-button chat-only-control" type="button" aria-label="Read latest reply aloud" title="Read latest reply aloud">
+    <button id="speakerButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Read latest reply aloud" title="Read latest reply aloud">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm11.5-.8a5 5 0 0 1 0 7.6l-1.2-1.6a3 3 0 0 0 0-4.4l1.2-1.6Zm2.4-3.1a9 9 0 0 1 0 13.8l-1.2-1.6a7 7 0 0 0 0-10.6l1.2-1.6Z"/></svg>
     </button>
     <button id="layerButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Bring avatar layer forward" title="Bring avatar layer forward">
@@ -2212,7 +2212,7 @@
     let headReplacementActive = false;
     const visemeImages = new Map();
     const layers = { eyes: {}, gaze: {}, brow: {}, forehead: {}, cheek: {}, eyebag: {},
-      smile: null, emotionMouth: null };
+      stylizedBlink: {}, smile: null, emotionMouth: null };
     const motion = {};
     const motionLoadTasks = {};
     let assetRevision = Date.now();
@@ -2292,6 +2292,8 @@
     let audioTimeData = null;
     let audioFrequencyData = null;
     let speechSource = null;
+    let speechRequest = null;
+    let speechRequestID = 0;
     let speechTrack = [];
     let speechStart = 0;
     let speechTrackIndex = 0;
@@ -2421,6 +2423,11 @@
     const headContext = headCanvas.getContext('2d', { alpha: true });
     const headReplacementCanvas = document.createElement('canvas');
     const headReplacementContext = headReplacementCanvas.getContext('2d', { alpha: true });
+    const stylizedMouthCanvas = document.createElement('canvas');
+    const stylizedMouthContext = stylizedMouthCanvas.getContext('2d', { alpha: true });
+    const stylizedMouthMaskCanvas = document.createElement('canvas');
+    const stylizedMouthMaskContext = stylizedMouthMaskCanvas.getContext('2d', { alpha: true });
+    let stylizedMouthMaskKey = '';
     let lastBodyGeometry = null;
 
     let currentViseme = 'sil';
@@ -3221,6 +3228,23 @@
       shell.setPetMotionReady(motion.walk ? motionPlaybackProfile() : { ready: false });
     };
 
+    const STYLIZED_SOURCE_MEDIA = new Set([
+      'anime', 'illustration', 'illustrated', 'cartoon', 'drawing',
+      'game art', 'game-art', '3d render', '3d-render', 'soft-3d',
+    ]);
+    const runtimeSourceMedium = value => String(value || '').trim().toLowerCase();
+    const isStylizedFaceRuntime = value => {
+      const runtime = value && typeof value === 'object' ? value : {};
+      // A current export carries the original intake classification. Unknown,
+      // malformed and photographic values fail closed to the existing photo
+      // compositor. Only old reviewed packages without that field may inherit
+      // their authored replacement-head declaration as a compatibility hint.
+      if (Object.prototype.hasOwnProperty.call(runtime, 'source_medium')) {
+        return STYLIZED_SOURCE_MEDIA.has(runtimeSourceMedium(runtime.source_medium));
+      }
+      return runtimeSourceMedium(runtime.body && runtime.body.head_composite) === 'replace';
+    };
+
     // A photographic identity plate can dissolve gently into a separately
     // generated body without exposing two silhouettes. Flat cartoon art cannot:
     // its black ear, cheek and jaw strokes remain visible underneath the live
@@ -3322,6 +3346,14 @@
         headCanvas.width = portraitWidth;
         headCanvas.height = portraitHeight;
 
+        visemeImages.clear();
+        for (const kind of ['eyes', 'gaze', 'brow', 'forehead', 'cheek', 'eyebag',
+          'stylizedBlink']) layers[kind] = {};
+        layers.smile = null;
+        layers.emotionMouth = null;
+        currentViseme = 'sil';
+        previousViseme = 'sil';
+        stylizedMouthMaskKey = '';
         bodyImage = null;
         headMask = null;
         bodyHeadClearMask = null;
@@ -3348,6 +3380,15 @@
         if (manifest.emotion_mouth && manifest.emotion_mouth.src) {
           layerJobs.push(loadImage(manifest.emotion_mouth.src)
             .then(image => { layers.emotionMouth = image; }));
+        }
+        if (isStylizedFaceRuntime(manifest) && manifest.stylized_blink) {
+          for (const key of ['l', 'r']) {
+            const spec = manifest.stylized_blink[key];
+            if (spec && spec.src) {
+              layerJobs.push(loadImage(spec.src)
+                .then(image => { layers.stylizedBlink[key] = image; }));
+            }
+          }
         }
         if (manifest.body) {
           layerJobs.push(loadImage(manifest.body.image).then(image => { bodyImage = image; }));
@@ -4064,6 +4105,81 @@
 
     const stripBlendCanvas = document.createElement('canvas');
     const stripBlendContext = stripBlendCanvas.getContext('2d', { alpha: true });
+    const runtimeBox = value => {
+      if (!value || !Array.isArray(value.box) || value.box.length !== 4) return null;
+      const box = value.box.map(Number);
+      return box.every(Number.isFinite) && box[2] > 0 && box[3] > 0 ? box : null;
+    };
+    // Never reuse the photographic smile/emotion rectangles here: they carry
+    // cheek context and can reach an oversized cartoon sclera. Current
+    // stylized bundles publish this canonical outer-lip box explicitly; an old
+    // bundle without it fails closed to a static mouth until republished.
+    const stylizedVisemeGeometry = () => runtimeBox(
+      manifest && manifest.stylized_mouth);
+    const selectStylizedVisemeImage = (oldImage, newImage, blend) => (
+      newImage && newImage !== oldImage && blend >= .5 ? newImage : oldImage
+    );
+    const faceEyelidPolicy = (stylized, stylizedBlinkReady, closure) => {
+      if (!stylized) return 'photo-strip';
+      return stylizedBlinkReady && closure >= .78
+        ? 'stylized-closed' : 'static-canonical';
+    };
+    const prepareStylizedMouthMask = (width, height) => {
+      const roundedWidth = Math.max(1, Math.round(width));
+      const roundedHeight = Math.max(1, Math.round(height));
+      const key = `${roundedWidth}x${roundedHeight}`;
+      if (stylizedMouthMaskKey === key) return;
+      stylizedMouthMaskKey = key;
+      stylizedMouthMaskCanvas.width = roundedWidth;
+      stylizedMouthMaskCanvas.height = roundedHeight;
+      const pixels = stylizedMouthMaskContext.createImageData(
+        roundedWidth, roundedHeight);
+      const featherX = Math.max(4, Math.min(16, Math.round(roundedWidth * .055)));
+      const featherY = Math.max(4, Math.min(14, Math.round(roundedHeight * .075)));
+      for (let y = 0; y < roundedHeight; y += 1) {
+        const vertical = Math.min(y / featherY,
+          (roundedHeight - 1 - y) / featherY);
+        for (let x = 0; x < roundedWidth; x += 1) {
+          const horizontal = Math.min(x / featherX,
+            (roundedWidth - 1 - x) / featherX);
+          const edge = expressionSmoothStep(Math.min(horizontal, vertical));
+          const index = (y * roundedWidth + x) * 4;
+          pixels.data[index] = 255;
+          pixels.data[index + 1] = 255;
+          pixels.data[index + 2] = 255;
+          pixels.data[index + 3] = Math.round(edge * 255);
+        }
+      }
+      stylizedMouthMaskContext.putImageData(pixels, 0, 0);
+    };
+    const drawStylizedVisemePatch = (target, oldImage, newImage, blend) => {
+      const box = stylizedVisemeGeometry();
+      if (!target || !oldImage || !box) return;
+      const [x, y, width, height] = box;
+      const roundedWidth = Math.max(1, Math.round(width));
+      const roundedHeight = Math.max(1, Math.round(height));
+      if (stylizedMouthCanvas.width !== roundedWidth) stylizedMouthCanvas.width = roundedWidth;
+      if (stylizedMouthCanvas.height !== roundedHeight) stylizedMouthCanvas.height = roundedHeight;
+      prepareStylizedMouthMask(roundedWidth, roundedHeight);
+      stylizedMouthContext.setTransform(1, 0, 0, 1, 0, 0);
+      stylizedMouthContext.globalCompositeOperation = 'source-over';
+      stylizedMouthContext.globalAlpha = 1;
+      stylizedMouthContext.clearRect(0, 0, roundedWidth, roundedHeight);
+      // RGB crossfading two pieces of drawn line art creates a captured frame
+      // with two lips/jaw lines (the user's blurred/double-lip artifact). A
+      // stylized viseme is therefore discrete; the 18 ms timing remains only
+      // the decision boundary. Photorealistic frames still use their original
+      // full-frame crossfade below.
+      const selectedImage = selectStylizedVisemeImage(
+        oldImage, newImage, blend);
+      stylizedMouthContext.drawImage(selectedImage, x, y, width, height,
+        0, 0, roundedWidth, roundedHeight);
+      stylizedMouthContext.globalCompositeOperation = 'destination-in';
+      stylizedMouthContext.globalAlpha = 1;
+      stylizedMouthContext.drawImage(stylizedMouthMaskCanvas, 0, 0);
+      stylizedMouthContext.globalCompositeOperation = 'source-over';
+      target.drawImage(stylizedMouthCanvas, x, y, width, height);
+    };
     const stripBracket = (values, target) => {
       if (!Array.isArray(values) || values.length < 2) return { low: 0, high: 0, mix: 0 };
       const numeric = values.map(Number);
@@ -4150,15 +4266,30 @@
       const oldImage = visemeImages.get(previousViseme) || visemeImages.get('sil') || [...visemeImages.values()][0];
       const newImage = visemeImages.get(currentViseme) || oldImage;
       const blend = Math.max(0, Math.min(1, (now - visemeChangedAt) / (XFADE * 1000)));
+      const stylizedRuntime = isStylizedFaceRuntime(manifest);
       faceContext.setTransform(1, 0, 0, 1, 0, 0);
       faceContext.globalCompositeOperation = 'source-over';
       faceContext.globalAlpha = 1;
       faceContext.clearRect(0, 0, portraitWidth, portraitHeight);
-      if (oldImage) faceContext.drawImage(oldImage, 0, 0, portraitWidth, portraitHeight);
-      if (newImage && newImage !== oldImage) {
-        faceContext.globalAlpha = blend;
-        faceContext.drawImage(newImage, 0, 0, portraitWidth, portraitHeight);
-        faceContext.globalAlpha = 1;
+      if (stylizedRuntime) {
+        // Cartoon providers often redraw the entire face for every phoneme.
+        // Crossfading those portraits makes a smaller face morph inside the
+        // static head. Keep one neutral identity plate and animate only the
+        // feathered authored mouth box instead.
+        const neutralImage = visemeImages.get('sil') || oldImage || newImage;
+        if (neutralImage) {
+          faceContext.drawImage(neutralImage, 0, 0, portraitWidth, portraitHeight);
+          drawStylizedVisemePatch(faceContext, oldImage || neutralImage,
+            newImage || oldImage || neutralImage, blend);
+        }
+      } else {
+        // Photorealistic runtimes retain the reviewed full-frame crossfade.
+        if (oldImage) faceContext.drawImage(oldImage, 0, 0, portraitWidth, portraitHeight);
+        if (newImage && newImage !== oldImage) {
+          faceContext.globalAlpha = blend;
+          faceContext.drawImage(newImage, 0, 0, portraitWidth, portraitHeight);
+          faceContext.globalAlpha = 1;
+        }
       }
 
       const blink = blinkAmount(now, reducedMotion.matches);
@@ -4342,7 +4473,30 @@
             Math.max(blinkValue, speechValue * side), 0, true);
         }
       }
-      if (manifest.eyes && Array.isArray(manifest.eyes.states)) {
+      const stylizedBlinkReady = stylizedRuntime
+        && manifest.stylized_blink
+        && manifest.stylized_blink.mode === 'semantic-eye-switch'
+        && ['l', 'r'].every(key => layers.stylizedBlink[key]
+          && runtimeBox(manifest.stylized_blink[key]));
+      const eyelidPolicy = faceEyelidPolicy(
+        stylizedRuntime, stylizedBlinkReady, eyelidClosure);
+      if (eyelidPolicy === 'stylized-closed') {
+        // Two pieces of drawn eye line art must never be blended. Switch the
+        // seam-gated semantic plates only at near-maximum closure, just as the
+        // stylized viseme path switches discrete mouth drawings.
+        faceContext.globalAlpha = 1;
+        for (const key of ['l', 'r']) {
+          const box = runtimeBox(manifest.stylized_blink[key]);
+          faceContext.drawImage(layers.stylizedBlink[key],
+            box[0], box[1], box[2], box[3]);
+        }
+        faceContext.globalAlpha = 1;
+      } else if (eyelidPolicy === 'photo-strip'
+        && manifest.eyes && Array.isArray(manifest.eyes.states)) {
+        // The calibrated human lid strips deliberately stay photo-only. If a
+        // reviewed cartoon blink plate is missing or rejected, keep the
+        // canonical eyes static; falling back here recreates the tiny inner
+        // eye that this route exists to prevent.
         const states = manifest.eyes.states;
         for (const key of ['l', 'r']) {
           const image = layers.eyes[key];
@@ -5541,7 +5695,19 @@
       return audioContext;
     };
 
+    const setSpeakerPlaybackState = playing => {
+      const active = Boolean(playing);
+      speakerButton.setAttribute('aria-pressed', String(active));
+      speakerButton.setAttribute('aria-label', active
+        ? 'Stop reading aloud' : 'Read latest reply aloud');
+      speakerButton.title = active ? 'Stop reading aloud' : 'Read latest reply aloud';
+    };
+
     const stopSpeech = () => {
+      const wasSpeaking = Boolean(speechSource || speechRequest);
+      const pending = speechRequest;
+      speechRequest = null;
+      if (pending && pending.controller) pending.controller.abort();
       if (speechSource) { try { speechSource.stop(); } catch (_) { /* already ended */ } }
       speechSource = null;
       speechTrack = [];
@@ -5551,45 +5717,80 @@
       speechExpressionPlan = makeSpeechExpressionPlan('');
       reactiveMouthState.viseme = 'sil';
       reactiveMouthState.audibleUntil = 0;
+      setSpeakerPlaybackState(false);
+      return wasSpeaking;
     };
 
-    const playSpeech = async (base64, track = [], spokenText = '') => {
-      if (!base64) return;
+    const beginSpeechRequest = () => {
       stopSpeech();
-      const graph = ensureAudioGraph();
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-      const buffer = await graph.decodeAudioData(bytes.buffer.slice(0));
-      const source = graph.createBufferSource();
-      source.buffer = buffer;
-      source.connect(audioAnalyser);
-      source.connect(graph.destination);
-      speechSource = source;
-      speechExpressionTimeline = makeSpeechExpressionTimeline(spokenText, buffer.duration);
-      speechExpressionPlan = speechExpressionPlanAt(
-        speechExpressionTimeline, 0, makeSpeechExpressionPlan(spokenText, buffer.duration));
-      resumeChatSpeakingPose();
-      speechTrack = stabiliseTrack(
-        track,
-        buffer.duration,
-        manifest && Array.isArray(manifest.visemes) ? manifest.visemes : [],
-      );
-      speechTrackIndex = 0;
-      speechStart = graph.currentTime;
-      source.onended = () => {
-        if (speechSource === source) {
-          speechSource = null;
-          speechTrack = [];
-          currentViseme = 'sil';
-          speechExpressionTimeline = [];
-          speechExpressionPlan = makeSpeechExpressionPlan('');
-          resumeChatSpeakingPose();
-          setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
-        }
+      const request = {
+        id: ++speechRequestID,
+        controller: new AbortController(),
       };
-      source.start();
-      setStatus('Speaking', 'good');
+      speechRequest = request;
+      setSpeakerPlaybackState(true);
+      return request;
+    };
+
+    const speechRequestIsCurrent = request => Boolean(
+      request && speechRequest === request
+      && request.controller && !request.controller.signal.aborted
+      && !live);
+
+    const playSpeech = async (base64, track = [], spokenText = '', request = null) => {
+      if (!base64) return false;
+      const owner = request || beginSpeechRequest();
+      if (!speechRequestIsCurrent(owner)) return false;
+      try {
+        const graph = ensureAudioGraph();
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        const buffer = await graph.decodeAudioData(bytes.buffer.slice(0));
+        // Muting, starting Live Talk, or beginning a newer utterance may happen
+        // while Chromium decodes a long response. A stale decode must never gain
+        // an audible destination after its owner has been cancelled.
+        if (!speechRequestIsCurrent(owner)) return false;
+        const source = graph.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioAnalyser);
+        source.connect(graph.destination);
+        speechSource = source;
+        setSpeakerPlaybackState(true);
+        speechExpressionTimeline = makeSpeechExpressionTimeline(spokenText, buffer.duration);
+        speechExpressionPlan = speechExpressionPlanAt(
+          speechExpressionTimeline, 0, makeSpeechExpressionPlan(spokenText, buffer.duration));
+        resumeChatSpeakingPose();
+        speechTrack = stabiliseTrack(
+          track,
+          buffer.duration,
+          manifest && Array.isArray(manifest.visemes) ? manifest.visemes : [],
+        );
+        speechTrackIndex = 0;
+        speechStart = graph.currentTime;
+        source.onended = () => {
+          if (speechSource === source && speechRequest === owner) {
+            speechSource = null;
+            speechRequest = null;
+            speechTrack = [];
+            currentViseme = 'sil';
+            speechExpressionTimeline = [];
+            speechExpressionPlan = makeSpeechExpressionPlan('');
+            setSpeakerPlaybackState(false);
+            resumeChatSpeakingPose();
+            setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
+          }
+        };
+        source.start();
+        setStatus('Speaking', 'good');
+        return true;
+      } catch (error) {
+        if (speechRequest === owner) {
+          stopSpeech();
+          throw error;
+        }
+        return false;
+      }
     };
 
     async function readAloud(text) {
@@ -5597,12 +5798,18 @@
         notify('Hang up Live Talk before playing a separate read-aloud voice.');
         return;
       }
+      const request = beginSpeechRequest();
       try {
         setStatus('Preparing voice…', 'busy');
-        const result = await postJSON('/say', { text });
-        if (result.audio) await playSpeech(result.audio, result.track || [], text);
+        const result = await postJSON('/say', { text }, request.controller.signal);
+        if (!speechRequestIsCurrent(request)) return;
+        if (result.audio) await playSpeech(
+          result.audio, result.track || [], text, request);
         else throw new Error(result.error || 'No audio was returned');
       } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        if (!speechRequestIsCurrent(request)) return;
+        stopSpeech();
         notify(`Could not read aloud: ${String(error.message || error).slice(0, 120)}`);
         setStatus('Ready', 'good');
       }
@@ -7787,6 +7994,12 @@
       void selectMoveMode();
     });
     speakerButton.addEventListener('click', () => {
+      if (speechSource || speechRequest) {
+        stopSpeech();
+        resumeChatSpeakingPose();
+        setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
+        return;
+      }
       if (latestAssistantText) void readAloud(latestAssistantText);
       else notify('There is no assistant reply to read yet.');
     });

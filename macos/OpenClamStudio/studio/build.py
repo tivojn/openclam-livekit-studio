@@ -18,7 +18,7 @@ Swapping the avatar is therefore just pointing `active.json` at another slug -
 nothing else in the project is avatar-specific.
 """
 import os, re, json, time, shutil, datetime, threading, traceback, tempfile, copy, uuid
-from . import anatomy, prep, generate, compose, render, visemes, measure, rig
+from . import anatomy, prep, generate, compose, render, visemes, measure, rig, face
 
 CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.abspath(os.environ.get("OPENCLAM_DATA_DIR", CODE_ROOT))
@@ -221,7 +221,12 @@ def create_avatar(image_path, name=None, slug=None):
             source=os.path.basename(src), source_keyframe="source-keyframe.png",
             keyframe="keyframe.png",
             status="draft", progress=dict(done=0, total=len(visemes.ORDER)),
-            metrics=metrics, warnings=metrics.get("warnings", []),
+            # Preserve the original intake evidence immediately.  Older
+            # builds created this field only after generating a canonical
+            # head, which let an ambiguous legacy cartoon later inherit the
+            # generated head's (usually photographic) detector route.
+            source_metrics=copy.deepcopy(metrics), metrics=metrics,
+            warnings=metrics.get("warnings", []),
             visemes=[], preview=None, sheet=None, log=[]))
     except Exception:
         # This directory was reserved by this call and cannot contain a prior
@@ -264,6 +269,120 @@ def _source_medium(report):
     if not medium and legacy.startswith("stylized"):
         return "illustration"
     return "photograph"
+
+
+def _medium_needs_local_reclassification(manifest):
+    """Whether an old manifest lacks a reviewed original-medium decision.
+
+    Explicit photographs and explicit stylized media are authoritative.  A
+    missing/empty/``unknown`` label is eligible for a fresh local inspection;
+    malformed reports and arbitrary future labels remain fail-closed rather
+    than being guessed from generated head/body metadata.
+    """
+    if not isinstance(manifest, dict):
+        return False
+    report = None
+    for key in ("source_metrics", "metrics"):
+        if key not in manifest:
+            continue
+        report = manifest.get(key)
+        if not isinstance(report, dict):
+            return False
+        break
+    if report is None:
+        return True
+    raw_medium = str(report.get("source_medium") or "").strip().lower()
+    legacy_mode = str(report.get("source_mode") or "").strip().lower()
+    if raw_medium in ("", "unknown") and not legacy_mode:
+        return True
+    if not raw_medium and legacy_mode.startswith("stylized"):
+        return False
+    # Includes explicit photograph, reviewed art aliases, and corrupt/future
+    # values.  Only the first two route anywhere; the last remains strict.
+    return False
+
+
+def _original_avatar_image(directory, manifest):
+    """Load one registry-owned original image without accepting path escapes."""
+    root = os.path.abspath(directory)
+    for key in ("source", "source_keyframe", "keyframe"):
+        value = manifest.get(key) if isinstance(manifest, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            continue
+        candidate = os.path.abspath(os.path.join(root, value))
+        try:
+            if os.path.commonpath((root, candidate)) != root:
+                continue
+        except ValueError:
+            continue
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            return os.path.relpath(candidate, root), prep.read_image_bgr(candidate)
+        except (OSError, ValueError):
+            continue
+    return None, None
+
+
+def repair_source_medium_from_source(slug, manifest=None, log=None):
+    """Repair only missing/unknown legacy medium evidence from local pixels.
+
+    The repair never trusts names, prompts, provider output, head metadata, or
+    wardrobe selections.  It reruns the same topology-gated intake detector on
+    the registry-owned original source/keyframe and persists a stylized result
+    only when the classifier produces an explicit whitelisted art medium.
+    Anything photographic, uncertain, unreadable, malformed, or corrupt stays
+    on the strict photographic path.
+    """
+    current = copy.deepcopy(manifest if manifest is not None
+                            else read_manifest(slug))
+    if not _medium_needs_local_reclassification(current):
+        return current
+    image_name, image = _original_avatar_image(adir(slug), current)
+    if image is None:
+        return current
+    try:
+        landmarks, _transform, metadata = face.detect_for_intake(image)
+    except Exception:
+        # Migration is best-effort.  An unavailable model or unreadable legacy
+        # codec must leave the avatar on the existing strict route, not prevent
+        # the owner from opening calibration/body tools.
+        return current
+    if landmarks is None or not isinstance(metadata, dict):
+        return current
+    raw_medium = str(metadata.get("source_medium") or "").strip().lower()
+    medium = _source_medium({"source_medium": raw_medium})
+    if medium == "photograph" or raw_medium in ("", "unknown", "photograph"):
+        return current
+
+    original_report = current.get("source_metrics")
+    if isinstance(original_report, dict):
+        repaired_report = copy.deepcopy(original_report)
+    elif (not isinstance(current.get("head"), dict) and
+          isinstance(current.get("metrics"), dict)):
+        # A draft's metrics still describe the source.  A ready legacy build's
+        # metrics describe its generated head and must not be relabelled.
+        repaired_report = copy.deepcopy(current["metrics"])
+    else:
+        repaired_report = {}
+    for key in ("detection_mode", "detection_crop", "topology",
+                "source_medium", "medium_score", "medium_features"):
+        if key in metadata:
+            repaired_report[key] = copy.deepcopy(metadata[key])
+    current["source_metrics"] = repaired_report
+    previous = None
+    if isinstance(original_report, dict):
+        previous = original_report.get("source_medium")
+    current["source_medium_repair"] = {
+        "method": "local-topology-and-visual-v1",
+        "image": image_name,
+        "previous": previous,
+        "source_medium": medium,
+    }
+    write_manifest(slug, current)
+    if log:
+        log(f"locally reclassified legacy source as {medium} from {image_name}")
+    return current
 
 
 def _band_suggestion(keys):
@@ -659,6 +778,8 @@ def recompose_avatar(slug, profile, log=print, progress=None):
     manifest = read_manifest(slug)
     if not manifest or manifest.get("status") != "ready":
         raise ValueError(f"{slug} is not ready for calibration")
+    manifest = repair_source_medium_from_source(
+        slug, manifest=manifest, log=log)
     profile = rig.normalize(profile)
     gaps = raw_render_gaps(slug)
     directory = adir(slug)
@@ -829,6 +950,8 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
     m = read_manifest(slug)
     if not m:
         raise ValueError(f"unknown avatar: {slug}")
+    m = repair_source_medium_from_source(
+        slug, manifest=m, log=log)
     lines = []
 
     def emit(msg):

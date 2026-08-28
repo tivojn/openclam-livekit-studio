@@ -38,6 +38,34 @@ def plausible_mesh(width=100, height=80):
     return landmarks
 
 
+def soft_3d_big_eye_fixture(noise=12):
+    """A shaded, non-flat character face with Luffy-like bilateral eyes."""
+    size = 256
+    landmarks = plausible_mesh(size, size)
+    for indices, centre_x in ((face.EYE_R, 82), (face.EYE_L, 174)):
+        for index, landmark_index in enumerate(indices):
+            angle = 2.0 * np.pi * index / len(indices)
+            landmarks[landmark_index] = (
+                centre_x + 16 * np.cos(angle),
+                94 + 13 * np.sin(angle))
+    # Preserve the semantic outer-corner span after laying out the hulls.
+    landmarks[face.EYE_R_OUT] = (74, 94)
+    landmarks[face.EYE_L_OUT] = (182, 94)
+
+    yy, xx = np.mgrid[:size, :size]
+    image = np.zeros((size, size, 3), np.float32)
+    image[:, :, 0] = 135 + 18 * xx / 255 + 8 * yy / 255
+    image[:, :, 1] = 150 + 12 * xx / 255
+    image[:, :, 2] = 175 + 10 * yy / 255
+    image += np.random.default_rng(123).normal(0, noise, image.shape)
+    image = np.clip(image, 0, 255).astype(np.uint8)
+    for centre in ((82, 94), (174, 94)):
+        cv2.ellipse(image, centre, (16, 13), 0, 0, 360,
+                    (245, 245, 245), -1)
+        cv2.circle(image, centre, 6, (25, 25, 25), -1)
+    return image, landmarks
+
+
 class CartoonDetectorTests(unittest.TestCase):
     def test_strict_photo_returns_without_starting_stylized_detector(self):
         image = np.zeros((80, 100, 3), np.uint8)
@@ -126,6 +154,26 @@ class CartoonDetectorTests(unittest.TestCase):
         self.assertEqual(
             face.classify_source_medium(photograph_like, landmarks)["source_medium"],
             "photograph")
+
+    def test_ambiguous_soft_3d_big_white_eyes_store_explicit_medium(self):
+        image, landmarks = soft_3d_big_eye_fixture(noise=12)
+        report = face.classify_source_medium(image, landmarks)
+        self.assertGreater(report["medium_score"], 0.62)
+        self.assertLess(report["medium_score"], 0.72)
+        self.assertEqual(report["source_medium"], "3d render")
+        self.assertTrue(report["medium_features"]["stylized_eye_evidence"])
+        self.assertGreater(
+            min(report["medium_features"]["eye_white_fraction_right"],
+                report["medium_features"]["eye_white_fraction_left"]), 0.4)
+
+    def test_big_white_eyes_cannot_override_photographic_texture_score(self):
+        image, landmarks = soft_3d_big_eye_fixture(noise=10)
+        report = face.classify_source_medium(image, landmarks)
+        self.assertLessEqual(report["medium_score"], 0.62)
+        # The bilateral signal is present, proving the texture fail-closed
+        # boundary—not a missing fixture condition—is what keeps this strict.
+        self.assertTrue(report["medium_features"]["stylized_eye_evidence"])
+        self.assertEqual(report["source_medium"], "photograph")
 
 
 class CartoonKeyframeTests(unittest.TestCase):
@@ -276,6 +324,9 @@ class CartoonRegistrationTransactionTests(unittest.TestCase):
                         range(2)))
 
             self.assertEqual({item["slug"] for item in manifests}, {"l", "l-2"})
+            self.assertTrue(all(
+                item["source_metrics"]["source_medium"] == "illustration"
+                for item in manifests))
             self.assertTrue(os.path.isfile(os.path.join(avatars, "l", "manifest.json")))
             self.assertTrue(os.path.isfile(os.path.join(avatars, "l-2", "manifest.json")))
 

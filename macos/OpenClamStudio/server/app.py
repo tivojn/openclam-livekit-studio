@@ -817,6 +817,10 @@ def _body_stage(slug, options, w, progress):
     """Generate the three body plates and publish them. Shared by the
     standalone body job and the one-click pipeline; raises on failure."""
     from studio import body, library, motion
+    # Older packaged builds did not always preserve source-medium evidence at
+    # intake.  Repair only missing/unknown labels from the registry-owned
+    # original before body.py chooses its strict versus stylized alpha gates.
+    reg().repair_source_medium_from_source(slug, log=w)
     _recover_body_edit_transaction(slug, log=w)
     progress("generation", .12, "Generating front, side, and back bodies")
     metadata = body.build(
@@ -1087,6 +1091,8 @@ def _pipeline_thread(slug, job_id, notes=""):
     try:
         from studio import motion, wardrobe
         manifest = reg().read_manifest(slug) or {}
+        manifest = reg().repair_source_medium_from_source(
+            slug, manifest=manifest, log=writer)
         # A keep-note CHANGES the head prompt, so the face that is already
         # built was made without it - skipping the face would have meant
         # the one thing the owner asked to keep never came back. The head
@@ -1468,15 +1474,28 @@ async def api_rig(slug: str = Query(pattern=SLUG_PATTERN)):
     manifest = registry.read_manifest(slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
+    manifest = registry.repair_source_medium_from_source(
+        slug, manifest=manifest)
     if manifest.get("status") != "ready":
         raise HTTPException(400, "build this avatar before calibrating it")
-    from studio import compose, face, rig
+    from studio import body, compose, face, rig
     import cv2
     directory = registry.adir(slug)
     keyframe = cv2.imread(os.path.join(directory, "keyframe.png"))
     if keyframe is None:
         raise HTTPException(400, "avatar keyframe is missing")
-    landmarks, _ = face.detect(keyframe)
+    # Facial calibration is a read-only view of the same authored keyframe
+    # used by the build/runtime pipeline.  Explicitly classified artwork may
+    # need the bounded, topology-gated crop detector even after a successful
+    # build (large cartoon eyes and headwear sit outside MediaPipe's human
+    # full-frame prior).  Route from the original stored intake evidence, not
+    # from a UI/body style hint.  Missing, malformed, unknown and photographic
+    # reports therefore remain on the strict detector.
+    allow_stylized = body._allow_stylized_source(directory)
+    if allow_stylized:
+        landmarks, _, _metadata = face.detect_for_intake(keyframe)
+    else:
+        landmarks, _ = face.detect(keyframe)
     if landmarks is None:
         raise HTTPException(400, "no face detected in avatar keyframe")
     profile = rig.from_manifest(manifest)
@@ -1508,7 +1527,8 @@ async def api_rig(slug: str = Query(pattern=SLUG_PATTERN)):
     dental = dict(donor=None, donors={}, rows={}, contours=[],
                   candidates={}, overrides={})
     for row in compose.DENTAL_ROWS:
-        candidates = compose._scan_tooth_donors(viseme_dir, row)
+        candidates = compose._scan_tooth_donors(
+            viseme_dir, row, allow_stylized=allow_stylized)
         dental["candidates"][row] = [
             dict(name=name, pixels=pixels)
             for name, _, _, _, pixels in candidates]

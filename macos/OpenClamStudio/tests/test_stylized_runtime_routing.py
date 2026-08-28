@@ -8,6 +8,8 @@ addition cannot quietly weaken photo QA.
 """
 import json
 import os
+import re
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -501,6 +503,250 @@ class BuildRoutingTests(unittest.TestCase):
                 exported_manifest = export_runtime.call_args.kwargs["manifest_data"]
                 self.assertEqual(
                     exported_manifest["source_metrics"]["source_medium"], medium)
+
+
+class StylizedRendererAssetTests(unittest.TestCase):
+    def test_photo_blink_export_never_enters_stylized_detector(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(
+                    export.face, "detect_for_intake",
+                    side_effect=AssertionError(
+                        "photo runtime invoked permissive intake")) as intake:
+            os.makedirs(os.path.join(directory, "raw"))
+            cv2.imwrite(os.path.join(directory, "raw", "v_blink.png"), _image())
+            result = export._publish_stylized_blink_source(
+                _image(), directory, {
+                    "r": {"box": [8, 8, 16, 12]},
+                    "l": {"box": [38, 8, 16, 12]},
+                }, directory, "photograph", log=lambda _message: None)
+        self.assertIsNone(result)
+        intake.assert_not_called()
+
+    def test_stylized_blink_export_accepts_closed_sclera_despite_noisy_mesh(self):
+        key = np.full((80, 96, 3), (70, 100, 150), np.uint8)
+        cv2.ellipse(key, (25, 26), (12, 10), 0, 0, 360,
+                    (245, 245, 245), -1)
+        cv2.ellipse(key, (69, 26), (12, 10), 0, 0, 360,
+                    (245, 245, 245), -1)
+        cv2.circle(key, (25, 26), 3, (10, 10, 10), -1)
+        cv2.circle(key, (69, 26), 3, (10, 10, 10), -1)
+        # A provider-authored closed cartoon eye has no white sclera.  Keep
+        # the canonical skin colour and draw only one clean lower-lid stroke;
+        # unlike a dark rectangle, this exercises the semantic topology gate.
+        shut = np.full_like(key, (70, 100, 150))
+        cv2.line(shut, (15, 31), (35, 31), (20, 20, 20), 3,
+                 cv2.LINE_AA)
+        cv2.line(shut, (59, 31), (79, 31), (20, 20, 20), 3,
+                 cv2.LINE_AA)
+        landmarks = _landmarks(96)
+        with tempfile.TemporaryDirectory() as directory:
+            raw = os.path.join(directory, "raw")
+            runtime = os.path.join(directory, "runtime")
+            os.makedirs(raw)
+            cv2.imwrite(os.path.join(raw, "v_blink.png"), shut)
+            with mock.patch.object(
+                    export.face, "detect_for_intake",
+                    return_value=(landmarks, np.eye(4), {})) as intake, \
+                    mock.patch.object(
+                        export.cv2, "estimateAffine2D",
+                        return_value=(np.array([[1., 0., 0.],
+                                                [0., 1., 0.]]), None)), \
+                    mock.patch.object(
+                        export.cv2, "estimateAffinePartial2D",
+                        return_value=(np.array([[1., 0., 0.],
+                                                [0., 1., 0.]]), None)), \
+                    mock.patch.object(
+                        export.blink, "_aperture",
+                        # The two real retained Luffys measure .815 and .655
+                        # on their noisier sides even though 100% and 98.6% of
+                        # the white sclera disappear.  Exercise both values.
+                        side_effect=[20., 16.3, 20., 13.1]):
+                result = export._publish_stylized_blink_source(
+                    key, directory, {
+                        "r": {"box": [14, 18, 22, 17]},
+                        "l": {"box": [58, 18, 22, 17]},
+                    }, runtime, "3d render", log=lambda _message: None)
+
+            self.assertEqual("semantic-eye-switch", result["mode"])
+            self.assertEqual(3, intake.call_count)
+            for side in blink.SIDES:
+                plate = cv2.imread(
+                    os.path.join(runtime, f"stylized-blink-{side}.png"),
+                    cv2.IMREAD_UNCHANGED)
+                self.assertIsNotNone(plate)
+                self.assertEqual(4, plate.shape[2])
+                self.assertEqual(0, int(plate[0, 0, 3]))
+                self.assertGreater(int(plate[plate.shape[0] // 2,
+                                             plate.shape[1] // 2, 3]), 250)
+                x, y, width, height = result[side]["box"]
+                neutral_patch = key[y:y + height, x:x + width]
+                feather = (plate[:, :, 3] > 2) & (plate[:, :, 3] < 24)
+                if np.any(feather):
+                    self.assertLessEqual(int(np.max(np.abs(
+                        plate[:, :, :3][feather].astype(np.int16)
+                        - neutral_patch[feather].astype(np.int16)))), 2)
+                self.assertEqual(
+                    f"assets/stylized-blink-{side}.png",
+                    result[side]["src"])
+
+    def test_stylized_blink_rejects_foreign_dark_art_in_eye_plate(self):
+        key = np.full((80, 96, 3), (70, 100, 150), np.uint8)
+        for centre in ((25, 26), (69, 26)):
+            cv2.ellipse(key, centre, (12, 10), 0, 0, 360,
+                        (245, 245, 245), -1)
+            cv2.circle(key, centre, 3, (10, 10, 10), -1)
+        shut = np.full_like(key, (70, 100, 150))
+        cv2.line(shut, (15, 31), (35, 31), (20, 20, 20), 3)
+        cv2.line(shut, (59, 31), (79, 31), (20, 20, 20), 3)
+        # Simulate the provider-shifted hair shard that caused the old 3-D
+        # blink plate's circular patch and black-hole eye on a dark canvas.
+        cv2.rectangle(shut, (22, 14), (28, 36), (5, 5, 5), -1)
+        landmarks = _landmarks(96)
+        identity = np.array([[1., 0., 0.], [0., 1., 0.]])
+        with tempfile.TemporaryDirectory() as directory:
+            raw = os.path.join(directory, "raw")
+            runtime = os.path.join(directory, "runtime")
+            os.makedirs(raw)
+            cv2.imwrite(os.path.join(raw, "v_blink.png"), shut)
+            with mock.patch.object(
+                    export.face, "detect_for_intake",
+                    return_value=(landmarks, np.eye(4), {})), \
+                    mock.patch.object(export.cv2, "estimateAffine2D",
+                                      return_value=(identity, None)), \
+                    mock.patch.object(export.cv2, "estimateAffinePartial2D",
+                                      return_value=(identity, None)), \
+                    mock.patch.object(export.blink, "_aperture",
+                                      side_effect=[20., 4., 20., 4.]):
+                result = export._publish_stylized_blink_source(
+                    key, directory, {
+                        "r": {"box": [14, 18, 22, 17]},
+                        "l": {"box": [58, 18, 22, 17]},
+                    }, runtime, "illustration", log=lambda _message: None)
+            self.assertIsNone(result)
+
+    def test_stylized_mouth_geometry_is_lip_only(self):
+        landmarks = _landmarks(100)
+        angles = np.linspace(0.0, np.pi * 2.0, len(face.OUTER_LIP),
+                             endpoint=False)
+        landmarks[face.OUTER_LIP, 0] = 50.0 + np.cos(angles) * 10.0
+        landmarks[face.OUTER_LIP, 1] = 50.0 + np.sin(angles) * 3.0
+        geometry = export._stylized_mouth_geometry((100, 100, 3), landmarks)
+        self.assertEqual("canonical-outer-lip-v1", geometry["basis"])
+        self.assertEqual([35, 44, 30, 16], geometry["box"])
+        mouth = geometry["box"]
+        # Oversized cartoon sclerae can sit immediately above the lips.  The
+        # canonical lip box must have zero intersection with either one.
+        for eye in ([12, 8, 28, 36], [60, 8, 28, 36]):
+            overlap_width = max(
+                0, min(mouth[0] + mouth[2], eye[0] + eye[2])
+                - max(mouth[0], eye[0]))
+            overlap_height = max(
+                0, min(mouth[1] + mouth[3], eye[1] + eye[3])
+                - max(mouth[1], eye[1]))
+            self.assertEqual(0, overlap_width * overlap_height)
+
+    def test_pet_refresh_uses_canonical_neutral_only_for_stylized_runtime(self):
+        key = np.full((48, 64, 3), (50, 110, 180), np.uint8)
+        provider_neutral = np.full((48, 64, 3), (180, 90, 40), np.uint8)
+        for medium, expects_key in (("illustration", True),
+                                    ("photograph", False)):
+            with self.subTest(medium=medium), \
+                    tempfile.TemporaryDirectory() as directory:
+                runtime = os.path.join(directory, "runtime")
+                os.makedirs(runtime)
+                cv2.imwrite(os.path.join(directory, "keyframe.png"), key)
+                cv2.imwrite(os.path.join(runtime, "sil_open.jpg"),
+                            provider_neutral)
+                with open(os.path.join(runtime, "manifest.json"), "w") as handle:
+                    json.dump({
+                        "v": export.RUNTIME_VERSION,
+                        "frames": {"sil": {"open": "assets/sil_open.jpg"}},
+                        "eyes": {},
+                    }, handle)
+                source_manifest = {
+                    "status": "ready",
+                    "source_metrics": {"source_medium": medium},
+                }
+                with mock.patch.object(export.reg, "adir",
+                                       return_value=directory), \
+                        mock.patch.object(export.reg, "read_manifest",
+                                          return_value=source_manifest), \
+                        mock.patch.object(
+                            export.face, "detect_for_intake",
+                            return_value=(_landmarks(64), np.eye(4), {})), \
+                        mock.patch.object(export.cutout, "render",
+                                          return_value={}), \
+                        mock.patch.object(export, "_publish_motion",
+                                          return_value=None), \
+                        mock.patch.object(
+                            export, "_publish_stylized_blink_source",
+                            return_value=None):
+                    export.publish_pet_assets(
+                        "routing-avatar", runtime_dir=runtime,
+                        log=lambda _message: None)
+                refreshed = cv2.imread(os.path.join(runtime, "sil_open.jpg"))
+                target = key if expects_key else provider_neutral
+                self.assertLess(float(np.mean(np.abs(
+                    refreshed.astype(np.int16) - target.astype(np.int16)))), 2.0)
+
+    def test_web_renderer_narrows_cartoon_motion_but_preserves_photo_branch(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "web", "index.html"),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("const isStylizedFaceRuntime", source)
+        self.assertIn("Object.prototype.hasOwnProperty.call(runtime, 'source_medium')", source)
+        self.assertIn("drawStylizedVisemePatch(faceContext", source)
+        self.assertIn("const neutralImage = visemeImages.get('sil')", source)
+        self.assertIn("manifest && manifest.stylized_mouth", source)
+        self.assertNotIn("runtimeBox(manifest && manifest.smile)", source)
+        self.assertIn("blend >= .5", source)
+        self.assertIn("Photorealistic runtimes retain the reviewed full-frame crossfade", source)
+        self.assertIn("manifest.stylized_blink.mode === 'semantic-eye-switch'", source)
+        self.assertIn("closure >= .78", source)
+        self.assertIn("eyelidPolicy === 'photo-strip'", source)
+        self.assertNotIn("expressionSmoothStep((eyelidClosure - .70) / .12)", source)
+
+    def test_web_stylized_switches_are_executable_and_fail_closed(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "web", "index.html"),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        selector = re.search(
+            r"(const selectStylizedVisemeImage = \(oldImage, newImage, blend\)"
+            r" => \([\s\S]*?\n    \);)", source)
+        policy = re.search(
+            r"(const faceEyelidPolicy = \(stylized, stylizedBlinkReady, closure\)"
+            r" => \{[\s\S]*?\n    \};)", source)
+        self.assertIsNotNone(selector)
+        self.assertIsNotNone(policy)
+        script = f"""
+          'use strict';
+          {selector.group(1)}
+          {policy.group(1)}
+          const oldImage = {{ id: 'old' }};
+          const newImage = {{ id: 'new' }};
+          process.stdout.write(JSON.stringify({{
+            mouth: [
+              selectStylizedVisemeImage(oldImage, newImage, .49).id,
+              selectStylizedVisemeImage(oldImage, newImage, .50).id
+            ],
+            lids: [
+              faceEyelidPolicy(true, false, 1),
+              faceEyelidPolicy(true, true, .77),
+              faceEyelidPolicy(true, true, .78),
+              faceEyelidPolicy(false, false, 1)
+            ]
+          }}));
+        """
+        output = subprocess.check_output(
+            ["node", "-e", script], text=True, cwd=root)
+        observed = json.loads(output)
+        self.assertEqual(["old", "new"], observed["mouth"])
+        self.assertEqual([
+            "static-canonical", "static-canonical",
+            "stylized-closed", "photo-strip",
+        ], observed["lids"])
 
 
 if __name__ == "__main__":

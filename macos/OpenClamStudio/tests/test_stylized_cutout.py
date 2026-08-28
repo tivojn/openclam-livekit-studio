@@ -28,6 +28,37 @@ def _white_cartoon(size=112, background=(255, 255, 255)):
 
 
 class StylizedFlatPlateTests(unittest.TestCase):
+    def test_uniform_medium_light_3d_plate_bypasses_empty_vision_mask(self):
+        size = 192
+        # Matches the retained soft-3D Luffy keyframe's measured border range:
+        # neutral BGR 203--210, too dark for the previous >=210 support gate.
+        yy, xx = np.indices((size, size), dtype=np.float32)
+        radius = np.sqrt((xx - size / 2) ** 2 + (yy - size / 2) ** 2)
+        background = np.clip(209 - radius / (size * .72) * 5, 203, 209)
+        plate = np.dstack((background, background, background + 1)).astype(np.uint8)
+        cv2.ellipse(
+            plate, (size // 2, size // 2), (55, 76), 0, 0, 360,
+            (38, 76, 212), -1, cv2.LINE_AA)
+        # Enclosed bright stylized eyes remain subject pixels.
+        cv2.circle(plate, (78, 86), 13, (248, 248, 248), -1)
+        cv2.circle(plate, (114, 86), 13, (248, 248, 248), -1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "source.png")
+            destination = os.path.join(directory, "cutout.png")
+            cv2.imwrite(source, plate)
+            with mock.patch.object(cutout, "helper_path", return_value=None):
+                result = cutout.render(
+                    source, destination, log=lambda _message: None,
+                    allow_stylized=True)
+            rgba = cv2.imread(destination, cv2.IMREAD_UNCHANGED)
+
+        self.assertEqual(
+            "border-connected-light-neutral-plate", result["method"])
+        self.assertEqual(0, int(rgba[2, 2, 3]))
+        self.assertEqual(255, int(rgba[size // 2, size // 2, 3]))
+        self.assertEqual(255, int(rgba[86, 78, 3]))
+
     def test_light_neutral_plate_does_not_feather_through_3d_skin(self):
         size = 160
         plate = np.full((size, size, 3), (226, 227, 230), np.uint8)

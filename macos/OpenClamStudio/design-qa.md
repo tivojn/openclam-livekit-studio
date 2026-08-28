@@ -2,8 +2,8 @@
 
 ## Source and implementation evidence
 
-- Primary structure reference: `/Users/adamcohen/Desktop/Screenshot 2026-08-28 at 9.22.53 AM.png`
-- Split-pane/detail reference: `/Users/adamcohen/Desktop/Screenshot 2026-08-28 at 9.23.02 AM.png`
+- Primary structure reference: `Screenshot 2026-08-28 at 9.22.53 AM.png`
+- Split-pane/detail reference: `Screenshot 2026-08-28 at 9.23.02 AM.png`
 - Latest implementation, details open: `/private/tmp/openclam-ui-qa/implementation-details-open.png`
 - Latest implementation, staged attachment: `/private/tmp/openclam-ui-qa/implementation-attachment-chip.png`
 - Final Edge Idle/control-safe state: `/private/tmp/openclam-ui-qa/final-edge-idle-details-open.png`

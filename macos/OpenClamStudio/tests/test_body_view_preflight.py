@@ -43,7 +43,7 @@ class BodyViewPreflightTests(unittest.TestCase):
                 rgba[10:170, 20:100, 3] = 255
                 return bool(cv2.imwrite(destination, rgba))
 
-            def reject_alpha(_source, rgba):
+            def reject_alpha(_source, rgba, **_options):
                 return rgba, {
                     "valid": False,
                     "reason": "floor shadow",

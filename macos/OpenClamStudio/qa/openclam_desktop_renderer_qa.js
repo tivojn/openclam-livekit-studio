@@ -531,6 +531,183 @@ assert.match(source, /audioMonitorGain\.gain\.value = 0/,
 assert.match(source, /source\.connect\(graph\.destination\)/,
   'regular timed speech must retain one explicit audible destination');
 
+// The rail speaker is a playback toggle. During a long generated utterance it
+// must stop the current Web Audio source immediately instead of starting a
+// second /say request, and the same transition must close the timed mouth and
+// expression state. Live Talk owns separate attached remote audio and must not
+// be touched by this local read-aloud control.
+assert.match(source,
+  /id="speakerButton"[^>]+aria-pressed="false"[^>]+aria-label="Read latest reply aloud"/,
+  'the speaker control must expose its inactive toggle state');
+const speakerStateSource = inline[1].match(
+  /(const setSpeakerPlaybackState = playing => \{[\s\S]*?\n    \};)/,
+);
+const stopSpeechSource = inline[1].match(
+  /(const stopSpeech = \(\) => \{[\s\S]*?\n    \};)/,
+);
+const beginSpeechRequestSource = inline[1].match(
+  /(const beginSpeechRequest = \(\) => \{[\s\S]*?\n    \};)/,
+);
+const speechRequestCurrentSource = inline[1].match(
+  /(const speechRequestIsCurrent = request => Boolean\([\s\S]*?&& !live\);)/,
+);
+const playSpeechSource = inline[1].match(
+  /(const playSpeech = async \(base64[\s\S]*?\n    \};)/,
+);
+assert.ok(speakerStateSource, 'speaker playback state helper must remain independently testable');
+assert.ok(stopSpeechSource, 'speech stop lifecycle must remain independently testable');
+assert.ok(beginSpeechRequestSource, 'speech request owner must remain independently testable');
+assert.ok(speechRequestCurrentSource, 'speech cancellation guard must remain independently testable');
+assert.ok(playSpeechSource, 'speech decode lifecycle must remain independently testable');
+const stoppedSources = [];
+const speakerAttributes = {};
+const localSpeechStop = new Function(
+  'speakerButton', 'initialSource', 'stoppedSources',
+  `'use strict';
+   let speechSource = initialSource;
+   let speechRequest = null;
+   let speechTrack = [[0, 'ah']];
+   let speechTrackIndex = 3;
+   let currentViseme = 'ah';
+   let speechExpressionTimeline = [{ text: 'long reply' }];
+   let speechExpressionPlan = { laughter: 1 };
+   const reactiveMouthState = { viseme: 'ah', audibleUntil: 999 };
+   const makeSpeechExpressionPlan = () => ({ neutral: true });
+   ${speakerStateSource[1]}
+   ${stopSpeechSource[1]}
+   const stopped = stopSpeech();
+   return { stopped, speechSource, speechTrack, speechTrackIndex, currentViseme,
+     speechExpressionTimeline, speechExpressionPlan, reactiveMouthState };`,
+)({
+  setAttribute: (name, value) => { speakerAttributes[name] = value; },
+  set title(value) { speakerAttributes.title = value; },
+}, { stop: () => stoppedSources.push('stop') }, stoppedSources);
+assert.equal(localSpeechStop.stopped, true);
+assert.deepEqual(stoppedSources, ['stop'], 'mute must synchronously stop the active source');
+assert.equal(localSpeechStop.speechSource, null);
+assert.deepEqual(localSpeechStop.speechTrack, []);
+assert.equal(localSpeechStop.speechTrackIndex, 0);
+assert.equal(localSpeechStop.currentViseme, 'sil');
+assert.deepEqual(localSpeechStop.speechExpressionTimeline, []);
+assert.equal(localSpeechStop.reactiveMouthState.viseme, 'sil');
+assert.equal(localSpeechStop.reactiveMouthState.audibleUntil, 0);
+assert.equal(speakerAttributes['aria-pressed'], 'false');
+assert.equal(speakerAttributes['aria-label'], 'Read latest reply aloud');
+assert.equal(speakerAttributes.title, 'Read latest reply aloud');
+
+// Exercise the actual async decode boundary. A mute or newer request while
+// decodeAudioData is pending must make the old result inert; starting Live Talk
+// must do the same without touching its independently attached remote audio.
+const speechCancellationQA = new Function('assert',
+  `'use strict';
+   return (async () => {
+     const speakerAttributes = {};
+     const speakerButton = {
+       setAttribute: (name, value) => { speakerAttributes[name] = value; },
+       set title(value) { speakerAttributes.title = value; },
+     };
+     let live = null;
+     let speechSource = null;
+     let speechRequest = null;
+     let speechRequestID = 0;
+     let speechTrack = [];
+     let speechTrackIndex = 0;
+     let speechStart = 0;
+     let currentViseme = 'sil';
+     let speechExpressionTimeline = [];
+     let speechExpressionPlan = {};
+     const reactiveMouthState = { viseme: 'sil', audibleUntil: 0 };
+     const makeSpeechExpressionPlan = () => ({});
+     const makeSpeechExpressionTimeline = () => [];
+     const speechExpressionPlanAt = (_timeline, _time, fallback) => fallback;
+     const stabiliseTrack = value => value;
+     const resumeChatSpeakingPose = () => {};
+     const setStatus = () => {};
+     const manifest = { visemes: ['sil', 'aa'] };
+     const audioAnalyser = {};
+     const decodeResolvers = [];
+     const sources = [];
+     const graph = {
+       currentTime: 12,
+       destination: {},
+       decodeAudioData: () => new Promise(resolve => decodeResolvers.push(resolve)),
+       createBufferSource: () => {
+         const source = {
+           connected: [], started: 0, stopped: 0, onended: null,
+           connect(value) { this.connected.push(value); },
+           start() { this.started += 1; },
+           stop() { this.stopped += 1; },
+         };
+         sources.push(source);
+         return source;
+       },
+     };
+     const ensureAudioGraph = () => graph;
+     ${speakerStateSource[1]}
+     ${stopSpeechSource[1]}
+     ${beginSpeechRequestSource[1]}
+     ${speechRequestCurrentSource[1]}
+     ${playSpeechSource[1]}
+
+     const mutedOwner = beginSpeechRequest();
+     const mutedDecode = playSpeech('YQ==', [[0, 'aa']], 'long reply', mutedOwner);
+     assert.equal(decodeResolvers.length, 1);
+     assert.equal(speakerAttributes['aria-pressed'], 'true');
+     assert.equal(stopSpeech(), true, 'pending decode is an active mute target');
+     assert.equal(mutedOwner.controller.signal.aborted, true);
+     decodeResolvers.shift()({ duration: 3 });
+     assert.equal(await mutedDecode, false);
+     assert.equal(sources.length, 0, 'a muted decode must never create an audible source');
+
+     const staleOwner = beginSpeechRequest();
+     const staleDecode = playSpeech('YQ==', [], 'old reply', staleOwner);
+     const currentOwner = beginSpeechRequest();
+     const currentDecode = playSpeech('YQ==', [], 'new reply', currentOwner);
+     assert.equal(staleOwner.controller.signal.aborted, true);
+     const resolveStale = decodeResolvers.shift();
+     const resolveCurrent = decodeResolvers.shift();
+     resolveStale({ duration: 2 });
+     assert.equal(await staleDecode, false);
+     assert.equal(sources.length, 0, 'a replaced decode must stay inaudible');
+     resolveCurrent({ duration: 2 });
+     assert.equal(await currentDecode, true);
+     assert.equal(sources.length, 1);
+     assert.equal(sources[0].started, 1, 'only the newest utterance may start');
+
+     const remoteAttachment = { released: false };
+     const liveOwner = beginSpeechRequest();
+     const liveDecode = playSpeech('YQ==', [], 'must not overlap call', liveOwner);
+     stopSpeech();
+     live = { audioAttachments: new Map([['remote', remoteAttachment]]) };
+     decodeResolvers.shift()({ duration: 4 });
+     assert.equal(await liveDecode, false);
+     assert.equal(sources.length, 1, 'Live Talk must suppress a stale local decode');
+     assert.equal(remoteAttachment.released, false,
+       'local speech cancellation must not release Live Talk remote audio');
+     return true;
+   })();`,
+)(assert);
+const speakerHandlerSource = inline[1].match(
+  /speakerButton\.addEventListener\('click', \(\) => \{([\s\S]*?)\n    \}\);/,
+);
+assert.ok(speakerHandlerSource, 'speaker click lifecycle must remain inspectable');
+assert.ok(speakerHandlerSource[1].indexOf('if (speechSource || speechRequest)')
+  < speakerHandlerSource[1].indexOf('readAloud(latestAssistantText)'),
+  'active or pending playback must stop before the control can request another utterance');
+assert.match(speakerHandlerSource[1], /stopSpeech\(\);[\s\S]*?return;/,
+  'muting an active utterance must return without calling read-aloud');
+assert.doesNotMatch(speakerHandlerSource[1], /hasAttachedAgentAudio|audioAttachments/,
+  'the regular speaker toggle must not mute or release Live Talk audio');
+assert.match(source, /speechSource = source;\s*setSpeakerPlaybackState\(true\);/,
+  'successful read-aloud playback must expose the active stop control');
+assert.match(source,
+  /if \(speechSource === source && speechRequest === owner\) \{[\s\S]*?setSpeakerPlaybackState\(false\);/,
+  'natural playback completion must restore the read-aloud control');
+assert.match(source, /postJSON\('\/say', \{ text \}, request\.controller\.signal\)/,
+  'long read-aloud fetches must be abortable from the speaker control');
+assert.match(source, /if \(!speechRequestIsCurrent\(owner\)\) return false;/,
+  'decoded audio must revalidate ownership before it becomes audible');
+
 // A regular request must not create a second LLM/TTS lane while Live Talk owns
 // the microphone and speaker. The composer keeps its text for after hang-up.
 assert.match(source, /Hang up Live Talk before sending a regular chat message/);
@@ -801,7 +978,8 @@ assert.equal(new Set(emotionVectors).size, emotionVectors.length,
   'every primary emotion must resolve to a distinct rendered channel vector');
 assert.ok(Math.abs(voicedTarget.headYaw) <= 1 && Math.abs(voicedTarget.headRoll) <= 1,
   'all conversational pose channels must remain bounded');
-assert.match(source, /playSpeech\(result\.audio, result\.track \|\| \[\], text\)/,
+assert.match(source,
+  /playSpeech\(\s*result\.audio, result\.track \|\| \[\], text, request\)/,
   'read-aloud speech must pass its words into the expression planner');
 assert.match(source, /playSpeech\(result\.audio, result\.track \|\| \[\], answer\)/,
   'chat replies must pass the final answer into the expression planner');
@@ -1289,7 +1467,8 @@ assert.match(source, /const resumeChatSpeakingPose = \(\) => \{[\s\S]{0,100}mark
   'conversation activity must resume the saved speaking pose from temporary Edge Idle');
 assert.match(source, /const submitComposer = \(\) => \{[\s\S]{0,420}resumeChatSpeakingPose\(\);/,
   'sending a message must retain the selected close-up\/zoom\/drag pose');
-assert.match(source, /speechSource = source;[\s\S]{0,520}resumeChatSpeakingPose\(\);[\s\S]{0,700}source\.onended[\s\S]{0,320}resumeChatSpeakingPose\(\);/,
+assert.match(playSpeechSource[1],
+  /speechSource = source;[\s\S]*?resumeChatSpeakingPose\(\);[\s\S]*?source\.onended[\s\S]*?resumeChatSpeakingPose\(\);/,
   'TTS start and end must restore the saved pose and restart the idle timer');
 assert.equal(chatStandbyEdge({x: -1}), 'left');
 assert.equal(chatStandbyEdge({x: 0}), 'right');
@@ -1701,6 +1880,40 @@ assert.equal(bodyHeadCompositeMode({options: {medium: 'photograph'}}), 'blend',
 assert.equal(bodyHeadCompositeMode({}), 'blend',
   'unknown and legacy packages must not opt themselves into cartoon replacement');
 
+// Drawn line art is discrete. Crossfading two mouth or eyelid drawings makes
+// doubled lips and a smaller artificial eye for at least one captured frame.
+const stylizedVisemeSelectorSource = inline[1].match(
+  /(const selectStylizedVisemeImage = \(oldImage, newImage, blend\) => \([\s\S]*?\n    \);)/,
+);
+assert.ok(stylizedVisemeSelectorSource,
+  'the stylized mouth-frame selector must remain independently testable');
+const selectStylizedVisemeImage = new Function(
+  `'use strict'; ${stylizedVisemeSelectorSource[1]}; return selectStylizedVisemeImage;`,
+)();
+const oldMouth = { id: 'old' };
+const newMouth = { id: 'new' };
+assert.equal(selectStylizedVisemeImage(oldMouth, newMouth, .49), oldMouth,
+  'a stylized mouth must retain exactly one old drawing before the midpoint');
+assert.equal(selectStylizedVisemeImage(oldMouth, newMouth, .50), newMouth,
+  'a stylized mouth must hard-switch to exactly one new drawing at the midpoint');
+
+const faceEyelidPolicySource = inline[1].match(
+  /(const faceEyelidPolicy = \(stylized, stylizedBlinkReady, closure\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(faceEyelidPolicySource,
+  'the cartoon/photo eyelid policy must remain independently testable');
+const faceEyelidPolicy = new Function(
+  `'use strict'; ${faceEyelidPolicySource[1]}; return faceEyelidPolicy;`,
+)();
+assert.equal(faceEyelidPolicy(true, false, 1), 'static-canonical',
+  'a rejected/missing cartoon blink must keep the canonical full-size eyes');
+assert.equal(faceEyelidPolicy(true, true, .77), 'static-canonical',
+  'cartoon open and closed eye drawings must not be blended');
+assert.equal(faceEyelidPolicy(true, true, .78), 'stylized-closed',
+  'a reviewed semantic cartoon blink may switch only near full closure');
+assert.equal(faceEyelidPolicy(false, false, 1), 'photo-strip',
+  'photorealistic avatars must retain their existing smooth eyelid strips');
+
 const hardenMaskSource = inline[1].match(
   /(const hardenMaskAlpha = \(pixels, threshold = 32\) => \{[\s\S]*?\n    \};)/,
 );
@@ -1984,4 +2197,9 @@ assert.match(source, /aria-label="Hold to talk"/);
 assert.match(source, /aria-label="Message"/);
 assert.match(source, /prefers-reduced-motion/);
 
-console.log('OpenClam desktop renderer QA passed');
+speechCancellationQA.then(() => {
+  console.log('OpenClam desktop renderer QA passed');
+}).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
