@@ -594,6 +594,59 @@ class AvatarStoreReleaseTests(unittest.TestCase):
                 (output / "release-assets" / "ara-ios-light.avtr").is_file()
             )
 
+    def test_new_full_expression_identity_requires_all_store_motions(self):
+        manifest = {
+            "format": BUILD.avtr.FORMAT,
+            "version": BUILD.avtr.IOS_EXPRESSION_VERSION,
+            "variant": BUILD.avtr.IOS_VARIANT,
+            "id": "new-avatar",
+            "displayName": "New Avatar",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "new-avatar-project"
+            source.mkdir()
+            Image.new("RGBA", (64, 64), (80, 90, 100, 255)).save(
+                source / "keyframe.png"
+            )
+            output = root / "staged-release"
+
+            def export_ios(
+                identifier, display_name, authoring, runtime, destination, **kwargs
+            ):
+                Path(destination).write_bytes(b"deterministic-new-avatar-ios-v4")
+                return copy.deepcopy(manifest)
+
+            with patch.object(BUILD, "_validate_ready_source"), \
+                    patch.object(
+                        BUILD.avtr, "export_ios_light", side_effect=export_ios
+                    ), \
+                    patch.object(BUILD, "normalize_archive"), \
+                    patch.object(
+                        BUILD, "_validate_ios_archive", return_value=manifest
+                    ) as validate_ios:
+                BUILD.build_release(
+                    source,
+                    output,
+                    identifier="new-avatar",
+                    display_name="New Avatar",
+                    author="OpenClam",
+                    version=1,
+                    base_catalog_path=BASE_CATALOG,
+                    source_identifier="new-avatar-project",
+                    source_display_name="New Avatar",
+                    release_tag="avatar-store-v1.0.2",
+                    require_full_expression=True,
+                    **_production_urls(identifier="new-avatar"),
+                )
+
+            validate_ios.assert_called_once()
+            self.assertTrue(validate_ios.call_args.kwargs["require_full_expression"])
+            self.assertEqual(
+                validate_ios.call_args.kwargs["required_motions"],
+                BUILD.FULL_EXPRESSION_REQUIRED_MOTIONS,
+            )
+
     def test_cleo_staging_forces_public_identity_v4_two_builds_and_ios_only(self):
         base = json.loads(BASE_CATALOG.read_text())
         originals = {

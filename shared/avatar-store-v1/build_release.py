@@ -639,9 +639,13 @@ def build_release(
             )
         require_full_expression = True
         verify_reproducible = True
+    # A full-expression Store package is also a complete animated companion.
+    # Keep this invariant for new identities (not only the historically
+    # protected Ara/Cleo updates), so a new v4 full-expression package cannot
+    # accidentally ship without one of the three Store animation modes.
     required_motions = (
         FULL_EXPRESSION_REQUIRED_MOTIONS
-        if protected_release is not None else None
+        if require_full_expression else None
     )
     catalog_url = _strict_https(catalog_url, "raw.githubusercontent.com")
     release_url = _strict_https(release_url, "github.com")
