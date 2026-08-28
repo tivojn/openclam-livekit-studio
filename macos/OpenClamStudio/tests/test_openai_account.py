@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image
+
 
 ROOT = Path(__file__).resolve().parents[1]
 import sys
@@ -15,20 +17,34 @@ import media_gen
 import openai_account as OA
 
 
+def _write_noisy_image(path, image_format="PNG"):
+    state = 0x12345678
+    pixels = bytearray()
+    for _ in range(128 * 128 * 3):
+        state = (1664525 * state + 1013904223) & 0xFFFFFFFF
+        pixels.append(state >> 24)
+    Image.frombytes("RGB", (128, 128), bytes(pixels)).save(
+        path, format=image_format)
+
+
 class OpenAIAccountTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.original_vault = credentials._TEST_VAULT_FILE
         self.original_mode_file = OA.MODE_FILE
+        self.original_generated_images_root = OA.GENERATED_IMAGES_ROOT
         credentials._TEST_VAULT_FILE = os.path.join(
             self.temporary.name, "vault.json")
         OA.MODE_FILE = os.path.join(self.temporary.name, "openai-account.json")
+        OA.GENERATED_IMAGES_ROOT = Path(
+            self.temporary.name, "codex", "generated_images")
         credentials._memo.clear()
 
     def tearDown(self):
         credentials._memo.clear()
         credentials._TEST_VAULT_FILE = self.original_vault
         OA.MODE_FILE = self.original_mode_file
+        OA.GENERATED_IMAGES_ROOT = self.original_generated_images_root
         self.temporary.cleanup()
 
     def test_explicit_mode_never_infers_or_copies_chatgpt_credentials(self):
@@ -92,6 +108,85 @@ class OpenAIAccountTests(unittest.TestCase):
 
         self.assertEqual(Path(seen["attached"]).parent, Path(seen["work"]))
         self.assertNotEqual(Path(seen["attached"]), outside)
+
+    def test_image_job_recovers_new_codex_managed_output(self):
+        Path(OA.MODE_FILE).write_text(
+            '{"auth_mode":"chatgpt"}', encoding="utf-8")
+
+        def run(command, **_kwargs):
+            session_id = "01a0477b-40cb-75b3-bfaf-d1674d7851aa"
+            generated = OA.GENERATED_IMAGES_ROOT / session_id / "image.png"
+            generated.parent.mkdir(parents=True)
+            _write_noisy_image(generated)
+            return subprocess.CompletedProcess(
+                command, 0,
+                f"session id: {session_id}\n" + f"generated {generated}", "")
+
+        with mock.patch.object(OA, "_codex", return_value="/test/codex"), \
+             mock.patch.object(OA, "_login_status", return_value=(True, "signed in")), \
+             mock.patch.object(OA.subprocess, "run", side_effect=run):
+            result = OA.generate_image("A calm blue circle")
+
+        self.assertTrue(result.startswith(b"\x89PNG"))
+
+    def test_image_recovery_ignores_concurrent_codex_output(self):
+        destination = Path(self.temporary.name, "result.png")
+        own_id = "01a0477b-40cb-75b3-bfaf-d1674d7851aa"
+        other_id = "01a04778-6108-77e2-bead-ed8d45daab80"
+        own = OA.GENERATED_IMAGES_ROOT / own_id / "own.png"
+        other = OA.GENERATED_IMAGES_ROOT / other_id / "other.png"
+        own.parent.mkdir(parents=True)
+        other.parent.mkdir(parents=True)
+        _write_noisy_image(own)
+        _write_noisy_image(other)
+        execution = subprocess.CompletedProcess(
+            [], 0, f"session id: {own_id}\n", "")
+
+        recovered = OA._recover_generated_image(
+            execution, set(), destination)
+
+        self.assertTrue(recovered)
+        self.assertTrue(destination.read_bytes().startswith(b"\x89PNG"))
+
+    def test_image_recovery_normalizes_jpeg_and_webp_to_png(self):
+        for suffix, image_format in (("jpg", "JPEG"), ("webp", "WEBP")):
+            with self.subTest(suffix=suffix):
+                session_id = "01a0477b-40cb-75b3-bfaf-d1674d7851aa"
+                generated = (OA.GENERATED_IMAGES_ROOT / session_id /
+                             f"image.{suffix}")
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                _write_noisy_image(generated, image_format)
+                destination = Path(self.temporary.name, f"result-{suffix}.png")
+                execution = subprocess.CompletedProcess(
+                    [], 0, f"session id: {session_id}\n", "")
+
+                self.assertTrue(OA._recover_generated_image(
+                    execution, set(), destination))
+                self.assertTrue(destination.read_bytes().startswith(
+                    b"\x89PNG\r\n\x1a\n"))
+                with Image.open(destination) as image:
+                    self.assertEqual(image.format, "PNG")
+                generated.unlink()
+
+    def test_image_recovery_rejects_invalid_or_disappearing_candidate(self):
+        session_id = "01a0477b-40cb-75b3-bfaf-d1674d7851aa"
+        generated = OA.GENERATED_IMAGES_ROOT / session_id / "image.png"
+        generated.parent.mkdir(parents=True)
+        generated.write_bytes(b"not-an-image" * 1000)
+        destination = Path(self.temporary.name, "result.png")
+        execution = subprocess.CompletedProcess(
+            [], 0, f"session id: {session_id}\n", "")
+
+        self.assertFalse(OA._recover_generated_image(
+            execution, set(), destination))
+        self.assertFalse(destination.exists())
+
+        _write_noisy_image(generated)
+        with mock.patch.object(OA.Image, "open",
+                               side_effect=FileNotFoundError("gone")):
+            self.assertFalse(OA._recover_generated_image(
+                execution, set(), destination))
+        self.assertFalse(destination.exists())
 
     def test_chat_job_returns_output_file_without_exposing_session_material(self):
         Path(OA.MODE_FILE).write_text(

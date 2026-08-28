@@ -6,6 +6,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -975,6 +976,45 @@ class CurrentImageProviderContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class XaiDualAuthMediaTests(unittest.IsolatedAsyncioTestCase):
+    def test_worker_reuses_the_oauth_module_loaded_by_the_app(self):
+        app_manager = object()
+        duplicate = object()
+        server_package = sys.modules["server"]
+        with mock.patch.object(server_package, "xai_oauth", duplicate,
+                               create=True), \
+             mock.patch.dict(sys.modules, {
+                "xai_oauth": app_manager,
+                "server.xai_oauth": duplicate,
+        }):
+            self.assertIs(media_gen._xai_oauth_manager(), app_manager)
+            self.assertIs(sys.modules["xai_oauth"], app_manager)
+            self.assertIs(sys.modules["server.xai_oauth"], app_manager)
+            from server import xai_oauth as package_import
+            self.assertIs(package_import, app_manager)
+
+    def test_worker_aliases_either_single_loaded_oauth_module(self):
+        for loaded_name, missing_name in (
+                ("xai_oauth", "server.xai_oauth"),
+                ("server.xai_oauth", "xai_oauth")):
+            manager = object()
+            with self.subTest(loaded_name=loaded_name), \
+                    mock.patch.dict(sys.modules, {loaded_name: manager}):
+                sys.modules.pop(missing_name, None)
+                self.assertIs(media_gen._xai_oauth_manager(), manager)
+                self.assertIs(sys.modules["xai_oauth"], manager)
+                self.assertIs(sys.modules["server.xai_oauth"], manager)
+
+    def test_worker_never_returns_partially_initialized_oauth_module(self):
+        class Initializing:
+            __spec__ = type("Spec", (), {"_initializing": True})()
+
+        manager = Initializing()
+        with mock.patch.dict(sys.modules, {"xai_oauth": manager}):
+            sys.modules.pop("server.xai_oauth", None)
+            with self.assertRaisesRegex(
+                    RuntimeError, "xai_oauth_import_in_progress"):
+                media_gen._xai_oauth_manager()
+
     async def asyncSetUp(self):
         _Client.response = None
         _Client.poll_response = None

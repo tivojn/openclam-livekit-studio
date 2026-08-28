@@ -17,6 +17,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+from PIL import Image
+
 try:
     import credentials
 except ModuleNotFoundError:  # package import in tests and embedded runtimes
@@ -33,6 +35,8 @@ MODE_FILE = os.path.join(DATA_ROOT, "openai-account.json")
 MAX_PROMPT_CHARS = 32_000
 MAX_REFERENCES = 16
 MAX_REFERENCE_BYTES = 20 * 1024 * 1024
+GENERATED_IMAGES_ROOT = Path(os.environ.get(
+    "CODEX_HOME", os.path.expanduser("~/.codex"))) / "generated_images"
 _login_lock = threading.Lock()
 _login_process = None
 _mode_lock = threading.Lock()
@@ -214,6 +218,92 @@ def _exec(arguments, prompt, work, timeout):
     return result
 
 
+def _generated_image_paths():
+    """Return Codex-owned bitmap paths without following outside symlinks."""
+    try:
+        root = GENERATED_IMAGES_ROOT.resolve()
+    except OSError:
+        return set()
+    if not root.is_dir():
+        return set()
+    paths = set()
+    for suffix in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+        for path in root.glob(f"**/{suffix}"):
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(root)
+                if resolved.is_file() and resolved.stat().st_size > 4096:
+                    paths.add(resolved)
+            except (OSError, ValueError):
+                continue
+    return paths
+
+
+def _recover_generated_image(result, before, destination):
+    """Recover the one bitmap created by this ephemeral Codex invocation.
+
+    The built-in image tool stores its output under Codex's managed image
+    directory.  Agents normally copy that output into ``destination``, but a
+    successful image call can end before that final copy.  Accept only a new
+    Codex-owned bitmap and fail closed if concurrent jobs make the result
+    ambiguous.
+    """
+    created = _generated_image_paths() - set(before)
+    if not created:
+        return False
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    session_ids = set(re.findall(
+        r"(?im)^session id:\s*([0-9a-f]{8}-[0-9a-f-]{27})\s*$",
+        combined,
+    ))
+    if not session_ids:
+        return False
+    try:
+        root = GENERATED_IMAGES_ROOT.resolve()
+    except OSError:
+        return False
+    candidates = []
+    for path in created:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if relative.parts and relative.parts[0] in session_ids:
+            candidates.append(path)
+    if len(candidates) != 1:
+        return False
+    destination = Path(destination)
+    temporary = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".openclam-recovered-", suffix=".png",
+            dir=destination.parent,
+        )
+        os.close(descriptor)
+        with Image.open(candidates[0]) as source:
+            source.load()
+            has_alpha = "A" in source.getbands() or \
+                "transparency" in source.info
+            normalized = source.convert("RGBA" if has_alpha else "RGB")
+            normalized.save(temporary, format="PNG")
+        if os.path.getsize(temporary) <= 4096:
+            return False
+        os.replace(temporary, destination)
+        temporary = None
+        return True
+    except (OSError, ValueError, Image.DecompressionBombError):
+        # Codex can clean up its managed file between discovery and opening.
+        # Keep that race on the stable image-missing error path.
+        return False
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
 def generate_image(prompt, references=None, *, aspect_ratio="1:1", quality="high"):
     """Generate/edit one image through Codex's built-in signed-in image tool."""
     require_chatgpt()
@@ -225,6 +315,7 @@ def generate_image(prompt, references=None, *, aspect_ratio="1:1", quality="high
         if not os.path.isfile(path) or os.path.getsize(path) > MAX_REFERENCE_BYTES:
             raise OpenAIAccountError("openai_codex_reference_invalid", 422)
     with tempfile.TemporaryDirectory(prefix="openclam-openai-image-") as work:
+        generated_before = _generated_image_paths()
         arguments = []
         # Codex runs with a workspace-write sandbox rooted at ``work``. Copy
         # owner-selected references into that private workspace so the image
@@ -252,8 +343,11 @@ def generate_image(prompt, references=None, *, aspect_ratio="1:1", quality="high
             + "\n\nSave the final bitmap as result.png in the current working directory. "
               "End with exactly the absolute result.png path."
         )
-        _exec(arguments, task, work, 1800)
+        execution = _exec(arguments, task, work, 1800)
         result = os.path.join(work, "result.png")
+        if not os.path.isfile(result) or os.path.getsize(result) <= 4096:
+            _recover_generated_image(
+                execution, generated_before, result)
         if not os.path.isfile(result) or os.path.getsize(result) <= 4096:
             raise OpenAIAccountError("openai_codex_image_missing", 502)
         # Return bytes because the temporary Codex workspace is deliberately

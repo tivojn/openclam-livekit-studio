@@ -85,6 +85,7 @@ _XAI_IMAGE_ASPECT_RATIOS = frozenset({
 })
 _XAI_IMAGE_DOWNLOAD_HOSTS = frozenset({"imgen.x.ai"})
 _XAI_VIDEO_DOWNLOAD_HOSTS = frozenset({"vidgen.x.ai"})
+_XAI_OAUTH_ALIAS_LOCK = threading.RLock()
 _BFL_POLL_ORIGINS = frozenset({
     "https://api.bfl.ai",
     "https://api.eu.bfl.ai",
@@ -142,11 +143,36 @@ def _providers():
 
 
 def _xai_oauth_manager():
-    try:
-        from . import xai_oauth
-    except (ImportError, ValueError):
-        import xai_oauth
-    return xai_oauth
+    # ``app.py`` can run either as ``server.app`` or from the server directory.
+    # Reuse whichever OAuth module the app loaded first so its process-only
+    # development credential is never split across ``xai_oauth`` and
+    # ``server.xai_oauth`` module instances.
+    with _XAI_OAUTH_ALIAS_LOCK:
+        top_level = sys.modules.get("xai_oauth")
+        packaged = sys.modules.get("server.xai_oauth")
+        loaded = [value for value in (top_level, packaged) if value is not None]
+        if any(bool(getattr(getattr(value, "__spec__", None),
+                            "_initializing", False)) for value in loaded):
+            # Never expose or overwrite a partially initialized module. A
+            # subsequent request can retry after Python finishes the import.
+            raise RuntimeError("xai_oauth_import_in_progress")
+        manager = top_level or packaged
+        if manager is None:
+            try:
+                from . import xai_oauth as manager
+            except (ImportError, ValueError):
+                import xai_oauth as manager
+        # Assignment (rather than setdefault) repairs a process where both
+        # import spellings were already loaded as distinct module objects.
+        sys.modules["xai_oauth"] = manager
+        sys.modules["server.xai_oauth"] = manager
+        parent = sys.modules.get("server")
+        if parent is not None:
+            # ``from server import xai_oauth`` consults the package attribute,
+            # which can otherwise retain the duplicate module even after the
+            # two sys.modules aliases have been repaired.
+            setattr(parent, "xai_oauth", manager)
+        return manager
 
 
 def _openai_account_manager():
