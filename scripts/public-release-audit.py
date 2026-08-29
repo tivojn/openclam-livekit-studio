@@ -18,6 +18,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 
 
 ALLOWED_TOP_LEVEL = {
@@ -1266,32 +1267,41 @@ def history_findings(root: Path, require_fresh: bool) -> list[str]:
 
     paths_by_oid, object_ids = reachable_objects(root)
 
-    process = subprocess.Popen(
-        ["git", "-C", str(root), "cat-file", "--batch"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-    )
-    assert process.stdin is not None
-    assert process.stdout is not None
-    process.stdin.write("".join(f"{oid}\n" for oid in object_ids).encode("ascii"))
-    process.stdin.close()
-    for oid in object_ids:
-        header = process.stdout.readline().rstrip(b"\n")
-        fields = header.split()
-        if len(fields) != 3 or fields[1] == b"missing":
-            findings.append("could not inspect one reachable Git object")
-            continue
-        object_type = fields[1]
-        size = int(fields[2])
-        content = process.stdout.read(size)
-        process.stdout.read(1)
-        if object_type != b"blob":
-            continue
-        for relative in paths_by_oid.get(oid, set()):
-            findings.extend(
-                f"reachable history {finding}"
-                for finding in audit_history_bytes(relative, content)
-            )
+    # Feed requests from a regular temporary file rather than writing the
+    # entire list into a pipe before reading stdout. On Linux the old two-pipe
+    # ordering could deadlock once ``cat-file`` filled its small stdout pipe
+    # while Python was still blocked filling stdin. A seekable request stream
+    # lets the child read independently while this process drains responses.
+    with tempfile.TemporaryFile() as requests:
+        requests.write(
+            "".join(f"{oid}\n" for oid in object_ids).encode("ascii")
+        )
+        requests.seek(0)
+        process = subprocess.Popen(
+            ["git", "-C", str(root), "cat-file", "--batch"],
+            stdin=requests,
+            stdout=subprocess.PIPE,
+        )
+        assert process.stdout is not None
+        for oid in object_ids:
+            header = process.stdout.readline().rstrip(b"\n")
+            fields = header.split()
+            if len(fields) != 3 or fields[1] == b"missing":
+                findings.append("could not inspect one reachable Git object")
+                continue
+            object_type = fields[1]
+            size = int(fields[2])
+            content = process.stdout.read(size)
+            process.stdout.read(1)
+            if object_type != b"blob":
+                continue
+            for relative in paths_by_oid.get(oid, set()):
+                findings.extend(
+                    f"reachable history {finding}"
+                    for finding in audit_history_bytes(relative, content)
+                )
+        if process.wait() != 0:
+            findings.append("could not complete reachable Git object scan")
     return findings
 
 
