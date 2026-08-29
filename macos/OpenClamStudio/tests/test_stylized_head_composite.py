@@ -106,6 +106,50 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         self.assertEqual(255, int(preview[129, 90, 3]))
         self.assertEqual(255, int(preview[133, 90, 3]))
         self.assertGreater(receipt["anatomy_pixels"], 0)
+        self.assertEqual(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            receipt["face_transform"])
+
+    def test_jaw_handoff_keeps_body_under_antialiased_stylized_edge(self):
+        portrait = _stylized_portrait()
+        landmarks = _oval_landmarks()
+        body_rgba = np.zeros((220, 180, 4), np.uint8)
+        donor = (20, 30, 190, 255)
+        cv2.ellipse(body_rgba, (90, 84), (50, 46), 0, 0, 360, donor, -1)
+        # The donor neck is deliberately wider than the canonical under-jaw
+        # feather.  This reproduces the two/five-pixel Luffy gap when a binary
+        # clear mask erased the backing body beyond the overlay's edge.
+        cv2.rectangle(body_rgba, (68, 118), (112, 170), donor, -1)
+        transform = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            clear_path = os.path.join(directory, "head-clear-mask.png")
+            preview_path = os.path.join(directory, "preview.png")
+            body_path = os.path.join(directory, "body.png")
+            body._stylized_head_mask(portrait, landmarks, mask_path)
+            cv2.imwrite(body_path, body_rgba)
+            receipt = body._stylized_head_clear_mask(
+                body_rgba, mask_path, transform, landmarks,
+                [52, 43, 76, 84], clear_path)
+            clear = cv2.imread(clear_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            body._runtime_composite_preview(
+                body_path, portrait[:, :, :3], mask_path, transform,
+                preview_path, replace=True, clear_mask_path=clear_path)
+            preview = cv2.imread(preview_path, cv2.IMREAD_UNCHANGED)
+
+        handoff_start, handoff_end = receipt["handoff_row_range"]
+        self.assertLessEqual(handoff_start, 124)
+        self.assertGreaterEqual(handoff_end, 126)
+        self.assertGreater(receipt["handoff_pixels_preserved"], 0)
+        # Outside the canonical mask but still inside the donor neck, the body
+        # must remain fully opaque across the final jaw rows.
+        self.assertEqual(0, int(mask[126, 70]))
+        self.assertLessEqual(int(clear[126, 70]), 4)
+        self.assertEqual(255, int(preview[126, 70, 3]))
+        self.assertEqual(255, int(preview[126, 110, 3]))
 
     def test_body_clear_removes_larger_shifted_donor_hat(self):
         portrait = _stylized_portrait()

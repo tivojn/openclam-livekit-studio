@@ -142,7 +142,7 @@ enum OpenClamAvatarStandbyTransformPolicy {
             scale: CaptainAyerOverlayTuning.clampedScale(scale),
             normalizedOffset: CGPoint(
                 x: clampOffset(normalizedOffset.x),
-                y: clampOffset(normalizedOffset.y)
+                y: clampVerticalOffset(normalizedOffset.y)
             )
         )
     }
@@ -158,12 +158,14 @@ enum OpenClamAvatarStandbyTransformPolicy {
               canvasSize.height > 0 else {
             return CGPoint(
                 x: clampOffset(startingOffset.x),
-                y: clampOffset(startingOffset.y)
+                y: clampVerticalOffset(startingOffset.y)
             )
         }
         return CGPoint(
             x: clampOffset(startingOffset.x + translation.width / canvasSize.width),
-            y: clampOffset(startingOffset.y + translation.height / canvasSize.height)
+            y: clampVerticalOffset(
+                startingOffset.y + translation.height / canvasSize.height
+            )
         )
     }
 
@@ -189,6 +191,90 @@ enum OpenClamAvatarStandbyTransformPolicy {
     private static func clampOffset(_ value: CGFloat) -> CGFloat {
         guard value.isFinite else { return 0 }
         return min(maximumNormalizedOffset, max(-maximumNormalizedOffset, value))
+    }
+
+    /// Every static mode scales the complete body from its top edge. Moving
+    /// upward would therefore move the hat/head outside the safe conversation
+    /// canvas. Downward movement remains available across the full persisted
+    /// range.
+    private static func clampVerticalOffset(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite else { return 0 }
+        return min(maximumNormalizedOffset, max(0, value))
+    }
+}
+
+/// One full-body plate backs both Standby and Close-up. Close-up differs only
+/// by its initial transform; pinching back to 1x reveals the complete body
+/// without swapping to a permanently cropped head-and-shoulders texture.
+enum OpenClamAvatarFramingPresetPolicy {
+    static let fullBodyTransformVersion = 1
+    static let closeUpFaceHeights: CGFloat = 3.5
+
+    static func legacyCompactToFullBodyScaleFactor(
+        for geometry: OpenClamAvatarRigGeometry
+    ) -> CGFloat {
+        let bodyHeight = geometry.bodySize.cgSize.height
+        let faceHeight = geometry.faceBoundsInBody.cgRect.height
+        guard bodyHeight.isFinite,
+              faceHeight.isFinite,
+              bodyHeight > 0,
+              faceHeight > 0 else { return 1 }
+        let priorVisibleHeight = min(bodyHeight, faceHeight * closeUpFaceHeights)
+        return CaptainAyerOverlayTuning.clampedScale(
+            bodyHeight / priorVisibleHeight
+        )
+    }
+
+    static func migratedCloseUpTransform(
+        from legacyTransform: OpenClamAvatarStandbyTransform,
+        geometry: OpenClamAvatarRigGeometry
+    ) -> OpenClamAvatarStandbyTransform {
+        OpenClamAvatarStandbyTransformPolicy.sanitized(
+            scale: legacyTransform.scale
+                * legacyCompactToFullBodyScaleFactor(for: geometry),
+            normalizedOffset: legacyTransform.normalizedOffset
+        )
+    }
+}
+
+/// Geometry-level last line of defence for persisted transforms and future
+/// stage-layout changes. With a top-anchored full-body plate, this guarantees
+/// the complete source top (including hats and hair) never crosses the upper
+/// safe edge, at every supported scale.
+enum OpenClamAvatarFramingConstraintPolicy {
+    static func keepingHeadVisible(
+        _ transform: OpenClamAvatarStandbyTransform,
+        stageFrame: CGRect,
+        canvasBounds: CGRect
+    ) -> OpenClamAvatarStandbyTransform {
+        let sanitized = OpenClamAvatarStandbyTransformPolicy.sanitized(
+            scale: transform.scale,
+            normalizedOffset: transform.normalizedOffset
+        )
+        guard canvasBounds.height.isFinite,
+              canvasBounds.height > 0,
+              canvasBounds.minY.isFinite,
+              stageFrame.minY.isFinite else { return sanitized }
+
+        let requestedOffsetY = sanitized.normalizedOffset.y * canvasBounds.height
+        let minimumOffsetY = max(0, canvasBounds.minY - stageFrame.minY)
+        return OpenClamAvatarStandbyTransform(
+            scale: sanitized.scale,
+            normalizedOffset: CGPoint(
+                x: sanitized.normalizedOffset.x,
+                // Safety wins if a future layout places the unscaled stage
+                // more than the normal gesture range above the canvas.
+                y: max(requestedOffsetY, minimumOffsetY) / canvasBounds.height
+            )
+        )
+    }
+}
+
+enum OpenClamAvatarStagePresentationPolicy {
+    static func presentation(
+        for _: OpenClamAvatarDisplayMode
+    ) -> OpenClamCatalogAvatarStage.Presentation {
+        .expanded
     }
 }
 
@@ -221,6 +307,12 @@ struct OpenClamAvatarTransformSession: Equatable, Sendable {
             in: canvasSize
         )
         return previewTransform
+    }
+
+    mutating func replacePreview(
+        with transform: OpenClamAvatarStandbyTransform
+    ) {
+        previewTransform = transform
     }
 }
 
@@ -940,6 +1032,8 @@ struct CaptainAyerAvatarOverlay: View {
     private var storedCloseUpOffsetX = 0.0
     @AppStorage("captainAyer.overlay.closeUpOffsetY")
     private var storedCloseUpOffsetY = 0.0
+    @AppStorage("captainAyer.overlay.closeUpFullBodyTransformVersion")
+    private var storedCloseUpFullBodyTransformVersion = 0
     @AppStorage("captainAyer.overlay.hidden")
     private var storedAvatarHidden = false
     @AppStorage("captainAyer.overlay.interactionLayer")
@@ -962,14 +1056,7 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var motionSession = OpenClamAvatarMotionSessionState()
     @State private var motionCompletionTask: Task<Void, Never>?
 
-    private var isHeadAnchored: Bool { displayMode == .closeUp }
-    private var activeFramingOffset: CGPoint {
-        switch displayMode {
-        case .standby: standbyOffset
-        case .closeUp: closeUpOffset
-        case .horizonWalk, .edgeIdle, .moves: .zero
-        }
-    }
+    private var isCloseUp: Bool { displayMode == .closeUp }
 
     var body: some View {
         GeometryReader { proxy in
@@ -993,21 +1080,27 @@ struct CaptainAyerAvatarOverlay: View {
                 1,
                 subjectBounds.maxY - topClearance
             )
-            let presentation: OpenClamCatalogAvatarStage.Presentation = isHeadAnchored
-                ? .compact
-                : .expanded
+            let presentation = OpenClamAvatarStagePresentationPolicy.presentation(
+                for: displayMode
+            )
             // Close-up is a visual backdrop and may continue behind the
             // translucent composer. Full-body standby and every motion share
             // the measured composer-top floor so their visible feet remain
             // immediately above the input shell.
-            let stageBounds = isHeadAnchored ? backdropBounds : subjectBounds
+            let stageBounds = isCloseUp ? backdropBounds : subjectBounds
             let stageLayout = OpenClamAvatarConversationCanvasPolicy.layout(
                 crop: presentation.crop(for: avatar),
                 in: stageBounds,
-                alignsVisibleFeet: !isHeadAnchored,
+                alignsVisibleFeet: !isCloseUp,
                 visibleBottomFraction: OpenClamAvatarConversationCanvasPolicy
                     .fullBodyVisibleBottomFraction(for: avatar)
             )
+            let presentedTransform = OpenClamAvatarFramingConstraintPolicy
+                .keepingHeadVisible(
+                    activeFramingTransform,
+                    stageFrame: stageLayout.stageFrame,
+                    canvasBounds: stageBounds
+                )
 
             ZStack(alignment: .trailing) {
                 if !isAvatarHidden {
@@ -1015,15 +1108,18 @@ struct CaptainAyerAvatarOverlay: View {
                         presentation: presentation,
                         width: stageLayout.stageFrame.width,
                         height: stageLayout.stageFrame.height,
-                        canvasSize: stageBounds.size
+                        canvasSize: stageBounds.size,
+                        stageFrame: stageLayout.stageFrame,
+                        canvasBounds: stageBounds,
+                        presentedScale: presentedTransform.scale
                     )
                     .position(
                         x: stageLayout.stageFrame.midX,
                         y: stageLayout.stageFrame.midY
                     )
                     .offset(
-                        x: activeFramingOffset.x * stageBounds.width,
-                        y: activeFramingOffset.y * stageBounds.height
+                        x: presentedTransform.normalizedOffset.x * stageBounds.width,
+                        y: presentedTransform.normalizedOffset.y * stageBounds.height
                     )
                     // Keep the narrow silhouette gesture surface alive at 0%
                     // opacity so an upward swipe can recover the avatar. The
@@ -1101,13 +1197,26 @@ struct CaptainAyerAvatarOverlay: View {
             storedStandbyOffsetX = Double(standby.normalizedOffset.x)
             storedStandbyOffsetY = Double(standby.normalizedOffset.y)
             standbyOffset = standby.normalizedOffset
-            let closeUp = OpenClamAvatarStandbyTransformPolicy.sanitized(
+            let legacyCloseUp = OpenClamAvatarStandbyTransformPolicy.sanitized(
                 scale: CGFloat(storedCloseUpScale),
                 normalizedOffset: CGPoint(
                     x: storedCloseUpOffsetX,
                     y: storedCloseUpOffsetY
                 )
             )
+            let closeUp: OpenClamAvatarStandbyTransform
+            if storedCloseUpFullBodyTransformVersion
+                < OpenClamAvatarFramingPresetPolicy.fullBodyTransformVersion {
+                closeUp = OpenClamAvatarFramingPresetPolicy
+                    .migratedCloseUpTransform(
+                        from: legacyCloseUp,
+                        geometry: avatar.geometry
+                    )
+                storedCloseUpFullBodyTransformVersion =
+                    OpenClamAvatarFramingPresetPolicy.fullBodyTransformVersion
+            } else {
+                closeUp = legacyCloseUp
+            }
             storedCloseUpScale = Double(closeUp.scale)
             storedCloseUpOffsetX = Double(closeUp.normalizedOffset.x)
             storedCloseUpOffsetY = Double(closeUp.normalizedOffset.y)
@@ -1207,7 +1316,10 @@ struct CaptainAyerAvatarOverlay: View {
         presentation: OpenClamCatalogAvatarStage.Presentation,
         width: CGFloat,
         height: CGFloat,
-        canvasSize: CGSize
+        canvasSize: CGSize,
+        stageFrame: CGRect,
+        canvasBounds: CGRect,
+        presentedScale: CGFloat
     ) -> some View {
         return OpenClamCatalogAvatarStage(
             avatar: avatar,
@@ -1228,14 +1340,22 @@ struct CaptainAyerAvatarOverlay: View {
                 updateAvatarTransform(
                     magnification: magnification,
                     translation: translation,
-                    canvasSize: canvasSize
+                    canvasSize: canvasSize,
+                    stageFrame: stageFrame,
+                    canvasBounds: canvasBounds
                 )
             },
-            onTransformEnded: endAvatarTransform,
+            onTransformEnded: { cancelled in
+                endAvatarTransform(
+                    cancelled: cancelled,
+                    stageFrame: stageFrame,
+                    canvasBounds: canvasBounds
+                )
+            },
             onInteraction: noteAvatarInteraction
         )
         .frame(width: width, height: height)
-        .scaleEffect(scale, anchor: isHeadAnchored ? .top : .bottom)
+        .scaleEffect(presentedScale, anchor: .top)
         .compositingGroup()
         // The artwork spans most of the screen but only a narrow silhouette is
         // interactive. Do not publish a full-stage accessibility replacement:
@@ -1324,29 +1444,46 @@ struct CaptainAyerAvatarOverlay: View {
     private func updateAvatarTransform(
         magnification: CGFloat,
         translation: CGSize,
-        canvasSize: CGSize
+        canvasSize: CGSize,
+        stageFrame: CGRect,
+        canvasBounds: CGRect
     ) {
         if transformSession == nil {
             beginAvatarTransform()
         }
         guard var session = transformSession else { return }
-        let preview = session.update(
+        let unconstrainedPreview = session.update(
             magnification: magnification,
             centroidTranslation: translation,
             canvasSize: canvasSize
         )
+        let preview = OpenClamAvatarFramingConstraintPolicy.keepingHeadVisible(
+            unconstrainedPreview,
+            stageFrame: stageFrame,
+            canvasBounds: canvasBounds
+        )
+        session.replacePreview(with: preview)
         transformSession = session
         applyFramingTransform(preview, for: session.mode)
     }
 
-    private func endAvatarTransform(cancelled: Bool) {
+    private func endAvatarTransform(
+        cancelled: Bool,
+        stageFrame: CGRect,
+        canvasBounds: CGRect
+    ) {
         guard let session = transformSession else {
             gestureState.endPinch()
             return
         }
-        let result = cancelled
+        let candidate = cancelled
             ? session.startingTransform
             : session.previewTransform
+        let result = OpenClamAvatarFramingConstraintPolicy.keepingHeadVisible(
+            candidate,
+            stageFrame: stageFrame,
+            canvasBounds: canvasBounds
+        )
         applyFramingTransform(result, for: session.mode)
         if !cancelled {
             persistFramingTransform(result, for: session.mode)

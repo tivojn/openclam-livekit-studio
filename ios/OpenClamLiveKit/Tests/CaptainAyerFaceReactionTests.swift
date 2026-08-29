@@ -56,8 +56,8 @@ final class CaptainAyerFaceReactionTests: XCTestCase {
             asymmetrySample: 0.5
         )
         XCTAssertEqual(partialPlan.leadingEye, .left)
-        XCTAssertGreaterThanOrEqual(partialPlan.delay, 2.8)
-        XCTAssertGreaterThan(partialPlan.followingEyeDelay, 0)
+        XCTAssertEqual(partialPlan.delay, 1.8, accuracy: 0.0001)
+        XCTAssertEqual(partialPlan.followingEyeDelay, 0.040, accuracy: 0.0001)
         XCTAssertLessThan(partialPlan.leftPeakClosure, 0.80)
         XCTAssertLessThan(partialPlan.rightPeakClosure, 0.80)
 
@@ -77,12 +77,42 @@ final class CaptainAyerFaceReactionTests: XCTestCase {
             offsetSample: 1,
             characterSample: 0.8,
             leadingEyeSample: 0.8,
-            asymmetrySample: 0.8
+            asymmetrySample: 1
         )
         XCTAssertEqual(fullPlan.leadingEye, .right)
         XCTAssertGreaterThanOrEqual(fullPlan.leftPeakClosure, 0.92)
         XCTAssertGreaterThanOrEqual(fullPlan.rightPeakClosure, 0.94)
-        XCTAssertLessThanOrEqual(fullPlan.followingEyeDelay, 0.034)
+        XCTAssertEqual(fullPlan.delay, 4.2, accuracy: 0.0001)
+        XCTAssertEqual(fullPlan.followingEyeDelay, 0.056, accuracy: 0.0001)
+
+        let fullEvent = fullPlan.event(startingAt: start)
+        let firstClosedFrame: (CaptainAyerEyeSide) -> Int? = { eye in
+            (0 ... 30).first { frame in
+                let closure = fullEvent.closure(
+                    for: eye,
+                    at: start.addingTimeInterval(Double(frame) / 60)
+                )
+                guard let state = CaptainAyerEyeClosurePolicy.state(
+                    amount: closure
+                ) else {
+                    return false
+                }
+                return OpenClamAvatarEyelidPlatePolicy.plan(
+                    for: state,
+                    frameCount: 8,
+                    sourceMedium: .rendered3D
+                ) == .semanticClosed(frame: 7)
+            }
+        }
+        let leftClosedFrame = firstClosedFrame(.left)
+        let rightClosedFrame = firstClosedFrame(.right)
+        XCTAssertNotNil(leftClosedFrame)
+        XCTAssertNotNil(rightClosedFrame)
+        XCTAssertNotEqual(leftClosedFrame, rightClosedFrame)
+        XCTAssertLessThanOrEqual(
+            abs((leftClosedFrame ?? 0) - (rightClosedFrame ?? 0)),
+            4
+        )
     }
 
     func testAmbientIrisPlanStaysSubtleAndReturnsHome() throws {

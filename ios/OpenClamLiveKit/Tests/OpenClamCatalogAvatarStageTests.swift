@@ -74,7 +74,7 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
         }
     }
 
-    func testFullExpressionFaceSurfaceStaysRegisteredForEverySpeechHeadPose() {
+    func testPhotographicFullExpressionFacePreservesCanonicalRotationForEverySpeechHeadPose() {
         let canonicalRotation = -0.343
         let bodyScale: CGFloat = 1.27
         // Sample ten seconds at the renderer's 60 Hz cadence. The authored
@@ -91,12 +91,44 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
                 canonicalRotationDegrees: canonicalRotation,
                 reaction: pose,
                 bodyLocked: true,
+                sourceMedium: .photograph,
                 bodyScale: bodyScale
             )
 
             XCTAssertEqual(plan.pitchDegrees, 0, accuracy: 0.000_001)
             XCTAssertEqual(plan.yawDegrees, 0, accuracy: 0.000_001)
-            XCTAssertEqual(plan.rotationDegrees, canonicalRotation, accuracy: 0.000_001)
+            XCTAssertEqual(
+                plan.rotationDegrees,
+                canonicalRotation,
+                accuracy: 0.000_001
+            )
+            XCTAssertEqual(plan.translationX, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.translationY, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.dynamicResamplingPassCount, 0)
+        }
+    }
+
+    func testStylizedFullExpressionFaceZerosCanonicalRotationForEverySpeechHeadPose() {
+        let canonicalRotation = 23.7223
+        let pose = CaptainAyerFaceMirrorHeadPose(
+            yaw: 0.72,
+            pitch: -0.41,
+            roll: 0.88
+        )
+
+        for medium in [OpenClamAvatarSourceMedium.anime,
+                       .illustration, .rendered3D, .gameArt] {
+            let plan = OpenClamAvatarFaceRegistrationPolicy.plan(
+                canonicalRotationDegrees: canonicalRotation,
+                reaction: pose,
+                bodyLocked: true,
+                sourceMedium: medium,
+                bodyScale: 1.27
+            )
+
+            XCTAssertEqual(plan.pitchDegrees, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.yawDegrees, 0, accuracy: 0.000_001)
+            XCTAssertEqual(plan.rotationDegrees, 0, accuracy: 0.000_001)
             XCTAssertEqual(plan.translationX, 0, accuracy: 0.000_001)
             XCTAssertEqual(plan.translationY, 0, accuracy: 0.000_001)
             XCTAssertEqual(plan.dynamicResamplingPassCount, 0)
@@ -113,6 +145,7 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
             canonicalRotationDegrees: -0.25,
             reaction: pose,
             bodyLocked: false,
+            sourceMedium: .photograph,
             bodyScale: 1.5
         )
 

@@ -275,6 +275,33 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertNotNil(reduced.leftBrowFrame)
     }
 
+    func testSpeechBlinkOffsetsTheFollowingEyeAtDisplayCadence() {
+        let plan = CaptainAyerSpeechExpressionPlan.neutral
+        let sampledClosures = (0 ... 180).map { frame -> (Int, Double, Double) in
+            let state = CaptainAyerSpeechExpressionPlanner.renderState(
+                for: plan,
+                progress: 0.5,
+                elapsed: Double(frame) / 60
+            )
+            return (
+                frame,
+                CaptainAyerEyeClosurePolicy.amount(state.leftEye),
+                CaptainAyerEyeClosurePolicy.amount(state.rightEye)
+            )
+        }
+        let firstLeftClosed = sampledClosures.first { $0.1 >= 0.78 }?.0
+        let firstRightClosed = sampledClosures.first { $0.2 >= 0.78 }?.0
+
+        XCTAssertNotNil(firstLeftClosed)
+        XCTAssertNotNil(firstRightClosed)
+        XCTAssertNotEqual(firstLeftClosed, firstRightClosed)
+        XCTAssertLessThanOrEqual(
+            abs((firstLeftClosed ?? 0) - (firstRightClosed ?? 0)),
+            3,
+            "The second eyelid should follow subtly, never read as a wink"
+        )
+    }
+
     func testSpeechExpressionTimelineSwitchesIntentAtPhraseBoundaries() throws {
         let timeline = CaptainAyerSpeechExpressionPlanner.timeline(
             for: "Haha, this is hilarious! But I am horrified and afraid. Finally I am furious.",
@@ -1095,7 +1122,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
             in: CGSize(width: 400, height: 800)
         )
         XCTAssertEqual(moved.x, 0.30, accuracy: 0.0001)
-        XCTAssertEqual(moved.y, -0.05, accuracy: 0.0001)
+        XCTAssertEqual(moved.y, 0, accuracy: 0.0001)
 
         let sanitized = OpenClamAvatarStandbyTransformPolicy.sanitized(
             scale: 99,
@@ -1113,7 +1140,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
         XCTAssertEqual(
             sanitized.normalizedOffset.y,
-            -OpenClamAvatarStandbyTransformPolicy.maximumNormalizedOffset,
+            0,
             accuracy: 0.0001
         )
     }
@@ -1135,7 +1162,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
         XCTAssertEqual(first.scale, 1.5, accuracy: 0.0001)
         XCTAssertEqual(first.normalizedOffset.x, 0.20, accuracy: 0.0001)
-        XCTAssertEqual(first.normalizedOffset.y, -0.15, accuracy: 0.0001)
+        XCTAssertEqual(first.normalizedOffset.y, 0, accuracy: 0.0001)
 
         let second = session.update(
             magnification: 2,
@@ -1144,7 +1171,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
         XCTAssertEqual(second.scale, 2.4, accuracy: 0.0001)
         XCTAssertEqual(second.normalizedOffset.x, 0.30, accuracy: 0.0001)
-        XCTAssertEqual(second.normalizedOffset.y, -0.05, accuracy: 0.0001)
+        XCTAssertEqual(second.normalizedOffset.y, 0, accuracy: 0.0001)
         XCTAssertEqual(
             session.startingTransform,
             OpenClamAvatarStandbyTransform(
@@ -1179,7 +1206,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
         XCTAssertEqual(pinched.scale, 0.75, accuracy: 0.0001)
         XCTAssertEqual(pinched.normalizedOffset.x, 0.10, accuracy: 0.0001)
-        XCTAssertEqual(pinched.normalizedOffset.y, -0.10, accuracy: 0.0001)
+        XCTAssertEqual(pinched.normalizedOffset.y, 0, accuracy: 0.0001)
     }
 
     func testTwoFingerTransformClampsAndRejectsInvalidGestureGeometry() {
@@ -1205,7 +1232,7 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
         XCTAssertEqual(
             clamped.normalizedOffset.y,
-            -OpenClamAvatarStandbyTransformPolicy.maximumNormalizedOffset,
+            0,
             accuracy: 0.0001
         )
 
@@ -1217,7 +1244,97 @@ final class CaptainAyerAvatarTests: XCTestCase {
         )
         XCTAssertEqual(invalid.scale, starting.scale, accuracy: 0.0001)
         XCTAssertEqual(invalid.normalizedOffset.x, 0.12, accuracy: 0.0001)
-        XCTAssertEqual(invalid.normalizedOffset.y, -0.18, accuracy: 0.0001)
+        XCTAssertEqual(invalid.normalizedOffset.y, 0, accuracy: 0.0001)
+    }
+
+    func testEveryDisplayModeUsesTheExpandedFullBodyPlate() {
+        for mode in OpenClamAvatarDisplayMode.allCases {
+            for avatar in OpenClamAvatarCatalog.avatars {
+                let crop = OpenClamAvatarStagePresentationPolicy
+                    .presentation(for: mode)
+                    .crop(for: avatar)
+                XCTAssertEqual(
+                    crop,
+                    CGRect(origin: .zero, size: avatar.geometry.bodySize.cgSize),
+                    "\(mode.title) must keep \(avatar.displayName)'s full body available"
+                )
+            }
+        }
+    }
+
+    func testCloseUpMigratesFromCropToEquivalentFullBodyTransform() {
+        for avatar in OpenClamAvatarCatalog.avatars {
+            let legacy = OpenClamAvatarStandbyTransform(
+                scale: 1,
+                normalizedOffset: CGPoint(x: 0.12, y: -0.25)
+            )
+            let migrated = OpenClamAvatarFramingPresetPolicy
+                .migratedCloseUpTransform(
+                    from: legacy,
+                    geometry: avatar.geometry
+                )
+            let bodyHeight = avatar.geometry.bodySize.cgSize.height
+            let faceHeight = avatar.geometry.faceBoundsInBody.cgRect.height
+            let expectedScale = CaptainAyerOverlayTuning.clampedScale(
+                bodyHeight / min(
+                    bodyHeight,
+                    faceHeight
+                        * OpenClamAvatarFramingPresetPolicy.closeUpFaceHeights
+                )
+            )
+
+            XCTAssertEqual(migrated.scale, expectedScale, accuracy: 0.0001)
+            XCTAssertEqual(migrated.normalizedOffset.x, 0.12, accuracy: 0.0001)
+            XCTAssertEqual(migrated.normalizedOffset.y, 0, accuracy: 0.0001)
+            XCTAssertGreaterThanOrEqual(migrated.scale, 1)
+        }
+    }
+
+    func testFullHeadStaysBelowTopSafeEdgeAtEverySupportedScale() {
+        let canvas = CGRect(x: 0, y: 42, width: 390, height: 684)
+        // Exercise a defensive future layout whose source plate starts above
+        // the safe canvas, as well as both supported scale extremes.
+        let stage = CGRect(x: 12, y: 24, width: 366, height: 684)
+
+        for scale in [
+            CaptainAyerOverlayTuning.minimumScale,
+            1,
+            CaptainAyerOverlayTuning.maximumScale,
+        ] {
+            let constrained = OpenClamAvatarFramingConstraintPolicy
+                .keepingHeadVisible(
+                    OpenClamAvatarStandbyTransform(
+                        scale: scale,
+                        normalizedOffset: CGPoint(x: 0.2, y: -0.48)
+                    ),
+                    stageFrame: stage,
+                    canvasBounds: canvas
+                )
+            let renderedFullBodyTop = stage.minY
+                + constrained.normalizedOffset.y * canvas.height
+
+            XCTAssertEqual(constrained.scale, scale, accuracy: 0.0001)
+            XCTAssertEqual(renderedFullBodyTop, canvas.minY, accuracy: 0.0001)
+            XCTAssertGreaterThanOrEqual(renderedFullBodyTop, canvas.minY)
+        }
+    }
+
+    func testHeadConstraintPreservesValidDownwardPlacementAndHorizontalPan() {
+        let canvas = CGRect(x: 0, y: 42, width: 390, height: 684)
+        let stage = CGRect(x: 0, y: 42, width: 390, height: 684)
+        let constrained = OpenClamAvatarFramingConstraintPolicy
+            .keepingHeadVisible(
+                OpenClamAvatarStandbyTransform(
+                    scale: 3.5,
+                    normalizedOffset: CGPoint(x: -0.35, y: 0.30)
+                ),
+                stageFrame: stage,
+                canvasBounds: canvas
+            )
+
+        XCTAssertEqual(constrained.scale, 3.5, accuracy: 0.0001)
+        XCTAssertEqual(constrained.normalizedOffset.x, -0.35, accuracy: 0.0001)
+        XCTAssertEqual(constrained.normalizedOffset.y, 0.30, accuracy: 0.0001)
     }
 
     func testStandbyAndCloseUpKeepIndependentTwoFingerSessions() {

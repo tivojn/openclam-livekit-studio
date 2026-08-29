@@ -928,7 +928,39 @@ def _runtime_body_metadata(source):
     runtime.pop("views", None)
     runtime.pop("turnaround", None)
     runtime.pop("motion_reference", None)
-    if (str(runtime.get("head_composite") or "").strip().lower() != "replace"
+    current_stylized_handoff = (
+        str(runtime.get("head_composite") or "").strip().lower() == "replace"
+        and type(runtime.get("head_handoff_version")) is int
+        and runtime.get("head_handoff_version")
+        == STYLIZED_HEAD_HANDOFF_VERSION)
+    if current_stylized_handoff:
+        quality = runtime.get("head_clear_quality")
+        recorded = quality.get("face_transform") \
+            if isinstance(quality, dict) else None
+        # Old v2 authoring receipts did not record this value, so they remain
+        # importable.  Every newly authored mask does.  Once present it is a
+        # coherence seal: changing face registration without regenerating the
+        # body-space eraser must fail before a stale mask reaches either
+        # desktop runtime or an iPhone package.
+        if recorded is not None:
+            try:
+                recorded_matrix = np.asarray(recorded, dtype=np.float64)
+                current_matrix = np.asarray(
+                    runtime.get("face_transform"), dtype=np.float64)
+            except (TypeError, ValueError):
+                recorded_matrix = np.empty((0, 0), dtype=np.float64)
+                current_matrix = np.empty((0, 0), dtype=np.float64)
+            if (recorded_matrix.shape != (2, 3)
+                    or current_matrix.shape != (2, 3)
+                    or not np.all(np.isfinite(recorded_matrix))
+                    or not np.all(np.isfinite(current_matrix))
+                    or not np.allclose(
+                        recorded_matrix, current_matrix,
+                        rtol=0.0, atol=5e-8)):
+                raise ValueError(
+                    "stylized head clear mask is stale; regenerate the full "
+                    "body after changing face alignment")
+    if (not current_stylized_handoff
             or type(runtime.get("head_handoff_version")) is not int
             or runtime.get("head_handoff_version")
             != STYLIZED_HEAD_HANDOFF_VERSION):

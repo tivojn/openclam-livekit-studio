@@ -1049,7 +1049,7 @@ assert.match(source, /const LIVE_RIG_KEY = 'openclam-live-rig';/,
 assert.match(source, /for \(const key of \['brows', 'eyebags'\]\)/);
 assert.match(source, /const eyebagGain = rigExpressionGain\('eyebags', 35, 35\);/);
 assert.match(source, /const upperFaceSpeaking = speaking && !reducedMotion\.matches;/);
-assert.match(source, /const semanticEyeOpen = upperFaceSpeaking[\s\S]{0,280}const eyelidClosure = Math\.max\(blink \* \(1 - semanticEyeOpen \* \.92\),/,
+assert.match(source, /const semanticEyeOpen = upperFaceSpeaking[\s\S]{0,420}l: Math\.max\(blink\.l \* \(1 - semanticEyeOpen \* \.92\), semanticSquint\),[\s\S]{0,100}r: Math\.max\(blink\.r \* \(1 - semanticEyeOpen \* \.92\), semanticSquint\),/,
   'fear and surprise must hold the eyes open while other semantic squint uses the eyelid atlas');
 assert.match(source, /const drawStripState2D = /,
   'brow and forehead axes must interpolate instead of snapping');
@@ -1063,25 +1063,46 @@ assert.ok(source.indexOf('if (manifest.gaze) {') < source.indexOf('if (manifest.
 // speech scheduler is correctly still.  The next blink stays deferred while
 // the preference is active, so opting back in cannot resume half a blink.
 const blinkAmountSource = inline[1].match(
-  /(const blinkAmount = \(now, reduce = false\) => \{[\s\S]*?\n    \};)/,
+  /(const blinkAmounts = \(now, reduce = false\) => \{[\s\S]*?\n    \};)/,
 );
 assert.ok(blinkAmountSource, 'blink helper must expose a reduced-motion gate');
 const deterministicMath = Object.create(Math);
 deterministicMath.random = () => 0.5;
 const blinkProbe = new Function(
   'Math',
-  `'use strict'; let blinkStartedAt = 0; let nextBlinkAt = 0; ${blinkAmountSource[1]};`
-    + 'return { blinkAmount, state: () => ({ blinkStartedAt, nextBlinkAt }) };',
+  `'use strict'; let blinkStartedAt = 0; let nextBlinkAt = 0; `
+    + `let blinkEyeDelay = { l: 0, r: 0 }; ${blinkAmountSource[1]};`
+    + 'return { blinkAmounts, state: () => ({ blinkStartedAt, nextBlinkAt, blinkEyeDelay }) };',
 )(deterministicMath);
-assert.equal(blinkProbe.blinkAmount(100, true), 0,
+assert.deepEqual(blinkProbe.blinkAmounts(100, true), { l: 0, r: 0 },
   'Reduced Motion must suppress a pending eyelid/under-eye blink');
 assert.equal(blinkProbe.state().blinkStartedAt, 0);
 assert.ok(blinkProbe.state().nextBlinkAt >= 1100,
   'Reduced Motion must defer rather than preserve an in-progress blink');
-assert.equal(blinkProbe.blinkAmount(200, true), 0);
+assert.deepEqual(blinkProbe.blinkAmounts(200, true), { l: 0, r: 0 });
 assert.ok(blinkProbe.state().nextBlinkAt >= 1200);
-assert.match(source, /const blink = blinkAmount\(now, reducedMotion\.matches\);/,
+
+const offsetMath = Object.create(Math);
+const offsetSamples = [0.5, 0.25, 0.5];
+offsetMath.random = () => offsetSamples.shift() ?? 0.5;
+const offsetProbe = new Function(
+  'Math',
+  `'use strict'; let blinkStartedAt = 0; let nextBlinkAt = 0; `
+    + `let blinkEyeDelay = { l: 0, r: 0 }; ${blinkAmountSource[1]};`
+    + 'return { blinkAmounts, state: () => ({ blinkStartedAt, nextBlinkAt, blinkEyeDelay }) };',
+)(offsetMath);
+offsetProbe.blinkAmounts(100, false);
+const offsetBlink = offsetProbe.blinkAmounts(180, false);
+assert.ok(offsetBlink.l > offsetBlink.r && offsetBlink.r > 0,
+  'one eyelid must lead the other by a subtle randomized delay');
+offsetProbe.blinkAmounts(500, false);
+const followingInterval = offsetProbe.state().nextBlinkAt - 500;
+assert.ok(followingInterval >= 1450 && followingInterval <= 4650,
+  `runtime blink interval must stay attentive and irregular: ${followingInterval}`);
+assert.match(source, /const blink = blinkAmounts\(now, reducedMotion\.matches\);/,
   'the face compositor must pass the preference into the blink/under-eye path');
+assert.match(source, /const closure = eyelidClosure\[key\];/,
+  'each eye must sample its own blink clock');
 
 // Horizon Walk and either Edge Idle road are avatar-only presentation states.
 // A rendered frame is the authority: missing assets/failures restore the UI,
@@ -1796,8 +1817,9 @@ assert.deepEqual(reducedGaze, nearbyGaze,
   'reduced motion must remove autonomous easing without disabling cursor control');
 assert.match(source, /Coordinates are sent even outside the window|point\.seen/);
 
-// Speaking motion is deliberately quieter than idle life. Lip sync and face
-// composition remain separate, so calming the body cannot flatten the mouth.
+// The replacement head and body must remain one rigid upright plate. Lip sync,
+// gaze, upper-face expression and a tiny breath remain separate face/life
+// channels, so removing tilt cannot flatten the avatar.
 const bodyMotionSource = inline[1].match(
   /(const bodyMotionAt = \(now, speaking, state, reduce = false\) => \{[\s\S]*?\n    \};)/,
 );
@@ -1805,32 +1827,21 @@ assert.ok(bodyMotionSource, 'body-motion envelope must remain independently test
 const bodyMotionAt = new Function(
   `'use strict'; ${bodyMotionSource[1]}; return bodyMotionAt;`,
 )();
-let speakingSway = 0;
 let speakingBreath = 0;
-let idleSway = 0;
+let idleBreath = 0;
 const steadySpeechState = { speechBlend: 1, at: 1 };
 const steadyIdleState = { speechBlend: 0, at: 1 };
 for (let time = 25; time <= 20_000; time += 25) {
   const speaking = bodyMotionAt(time, true, steadySpeechState, false);
   const idle = bodyMotionAt(time, false, steadyIdleState, false);
-  speakingSway = Math.max(speakingSway, Math.abs(speaking.sway));
+  assert.equal(speaking.sway, 0, 'speech must never tilt the body/head plate');
+  assert.equal(idle.sway, 0, 'idle life must never tilt the body/head plate');
   speakingBreath = Math.max(speakingBreath, Math.abs(speaking.breathe - 1));
-  idleSway = Math.max(idleSway, Math.abs(idle.sway));
+  idleBreath = Math.max(idleBreath, Math.abs(idle.breathe - 1));
 }
-assert.ok(speakingSway <= .001351, `speaking sway is too large: ${speakingSway}`);
 assert.ok(speakingBreath <= .000901, `speaking breath is too large: ${speakingBreath}`);
-assert.ok(idleSway > speakingSway * 4,
-  'speech must be substantially calmer than the avatar\'s unhurried idle life');
-let transitionSnap = 0;
-for (let start = 500; start <= 20_000; start += 25) {
-  const transitionState = { speechBlend: 0, at: start };
-  const idleState = { speechBlend: 0, at: start };
-  const transition = bodyMotionAt(start + 16, true, transitionState, false);
-  const idle = bodyMotionAt(start + 16, false, idleState, false);
-  transitionSnap = Math.max(transitionSnap, Math.abs(transition.sway - idle.sway));
-}
-assert.ok(transitionSnap < .00043,
-  `speech onset must crossfade instead of phase-snapping the silhouette: ${transitionSnap}`);
+assert.ok(idleBreath > speakingBreath * 2,
+  'idle breathing may remain more visible than the calm speech breath');
 const transitionState = { speechBlend: 0, at: 1000 };
 bodyMotionAt(1016, true, transitionState, false);
 assert.ok(transitionState.speechBlend > 0 && transitionState.speechBlend < .08,
@@ -1854,6 +1865,14 @@ assert.match(source, /Boolean\(agentSpeaking \|\| speechSource \|\| liveAudioSpe
 assert.match(source, /bodyMotionState, reducedMotion\.matches\)/);
 assert.match(source, /composeHead\(now\);/,
   'calming the silhouette must not bypass reactive face and lip composition');
+const drawAvatarSource = inline[1].match(
+  /(const drawAvatar = \(now, presentation = ''\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(drawAvatarSource, 'avatar compositor must remain independently inspectable');
+assert.doesNotMatch(drawAvatarSource[1], /context\.rotate|conversationalPose|headRoll|headYaw|headPitch/,
+  'standby and edge presentation must never add body sway or conversational head tilt');
+assert.match(drawAvatarSource[1], /context\.scale\(breathe, 1\);/,
+  'upright registration must retain the subtle breathing channel');
 
 // Flat cartoon line art cannot use the photographic identity dissolve: the
 // generated body's ear/jaw strokes show through the live head as duplicate

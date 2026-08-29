@@ -37,6 +37,11 @@ repaired full-expression package, advances that entry to version 2, and gives
 the iOS client a new cache identity. The v1.0.3 catalog and release remain
 unchanged for older clients.
 
+The immutable `avatar-store-v1.0.5` catalog advances `luffy-3d` to version 3
+with the approved upright, centred head registration and a seamless stylized
+jaw-to-neck handoff. It preserves the straw hat, full-expression face assets,
+and all three reviewed motion roles. Earlier catalog tags remain unchanged.
+
 ## Generic staging layout
 
 `build_release.py` has no production URL, identity, publisher, version, or

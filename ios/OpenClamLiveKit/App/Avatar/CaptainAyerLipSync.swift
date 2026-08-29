@@ -866,18 +866,21 @@ enum CaptainAyerSpeechExpressionPlanner {
         let semanticClosureCap = semanticEyeOpen > 0.004
             ? unit(1 - semanticEyeOpen * 0.92)
             : nil
-        let blink = blinkAmount(elapsed: elapsed, seed: plan.seed)
-            * (1 - semanticEyeOpen * 0.92)
+        let speechBlink = blinkAmounts(elapsed: elapsed, seed: plan.seed)
+        let blinkScale = 1 - semanticEyeOpen * 0.92
+        let leftBlinkAmount = speechBlink.left * blinkScale
+        let rightBlinkAmount = speechBlink.right * blinkScale
         let eyeSquint = unit(warmth * 0.035 - plan.fear * 0.35 - plan.surprise * 0.32)
             * envelope * upperFaceGain
-        let eyelidClosure = max(blink, eyeSquint)
-        let leftBlink = eyeState(amount: eyelidClosure)
-        let rightBlink = eyeState(amount: eyelidClosure * (0.96 + plan.seed * 0.03))
+        let leftEyelidClosure = max(leftBlinkAmount, eyeSquint)
+        let rightEyelidClosure = max(rightBlinkAmount, eyeSquint)
+        let leftBlink = eyeState(amount: leftEyelidClosure)
+        let rightBlink = eyeState(amount: rightEyelidClosure)
         let tiltDirection = plan.seed < 0.5 ? -1.0 : 1.0
         let baseUnderEye = 0.08 + warmth * 0.32 + plan.empathy * 0.12
             + plan.sadness * 0.56 + plan.anger * 0.18
         let underEye = max(
-            eyelidClosure * 0.30,
+            max(leftEyelidClosure, rightEyelidClosure) * 0.30,
             mouthOnlySmile ? 0 : baseUnderEye * envelope * upperFaceGain
         )
         return CaptainAyerFaceReactionRenderState(
@@ -938,6 +941,23 @@ enum CaptainAyerSpeechExpressionPlanner {
         if local < 0.085 { return smoothStep(local / 0.085) }
         if local < 0.115 { return 1 }
         return 1 - smoothStep((local - 0.115) / 0.135)
+    }
+
+    /// Speech and ambient motion use independent clocks, so speech still needs
+    /// its own blink. Offset the following eye by 24-50 ms: visibly organic at
+    /// 60 Hz, but short enough to read as one paired blink rather than a wink.
+    private static func blinkAmounts(
+        elapsed: TimeInterval,
+        seed: Double
+    ) -> (left: Double, right: Double) {
+        let followingEyeDelay = 0.024 + 0.026 * unit(seed)
+        let leftLeads = seed < 0.5
+        let leftElapsed = elapsed - (leftLeads ? 0 : followingEyeDelay)
+        let rightElapsed = elapsed - (leftLeads ? followingEyeDelay : 0)
+        return (
+            left: blinkAmount(elapsed: leftElapsed, seed: seed),
+            right: blinkAmount(elapsed: rightElapsed, seed: seed)
+        )
     }
 
     private static func eyeState(amount rawAmount: Double) -> CaptainAyerEyeReactionState? {

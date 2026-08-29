@@ -495,6 +495,28 @@ HISTORICAL_LOCAL_IDENTITY_COMMITS = {
     "d2d48b6cb80a5dbc2b16d93dde4434b26bcb5239",
 }
 
+# These exact text blobs were already reachable before the history scanner was
+# enabled.  The design note contains a documented local-path example and the
+# Swift test revisions contain the same deterministic Base64 AVTR fixture that
+# is hash-pinned in the current tree.  Keep the exception history-only and
+# content-addressed: restoring either path with any changed bytes is still
+# reviewed by the normal current-tree rules and fails closed.
+HISTORICAL_REVIEWED_TEXT_HASHES = {
+    Path("macos/OpenClamStudio/design-qa.md"): {
+        "097c3b2240433376342cf3b5341bd1eb0bd5b0f6fa61c7d6936967823b3acdc8",
+        "1ab8f8d5d61d14831bb5a428470d9e24468ef45d42cea50c1d6560dd760385df",
+        "f0c41be6a4b7091da2dc9744d193a8fbbb5c122a9f554326314bcba8b2b79387",
+        "d12d37ae85561ab9768678d27010ef37a5a216b30448c277a7997958ae0e57b4",
+    },
+    Path("ios/OpenClamLiveKit/Tests/OpenClamAvatarPackageTests.swift"): {
+        "e01463fdb8b44c4802464a3d11705a8aa7a10918a6e444338598c855e7e30221",
+        "8aa08c38ca568277b0e4bac2fb700e81500ef90fef718297232cc2681be3be5a",
+        "87b28bb1ca375f279ebcffec96c33d8631b8a8e53310308f62112c46b4d6b57d",
+        "fff1f8247585c0e2118b1dfb6eb5ef2d4019e4d4125930908cf9a375b948bb32",
+        "fcb9ae237ae1b7ed15b3c753ebbb0d1f0b4db0d286b0093fa7dfc0c4d7d09820",
+    },
+}
+
 REQUIRED_AVATAR_BINARY_HASHES = {
     **CAPTAIN_AYER_BINARY_HASHES,
     **ARA_BINARY_HASHES,
@@ -516,7 +538,7 @@ CAPTAIN_AYER_CONTENTS_FILES = {
 REQUIRED_STORE_POLICY_SNIPPETS = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/OpenClamAvatarStore.swift"): (
         b"static let catalogURL: URL? = productionCatalogURL",
-        b"avatar-store-v1.0.4/shared/avatar-store-v1/catalog/v1/catalog.json",
+        b"avatar-store-v1.0.5/shared/avatar-store-v1/catalog/v1/catalog.json",
         b"static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)",
         b"guard remoteAccess.isEnabled else",
     ),
@@ -997,6 +1019,8 @@ def audit_bytes(relative: Path, raw: bytes) -> list[str]:
 
 def audit_history_bytes(relative: Path, raw: bytes) -> list[str]:
     actual_hash = hashlib.sha256(raw).hexdigest()
+    if actual_hash in HISTORICAL_REVIEWED_TEXT_HASHES.get(relative, set()):
+        return []
     for historical_hashes in (
         HISTORICAL_ARA_V1_0_1_BINARY_HASHES,
         HISTORICAL_ARA_INTERIM_BINARY_HASHES,
@@ -1074,7 +1098,7 @@ def release_feature_contract_findings(root: Path) -> list[str]:
 
     if contract.get("schema_version") != 1:
         findings.append("release feature contract schema mismatch")
-    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.4"}:
+    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.5"}:
         findings.append("release feature contract changed the approved Avatar Store state")
     if ptt.get("apple") != {"enabled": True, "transcript_delivery": "live"}:
         findings.append("release feature contract changed Apple PTT delivery")

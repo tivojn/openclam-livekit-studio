@@ -294,6 +294,31 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
             })
             self.assertNotIn("head_handoff_version", candidate)
 
+    def test_stylized_head_clear_mask_rejects_stale_face_registration(self):
+        current_transform = [[.36, 0.0, 352.4], [0.0, .36, 18.7]]
+        with self.assertRaisesRegex(ValueError, "head clear mask is stale"):
+            export._runtime_body_metadata({
+                "v": 3,
+                "head_composite": "replace",
+                "head_handoff_version": export.STYLIZED_HEAD_HANDOFF_VERSION,
+                "head_clear_mask": "head-clear-mask.png",
+                "face_transform": current_transform,
+                "head_clear_quality": {
+                    "face_transform": [
+                        [.36, 0.0, 392.1], [0.0, .36, 18.7]],
+                },
+            })
+
+        coherent = export._runtime_body_metadata({
+            "v": 3,
+            "head_composite": "replace",
+            "head_handoff_version": export.STYLIZED_HEAD_HANDOFF_VERSION,
+            "head_clear_mask": "head-clear-mask.png",
+            "face_transform": current_transform,
+            "head_clear_quality": {"face_transform": current_transform},
+        })
+        self.assertEqual(current_transform, coherent["face_transform"])
+
 
 class BuildRoutingTests(unittest.TestCase):
     def test_source_medium_whitelist_fails_closed(self):

@@ -2435,8 +2435,12 @@
     let currentViseme = 'sil';
     let previousViseme = 'sil';
     let visemeChangedAt = 0;
-    let nextBlinkAt = performance.now() + 1800 + Math.random() * 2200;
+    // Start promptly, then keep every blink irregular.  The per-eye delay is
+    // chosen when an event begins so the lids do not read as one mechanical
+    // shutter, while remaining close enough to look like a single blink.
+    let nextBlinkAt = performance.now() + 1200 + Math.random() * 2200;
     let blinkStartedAt = 0;
+    let blinkEyeDelay = { l: 0, r: 0 };
     let nextMicroExpression = performance.now() + 2800;
     let microExpression = { value: 0, started: 0, duration: 1 };
     /* expression-engine:start */
@@ -4019,25 +4023,44 @@
       return 'sil';
     };
 
-    const blinkAmount = (now, reduce = false) => {
+    const blinkAmounts = (now, reduce = false) => {
       // A blink and its dependent lower-lid/under-eye strip are decorative
       // renderer motion.  Respect Reduced Motion immediately, including in
       // the middle of a blink, and defer the next one until motion is allowed
       // again instead of resuming an in-progress close.
+      const open = { l: 0, r: 0 };
       if (reduce) {
         blinkStartedAt = 0;
         nextBlinkAt = Math.max(nextBlinkAt, now + 1000);
-        return 0;
+        blinkEyeDelay = open;
+        return open;
       }
-      if (!blinkStartedAt && now >= nextBlinkAt) blinkStartedAt = now;
-      if (!blinkStartedAt) return 0;
+      if (!blinkStartedAt && now >= nextBlinkAt) {
+        blinkStartedAt = now;
+        const followingDelay = 24 + Math.random() * 36;
+        blinkEyeDelay = Math.random() < .5
+          ? { l: 0, r: followingDelay }
+          : { l: followingDelay, r: 0 };
+      }
+      if (!blinkStartedAt) return open;
+      const amountAt = elapsed => {
+        if (elapsed < 0) return 0;
+        if (elapsed < 90) return elapsed / 90;
+        if (elapsed < 135) return 1;
+        if (elapsed < 250) return 1 - (elapsed - 135) / 115;
+        return 0;
+      };
       const elapsed = now - blinkStartedAt;
-      if (elapsed < 90) return elapsed / 90;
-      if (elapsed < 135) return 1;
-      if (elapsed < 250) return 1 - (elapsed - 135) / 115;
-      blinkStartedAt = 0;
-      nextBlinkAt = now + 1900 + Math.random() * 4300;
-      return 0;
+      const amounts = {
+        l: amountAt(elapsed - blinkEyeDelay.l),
+        r: amountAt(elapsed - blinkEyeDelay.r),
+      };
+      if (elapsed >= 250 + Math.max(blinkEyeDelay.l, blinkEyeDelay.r)) {
+        blinkStartedAt = 0;
+        blinkEyeDelay = open;
+        nextBlinkAt = now + 1450 + Math.random() * 3200;
+      }
+      return amounts;
     };
 
     const microBrow = (now, reduce = false) => {
@@ -4554,7 +4577,7 @@
         }
       }
 
-      const blink = blinkAmount(now, reducedMotion.matches);
+      const blink = blinkAmounts(now, reducedMotion.matches);
       const gazeXValues = manifest.gaze && manifest.gaze.dxs || [0];
       const gazeYValues = manifest.gaze && manifest.gaze.dys || [0];
       const gazeTarget = cursorGazeTarget(pointer, avatarFaceAnchor(), {
@@ -4657,8 +4680,12 @@
         Number(speechExpressionPlan.surprise || 0),
         Number(speechExpressionPlan.anger || 0) * .86,
       ) : 0;
-      const eyelidClosure = Math.max(blink * (1 - semanticEyeOpen * .92),
-        upperFaceSpeaking ? expressionUnit(expression.eyeSquint) : 0);
+      const semanticSquint = upperFaceSpeaking
+        ? expressionUnit(expression.eyeSquint) : 0;
+      const eyelidClosure = {
+        l: Math.max(blink.l * (1 - semanticEyeOpen * .92), semanticSquint),
+        r: Math.max(blink.r * (1 - semanticEyeOpen * .92), semanticSquint),
+      };
       const expressiveGazeTarget = {
         x: Math.max(-Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
           Math.min(Math.max(...gazeXValues.map(value => Math.abs(Number(value))), 0),
@@ -4742,10 +4769,10 @@
       if (manifest.eyebag) {
         const values = manifest.eyebag.ups || [0];
         const maximum = Number(values[values.length - 1] || 0);
-        const blinkValue = eyelidClosure * maximum * .3;
         const speechValue = upperFaceSpeaking && !mouthOnlySmile
           ? (.20 + expression.underEye * .42) * eyebagGain * maximum : 0;
         for (const key of ['l', 'r']) {
+          const blinkValue = eyelidClosure[key] * maximum * .3;
           const side = key === 'l' ? 1 - expression.asymmetry : 1 + expression.asymmetry;
           drawStripState(faceContext, layers.eyebag[key], manifest.eyebag[key], values,
             Math.max(blinkValue, speechValue * side), 0, true);
@@ -4756,21 +4783,21 @@
         && manifest.stylized_blink.mode === 'semantic-eye-switch'
         && ['l', 'r'].every(key => layers.stylizedBlink[key]
           && runtimeBox(manifest.stylized_blink[key]));
-      const eyelidPolicy = faceEyelidPolicy(
-        stylizedRuntime, stylizedBlinkReady, eyelidClosure);
-      if (eyelidPolicy === 'stylized-closed') {
-        // Two pieces of drawn eye line art must never be blended. Switch the
-        // seam-gated semantic plates only at near-maximum closure, just as the
-        // stylized viseme path switches discrete mouth drawings.
+      if (stylizedRuntime) {
+        // Two pieces of drawn eye line art must never be blended. Switch each
+        // seam-gated semantic plate only at near-maximum closure. The small
+        // per-eye timing offset reads as a natural bilateral blink without
+        // ever shrinking a cartoon eye inside its canonical outline.
         faceContext.globalAlpha = 1;
         for (const key of ['l', 'r']) {
+          if (faceEyelidPolicy(true, stylizedBlinkReady,
+              eyelidClosure[key]) !== 'stylized-closed') continue;
           const box = runtimeBox(manifest.stylized_blink[key]);
           faceContext.drawImage(layers.stylizedBlink[key],
             box[0], box[1], box[2], box[3]);
         }
         faceContext.globalAlpha = 1;
-      } else if (eyelidPolicy === 'photo-strip'
-        && manifest.eyes && Array.isArray(manifest.eyes.states)) {
+      } else if (manifest.eyes && Array.isArray(manifest.eyes.states)) {
         // The calibrated human lid strips deliberately stay photo-only. If a
         // reviewed cartoon blink plate is missing or rejected, keep the
         // canonical eyes static; falling back here recreates the tiny inner
@@ -4779,15 +4806,16 @@
         for (const key of ['l', 'r']) {
           const image = layers.eyes[key];
           const geometry = manifest.eyes[key];
-          if (!image || !geometry || !Array.isArray(geometry.box) || eyelidClosure <= .004) continue;
+          const closure = eyelidClosure[key];
+          if (!image || !geometry || !Array.isArray(geometry.box) || closure <= .004) continue;
           const box = geometry.box.map(Number);
           let high = 0;
-          while (high < states.length - 1 && Number(states[high]) < eyelidClosure) high += 1;
+          while (high < states.length - 1 && Number(states[high]) < closure) high += 1;
           const low = high - 1;
           const lowValue = low >= 0 ? Number(states[low]) : 0;
           const highValue = Number(states[high]) || 1;
           const blendValue = Math.max(0, Math.min(1,
-            (eyelidClosure - lowValue) / Math.max(.0001, highValue - lowValue)));
+            (closure - lowValue) / Math.max(.0001, highValue - lowValue)));
           if (low >= 0) faceContext.drawImage(image, 0, low * box[3], box[2], box[3], box[0], box[1], box[2], box[3]);
           faceContext.globalAlpha = blendValue;
           faceContext.drawImage(image, 0, high * box[3], box[2], box[3], box[0], box[1], box[2], box[3]);
@@ -5037,9 +5065,9 @@
     };
 
     // Speech should be carried by the mouth and expression bank, not by a
-    // metronomic full-body rock. Keep a small, slow counter-sway and breath so
-    // the plate remains alive; reduced-motion users get a completely stable
-    // silhouette while lip sync itself stays available.
+    // rocking body or independently tilted head. Keep only a subtle breath;
+    // the rigid upright plate guarantees that the replacement head and neck
+    // remain registered in every presentation mode.
     const bodyMotionAt = (now, speaking, state, reduce = false) => {
       const target = speaking ? 1 : 0;
       if (reduce) {
@@ -5053,17 +5081,11 @@
       state.speechBlend += (target - state.speechBlend) * response;
       state.speechBlend = Math.max(0, Math.min(1, state.speechBlend));
       state.at = now;
-      const idle = {
-        sway: Math.sin(now / 2200) * .0056,
-        breathe: 1 + Math.sin(now / 1250) * .0025,
-      };
-      const speech = {
-        sway: Math.sin(now / 1050) * .0011 + Math.sin(now / 2600) * .00025,
-        breathe: 1 + Math.sin(now / 1650) * .0009,
-      };
+      const idle = { breathe: 1 + Math.sin(now / 1250) * .0025 };
+      const speech = { breathe: 1 + Math.sin(now / 1650) * .0009 };
       const blend = state.speechBlend;
       return {
-        sway: idle.sway + (speech.sway - idle.sway) * blend,
+        sway: 0,
         breathe: idle.breathe + (speech.breathe - idle.breathe) * blend,
       };
     };
@@ -5089,22 +5111,13 @@
       const pivotY = bounds[1] + bounds[3];
       const liveAudioSpeaking = Boolean(
         live && live.remoteAudioState && live.remoteAudioState.speaking);
-      const { sway, breathe } = bodyMotionAt(
+      const { breathe } = bodyMotionAt(
         now, Boolean(agentSpeaking || speechSource || liveAudioSpeaking),
         bodyMotionState, reducedMotion.matches);
-      const conversationalPose = reducedMotion.matches
-        ? { headYaw: 0, headPitch: 0, headRoll: 0 }
-        : speechExpressionState.value;
 
       context.save();
       context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale, pixelRatio * fit.x, pixelRatio * fit.y);
       context.translate(pivotX, pivotY);
-      context.translate(
-        Number(conversationalPose.headYaw || 0) * bounds[2] * .014,
-        Number(conversationalPose.headPitch || 0) * bounds[3] * .010,
-      );
-      context.rotate(sway + Number(conversationalPose.headRoll || 0) * .038
-        + (chatIdleEdge === 'left' ? .018 : chatIdleEdge === 'right' ? -.018 : 0));
       context.scale(breathe, 1);
       context.translate(-pivotX, -pivotY);
       context.drawImage(image, 0, 0, width, height);
@@ -5127,7 +5140,9 @@
       }
       context.restore();
 
-      lastBodyGeometry = { fit, width, height, metadata, pivotX, pivotY, sway, breathe, hasBody };
+      lastBodyGeometry = {
+        fit, width, height, metadata, pivotX, pivotY, sway: 0, breathe, hasBody,
+      };
     };
 
     const chatStandbyEdge = value => Number(value && value.x) < 0 ? 'left' : 'right';

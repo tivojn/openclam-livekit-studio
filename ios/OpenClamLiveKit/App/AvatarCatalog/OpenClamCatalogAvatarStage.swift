@@ -111,14 +111,14 @@ enum OpenClamAvatarEyelidPlatePolicy {
     }
 }
 
-/// A catalog avatar is a photographic face registered into a photographic
-/// body plate. Moving that face surface independently from the body makes the
-/// skin drift inside otherwise stationary hair and also asks Core Animation
-/// to resample the already-composited face on every speech frame. Full-
-/// expression packages therefore keep the surface rigidly registered and
-/// express head intent with their gaze, eyelid, brow, forehead, cheek, and
-/// mouth banks instead. Legacy packages retain their historical pose behavior
-/// until they are rebuilt with the body-locked v4 contract.
+/// A catalog avatar face is registered into its authored body plate. Moving
+/// that face surface independently from the body makes it drift inside
+/// otherwise stationary hair and also asks Core Animation to resample the
+/// already-composited face on every speech frame. Full-expression packages
+/// therefore keep the surface rigidly registered and express head intent with
+/// their gaze, eyelid, brow, forehead, cheek, and mouth banks instead. Legacy
+/// packages retain their historical pose behavior until they are rebuilt with
+/// the body-locked v4 contract.
 struct OpenClamAvatarFaceRegistrationPlan: Equatable, Sendable {
     let pitchDegrees: Double
     let yawDegrees: Double
@@ -136,13 +136,21 @@ enum OpenClamAvatarFaceRegistrationPolicy {
         canonicalRotationDegrees: Double,
         reaction: CaptainAyerFaceMirrorHeadPose,
         bodyLocked: Bool,
+        sourceMedium: OpenClamAvatarSourceMedium,
         bodyScale: CGFloat
     ) -> OpenClamAvatarFaceRegistrationPlan {
         guard !bodyLocked else {
             return OpenClamAvatarFaceRegistrationPlan(
                 pitchDegrees: 0,
                 yawDegrees: 0,
-                rotationDegrees: canonicalRotationDegrees,
+                // Stylized full-expression packages already author the head
+                // upright in body space. Their permissive landmarks can report
+                // a bogus roll that detaches the jaw/neck, so only that path is
+                // zeroed. Photographic rigs retain their authored canonical
+                // registration while dynamic speech motion remains disabled.
+                rotationDegrees: sourceMedium.isStylized
+                    ? 0
+                    : canonicalRotationDegrees,
                 translationX: 0,
                 translationY: 0,
                 dynamicResamplingPassCount: 0
@@ -1568,6 +1576,7 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
                 canonicalRotationDegrees: transform.rotationDegrees,
                 reaction: reaction.headPose,
                 bodyLocked: avatar.expressionGeometry != nil,
+                sourceMedium: avatar.sourceMedium,
                 bodyScale: scale
             )
 

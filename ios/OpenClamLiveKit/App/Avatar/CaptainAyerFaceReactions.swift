@@ -332,9 +332,9 @@ enum CaptainAyerAmbientMotionPlanner {
         let rightPeak = leadingEye == .right ? basePeak : basePeak - asymmetry
 
         return CaptainAyerAmbientBlinkPlan(
-            delay: 2.8 + 3.4 * unit(delaySample),
+            delay: 1.8 + 2.4 * unit(delaySample),
             duration: 0.22 + 0.10 * unit(durationSample),
-            followingEyeDelay: 0.012 + 0.022 * unit(offsetSample),
+            followingEyeDelay: 0.024 + 0.032 * unit(offsetSample),
             leadingEye: leadingEye,
             leftPeakClosure: min(1, max(0, leftPeak)),
             rightPeakClosure: min(1, max(0, rightPeak))

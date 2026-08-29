@@ -1348,6 +1348,121 @@ class EyewearLockTests(unittest.TestCase):
         self.assertGreaterEqual(receipt["face_bounds"][2], 84)
         self.assertGreaterEqual(receipt["face_bounds"][3], 100)
 
+    def test_stylized_face_alignment_locks_false_landmark_roll_upright(self):
+        indices = np.arange(478, dtype=np.float32)
+        landmarks = np.column_stack((
+            512.0 + ((indices % 17.0) - 8.0) * 12.0,
+            512.0 + (((indices // 17.0) % 17.0) - 8.0) * 12.0,
+        )).astype(np.float32)
+        for point_index, landmark_index in enumerate(body.face.FACE_OVAL):
+            angle = 2.0 * np.pi * point_index / len(body.face.FACE_OVAL)
+            landmarks[landmark_index] = (
+                512.0 + 250.0 * np.cos(angle),
+                512.0 + 310.0 * np.sin(angle),
+            )
+        angle = np.deg2rad(23.0)
+        scale = 0.31
+        detected = np.array([
+            [scale * np.cos(angle), -scale * np.sin(angle), 360.0],
+            [scale * np.sin(angle), scale * np.cos(angle), 40.0],
+        ], dtype=np.float64)
+        target = cv2.transform(landmarks[None, :, :], detected)[0]
+        identity_image = np.zeros((1024, 1024, 3), dtype=np.uint8)
+        body_image = np.zeros((1448, 1086, 3), dtype=np.uint8)
+
+        with mock.patch.object(
+                body, "_detect", side_effect=[landmarks, target]), \
+             mock.patch.object(
+                 body.cv2, "estimateAffinePartial2D",
+                 return_value=(detected, None)):
+            upright, receipt, _key = body._face_transform(
+                identity_image, body_image, allow_stylized=True)
+
+        self.assertAlmostEqual(upright[0, 0], scale, places=6)
+        self.assertAlmostEqual(upright[1, 1], scale, places=6)
+        self.assertAlmostEqual(upright[0, 1], 0.0, places=6)
+        self.assertAlmostEqual(upright[1, 0], 0.0, places=6)
+        source_anchor = np.array([512.0, 512.0])
+        old_anchor = detected @ np.array([*source_anchor, 1.0])
+        new_anchor = upright @ np.array([*source_anchor, 1.0])
+        np.testing.assert_allclose(new_anchor, old_anchor, atol=1e-4)
+        self.assertTrue(receipt["upright_lock"])
+        self.assertAlmostEqual(
+            receipt["detected_rotation_degrees"], 23.0, places=3)
+
+        with mock.patch.object(
+                body, "_detect", side_effect=[landmarks, target]), \
+             mock.patch.object(
+                 body.cv2, "estimateAffinePartial2D",
+                 return_value=(detected, None)):
+            photographic, photo_receipt, _key = body._face_transform(
+                identity_image, body_image, allow_stylized=False)
+        np.testing.assert_allclose(photographic, detected, atol=1e-7)
+        self.assertFalse(photo_receipt["upright_lock"])
+
+    def test_stylized_neck_center_uses_narrow_rows_before_shoulders(self):
+        plate = np.zeros((720, 600, 4), dtype=np.uint8)
+        # The measured face ends near y=280.  A broad jaw contracts into a
+        # 60-pixel neck, then widens into the shoulders.  The narrow rows—not
+        # the landmark-biased facial centre—are the body handoff authority.
+        plate[230:260, 190:410, 3] = 255
+        plate[260:286, 270:330, 3] = 255
+        plate[286:350, 150:450, 3] = 255
+
+        centre, receipt = body._stylized_neck_center(
+            plate, (220, 100, 160, 180))
+
+        self.assertAlmostEqual(centre, 299.5, places=3)
+        self.assertTrue(receipt["applied"])
+        self.assertEqual(receipt["method"], "narrow-body-silhouette")
+        self.assertLessEqual(receipt["row_range"][0], 270)
+        self.assertGreaterEqual(receipt["row_range"][1], 270)
+
+    def test_stylized_upright_alignment_centres_neck_on_shoulders(self):
+        indices = np.arange(478, dtype=np.float32)
+        landmarks = np.column_stack((
+            512.0 + ((indices % 17.0) - 8.0) * 12.0,
+            512.0 + (((indices // 17.0) % 17.0) - 8.0) * 12.0,
+        )).astype(np.float32)
+        for point_index, landmark_index in enumerate(body.face.FACE_OVAL):
+            angle = 2.0 * np.pi * point_index / len(body.face.FACE_OVAL)
+            landmarks[landmark_index] = (
+                512.0 + 250.0 * np.cos(angle),
+                512.0 + 310.0 * np.sin(angle),
+            )
+        angle = np.deg2rad(23.0)
+        scale = 0.31
+        detected = np.array([
+            [scale * np.cos(angle), -scale * np.sin(angle), 482.0],
+            [scale * np.sin(angle), scale * np.cos(angle), -40.0],
+        ], dtype=np.float64)
+        target = cv2.transform(landmarks[None, :, :], detected)[0]
+        oval = target[body.face.FACE_OVAL]
+        face_bounds = cv2.boundingRect(np.round(oval).astype(np.int32))
+        _face_x, face_y, face_width, face_height = face_bounds
+        body_plate = np.zeros((1448, 1086, 4), dtype=np.uint8)
+        target_neck_x = 540
+        start = int(face_y + face_height * 0.72)
+        stop = int(face_y + face_height * 1.20)
+        body_plate[start:stop, target_neck_x - 38:target_neck_x + 38, 3] = 255
+        identity_image = np.zeros((1024, 1024, 3), dtype=np.uint8)
+
+        with mock.patch.object(
+                body, "_detect", side_effect=[landmarks, target]), \
+             mock.patch.object(
+                 body.cv2, "estimateAffinePartial2D",
+                 return_value=(detected, None)):
+            upright, receipt, _key = body._face_transform(
+                identity_image, body_plate, allow_stylized=True)
+
+        mapped_neck_x = (
+            upright[0, 0] * identity_image.shape[1] * 0.5 + upright[0, 2])
+        self.assertAlmostEqual(mapped_neck_x, target_neck_x - 0.5, places=3)
+        self.assertAlmostEqual(upright[0, 1], 0.0, places=6)
+        self.assertAlmostEqual(upright[1, 0], 0.0, places=6)
+        self.assertTrue(receipt["neck_alignment"]["applied"])
+        self.assertLess(receipt["neck_alignment"]["shift_x"], 0)
+
     def test_runtime_head_mask_keeps_the_generated_hair_silhouette(self):
         """The live layer owns the face, not the portrait's square hairstyle."""
         landmarks = np.zeros((478, 2), dtype=np.float32)

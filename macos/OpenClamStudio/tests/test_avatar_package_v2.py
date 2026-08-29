@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -520,6 +521,51 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 packaged.convert("RGBA").tobytes(),
             )
             self.assertEqual((240, 30, 40, 255), packaged.convert("RGBA").getpixel((0, 0)))
+
+    def test_stylized_export_rejects_non_upright_canonical_registration(self):
+        configure_stylized_body_replacement(self.authoring, self.runtime)
+        angle = math.radians(8)
+        scale = 0.25
+        rotated = [
+            [scale * math.cos(angle), -scale * math.sin(angle), 128],
+            [scale * math.sin(angle), scale * math.cos(angle), 64],
+        ]
+        runtime_path = self.runtime / "manifest.json"
+        runtime = json.loads(runtime_path.read_text())
+        runtime["body"]["face_transform"] = rotated
+        runtime_path.write_text(json.dumps(runtime))
+        authored_path = self.authoring / "body" / "body.json"
+        authored = json.loads(authored_path.read_text())
+        authored["face_transform"] = rotated
+        authored_path.write_text(json.dumps(authored))
+
+        destination = self.root / "tilted-cartoon.avtr"
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "registration is not upright"):
+            package.export_ios_light(
+                "cartoon", "Cartoon", self.authoring, self.runtime,
+                destination)
+        self.assertFalse(destination.exists())
+
+    def test_stylized_export_rejects_clear_mask_from_old_registration(self):
+        configure_stylized_body_replacement(self.authoring, self.runtime)
+        stale = [[0.25, 0, 168], [0, 0.25, 64]]
+        for path in (
+                self.authoring / "body" / "body.json",
+                self.runtime / "manifest.json"):
+            manifest = json.loads(path.read_text())
+            target = manifest["body"] \
+                if path.name == "manifest.json" else manifest
+            target["head_clear_quality"] = {"face_transform": stale}
+            path.write_text(json.dumps(manifest))
+
+        destination = self.root / "stale-clear-mask.avtr"
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "head clear mask is stale"):
+            package.export_ios_light(
+                "cartoon", "Cartoon", self.authoring, self.runtime,
+                destination)
+        self.assertFalse(destination.exists())
 
     def test_stylized_bake_requires_current_coordinated_head_handoff(self):
         configure_stylized_body_replacement(self.authoring, self.runtime)

@@ -652,6 +652,32 @@ def _ios_body_source(
             or int(authored.get("height") or 0) != int(body.get("height") or 0)):
         raise AvatarPackageError(
             "stylized iPhone body and face registration are out of sync")
+    for label, candidate in (("authored", authored), ("runtime", body)):
+        quality = candidate.get("head_clear_quality")
+        recorded = quality.get("face_transform") \
+            if isinstance(quality, dict) else None
+        # Legacy v2 receipts predate the coherence seal and remain readable.
+        # Newly authored masks always carry it, so a later hand-edit of the
+        # registration cannot silently package an eraser generated at another
+        # head position.
+        if recorded is not None:
+            try:
+                recorded_values = [
+                    float(value) for row in recorded for value in row]
+                current_values = [
+                    float(value)
+                    for row in candidate.get("face_transform") for value in row]
+            except (TypeError, ValueError):
+                recorded_values = []
+                current_values = []
+            if (len(recorded_values) != 6 or len(current_values) != 6
+                    or any(not math.isfinite(value)
+                           for value in recorded_values + current_values)
+                    or any(abs(left - right) > 5e-8 for left, right in zip(
+                        recorded_values, current_values))):
+                raise AvatarPackageError(
+                    f"stylized iPhone {label} head clear mask is stale; "
+                    "rebuild the full body before exporting")
 
     authored_raw = _authoring_body_asset(
         body_root, authored.get("image") or "body.png", "body")
@@ -1504,6 +1530,13 @@ def export_ios_light(
     if not all(value == value and abs(value) <= 8192 for value in matrix_values):
         raise AvatarPackageError("body face transform is invalid")
     m00, m01, tx, m10, m11, ty = matrix_values
+    if source_medium != "photograph":
+        canonical_rotation = math.degrees(math.atan2(m10, m00))
+        if abs(canonical_rotation) > 0.5:
+            raise AvatarPackageError(
+                "stylized iPhone face registration is not upright; "
+                "rebuild the full body before exporting"
+            )
     body_width = int(body.get("width") or 0)
     body_height = int(body.get("height") or 0)
     bx, by, bw, bh = bounds

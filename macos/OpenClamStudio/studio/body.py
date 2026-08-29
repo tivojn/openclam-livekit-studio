@@ -521,7 +521,7 @@ def _prompt(options, view="front"):
 
 TURNAROUND — matched FRONT / RIGHT-SIDE / BACK; one complete figure, never triptych, split, duplicate, inset, or diagram. Keep pose, limbs, outfit, scale, and camera height fixed; rotate only the camera.
 
-IDENTITY LOCK — preserve face, skull, skin, hair, brows, eyes, nose, lips, ears, age, and any eyeglasses exactly; never remove them. If absent, add none. Apply HEADWEAR OVERRIDE below. Neutral closed mouth; never beautify, de-age, or redesign.
+IDENTITY LOCK — preserve face, skull, skin, hair, brows, eyes, nose, lips, ears, age, and eyeglasses; never remove them. If absent, add none. Apply HEADWEAR OVERRIDE below. Neutral closed mouth; never beautify, de-age, or redesign. Head upright; neck centred.
 
 VIEW — {view_text}
 
@@ -576,12 +576,94 @@ def _detect(image, label, allow_stylized=False):
     raise RuntimeError(f"no face detected in the {label}")
 
 
+def _stylized_neck_center(body_image, face_bounds):
+    """Return the centre of the narrow neck silhouette below a cartoon face.
+
+    Cartoon face landmarks are useful for scale, but their horizontal centre
+    can be biased by a large hat, oversized eyes, or asymmetric hair.  The
+    body cutout is the authoritative signal for where the head must meet the
+    shoulders.  Sample the jaw-to-shoulder band, retain plausible dense neck
+    rows, and use the narrowest fifth so widening shoulders cannot pull the
+    result sideways.
+
+    The helper accepts either the RGBA cutout used by the body pipeline or a
+    BGR cutout whose transparent pixels have already been zeroed.  Returning
+    ``(None, metadata)`` is intentionally safe: the caller falls back to the
+    established canvas-centre anchor rather than guessing.
+    """
+    if (body_image is None or body_image.ndim != 3
+            or body_image.shape[2] not in (3, 4)
+            or not isinstance(face_bounds, (list, tuple))
+            or len(face_bounds) != 4):
+        return None, {"applied": False, "reason": "invalid inputs"}
+    face_x, face_y, face_width, face_height = [float(v) for v in face_bounds]
+    if (not all(np.isfinite(v) for v in (
+            face_x, face_y, face_width, face_height))
+            or face_width < 8.0 or face_height < 8.0):
+        return None, {"applied": False, "reason": "invalid face bounds"}
+
+    if body_image.shape[2] == 4:
+        foreground = body_image[:, :, 3] > 8
+    else:
+        # Cutout RGB is zero outside its alpha support.  Requiring any channel
+        # above four tolerates antialiasing without mistaking a black hair or
+        # garment interior for a separate silhouette component.
+        foreground = np.any(body_image[:, :, :3] > 4, axis=2)
+
+    height, width = foreground.shape
+    start = max(0, int(np.floor(face_y + face_height * 0.72)))
+    stop = min(height, int(np.ceil(face_y + face_height * 1.20)) + 1)
+    expected = face_x + face_width * 0.5
+    minimum_span = max(6.0, face_width * 0.18)
+    maximum_span = min(float(width), face_width * 1.60)
+    candidates = []
+    for row in range(start, stop):
+        columns = np.flatnonzero(foreground[row])
+        if columns.size < minimum_span:
+            continue
+        left = float(columns[0])
+        right = float(columns[-1])
+        span = right - left + 1.0
+        if not minimum_span <= span <= maximum_span:
+            continue
+        density = float(columns.size) / span
+        centre = (left + right) * 0.5
+        if density < 0.55 or abs(centre - expected) > face_width * 0.75:
+            continue
+        candidates.append((span, centre, row))
+    if len(candidates) < 5:
+        return None, {
+            "applied": False,
+            "reason": "neck silhouette was not measurable",
+            "candidate_rows": len(candidates),
+        }
+
+    candidates.sort(key=lambda item: (item[0], item[2]))
+    retained_count = max(5, int(np.ceil(len(candidates) * 0.20)))
+    retained = candidates[:retained_count]
+    centres = np.asarray([item[1] for item in retained], dtype=np.float64)
+    spans = np.asarray([item[0] for item in retained], dtype=np.float64)
+    rows = [int(item[2]) for item in retained]
+    centre = float(np.median(centres))
+    return centre, {
+        "applied": True,
+        "method": "narrow-body-silhouette",
+        "target_x": round(centre, 3),
+        "row_range": [min(rows), max(rows)],
+        "median_span": round(float(np.median(spans)), 3),
+        "candidate_rows": len(candidates),
+    }
+
+
 def _face_transform(keyframe, body_image, allow_stylized=False):
+    body_bgr = body_image[:, :, :3] \
+        if body_image is not None and body_image.ndim == 3 \
+        else body_image
     key_landmarks = _detect(
         keyframe, "identity portrait", allow_stylized=allow_stylized)
     try:
         body_landmarks = _detect(
-            body_image, "generated body", allow_stylized=allow_stylized)
+            body_bgr, "generated body", allow_stylized=allow_stylized)
     except RuntimeError as error:
         raise GeneratedBodyIdentityError(str(error)) from error
     source = key_landmarks[face.RIGID].astype(np.float32)
@@ -600,12 +682,77 @@ def _face_transform(keyframe, body_image, allow_stylized=False):
         scale, (x, y, width, height), body_image.shape, residual)
     if failure:
         raise GeneratedBodyIdentityError(failure)
-    return transform, {
+    detected_rotation = float(np.degrees(np.arctan2(
+        transform[1, 0], transform[0, 0])))
+    neck_alignment = None
+    if allow_stylized:
+        # Cartoon/3-D landmark topology is intentionally permissive, but its
+        # rigid points are not a trustworthy roll estimator.  In particular,
+        # large stylized eyes can make MediaPipe report a 20–25 degree affine
+        # rotation for an image whose eye line, nose and neck are visibly
+        # upright.  Baking that false rotation into the body handoff creates a
+        # detached diagonal neck in every renderer.  Preserve the robust fit's
+        # scale and placement at the rigid-face centroid while locking the
+        # canonical head to zero roll.  Photographs retain the measured
+        # similarity transform unchanged.
+        # Canonical avatar heads are authored around the portrait canvas
+        # centre.  Keeping that exact point fixed is also stable when the
+        # stylized detector's rigid landmark centroid is biased by oversized
+        # eyes or an asymmetric hat.
+        anchor = np.array([
+            keyframe.shape[1] * 0.5,
+            keyframe.shape[0] * 0.5,
+        ], dtype=np.float64)
+        mapped_anchor = np.asarray(transform, dtype=np.float64) @ np.array(
+            [float(anchor[0]), float(anchor[1]), 1.0], dtype=np.float64)
+        transform = np.array([
+            [scale, 0.0, mapped_anchor[0] - scale * float(anchor[0])],
+            [0.0, scale, mapped_anchor[1] - scale * float(anchor[1])],
+        ], dtype=np.float64)
+        # A level head can still look detached when its neck is translated to
+        # a landmark-biased facial centre instead of the torso.  Re-anchor only
+        # horizontal translation to the cutout's narrow neck rows; keep scale
+        # and vertical placement from the robust face fit.  This is stylized-
+        # only: photographic faces retain their measured affine unchanged.
+        target_neck_x, neck_alignment = _stylized_neck_center(
+            body_image, (x, y, width, height))
+        if target_neck_x is not None:
+            old_target_x = float(
+                transform[0, 0] * anchor[0] + transform[0, 2])
+            maximum_shift = max(8.0, min(
+                float(body_image.shape[1]) * 0.08,
+                float(width) * 0.55,
+            ))
+            shift = float(target_neck_x - old_target_x)
+            if abs(shift) <= maximum_shift:
+                transform[0, 2] = (
+                    float(target_neck_x) - scale * float(anchor[0]))
+                neck_alignment.update({
+                    "source_x": round(float(anchor[0]), 3),
+                    "shift_x": round(shift, 3),
+                })
+            else:
+                neck_alignment = {
+                    "applied": False,
+                    "reason": "neck correction exceeded safety limit",
+                    "target_x": round(float(target_neck_x), 3),
+                    "shift_x": round(shift, 3),
+                    "maximum_shift": round(maximum_shift, 3),
+                }
+    receipt = {
         "residual_median_px": round(float(np.median(residual)), 3),
         "residual_max_px": round(float(np.max(residual)), 3),
         "scale": round(scale, 5),
         "face_bounds": [int(x), int(y), int(width), int(height)],
-    }, key_landmarks
+        "upright_lock": bool(allow_stylized),
+        "detected_rotation_degrees": round(detected_rotation, 4),
+    }
+    if allow_stylized:
+        receipt["neck_alignment"] = neck_alignment or {
+            "applied": False,
+            "reason": "neck silhouette was not measured",
+        }
+    return transform, receipt, key_landmarks
 
 
 def _canonical_head_replacement_core(body_shape, transform, key_landmarks):
@@ -830,7 +977,7 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
         replacement_head = None
         if allow_stylized:
             identity = _face_transform(
-                keyframe, body_rgba[:, :, :3], allow_stylized=True)
+                keyframe, body_rgba, allow_stylized=True)
             replacement_head = _canonical_head_replacement_core(
                 body_rgba.shape, identity[0], identity[2])
         body_rgba, alpha_quality = body_alpha.refine(
@@ -1210,17 +1357,58 @@ def _stylized_head_clear_mask(
     donor_anatomy = (
         (anatomy > 0) & (band > 0) & (body_image[:, :, 3] > 8)
         & ~canonical)
-    clear_alpha = np.where(
-        canonical | donor_silhouette | donor_anatomy,
-        255, 0).astype(np.uint8)
+    clear_base = canonical | donor_silhouette | donor_anatomy
+    clear_strength = clear_base.astype(np.float32)
+
+    # A binary eraser is correct through the upper face: donor hair, ears and
+    # cheeks outside the canonical silhouette must disappear completely.  It
+    # is not correct at the final jaw rows, however.  The canonical mask is
+    # antialiased and deliberately feathers into the generated neck there.  A
+    # hard body-space clear used to extend two pixels beyond the canonical
+    # source on one side and five on the other, exposing transparent crescents
+    # that looked like a detached neck at close-up scale.
+    #
+    # Taper the final ~10% of face height and clear only beneath essentially
+    # opaque canonical pixels in that handoff.  Donor neck pixels remain as
+    # the backing layer under the jaw feather, keeping output alpha continuous,
+    # while all doubled anatomy above the handoff remains hard-cleared.  The
+    # photographic compositor never consumes this stylized-only asset.
+    handoff_height = max(6, int(round(face_height * 0.10)))
+    handoff_start = max(0, chin_stop - handoff_height)
+    if chin_stop > handoff_start:
+        row_progress = np.clip(
+            (np.arange(height, dtype=np.float32) - handoff_start)
+            / float(chin_stop - handoff_start),
+            0.0, 1.0)
+        smooth = row_progress * row_progress * (3.0 - 2.0 * row_progress)
+        taper = 1.0 - smooth
+        # Only the last three alpha codes qualify as opaque.  This prevents a
+        # partially transparent source edge from combining with a partially
+        # erased body into another alpha dip.
+        source_gate = np.clip(
+            (warped.astype(np.float32) - 252.0) / 3.0, 0.0, 1.0)
+        source_gate = source_gate * source_gate * (3.0 - 2.0 * source_gate)
+        handoff_rows = np.arange(height) >= handoff_start
+        clear_strength[handoff_rows] *= (
+            taper[handoff_rows, None] * source_gate[handoff_rows])
+    clear_alpha = np.round(clear_strength * 255.0).astype(np.uint8)
     rgba = np.full((height, width, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = clear_alpha
     if not cv2.imwrite(destination, rgba):
         raise RuntimeError("the stylized body clear mask could not be written")
+    transform_receipt = [
+        [round(float(value), 7) for value in row]
+        for row in np.asarray(transform, dtype=np.float64)
+    ]
     return {
         "canonical_pixels": int(np.sum(clear_alpha > 4)),
         "silhouette_pixels": int(np.sum(donor_silhouette)),
         "anatomy_pixels": int(np.sum(donor_anatomy)),
+        "handoff_row_range": [int(handoff_start), int(chin_stop - 1)],
+        "handoff_pixels_preserved": int(np.sum(
+            clear_base[handoff_start:chin_stop]
+            & (clear_alpha[handoff_start:chin_stop] < 250))),
+        "face_transform": transform_receipt,
         "bounds": _alpha_bounds(rgba),
     }
 
@@ -1598,7 +1786,10 @@ def _edit_prompt(instruction, view, remove_headwear=False):
         ),
     }[view]
     view_contract = {
-        "front": "Keep a true straight-on front view.",
+        "front": (
+            "True straight-on front; level eyes, upright head, neck centred "
+            "on torso."
+        ),
         "side": "Keep a true 90-degree right-side profile.",
         "back": "Keep a true back view with the face completely out of view.",
     }[view]
@@ -1679,7 +1870,7 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             replacement_head = None
             if view == "front" and allow_stylized:
                 front_identity = _face_transform(
-                    keyframe, body_rgba[:, :, :3], allow_stylized=True)
+                    keyframe, body_rgba, allow_stylized=True)
                 replacement_head = _canonical_head_replacement_core(
                     body_rgba.shape, front_identity[0], front_identity[2])
             body_rgba, alpha_quality = body_alpha.refine(

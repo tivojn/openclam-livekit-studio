@@ -22,7 +22,7 @@ never touched; it is covered.
 Output is a small per-eye RGBA patch strip.  Every viseme frame is identical in
 the eye region by construction, so one strip overlays correctly on all of them -
 no need for a second full set of frames, and the two eyes stay separable so the
-runtime can give them the few ms of asymmetry that real blinks have.
+runtime can give them the subtle few-dozen-ms lead that real blinks have.
 """
 import numpy as np, cv2
 from . import face
@@ -324,17 +324,18 @@ def blink_ms(close=CLOSE, hold=HOLD, open_=OPEN):
 
 def schedule(duration_ms, rng=None, speaking=False, start=900.0):
     """Blink events over a span, with the same statistics the runtime uses:
-    irregular spacing, slight timing variation, and a few ms of eye-to-eye
-    asymmetry. Each event is one full blink; the random interval supplies the
+    irregular but attentive spacing, slight timing variation, and a subtle
+    eye-to-eye lead. Each event is one full blink; the random interval supplies
     natural variation without rapid double blinks."""
     import random
     r = rng or random.Random(7)
     ev, t = [], start
     while t < duration_ms:
+        lead = -1 if r.random() < .5 else 1
         ev.append(dict(t0=t, k=0.88 + r.random() * 0.26,
                        amp=0.93 + r.random() * 0.07,
-                       skew=(r.random() * 2 - 1) * 13))
-        t += (1500 + r.random() * 3400) if speaking else (2400 + r.random() * 5400)
+                       skew=lead * (22 + r.random() * 34)))
+        t += (1300 + r.random() * 3000) if speaking else (1700 + r.random() * 3600)
     return ev
 
 
