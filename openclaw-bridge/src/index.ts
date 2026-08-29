@@ -71,6 +71,8 @@ function errorResponse(code: PublicErrorCode, status: number): Response {
 function validateConfiguration(env: Env): void {
   if (
     env.BRIDGE_BOOTSTRAP_TOKEN.length < 40 ||
+    (env.BRIDGE_BOOTSTRAP_TOKEN_NEXT !== undefined &&
+      env.BRIDGE_BOOTSTRAP_TOKEN_NEXT.length < 40) ||
     env.PAIRING_CODE_PEPPER.length < 32 ||
     env.TOKEN_VERIFIER_PEPPER.length < 32 ||
     env.PENDING_EVENT_KEK_B64.length < 40
@@ -104,12 +106,14 @@ function requireJson(request: Request): void {
 
 async function authenticateBootstrap(request: Request, env: Env): Promise<void> {
   const candidate = bearerToken(request);
-  if (
-    candidate === null ||
-    !(await secureEqual(candidate, env.BRIDGE_BOOTSTRAP_TOKEN))
-  ) {
+  if (candidate === null) {
     unauthorized();
   }
+  const currentMatches = await secureEqual(candidate, env.BRIDGE_BOOTSTRAP_TOKEN);
+  const nextMatches = env.BRIDGE_BOOTSTRAP_TOKEN_NEXT === undefined
+    ? false
+    : await secureEqual(candidate, env.BRIDGE_BOOTSTRAP_TOKEN_NEXT);
+  if (!currentMatches && !nextMatches) unauthorized();
 }
 
 function coordinator(env: Env): DurableObjectStub<PairingCoordinator> {

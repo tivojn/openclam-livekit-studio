@@ -20,6 +20,8 @@ import type {
 
 const BOOTSTRAP_TOKEN =
   "test-bootstrap-token-that-is-at-least-forty-characters-long";
+const NEXT_BOOTSTRAP_TOKEN =
+  "test-next-bootstrap-token-that-is-at-least-forty-characters";
 const TEST_KEK = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=";
 const GATEWAY_LABEL = "Zane's OpenClaw";
 const openedSockets = new Set<WebSocket>();
@@ -298,6 +300,56 @@ describe("HTTP pairing contract", () => {
     const wrong = await createPairing(createBody(), wrongSecret);
     expect(wrong.response.status).toBe(401);
     expect(await wrong.response.text()).not.toContain(wrongSecret);
+  });
+
+  it("accepts an optional secondary bootstrap bearer during a safe rollout", async () => {
+    const response = await worker.fetch(
+      new Request("https://bridge.test/v1/pairings", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${NEXT_BOOTSTRAP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(createBody()),
+      }),
+      { ...env, BRIDGE_BOOTSTRAP_TOKEN_NEXT: NEXT_BOOTSTRAP_TOKEN },
+    );
+    expect(response.status).toBe(201);
+  });
+
+  it("keeps the current bootstrap bearer valid while the secondary is configured", async () => {
+    const response = await worker.fetch(
+      new Request("https://bridge.test/v1/pairings", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${BOOTSTRAP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(createBody()),
+      }),
+      { ...env, BRIDGE_BOOTSTRAP_TOKEN_NEXT: NEXT_BOOTSTRAP_TOKEN },
+    );
+    expect(response.status).toBe(201);
+  });
+
+  it("rejects the secondary bootstrap bearer when its rollout slot is absent", async () => {
+    const response = await createPairing(createBody(), NEXT_BOOTSTRAP_TOKEN);
+    expect(response.response.status).toBe(401);
+  });
+
+  it("rejects an invalid configured secondary bootstrap bearer", async () => {
+    const response = await worker.fetch(
+      new Request("https://bridge.test/v1/pairings", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${BOOTSTRAP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(createBody()),
+      }),
+      { ...env, BRIDGE_BOOTSTRAP_TOKEN_NEXT: "too-short" },
+    );
+    expect(response.status).toBe(503);
   });
 
   it("creates an exact bounded one-time pairing response", async () => {

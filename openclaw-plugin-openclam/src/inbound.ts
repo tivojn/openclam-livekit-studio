@@ -278,6 +278,10 @@ export async function dispatchOpenClamTurn(params: {
     },
     replyOptions: {
       abortSignal: params.signal,
+      // OpenClam owns the authenticated delivery callback for this direct
+      // channel. Force ordinary assistant finals through it even when the
+      // host's global visible-reply preference is message-tool-only.
+      sourceReplyDeliveryMode: "automatic",
       suppressDefaultToolProgressMessages: true,
       allowToolLifecycleWhenProgressHidden: true,
       forceToolResultProgress: true,

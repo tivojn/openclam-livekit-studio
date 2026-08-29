@@ -122,6 +122,13 @@ describe("OpenClam inbound authorization", () => {
     });
 
     expect(inboundContext?.CommandAuthorized).toBe(false);
+    expect(channel.inbound.dispatchReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replyOptions: expect.objectContaining({
+          sourceReplyDeliveryMode: "automatic",
+        }),
+      }),
+    );
   });
 
   it("does not split an emoji at the 32,000-code-point reply boundary", async () => {

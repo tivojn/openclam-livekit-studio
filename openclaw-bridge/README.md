@@ -214,6 +214,11 @@ npx wrangler secret put TOKEN_VERIFIER_PEPPER
 npx wrangler secret put PENDING_EVENT_KEK_B64
 ```
 
+For a non-disruptive first-install rollout, the Worker also accepts an optional
+`BRIDGE_BOOTSTRAP_TOKEN_NEXT`. Set it to an independent value, enroll the new
+adapter, and delete it immediately afterward. The current bootstrap token and
+all existing adapter/client credentials remain valid throughout.
+
 `PENDING_EVENT_KEK_B64` must decode to exactly 32 bytes. Generate each secret
 independently. A deployment should use a dedicated hostname and Cloudflare
 resources rather than a LiveKit route or binding.
