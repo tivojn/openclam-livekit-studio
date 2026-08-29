@@ -21,6 +21,16 @@ class OpenClawACPTests(unittest.TestCase):
         self.environment.stop()
         self.media_directory.cleanup()
 
+    def test_executable_finds_supported_user_install_without_shell_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / ".openclaw" / "bin" / "openclaw"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+            launcher.chmod(0o700)
+            with mock.patch.object(openclaw_acp.shutil, "which", return_value=None), \
+                 mock.patch.object(openclaw_acp.Path, "home", return_value=Path(directory)):
+                self.assertEqual(openclaw_acp._executable(), str(launcher.resolve()))
+
     def test_public_agents_excludes_workspace(self):
         with mock.patch.object(openclaw_acp, "_run_json", return_value=[{
             "id": "ara",

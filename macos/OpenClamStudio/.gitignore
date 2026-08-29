@@ -40,6 +40,7 @@ dist-electron/
 *.zip
 
 # Logs and temporary files
+tmp/
 *.log
 *.tmp
 *.bak

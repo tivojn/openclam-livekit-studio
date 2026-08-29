@@ -32,8 +32,17 @@ class OpenClawPairingError(RuntimeError):
 
 
 def _executable() -> str | None:
+    # Apps launched from Finder inherit launchd's deliberately small PATH.
+    # OpenClaw's supported per-user installer puts its stable launcher here,
+    # so PATH-only discovery makes an installed CLI disappear in the signed
+    # app even though the same command works in Terminal.
+    try:
+        user_launcher = str(Path.home() / ".openclaw" / "bin" / "openclaw")
+    except RuntimeError:
+        user_launcher = ""
     for candidate in (
         shutil.which("openclaw"),
+        user_launcher,
         "/opt/homebrew/bin/openclaw",
         "/usr/local/bin/openclaw",
     ):

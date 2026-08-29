@@ -15,6 +15,7 @@ import datetime, re
 from contextlib import asynccontextmanager
 from posixpath import normpath as posix_normpath
 os.environ["PATH"] = os.pathsep.join(filter(None, (
+    os.path.join(os.path.expanduser("~"), ".openclaw", "bin"),
     "/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", ""))))
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 

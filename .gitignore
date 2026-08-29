@@ -21,6 +21,7 @@ dist-*/
 !/openclaw-plugin-openclam/dist/**
 /outputs/
 /proof/
+/tmp/
 acceptance-output/
 .electron-python-runtime/
 .electron-models/

@@ -601,6 +601,7 @@ function backendEnvironment() {
     OPENCLAM_LIVEKIT_SERVER_HOST: LIVEKIT_SERVER_HOST,
     PATH: [
       path.join(root, 'bin'),
+      path.join(app.getPath('home'), '.openclaw', 'bin'),
       '/opt/homebrew/bin',
       '/usr/local/bin',
       process.env.PATH || '',

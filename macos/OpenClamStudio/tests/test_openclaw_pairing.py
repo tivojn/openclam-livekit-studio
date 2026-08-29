@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -21,6 +22,16 @@ class OpenClawPairingTests(unittest.TestCase):
         return subprocess.CompletedProcess(
             ["openclaw"], returncode, json.dumps(value).encode(), b"private-error"
         )
+
+    def test_executable_finds_supported_user_install_without_shell_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / ".openclaw" / "bin" / "openclaw"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+            launcher.chmod(0o700)
+            with patch.object(openclaw_pairing.shutil, "which", return_value=None), \
+                 patch.object(openclaw_pairing.Path, "home", return_value=Path(directory)):
+                self.assertEqual(openclaw_pairing._executable(), str(launcher.resolve()))
 
     def test_status_returns_only_safe_labels(self):
         value = {

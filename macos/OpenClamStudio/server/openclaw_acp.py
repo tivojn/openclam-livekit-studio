@@ -189,8 +189,16 @@ def _load_media(handle: str, kind: str) -> tuple[dict[str, object], str] | None:
 
 
 def _executable() -> str | None:
+    # Finder-launched apps do not inherit the user's interactive-shell PATH.
+    # The supported OpenClaw installer exposes a stable launcher in the
+    # user's OpenClaw directory, so probe it explicitly before system bins.
+    try:
+        user_launcher = str(Path.home() / ".openclaw" / "bin" / "openclaw")
+    except RuntimeError:
+        user_launcher = ""
     for candidate in (
         shutil.which("openclaw"),
+        user_launcher,
         "/opt/homebrew/bin/openclaw",
         "/usr/local/bin/openclaw",
     ):
