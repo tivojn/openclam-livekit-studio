@@ -38,6 +38,8 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
     let variant: String
     let id: String
     let displayName: String
+    let sourceMedium: OpenClamAvatarSourceMedium?
+    let speechPatch: OpenClamAvatarSpeechPatchMetadata?
     let rig: OpenClamAvatarRigGeometry
     let expression: OpenClamAvatarExpressionGeometry?
     let assets: [String: OpenClamAvatarPackageAsset]
@@ -49,6 +51,8 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
         variant: String,
         id: String,
         displayName: String,
+        sourceMedium: OpenClamAvatarSourceMedium? = nil,
+        speechPatch: OpenClamAvatarSpeechPatchMetadata? = nil,
         rig: OpenClamAvatarRigGeometry,
         expression: OpenClamAvatarExpressionGeometry? = nil,
         assets: [String: OpenClamAvatarPackageAsset],
@@ -59,6 +63,8 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
         self.variant = variant
         self.id = id
         self.displayName = displayName
+        self.sourceMedium = sourceMedium
+        self.speechPatch = speechPatch
         self.rig = rig
         self.expression = expression
         self.assets = assets
@@ -1151,6 +1157,8 @@ struct OpenClamAvatarPackageStore: Sendable {
             sourceSlug: manifest.id,
             sourceRelativeRuntimePath: "Application Support/OpenClam/Avatars/v2/\(manifest.id)",
             includedByteCount: includedByteCount,
+            sourceMedium: manifest.sourceMedium ?? .photograph,
+            speechPatch: manifest.speechPatch,
             geometry: manifest.rig,
             expressionGeometry: manifest.expression,
             compatibility: manifest.version == OpenClamAvatarPackageContract.expressionVersion
@@ -1227,7 +1235,10 @@ struct OpenClamAvatarPackageStore: Sendable {
             throw OpenClamAvatarPackageError.invalidManifest
         }
 
-        let baseKeys = Set(["format", "version", "variant", "id", "displayName", "rig", "assets"])
+        var baseKeys = Set(["format", "version", "variant", "id", "displayName", "rig", "assets"])
+        if root["sourceMedium"] != nil {
+            baseKeys.insert("sourceMedium")
+        }
         guard let version = root["version"] as? Int else {
             throw OpenClamAvatarPackageError.invalidManifest
         }
@@ -1236,6 +1247,7 @@ struct OpenClamAvatarPackageStore: Sendable {
         } else if version == OpenClamAvatarPackageContract.expressionVersion {
             var keys = baseKeys.union(["expression"])
             if root["motions"] != nil { keys.insert("motions") }
+            if root["speechPatch"] != nil { keys.insert("speechPatch") }
             try requireExactKeys(root, keys)
         } else if root["motions"] != nil {
             try requireExactKeys(root, baseKeys.union(["motions"]))
@@ -1336,6 +1348,22 @@ struct OpenClamAvatarPackageStore: Sendable {
                     ["x", "y", "width", "height"]
                 )
             }
+
+            if let rawSpeechPatch = root["speechPatch"] {
+                guard let speechPatch = rawSpeechPatch as? [String: Any] else {
+                    throw OpenClamAvatarPackageError.invalidManifest
+                }
+                try requireExactKeys(speechPatch, ["box", "visemeXOffsets"])
+                try requireExactKeys(
+                    try object(speechPatch, "box"),
+                    ["x", "y", "width", "height"]
+                )
+                let offsets = try object(speechPatch, "visemeXOffsets")
+                try requireExactKeys(
+                    offsets,
+                    Set(OpenClamAvatarViseme.allCases.map(\.rawValue))
+                )
+            }
         }
     }
 
@@ -1390,7 +1418,10 @@ struct OpenClamAvatarPackageStore: Sendable {
                 throw OpenClamAvatarPackageError.invalidRig
             }
             try validateExpression(expression)
-        } else if manifest.expression != nil {
+            if let speechPatch = manifest.speechPatch {
+                try validateSpeechPatch(speechPatch)
+            }
+        } else if manifest.expression != nil || manifest.speechPatch != nil {
             throw OpenClamAvatarPackageError.privateMetadataNotAllowed
         }
 
@@ -1607,6 +1638,30 @@ struct OpenClamAvatarPackageStore: Sendable {
             ) else {
                 throw OpenClamAvatarPackageError.invalidRig
             }
+        }
+    }
+
+    private func validateSpeechPatch(
+        _ speechPatch: OpenClamAvatarSpeechPatchMetadata
+    ) throws {
+        let box = speechPatch.box
+        guard [box.x, box.y, box.width, box.height].allSatisfy(\.isFinite),
+              box.x >= 0,
+              box.y >= 0,
+              box.width > 0,
+              box.height > 0,
+              box.x + box.width <= OpenClamAvatarSize.faceSource.width,
+              box.y + box.height <= OpenClamAvatarSize.faceSource.height else {
+            throw OpenClamAvatarPackageError.invalidRig
+        }
+
+        let canonicalKeys = Set(OpenClamAvatarViseme.allCases.map(\.rawValue))
+        guard Set(speechPatch.visemeXOffsets.keys) == canonicalKeys,
+              speechPatch.visemeXOffsets.values.allSatisfy({
+                  $0.isFinite && (-96 ... 96).contains($0)
+              }),
+              speechPatch.visemeXOffsets[OpenClamAvatarViseme.silence.rawValue] == 0 else {
+            throw OpenClamAvatarPackageError.invalidRig
         }
     }
 

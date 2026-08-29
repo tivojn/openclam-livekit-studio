@@ -34,6 +34,7 @@ FORMAT = "openclam-avatar"
 VERSION = 2
 IOS_MOTION_VERSION = 3
 IOS_EXPRESSION_VERSION = 4
+STYLIZED_HEAD_HANDOFF_VERSION = 2
 MAC_VARIANT = "macos-full"
 IOS_VARIANT = "ios-light"
 MANIFEST = "manifest.json"
@@ -599,6 +600,7 @@ def _ios_body_source(
     authoring: Path,
     runtime: Path,
     body: Mapping[str, object],
+    source_medium: str | None = None,
 ) -> Path:
     """Choose a release-safe standing plate for the iPhone package.
 
@@ -613,10 +615,19 @@ def _ios_body_source(
     guessing which pixels belong to the current rig.
     """
     raw_runtime = _runtime_asset(runtime, body.get("image"))
-    if (_authoritative_source_medium(authoring) == "photograph"
+    if source_medium is None:
+        source_medium = _authoritative_source_medium(authoring)
+    if (source_medium == "photograph"
             or str(body.get("head_composite") or "").strip().lower()
             != "replace"):
         return raw_runtime
+
+    if (type(body.get("head_handoff_version")) is not int
+            or body.get("head_handoff_version")
+            != STYLIZED_HEAD_HANDOFF_VERSION):
+        raise AvatarPackageError(
+            "stylized iPhone body handoff metadata is missing or unsupported")
+    runtime_clear_mask = _runtime_asset(runtime, body.get("head_clear_mask"))
 
     body_root = authoring / "body"
     authored = _read_json_file(body_root / "body.json")
@@ -627,6 +638,13 @@ def _ios_body_source(
             != "replace" or authored_medium == "photograph"):
         raise AvatarPackageError(
             "stylized iPhone body replacement metadata is incomplete")
+    if (type(authored.get("head_handoff_version")) is not int
+            or authored.get("head_handoff_version")
+            != STYLIZED_HEAD_HANDOFF_VERSION):
+        raise AvatarPackageError(
+            "authored stylized iPhone body handoff metadata is missing or unsupported")
+    authored_clear_mask = _authoring_body_asset(
+        body_root, authored.get("head_clear_mask"), "head clear mask")
     if (authored.get("face_transform") != body.get("face_transform")
             or (authored.get("alignment") or {}).get("face_bounds")
             != (body.get("alignment") or {}).get("face_bounds")
@@ -641,7 +659,9 @@ def _ios_body_source(
         body_root, authored.get("head_mask") or "head-mask.png", "head mask")
     runtime_head_mask = _runtime_asset(runtime, body.get("head_mask"))
     if (_sha256_path(authored_raw) != _sha256_path(raw_runtime)
-            or _sha256_path(authored_head_mask) != _sha256_path(runtime_head_mask)):
+            or _sha256_path(authored_head_mask) != _sha256_path(runtime_head_mask)
+            or _sha256_path(authored_clear_mask)
+            != _sha256_path(runtime_clear_mask)):
         raise AvatarPackageError(
             "stylized iPhone runtime is stale; republish it before export")
 
@@ -652,7 +672,10 @@ def _ios_body_source(
         body_root, preview, "baked body composite")
     raw_size = _image_details(authored_raw)[:2]
     composite_size = _image_details(composite)[:2]
-    if composite_size != raw_size or not _image_has_alpha(composite):
+    clear_mask_size = _image_details(authored_clear_mask)[:2]
+    if (composite_size != raw_size or clear_mask_size != raw_size
+            or not _image_has_alpha(composite)
+            or not _image_has_alpha(authored_clear_mask)):
         raise AvatarPackageError(
             "stylized iPhone baked body composite is invalid")
     try:
@@ -695,6 +718,40 @@ def _sprite(meta: object, columns: int, rows: int, storage: str) -> dict:
         "rows": rows,
         "storage": storage,
     }
+
+
+def _ios_semantic_blink(
+    runtime_manifest: Mapping[str, object], source_medium: str
+) -> dict[str, object] | None:
+    """Return reviewed full-eye blink sprites for an explicit stylized rig.
+
+    Photographic packages return before inspecting this optional metadata, so
+    their export bytes and renderer contract are unchanged. Legacy stylized
+    rigs without semantic plates remain exportable, but iOS deliberately keeps
+    their canonical eyes static rather than showing the human eyelid strips.
+    """
+    if source_medium == "photograph":
+        return None
+    value = runtime_manifest.get("stylized_blink")
+    if value is None:
+        eyes = runtime_manifest.get("eyes")
+        if not isinstance(eyes, dict):
+            raise AvatarPackageError("runtime eye rig is missing")
+        return {
+            "mode": "static-canonical",
+            "l": _sprite(eyes.get("l"), 1, 8, "verticalStrip"),
+            "r": _sprite(eyes.get("r"), 1, 8, "verticalStrip"),
+        }
+    if not isinstance(value, dict) \
+            or value.get("mode") != "semantic-eye-switch":
+        raise AvatarPackageError("stylized iPhone blink metadata is invalid")
+    result: dict[str, object] = {"mode": "semantic-eye-switch"}
+    for side in ("l", "r"):
+        metadata = value.get(side)
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("src"), str):
+            raise AvatarPackageError("stylized iPhone blink metadata is invalid")
+        result[side] = _sprite(metadata, 1, 8, "verticalStrip")
+    return result
 
 
 def _image_details(path: Path) -> tuple[int, int, str]:
@@ -749,6 +806,63 @@ def _copy_vertical_strip_as_grid(
                 ))
                 atlas.paste(frame, (column * frame_width, row * frame_height))
         atlas.save(destination, format="PNG", optimize=True)
+
+
+def _copy_semantic_eye_as_late_switch_strip(
+    source: Path,
+    destination: Path,
+    box: Mapping[str, object],
+    *,
+    states: int = 8,
+) -> None:
+    """Package one full cartoon eye plate without human-size interpolation.
+
+    Frames zero through six are transparent, so the canonical authored eye
+    remains untouched throughout the approach to a blink. The final frame is
+    the complete semantic closed-eye replacement. iOS switches to it only at
+    full closure; it can never render as a smaller eye inside the original.
+    """
+    frame_width = int(box["width"])
+    frame_height = int(box["height"])
+    if states < 2 or frame_height * states > MAX_IOS_TEXTURE_DIMENSION \
+            or frame_width * frame_height * states > MAX_IOS_PIXELS:
+        raise AvatarPackageError("stylized iPhone blink texture is invalid")
+    try:
+        with Image.open(source) as plate_image:
+            plate_image.load()
+            plate = plate_image.convert("RGBA")
+            if plate.size != (frame_width, frame_height):
+                raise AvatarPackageError(
+                    "stylized iPhone blink plate dimensions are invalid"
+                )
+            strip = Image.new(
+                "RGBA", (frame_width, frame_height * states), (0, 0, 0, 0)
+            )
+            strip.alpha_composite(plate, (0, frame_height * (states - 1)))
+            strip.info.clear()
+            strip.save(destination, format="PNG", optimize=True, compress_level=9)
+    except AvatarPackageError:
+        raise
+    except Exception as error:
+        raise AvatarPackageError("stylized iPhone blink plate is invalid") from error
+
+
+def _copy_static_transparent_eye_strip(
+    destination: Path,
+    box: Mapping[str, object],
+    *,
+    states: int = 8,
+) -> None:
+    """Fail closed for a legacy stylized rig with no semantic blink plate."""
+    frame_width = int(box["width"])
+    frame_height = int(box["height"])
+    if states < 2 or frame_height * states > MAX_IOS_TEXTURE_DIMENSION \
+            or frame_width * frame_height * states > MAX_IOS_PIXELS:
+        raise AvatarPackageError("stylized iPhone static-eye texture is invalid")
+    strip = Image.new(
+        "RGBA", (frame_width, frame_height * states), (0, 0, 0, 0)
+    )
+    strip.save(destination, format="PNG", optimize=True, compress_level=9)
 
 
 def _copy_clean_image(
@@ -899,6 +1013,76 @@ def _expression_geometry(runtime_manifest: Mapping[str, object]) -> dict | None:
         "browGain": calibrated_gain("brows", 10, 10, 1.35),
         "foreheadGain": calibrated_gain("forehead", 100, 100, 1.2),
         "underEyeGain": calibrated_gain("eyebags", 35, 35, 1.35),
+    }
+
+
+def _stylized_speech_patch(
+    runtime_manifest: Mapping[str, object],
+    source_medium: str,
+    expression: Mapping[str, object] | None,
+) -> dict | None:
+    """Publish reviewed lip-only registration for stylized v4 packages.
+
+    Photographs deliberately remain on their long-standing compositor path.
+    A non-photographic package must carry a freshly measured complete viseme
+    bank; silently guessing offsets recreates the displaced cartoon mouth this
+    metadata is intended to prevent.
+    """
+    if source_medium == "photograph" or expression is None:
+        return None
+    mouth = runtime_manifest.get("stylized_mouth")
+    if not isinstance(mouth, dict) \
+            or mouth.get("basis") != "canonical-outer-lip-v1":
+        raise AvatarPackageError(
+            "rebuild this stylized avatar's face before exporting for iPhone"
+        )
+    box = mouth.get("box")
+    offsets = mouth.get("viseme_x_offsets")
+    if not isinstance(box, list) or len(box) != 4 \
+            or not isinstance(offsets, dict) \
+            or set(offsets) != set(IOS_VISEMES):
+        raise AvatarPackageError(
+            "stylized iPhone speech registration is incomplete"
+        )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        for value in box
+    ):
+        raise AvatarPackageError("stylized iPhone speech box is invalid")
+    x, y, width, height = (float(value) for value in box)
+    # The upper fifth of the expression crop is philtrum/nose context on the
+    # cartoon provider output.  Keep the speech plate below that boundary and
+    # inside the lip-derived box so it cannot stamp a second nose tip.
+    smile_box = expression["smile"]["box"]
+    safe_y = max(y, float(smile_box["y"]) + float(smile_box["height"]) * .20)
+    bottom = y + height
+    if x < 0 or safe_y < 0 or width <= 0 or bottom <= safe_y \
+            or x + width > 1024 or bottom > 1024:
+        raise AvatarPackageError("stylized iPhone speech box is invalid")
+    clean_offsets = {}
+    for name in IOS_VISEMES:
+        value = offsets[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not math.isfinite(float(value)) \
+                or abs(float(value)) > 96:
+            raise AvatarPackageError(
+                "stylized iPhone speech registration is invalid"
+            )
+        clean_offsets[name] = round(float(value), 4)
+    if clean_offsets["sil"] != 0:
+        raise AvatarPackageError(
+            "stylized iPhone silence registration must remain zero"
+        )
+    return {
+        "box": {
+            "x": round(x, 4),
+            "y": round(safe_y, 4),
+            "width": round(width, 4),
+            "height": round(bottom - safe_y, 4),
+        },
+        "visemeXOffsets": clean_offsets,
     }
 
 
@@ -1262,6 +1446,7 @@ def export_ios_light(
     display_name = _safe_display_name(display_name)
     authoring = Path(authoring_root).resolve(strict=True)
     runtime = Path(runtime_root).resolve(strict=True)
+    source_medium = _authoritative_source_medium(authoring)
     runtime_manifest = _read_json_file(runtime / "manifest.json")
     body = runtime_manifest.get("body")
     if not isinstance(body, dict):
@@ -1285,13 +1470,23 @@ def export_ios_light(
             or len(gaze.get("dys") or []) != 11:
         raise AvatarPackageError("runtime face rig does not match iPhone profile")
 
-    left_eye = _sprite(eyes.get("l"), 1, 8, "verticalStrip")
-    right_eye = _sprite(eyes.get("r"), 1, 8, "verticalStrip")
+    semantic_blink = _ios_semantic_blink(runtime_manifest, source_medium)
+    left_eye = (
+        semantic_blink["l"] if semantic_blink is not None
+        else _sprite(eyes.get("l"), 1, 8, "verticalStrip")
+    )
+    right_eye = (
+        semantic_blink["r"] if semantic_blink is not None
+        else _sprite(eyes.get("r"), 1, 8, "verticalStrip")
+    )
     left_brow = _sprite(brow.get("l"), 14, 3, "verticalStrip")
     right_brow = _sprite(brow.get("r"), 14, 3, "verticalStrip")
     left_gaze = _sprite(gaze.get("l"), 25, 11, "gridAtlas")
     right_gaze = _sprite(gaze.get("r"), 25, 11, "gridAtlas")
     expression = _expression_geometry(runtime_manifest)
+    speech_patch = _stylized_speech_patch(
+        runtime_manifest, source_medium, expression
+    )
     if require_full_expression and expression is None:
         raise AvatarPackageError(
             "rebuild this avatar's face before exporting the full-expression "
@@ -1331,18 +1526,32 @@ def export_ios_light(
     with tempfile.TemporaryDirectory(prefix="openclam-ios-avtr-") as temporary:
         assets_root = Path(temporary) / "assets"
         assets_root.mkdir()
-        body_source = _ios_body_source(authoring, runtime, body)
+        body_source = _ios_body_source(
+            authoring, runtime, body, source_medium
+        )
         sources: dict[str, Path] = {
             "thumbnail": authoring / "keyframe.png",
             "body": body_source,
             "head-mask": _runtime_asset(runtime, body.get("head_mask")),
-            "eye-left": _runtime_asset(runtime, eyes["l"].get("src")),
-            "eye-right": _runtime_asset(runtime, eyes["r"].get("src")),
             "brow-left": _runtime_asset(runtime, brow["l"].get("src")),
             "brow-right": _runtime_asset(runtime, brow["r"].get("src")),
             "gaze-left-atlas": _runtime_asset(runtime, gaze["l"].get("src")),
             "gaze-right-atlas": _runtime_asset(runtime, gaze["r"].get("src")),
         }
+        semantic_mode = (
+            semantic_blink.get("mode") if semantic_blink is not None else None
+        )
+        if semantic_mode == "semantic-eye-switch":
+            sources["eye-left"] = _runtime_asset(
+                runtime, runtime_manifest["stylized_blink"]["l"].get("src")
+            )
+            sources["eye-right"] = _runtime_asset(
+                runtime, runtime_manifest["stylized_blink"]["r"].get("src")
+            )
+        elif semantic_mode is None:
+            # Photographic export remains byte-for-byte on the original strip.
+            sources["eye-left"] = _runtime_asset(runtime, eyes["l"].get("src"))
+            sources["eye-right"] = _runtime_asset(runtime, eyes["r"].get("src"))
         frames = runtime_manifest.get("frames")
         if not isinstance(frames, dict):
             raise AvatarPackageError("runtime viseme bank is missing")
@@ -1386,6 +1595,23 @@ def export_ios_light(
             if role == "thumbnail":
                 _copy_clean_image(
                     sources[role], destination_asset, jpeg_quality=90
+                )
+            elif role in {"eye-left", "eye-right"} \
+                    and semantic_mode == "semantic-eye-switch":
+                side = "l" if role == "eye-left" else "r"
+                _copy_semantic_eye_as_late_switch_strip(
+                    sources[role],
+                    destination_asset,
+                    semantic_blink[side]["box"],
+                    states=8,
+                )
+            elif role in {"eye-left", "eye-right"} \
+                    and semantic_mode == "static-canonical":
+                side = "l" if role == "eye-left" else "r"
+                _copy_static_transparent_eye_strip(
+                    destination_asset,
+                    semantic_blink[side]["box"],
+                    states=8,
                 )
             elif role == "gaze-left-atlas":
                 _copy_gaze_atlas(sources[role], destination_asset, left_gaze["box"])
@@ -1445,11 +1671,14 @@ def export_ios_light(
             "variant": IOS_VARIANT,
             "id": identifier,
             "displayName": display_name,
+            "sourceMedium": source_medium,
             "rig": rig,
             "assets": assets,
         }
         if expression is not None:
             manifest["expression"] = expression
+        if speech_patch is not None:
+            manifest["speechPatch"] = speech_patch
         if motions:
             manifest["motions"] = motions
         manifest_bytes = json.dumps(

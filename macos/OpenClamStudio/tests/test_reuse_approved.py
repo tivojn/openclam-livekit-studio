@@ -207,7 +207,7 @@ class DefaultDirectionTest(unittest.TestCase):
                 remap_unsafe=True)["id"],
             "back-heel")
 
-    def test_masculine_and_ambiguous_defaults_use_grounded_side_lean(self):
+    def test_masculine_and_ambiguous_defaults_use_grounded_folded_pose(self):
         for presentation in ("masculine", "male", "androgynous", "neutral", None):
             with self.subTest(presentation=presentation):
                 if presentation is None:
@@ -224,7 +224,7 @@ class DefaultDirectionTest(unittest.TestCase):
             with self.subTest(pose=pose):
                 safe = motion.resolve_idle_pose(
                     pose, presentation="masculine", remap_unsafe=True)
-                self.assertEqual(safe["id"], "side-cross")
+                self.assertEqual(safe["id"], "folded-cross")
                 feminine = motion.resolve_idle_pose(
                     pose, presentation="feminine", remap_unsafe=True)
                 self.assertEqual(feminine["id"], pose)

@@ -24,6 +24,9 @@
       "minLength": 1,
       "maxLength": 64
     },
+    "sourceMedium": {
+      "enum": ["photograph", "game art", "anime", "illustration", "3d render"]
+    },
     "rig": {
       "$ref": "#/$defs/rig"
     },

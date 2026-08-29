@@ -32,6 +32,11 @@ Each package is produced by the reviewed Mac AVTR exporter from an approved
 avatar project; only its public thumbnail is retained in source. The catalog
 pins every release package's exact size and SHA-256 digest.
 
+The immutable `avatar-store-v1.0.4` catalog replaces only `luffy-3d` with the
+repaired full-expression package, advances that entry to version 2, and gives
+the iOS client a new cache identity. The v1.0.3 catalog and release remain
+unchanged for older clients.
+
 ## Generic staging layout
 
 `build_release.py` has no production URL, identity, publisher, version, or

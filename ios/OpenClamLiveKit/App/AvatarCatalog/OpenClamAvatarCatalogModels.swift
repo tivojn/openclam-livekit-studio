@@ -84,6 +84,20 @@ enum OpenClamAvatarViseme: String, CaseIterable, Codable, Hashable, Sendable {
     }
 }
 
+/// Authoritative intake classification published by the avatar authoring
+/// pipeline. Missing metadata remains photographic for compatibility with
+/// every v2-v4 package that predates this field; only an explicit reviewed
+/// non-photographic value may opt into stylized face composition.
+enum OpenClamAvatarSourceMedium: String, Codable, Equatable, Hashable, Sendable {
+    case photograph
+    case gameArt = "game art"
+    case anime
+    case illustration
+    case rendered3D = "3d render"
+
+    var isStylized: Bool { self != .photograph }
+}
+
 enum OpenClamAvatarAssetRole: Hashable, Sendable {
     case thumbnail
     case body
@@ -164,6 +178,18 @@ struct OpenClamAvatarRect: Codable, Equatable, Hashable, Sendable {
     let height: Double
 
     var cgRect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+}
+
+/// Optional v4 speech calibration authored against the canonical 1024-square
+/// face source. Dictionary keys intentionally remain manifest strings so the
+/// package validator can reject missing or future visemes before runtime use.
+struct OpenClamAvatarSpeechPatchMetadata: Codable, Equatable, Sendable {
+    let box: OpenClamAvatarRect
+    let visemeXOffsets: [String: Double]
+
+    func xOffset(for viseme: OpenClamAvatarViseme) -> Double {
+        visemeXOffsets[viseme.rawValue] ?? 0
+    }
 }
 
 /// The source rig stores a 2×3 affine matrix in face-source to body coordinates.
@@ -305,6 +331,8 @@ struct OpenClamAvatarDescriptor: Identifiable, Equatable, Sendable {
     let sourceSlug: String
     let sourceRelativeRuntimePath: String
     let includedByteCount: Int
+    let sourceMedium: OpenClamAvatarSourceMedium
+    let speechPatch: OpenClamAvatarSpeechPatchMetadata?
     let geometry: OpenClamAvatarRigGeometry
     let expressionGeometry: OpenClamAvatarExpressionGeometry?
     let compatibility: OpenClamAvatarRigCompatibility
@@ -317,6 +345,8 @@ struct OpenClamAvatarDescriptor: Identifiable, Equatable, Sendable {
         sourceSlug: String,
         sourceRelativeRuntimePath: String,
         includedByteCount: Int,
+        sourceMedium: OpenClamAvatarSourceMedium = .photograph,
+        speechPatch: OpenClamAvatarSpeechPatchMetadata? = nil,
         geometry: OpenClamAvatarRigGeometry,
         expressionGeometry: OpenClamAvatarExpressionGeometry? = nil,
         compatibility: OpenClamAvatarRigCompatibility,
@@ -328,6 +358,8 @@ struct OpenClamAvatarDescriptor: Identifiable, Equatable, Sendable {
         self.sourceSlug = sourceSlug
         self.sourceRelativeRuntimePath = sourceRelativeRuntimePath
         self.includedByteCount = includedByteCount
+        self.sourceMedium = sourceMedium
+        self.speechPatch = speechPatch
         self.geometry = geometry
         self.expressionGeometry = expressionGeometry
         self.compatibility = compatibility

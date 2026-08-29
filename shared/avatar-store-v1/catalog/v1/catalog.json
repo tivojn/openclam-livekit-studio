@@ -97,23 +97,23 @@
       "id": "luffy-3d",
       "name": "Luffy · 3D",
       "thumbnail": {
-        "bytes": 931381,
+        "bytes": 1186986,
         "height": 1024,
         "mime": "image/png",
-        "sha256": "382745868b04fef16c3d2743e261277298aadbeb989a96855c646a9143383aaf",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png",
+        "sha256": "26c291079aaae5939620e64aa06bd656fb98441d2e0758c51d64f934ebd757a8",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.4/shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png",
         "width": 1024
       },
       "variants": {
         "ios-light": {
-          "bytes": 30007561,
+          "bytes": 32853849,
           "format": "openclam-avatar",
           "profile": "ios-light",
-          "sha256": "11e8b5bf559943b97d5490858d2b363ac1d01675da8740ef3ae296ad5497d808",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.3/luffy-3d-ios-light.avtr"
+          "sha256": "150108dc9858d8c5a951d099599ef1c9f042aacc874413f415c9c313fef55430",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.4/luffy-3d-ios-light.avtr"
         }
       },
-      "version": 1
+      "version": 2
     }
   ],
   "schemaVersion": 1

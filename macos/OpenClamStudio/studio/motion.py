@@ -22,6 +22,10 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 from . import body, cutout
 
 
+# v17 removes only exterior-connected, sparse neutral cast-shadow slivers from
+# stylized motion and restores authored sclera from enclosed source components
+# even when a coarse semantic matte opens the eye cavity to the exterior. The
+# photographic path and its v15 white-plate contract remain unchanged.
 # v16 preserves enclosed white stylized sclera without relaxing the v15 plate
 # contract, and makes ipsilateral gait a non-relaxable biomechanics rejection.
 # v15 made the retained white plate a two-sided contract: strong, connected
@@ -29,7 +33,7 @@ from . import body, cutout
 # exterior-connected plate, floor shadows, and the real gaps between limbs and
 # the torso are release-blocking background. Older cuts can have those shadows
 # promoted to opaque pixels, so they must be re-cut before reuse.
-MOTION_VERSION = 16
+MOTION_VERSION = 17
 # Shadows are not harmless presentation on motion plates: a floor shadow can
 # merge into a stiletto stem, while a wall-contact shadow can attach to hair or
 # clothing and become indistinguishable from the subject to a semantic matte.
@@ -76,10 +80,10 @@ DEFAULT_WALK_STYLE = "office"
 DEFAULT_IDLE_POSE = "back-heel"
 # Heel-contact poses are a deliberate feminine styling choice, not a universal
 # motion default.  The body authoring pipeline persists visible presentation in
-# body.json; callers that know that presentation use the grounded side lean for
-# masculine or ambiguous bodies.  Keeping DEFAULT_IDLE_POSE preserves old
+# body.json; callers that know that presentation use the grounded folded pose
+# for masculine or ambiguous bodies. Keeping DEFAULT_IDLE_POSE preserves old
 # authored feminine projects and CLI round-trips that do not carry body context.
-DEFAULT_NON_FEMININE_IDLE_POSE = "side-cross"
+DEFAULT_NON_FEMININE_IDLE_POSE = "folded-cross"
 HEEL_IDLE_POSE_IDS = frozenset(("back-heel", "heel-up"))
 PRESENTATION_ALIASES = {
     "female": "feminine",
@@ -378,6 +382,43 @@ IDLE_POSE_PRESETS = {
 def _clean(value, maximum=800):
     value = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or ""))
     return re.sub(r"\s+", " ", value).strip()[:maximum]
+
+
+def _motion_identity_lock(remove_headwear=False, owner_notes=""):
+    """Immutable identity details shared by every motion generation prompt.
+
+    The editable wardrobe receipt is intentionally bounded because provider
+    prompts have a finite budget. Owner notes used to live only inside that
+    receipt, so a late ``MUST KEEP: his straw hat`` instruction could disappear
+    when the expanded wardrobe prose was clipped. Keep the note separate and
+    put the structured headwear policy after it, where free text cannot reverse
+    the owner's explicit toggle.
+    """
+    notes = _clean(owner_notes, 600)
+    note_contract = (
+        "OWNER MUST-KEEP NOTE — " + notes + "\n\n"
+        if notes else "")
+    if bool(remove_headwear):
+        policy = (
+            "HEADWEAR STATE LOCK — REMOVE is enabled for this build. The canonical "
+            "head and body plates are intentionally bare-headed. Keep the subject "
+            "bare-headed in this keyframe and in EVERY video frame: do not restore, "
+            "invent, or substitute any hat, cap, bandana, headband, headscarf, helmet, "
+            "crown, tiara, hair ornament, or other head-attached item. Preserve the "
+            "canonical reconstructed hairline, hair, scalp, forehead, and ears exactly. "
+            "This structured removal policy overrides any conflicting owner note."
+        )
+    else:
+        policy = (
+            "HEADWEAR STATE LOCK — PRESERVE is enabled for this build. Preserve every "
+            "source-worn hat, cap, bandana, headband, headscarf, helmet, crown, tiara, "
+            "hair ornament, and other identity-bearing head-attached item visible in "
+            "the canonical head or body plates. Keep its exact type, shape, brim and "
+            "crown geometry, placement, scale, angle, material, colors, markings, and "
+            "relationship to the hair in this keyframe and in EVERY video frame. Never "
+            "remove, replace, redesign, recolor, resize, or reposition it."
+        )
+    return note_contract + policy
 
 
 def resolve_walk_style(style_id=None, custom_prompt=""):
@@ -689,7 +730,7 @@ def resolve_idle_pose(
         else:
             raise ValueError(
                 "heel-specific edge-idle poses are available only for a "
-                "feminine-presenting body; choose Side lean or another "
+                "feminine-presenting body; choose Folded cross or another "
                 "grounded pose")
     if pose_id == "custom":
         prompt = _clean(custom_prompt, 2400)
@@ -840,8 +881,11 @@ def _emit(progress, stage, value, label):
         progress(stage, value, label)
 
 
-def _walk_keyframe_prompt(outfit, walk_style=None, has_side_reference=True):
+def _walk_keyframe_prompt(
+        outfit, walk_style=None, has_side_reference=True,
+        identity_lock=None):
     walk_style = resolve_walk_style(walk_style)
+    identity_lock = identity_lock or _motion_identity_lock()
     standard_gait = walk_style["validation"] in {"office-gait", "stylized-gait"}
     tracking_contract = ""
     if standard_gait:
@@ -880,11 +924,15 @@ COMPOSITION — one person only, complete figure centered on a vertical 2:3 canv
 
 Editable wardrobe receipt, subordinate to the visual references: {outfit}
 
+{identity_lock}
+
 {SHADOWLESS_PLATE_CONTRACT}"""
 
 
-def _idle_keyframe_prompt(outfit, has_pose_reference, idle_pose=None):
+def _idle_keyframe_prompt(
+        outfit, has_pose_reference, idle_pose=None, identity_lock=None):
     idle_pose = resolve_idle_pose(idle_pose)
+    identity_lock = identity_lock or _motion_identity_lock()
     if idle_pose["validation"] == "free":
         return f"""Create a full-body performance keyframe of the exact same adult person. Reference 1 is the generated canonical FRONT full-body plate and is the body, wardrobe, and proportion authority. Reference 2 is the canonical HD head and is the facial-identity authority.
 
@@ -895,6 +943,8 @@ OPENING POSE — one natural, balanced standing frame that a performance loop ca
 COMPOSITION — one person only, full figure centered on a vertical 2:3 canvas with margin for the movement, locked camera, no crop, no props, no text, no furniture, no cast shadow. Shoot against a seamless pure white studio background and floor: bright, even white only, with no cast shadow, gray, scenery, reflections, or colored light spill on the subject. If any garment or shoe is white or near-white, render it one clearly visible tone deeper than the backdrop so the silhouette never blends into it.
 
 Editable wardrobe receipt, subordinate to the visual references: {outfit}
+
+{identity_lock}
 
 {SHADOWLESS_PLATE_CONTRACT}"""
     reference_note = (
@@ -915,13 +965,16 @@ COMPOSITION — one person only, full figure centered on a vertical 2:3 canvas w
 
 Editable wardrobe receipt, subordinate to the visual references: {outfit}
 
+{identity_lock}
+
 {SHADOWLESS_PLATE_CONTRACT}"""
 
 
-def _loop_walk_video_prompt(walk_style):
+def _loop_walk_video_prompt(walk_style, identity_lock=None):
     """In-place treadmill loop contract, seeded by the proven first-equals-
     last-frame approach: the authored seam replaces the traversal pipeline's
     loop-window search."""
+    identity_lock = identity_lock or _motion_identity_lock()
     # A custom gait may not be a two-footed walk at all (a hop, a shuffle),
     # so the contralateral two-step contract only wraps the preset gaits;
     # a custom act just demands identical repeated cycles of the described
@@ -960,6 +1013,8 @@ PRIORITY 0 — SEAMLESS IN-PLACE LOOP: the supplied image is the EXACT first fra
 
 PRIORITY 1 — IDENTITY, HAIR, AND WARDROBE: preserve the exact selected person's face, apparent age, body proportions, skin tone, hairline, hairstyle, outfit, materials, colors, accessories, and both complete shoes from the input keyframe in every frame. Never restyle, beautify, de-age, change clothes, change footwear, or invent a different person.
 
+{identity_lock}
+
 CAMERA AND PLATE: locked camera with constant scale, exposure, and color; no camera motion, zoom, reframing, or cuts. The entire background and floor stay seamless pure white with no scenery, shadows, reflections, text, props, gray, or colored spill; white or near-white wardrobe stays one clearly visible tone deeper than the backdrop. The subject's complete full body and both shoes stay inside the frame at all times.
 
 {SHADOWLESS_PLATE_CONTRACT}
@@ -969,10 +1024,12 @@ STYLE-SPECIFIC REJECTIONS — {walk_style['reject']}
 GLOBAL REJECTIONS — reject forward travel across the frame, root drift, treadmill speed changes, bounce, camera movement, cuts, body-part disappearance, extra fingers, warped shoes, color flicker, hairstyle drift, identity drift, or wardrobe drift."""
 
 
-def _walk_video_prompt(walk_style=None, walk_frame=None):
+def _walk_video_prompt(
+        walk_style=None, walk_frame=None, identity_lock=None):
     walk_style = resolve_walk_style(walk_style)
+    identity_lock = identity_lock or _motion_identity_lock()
     if walk_mode(walk_style) == "loop":
-        return _loop_walk_video_prompt(walk_style)
+        return _loop_walk_video_prompt(walk_style, identity_lock)
     walk_frame = resolve_walk_frame(walk_frame)
     enters, exits = walk_frame["crossing"]
     # The loop gate requires two hip-line crossings per arm and per leg, i.e. a full
@@ -1005,6 +1062,8 @@ def _walk_video_prompt(walk_style=None, walk_frame=None):
 
 PRIORITY 1 — IDENTITY, HAIR, AND WARDROBE: preserve the exact selected person's face, apparent age, body proportions, skin tone, hairline, hairstyle, outfit, materials, colors, accessories, and both complete shoes from the input keyframe in every frame. Never restyle, beautify, de-age, change clothes, change footwear, or invent a different person.
 
+{identity_lock}
+
 CAMERA AND PLATE: the three light-gray vertical registration lines and floor line remain exactly stationary. Camera scale, exposure, and color remain constant. The entire background and floor stay seamless pure white with no scenery, shadows, reflections, text, props, gray, or colored spill; white or near-white wardrobe stays one clearly visible tone deeper than the backdrop. Keep the subject's complete full body and both shoes inside frame while the subject crosses from roughly {enters}% to {exits}% at constant speed.
 
 {SHADOWLESS_PLATE_CONTRACT}
@@ -1014,8 +1073,9 @@ STYLE-SPECIFIC REJECTIONS — {walk_style['reject']}
 GLOBAL REJECTIONS — reject bounce, camera movement, cuts, body-part disappearance, extra fingers, warped shoes, color flicker, hairstyle drift, identity drift, or wardrobe drift."""
 
 
-def _idle_video_prompt(idle_pose=None):
+def _idle_video_prompt(idle_pose=None, identity_lock=None):
     idle_pose = resolve_idle_pose(idle_pose)
+    identity_lock = identity_lock or _motion_identity_lock()
     if idle_pose["validation"] == "free":
         return f"""Create a seamless character performance loop. The supplied image is the EXACT first frame and the EXACT final frame.
 
@@ -1024,6 +1084,8 @@ THE ACT — the person performs exactly this, with real energy and full movement
 PRIORITY — SEAMLESS IN-PLACE LOOP: the character stays at the same screen position throughout: no walking away, no sideways travel, no scale change. Motion eases out of the supplied opening pose into the act and returns precisely to that identical supplied pose at the end.
 
 IDENTITY AND WARDROBE — preserve the exact person's face, apparent age, hair, body proportions, outfit, materials, colors, accessories, and both complete shoes from the input keyframe in every frame. Never restyle or invent a different person.
+
+{identity_lock}
 
 CAMERA AND PLATE — locked camera, constant scale, exposure, and color; no cuts or zoom. The entire background and floor stay seamless pure white with no scenery, shadows, reflections, text, props, gray, or colored spill; white or near-white wardrobe stays one clearly visible tone deeper than the backdrop. The complete body and both shoes stay inside the frame at all times.
 
@@ -1041,23 +1103,27 @@ Reject: identity drift, wardrobe changes, camera motion, leaving the frame, or f
     )
     return f"""Animate a subtle living hold of this exact supported edge pose with a locked camera. Preserve the exact identity, hair, outfit, materials, colors, accessories, arm arrangement, leg arrangement, contact points, and both complete shoes from the input keyframe. The selected pose direction is: {idle_pose['prompt']} Preserve a seamless pure white background and floor throughout every frame, with no gray, scenery, reflections, cast shadow, or colored spill on the subject. {contact_lock}
 
+{identity_lock}
+
 {SHADOWLESS_PLATE_CONTRACT}
 
 Add only natural breathing, one soft blink, a tiny chin adjustment, and restrained fabric and hair settling. Never straighten away from the wall, become a tree pose, float without support, change which leg bears weight, uncross or cross the legs, change the arm arrangement, walk, talk, move the camera, zoom, cut, add objects, or add text. Begin and end with the exact same silhouette, limb geometry, wall contacts, and floor contacts for a seamless idle loop."""
 
 
-def _move_keyframe_prompt(outfit, move_style=None):
+def _move_keyframe_prompt(outfit, move_style=None, identity_lock=None):
     # A move IS a custom free act: the idle free-branch contracts (opening
     # pose, loopability, white plate) already say everything a performance
     # keyframe needs, with the choreography text in the driver's seat.
     move_style = resolve_move_style(move_style)
     return _idle_keyframe_prompt(
-        outfit, False, {"id": "custom", "prompt": move_style["prompt"]})
+        outfit, False, {"id": "custom", "prompt": move_style["prompt"]},
+        identity_lock)
 
 
-def _move_video_prompt(move_style=None):
+def _move_video_prompt(move_style=None, identity_lock=None):
     move_style = resolve_move_style(move_style)
-    return _idle_video_prompt({"id": "custom", "prompt": move_style["prompt"]})
+    return _idle_video_prompt(
+        {"id": "custom", "prompt": move_style["prompt"]}, identity_lock)
 
 
 def _provider_id(provider):
@@ -2900,48 +2966,99 @@ def _fill_stylized_eye_alpha_holes(current, alpha, source, pose):
     if body_height is None or nose is None:
         return alpha
 
-    mask = (alpha >= 24).astype(np.uint8)
-    contours, hierarchy = cv2.findContours(
-        mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-    if hierarchy is None:
-        return alpha
-
     # Cartoon sclera can be round and much larger than a photographic eye,
-    # but remains a small fraction of tracked body height.  The band ends at
-    # the nose, deliberately excluding teeth and every body/clothing cavity.
+    # but remains a small fraction of tracked body height. Keep the search in
+    # a narrow band around the tracked nose, deliberately excluding teeth and
+    # every body/clothing cavity.
     maximum_area = max(16.0, body_height * body_height * 0.015)
     horizontal_limit = max(7.0, body_height * 0.14)
     upper = nose[1] - body_height * 0.12
-    lower = nose[1] + body_height * 0.018
+    lower = nose[1] + body_height * 0.04
     plate_confidence = _white_plate_confidence(source)
     recovered = np.zeros(alpha.shape, dtype=np.uint8)
-    for index, contour in enumerate(contours):
-        # Only child contours are enclosed by existing subject alpha.  An
-        # exterior-connected white plate, hair gap, or floor shadow can never
-        # enter through this path.
-        if hierarchy[0][index][3] < 0:
+
+    # Prefer source topology over matte topology. A coarse semantic matte can
+    # erase the sclera all the way through the cheek boundary, which makes the
+    # missing eye exterior-connected in alpha and therefore invisible to the
+    # historical child-contour repair below. In the retained source, however,
+    # authored white sclera is still enclosed by dark eye ink. Select at most
+    # one compact source component on each side of the nose; filling its outer
+    # contour restores the black pupil/interior ink too, while copying the
+    # retained source RGB keeps the original illustration exact.
+    source_white = (plate_confidence >= 0.72).astype(np.uint8)
+    count, labels, stats, centers = cv2.connectedComponentsWithStats(
+        source_white, connectivity=8)
+    border_labels = set(np.unique(np.concatenate((
+        labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1],
+    ))).tolist())
+    source_candidates = []
+    source_area_limit = max(16.0, body_height * body_height * 0.015)
+    for index in range(1, count):
+        if index in border_labels:
             continue
-        area = cv2.contourArea(contour)
-        moments = cv2.moments(contour)
-        if not moments["m00"] or not 2 <= area <= maximum_area:
-            continue
-        center_x = moments["m10"] / moments["m00"]
-        center_y = moments["m01"] / moments["m00"]
+        x, y, width, height, area = (int(value) for value in stats[index])
+        center_x, center_y = centers[index]
+        aspect = width / max(height, 1)
         if not (
-                abs(center_x - nose[0]) <= horizontal_limit
+                max(3, body_height * body_height * 0.00030) <= area
+                <= source_area_limit
+                and width >= max(3, body_height * 0.02)
+                and height >= max(3, body_height * 0.02)
+                and width <= max(9, body_height * 0.13)
+                and height <= max(9, body_height * 0.13)
+                and 0.45 <= aspect <= 1.90
+                and abs(center_x - nose[0]) <= horizontal_limit
                 and upper <= center_y <= lower):
             continue
-        cavity = np.zeros(alpha.shape, dtype=np.uint8)
-        cv2.drawContours(cavity, [contour], -1, 1, thickness=cv2.FILLED)
-        pixels = cavity.astype(bool)
-        # A sclera cavity is predominantly authored white.  Requiring this
-        # evidence prevents an unrelated segmentation dropout in the face
-        # band from being painted opaque merely because it is enclosed.
-        if (
-                np.count_nonzero(pixels) < 3
-                or float(np.mean(plate_confidence[pixels] >= 0.78)) < 0.62):
-            continue
-        recovered[pixels] = 1
+        source_candidates.append((index, area, center_x))
+
+    selected = []
+    side_margin = max(1.0, body_height * 0.005)
+    for side in (-1, 1):
+        side_candidates = [
+            candidate for candidate in source_candidates
+            if (candidate[2] - nose[0]) * side > side_margin
+        ]
+        if side_candidates:
+            selected.append(max(side_candidates, key=lambda item: item[1]))
+    for index, _area, _center_x in selected:
+        component = (labels == index).astype(np.uint8)
+        contours, _hierarchy = cv2.findContours(
+            component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            cv2.drawContours(
+                recovered, contours, -1, 1, thickness=cv2.FILLED)
+
+    # Retain the child-contour route for very small or unusual illustrations
+    # whose white source region is fragmented by line art. It is still safe:
+    # only cavities already enclosed by subject alpha can enter this fallback.
+    mask = (alpha >= 24).astype(np.uint8)
+    contours, hierarchy = cv2.findContours(
+        mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is not None:
+        for index, contour in enumerate(contours):
+            if hierarchy[0][index][3] < 0:
+                continue
+            area = cv2.contourArea(contour)
+            moments = cv2.moments(contour)
+            if not moments["m00"] or not 2 <= area <= maximum_area:
+                continue
+            center_x = moments["m10"] / moments["m00"]
+            center_y = moments["m01"] / moments["m00"]
+            if not (
+                    abs(center_x - nose[0]) <= horizontal_limit
+                    and upper <= center_y <= lower):
+                continue
+            cavity = np.zeros(alpha.shape, dtype=np.uint8)
+            cv2.drawContours(
+                cavity, [contour], -1, 1, thickness=cv2.FILLED)
+            pixels = cavity.astype(bool)
+            if (
+                    np.count_nonzero(pixels) < 3
+                    or float(np.mean(
+                        plate_confidence[pixels] >= 0.78)) < 0.62):
+                continue
+            recovered[pixels] = 1
 
     recovered = recovered.astype(bool)
     if not recovered.any():
@@ -2949,6 +3066,259 @@ def _fill_stylized_eye_alpha_holes(current, alpha, source, pose):
     output = alpha.copy()
     output[recovered] = 255
     current[:, :, :3][recovered] = source[:, :, :3][recovered]
+    return output
+
+
+def _remove_stylized_exterior_neutral_artifacts(
+        current, alpha, source, pose):
+    """Remove sparse plate/shadow artifacts from stylized motion.
+
+    Some provider takes render a neutral wall/contact shadow just outside the
+    character. It is darker than the strict white-plate threshold, so Vision
+    can promote it to semi-opaque foreground. This exception is deliberately
+    stylized-only and deliberately narrow: the pixels must belong to a neutral
+    source component connected to the outer plate, form a tall, narrow, sparse
+    strip beside (not through) the tracked torso, and occupy only a tiny body-
+    relative area. Tiny lateral head wedges must additionally be sparse rather
+    than solid accessories. Interior white clothing and highlights are not
+    exterior-connected, while broad neutral garments fail the geometry.
+    """
+    if source is None:
+        return alpha
+    body_height = _pose_height(pose)
+    nose = _pose_point(pose, "nose", 0.20)
+    if body_height is None or nose is None:
+        return alpha
+
+    hsv = cv2.cvtColor(source[:, :, :3], cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    # Build exterior connectivity with the full white-to-gray bridge, then
+    # exclude the actual white plate from the removable candidate. This keeps
+    # compressed gray shadows attached to their authoritative background.
+    neutral_bridge = ((saturation <= 42) & (value >= 115)).astype(np.uint8)
+    count, bridge_labels = cv2.connectedComponents(
+        neutral_bridge, connectivity=8)
+    if count <= 1:
+        return alpha
+    border_labels = np.unique(np.concatenate((
+        bridge_labels[0, :], bridge_labels[-1, :],
+        bridge_labels[:, 0], bridge_labels[:, -1],
+    )))
+    border_labels = border_labels[border_labels > 0]
+    if not border_labels.size:
+        return alpha
+    exterior_neutral = np.isin(bridge_labels, border_labels)
+    candidates = (
+        exterior_neutral
+        & (saturation <= 42)
+        & (value >= 115)
+        & (value <= 235)
+        & (alpha >= 8)
+    ).astype(np.uint8)
+    count, labels, stats, _centers = cv2.connectedComponentsWithStats(
+        candidates, connectivity=8)
+    removed = np.zeros(alpha.shape, dtype=bool)
+
+    # Stylized hair spikes can outline a triangular piece of background that
+    # an additive face-hole pass later makes opaque. It reads as a glaring
+    # white wedge on dark UI. Remove only small, sparse, exterior-connected
+    # neutral wedges lateral to both eyes; central sclera, teeth, solid headwear
+    # and compact metallic accessories cannot satisfy this geometry.
+    head_primary_bounds = []
+    for index in range(1, count):
+        x, y, width, height, area = (
+            int(channel) for channel in stats[index])
+        component = labels == index
+        center_x = x + width / 2
+        center_y = y + height / 2
+        if (
+                3 <= area <= max(24, body_height * body_height * 0.001)
+                and width <= max(12, body_height * 0.06)
+                and height <= max(12, body_height * 0.06)
+                and area / max(1, width * height) <= 0.35
+                and body_height * 0.075
+                <= abs(center_x - nose[0]) <= body_height * 0.18
+                and nose[1] - body_height * 0.04 <= center_y
+                <= nose[1] + body_height * 0.08
+                and float(np.median(saturation[component])) <= 20
+                and 145 <= float(np.median(value[component])) <= 225):
+            removed |= component
+            head_primary_bounds.append((x, y, width, height))
+
+    # Anti-aliasing can split the perimeter of the same trapped plate wedge
+    # into short opaque strokes. They are not sparse enough to qualify as the
+    # primary wedge, but they are still exterior-neutral source pixels and sit
+    # immediately beside a proven wedge. This dependent pass cannot trigger
+    # without that proof. Its tiny area/proximity limits preserve compact gray
+    # hair accessories and every interior garment/highlight.
+    if head_primary_bounds:
+        distance_to_head_wedge = cv2.distanceTransform(
+            (~removed).astype(np.uint8), cv2.DIST_L2, 5)
+        # The fringe itself is a white-plate/object colour mix, so its
+        # saturation can be a little higher than the neutral core that proved
+        # the wedge. Rebuild exterior connectivity only for this dependent
+        # pass; the strict primary detector above remains unchanged.
+        head_bridge = ((saturation <= 90) & (value >= 115)).astype(np.uint8)
+        head_count, head_labels = cv2.connectedComponents(
+            head_bridge, connectivity=8)
+        head_border_labels = np.unique(np.concatenate((
+            head_labels[0, :], head_labels[-1, :],
+            head_labels[:, 0], head_labels[:, -1],
+        )))
+        head_border_labels = head_border_labels[head_border_labels > 0]
+        head_candidates = (
+            np.isin(head_labels, head_border_labels)
+            & (saturation <= 90)
+            & (value >= 115)
+            & (value <= 250)
+            & (alpha >= 8)
+            & (~removed)
+        ).astype(np.uint8)
+        head_count, head_labels, head_stats, head_centers = (
+            cv2.connectedComponentsWithStats(
+                head_candidates, connectivity=8))
+        head_satellite_area = max(
+            8.0, body_height * body_height * 0.00006)
+        head_satellite_distance = max(5.0, body_height * 0.085)
+        for index in range(1, head_count):
+            x, y, width, height, area = (
+                int(channel) for channel in head_stats[index])
+            component = head_labels == index
+            center_x, center_y = head_centers[index]
+            if not (
+                    1 <= area <= head_satellite_area
+                    and width <= max(8, body_height * 0.05)
+                    and height <= max(8, body_height * 0.05)
+                    and body_height * 0.05
+                    <= abs(center_x - nose[0]) <= body_height * 0.19
+                    and nose[1] - body_height * 0.08 <= center_y
+                    <= nose[1] + body_height * 0.10
+                    and float(np.median(saturation[component])) <= 90
+                    and 115 <= float(np.median(value[component])) <= 250
+                    and float(np.min(distance_to_head_wedge[component]))
+                    <= head_satellite_distance):
+                continue
+            removed |= component
+
+    primary_components = set()
+    primary_bounds = []
+    for index in range(1, count):
+        x, y, width, height, area = (
+            int(value) for value in stats[index])
+        component = labels == index
+        fill_ratio = area / max(1, width * height)
+        if not (
+                area >= max(24, body_height * body_height * 0.00020)
+                and area <= body_height * body_height * 0.015
+                and height >= max(28, body_height * 0.075)
+                and width <= max(12, body_height * 0.07)
+                and height / max(width, 1) >= 3.0
+                and fill_ratio <= 0.45
+                and y + height / 2 >= nose[1] + body_height * 0.10
+                and y + height / 2 <= nose[1] + body_height * 0.72
+                and (
+                    x + width <= nose[0] - body_height * 0.02
+                    or x >= nose[0] + body_height * 0.02)
+                and float(np.median(saturation[component])) <= 20
+                and 145 <= float(np.median(value[component])) <= 225):
+            continue
+        removed |= component
+        primary_components.add(index)
+        primary_bounds.append((x, y, width, height))
+
+    # The retained plate/object antialias beside a proven cast-shadow strip can
+    # be slightly coloured and therefore live outside the neutral core above.
+    # Rebuild a relaxed exterior map only after that core has proved the
+    # artifact. Remove small line-like neighbours within a body-relative
+    # distance of the same strip. A clean frame cannot enter this pass, and an
+    # interior gray garment or highlight is not exterior-connected.
+    if primary_bounds:
+        distance_to_shadow = cv2.distanceTransform(
+            (~removed).astype(np.uint8), cv2.DIST_L2, 5)
+        shadow_bridge = ((saturation <= 90) & (value >= 80)).astype(np.uint8)
+        shadow_count, shadow_labels = cv2.connectedComponents(
+            shadow_bridge, connectivity=8)
+        shadow_border_labels = np.unique(np.concatenate((
+            shadow_labels[0, :], shadow_labels[-1, :],
+            shadow_labels[:, 0], shadow_labels[:, -1],
+        )))
+        shadow_border_labels = shadow_border_labels[
+            shadow_border_labels > 0]
+        shadow_candidates = (
+            np.isin(shadow_labels, shadow_border_labels)
+            & (saturation <= 90)
+            & (value >= 80)
+            & (value <= 250)
+            & (alpha >= 8)
+            & (~removed)
+        ).astype(np.uint8)
+        shadow_count, shadow_labels, shadow_stats, shadow_centers = (
+            cv2.connectedComponentsWithStats(
+                shadow_candidates, connectivity=8))
+        shadow_distance = max(4.0, body_height * 0.035)
+        shadow_pad = max(4.0, body_height * 0.05)
+        for index in range(1, shadow_count):
+            x, y, width, height, area = (
+                int(channel) for channel in shadow_stats[index])
+            component = shadow_labels == index
+            center_x, center_y = shadow_centers[index]
+            if not (
+                    1 <= area <= body_height * body_height * 0.006
+                    and width <= max(12, body_height * 0.08)
+                    and height <= max(30, body_height * 0.55)
+                    and area / max(1, width * height) <= 0.70
+                    and float(np.median(saturation[component])) <= 90
+                    and 80 <= float(np.median(value[component])) <= 250
+                    and float(np.min(distance_to_shadow[component]))
+                    <= shadow_distance):
+                continue
+            for primary_x, primary_y, primary_width, primary_height in primary_bounds:
+                if (
+                        primary_x - shadow_pad <= center_x
+                        <= primary_x + primary_width + shadow_pad
+                        and primary_y - primary_height * 0.30 <= center_y
+                        <= primary_y + primary_height + shadow_pad):
+                    removed |= component
+                    break
+
+    # Compression can split the last few pixels of one cast shadow into tiny
+    # islands where it crosses dark shorts or a shoe. Remove only satellites
+    # immediately below and horizontally aligned with an already-proven tall
+    # shadow. This dependent pass cannot fire on a clean frame, and its short
+    # vertical reach stops before authored cuff/heel highlights farther down.
+    satellite_limit = max(6.0, body_height * 0.04)
+    horizontal_pad = max(3.0, body_height * 0.02)
+    for index in range(1, count):
+        if index in primary_components:
+            continue
+        x, y, width, height, area = (
+            int(channel) for channel in stats[index])
+        component = labels == index
+        if not (
+                2 <= area <= body_height * body_height * 0.001
+                and height <= max(28, body_height * 0.08)
+                and area / max(1, width * height) <= 0.65
+                and float(np.median(saturation[component])) <= 20
+                and 145 <= float(np.median(value[component])) <= 225):
+            continue
+        center_x = x + width / 2
+        center_y = y + height / 2
+        for primary_x, primary_y, primary_width, primary_height in primary_bounds:
+            primary_bottom = primary_y + primary_height
+            if (
+                    primary_x - horizontal_pad <= center_x
+                    <= primary_x + primary_width + horizontal_pad
+                    and primary_y + primary_height * 0.55 <= center_y
+                    <= primary_bottom + satellite_limit):
+                removed |= component
+                break
+
+    if not removed.any():
+        return alpha
+    output = alpha.copy()
+    output[removed] = 0
+    current[:, :, :3][removed] = 0
     return output
 
 
@@ -3053,6 +3423,9 @@ def _stabilise_segmented(
                 stable_alpha, source_confidence,
                 source_subject_alpha=source_subject_alpha)
             if allow_stylized:
+                stable_alpha = _remove_stylized_exterior_neutral_artifacts(
+                    current, stable_alpha, source,
+                    poses[index] if poses else None)
                 # This must run after the final full-frame white-plate veto:
                 # illustrated sclera is intentionally pure white and would be
                 # erased again if restored earlier.
@@ -5110,16 +5483,22 @@ def _build_context(
     outfit = _clean(
         body_options.get("prompt") or body_options.get("outfit"), 800
     ) or "the exact outfit shown in the generated body plates"
+    owner_notes = _clean(body_options.get("notes"), 600)
+    remove_headwear = bool(body_options.get("remove_headwear", False))
+    identity_lock = _motion_identity_lock(remove_headwear, owner_notes)
     prompts = {
         "walk_keyframe": _walk_keyframe_prompt(
             outfit, walk_style,
-            standard_gait and side_source != front_source),
+            standard_gait and side_source != front_source,
+            identity_lock),
         "idle_keyframe": _idle_keyframe_prompt(
-            outfit, bool(pose_reference), idle_pose),
-        "move_keyframe": _move_keyframe_prompt(outfit, move_style),
-        "walk_video": _walk_video_prompt(walk_style, walk_frame),
-        "idle_video": _idle_video_prompt(idle_pose),
-        "move_video": _move_video_prompt(move_style),
+            outfit, bool(pose_reference), idle_pose, identity_lock),
+        "move_keyframe": _move_keyframe_prompt(
+            outfit, move_style, identity_lock),
+        "walk_video": _walk_video_prompt(
+            walk_style, walk_frame, identity_lock),
+        "idle_video": _idle_video_prompt(idle_pose, identity_lock),
+        "move_video": _move_video_prompt(move_style, identity_lock),
     }
     signature_source = "\n".join((
         _sha256(front_source),
@@ -5173,6 +5552,9 @@ def _build_context(
         "walk_frame": walk_frame,
         "move_style": move_style,
         "source_medium": source_medium,
+        "owner_notes": owner_notes,
+        "remove_headwear": remove_headwear,
+        "identity_lock": identity_lock,
         "prompts": prompts,
         "signature": signature,
         "cache_root": cache_root,

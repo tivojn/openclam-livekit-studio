@@ -339,9 +339,10 @@ class StylizedHeadPromptTests(unittest.TestCase):
         self.assertIn("identity-bearing headwear", prompt)
         self.assertIn("closed, relaxed mouth", prompt)
 
-    def test_prompt_versions_do_not_invalidate_existing_photo_heads(self):
-        self.assertEqual(generate.HEAD_PROMPT_VERSION, 3)
-        self.assertEqual(generate.head_prompt_version("photograph"), 3)
+    def test_headwear_policy_invalidates_old_photo_and_stylized_heads(self):
+        self.assertEqual(generate.HEAD_PROMPT_VERSION, 4)
+        self.assertEqual(generate.head_prompt_version("photograph"), 4)
+        self.assertGreaterEqual(generate.head_prompt_version("illustration"), 2)
         self.assertNotEqual(
             generate.head_prompt_version("illustration"),
             generate.head_prompt_version("photograph"))

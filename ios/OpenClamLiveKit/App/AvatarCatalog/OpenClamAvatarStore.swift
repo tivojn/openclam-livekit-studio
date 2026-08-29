@@ -94,7 +94,7 @@ enum OpenClamAvatarStoreCatalogError: LocalizedError, Equatable {
 /// separate release steps so a shipped build can never point at a placeholder.
 enum OpenClamAvatarStoreReleasePolicy {
     static let productionCatalogURL = URL(
-        string: "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json"
+        string: "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.4/shared/avatar-store-v1/catalog/v1/catalog.json"
     )!
     static let catalogURL: URL? = productionCatalogURL
     static let unavailableMessage =
@@ -129,7 +129,7 @@ enum OpenClamAvatarStoreURLPolicy {
     static func allowsCatalogURL(_ url: URL) -> Bool {
         guard hasSafeHTTPSComponents(url),
               url.host?.lowercased() == "raw.githubusercontent.com",
-              url.path == "/\(owner)/\(repository)/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json" else {
+              url.path == "/\(owner)/\(repository)/avatar-store-v1.0.4/shared/avatar-store-v1/catalog/v1/catalog.json" else {
             return false
         }
         return true

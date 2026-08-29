@@ -211,7 +211,7 @@ AVATAR_STORE_CATALOG_BINARY_HASHES = {
     Path("shared/avatar-store-v1/catalog/v1/luffy-2d-thumbnail.png"):
         "921b7bbe683d52cb5fec03f7b66fe4a6e87cd34ab002c1e73f17747a9ec0c5a6",
     Path("shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png"):
-        "382745868b04fef16c3d2743e261277298aadbeb989a96855c646a9143383aaf",
+        "26c291079aaae5939620e64aa06bd656fb98441d2e0758c51d64f934ebd757a8",
 }
 
 CAPTAIN_AYER_BINARY_HASHES = {
@@ -355,6 +355,8 @@ HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES = {
         "7eb7ec65799715cdca9b52bad64d664fe2404b072a6f0a5b6af0368f4393217f",
     Path("shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png"):
         "a191cb5a10eeea538fd1169d85088aa158cce6104a636118c84015f657861a40",
+    Path("shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png"):
+        "382745868b04fef16c3d2743e261277298aadbeb989a96855c646a9143383aaf",
 }
 
 # v1.0.2 ships Ara from the user's approved full-expression authoring project.
@@ -514,7 +516,7 @@ CAPTAIN_AYER_CONTENTS_FILES = {
 REQUIRED_STORE_POLICY_SNIPPETS = {
     Path("ios/OpenClamLiveKit/App/AvatarCatalog/OpenClamAvatarStore.swift"): (
         b"static let catalogURL: URL? = productionCatalogURL",
-        b"avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json",
+        b"avatar-store-v1.0.4/shared/avatar-store-v1/catalog/v1/catalog.json",
         b"static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)",
         b"guard remoteAccess.isEnabled else",
     ),
@@ -628,7 +630,7 @@ HIGH_ENTROPY_SKIP_NAMES = {
 # change must receive a new explicit review before the public audit passes.
 REVIEWED_HIGH_ENTROPY_TEXT_HASHES = {
     Path("ios/OpenClamLiveKit/Tests/OpenClamAvatarPackageTests.swift"):
-        "8aa08c38ca568277b0e4bac2fb700e81500ef90fef718297232cc2681be3be5a",
+        "2cf53f32d71c5ac5928dd871711e0663aaa132bbdab72d8e67d0c7d5005a6108",
 }
 
 ALLOWED_SOURCE_BUILD_FILES = {
@@ -1072,7 +1074,7 @@ def release_feature_contract_findings(root: Path) -> list[str]:
 
     if contract.get("schema_version") != 1:
         findings.append("release feature contract schema mismatch")
-    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.3"}:
+    if store != {"enabled": True, "catalog_tag": "avatar-store-v1.0.4"}:
         findings.append("release feature contract changed the approved Avatar Store state")
     if ptt.get("apple") != {"enabled": True, "transcript_delivery": "live"}:
         findings.append("release feature contract changed Apple PTT delivery")

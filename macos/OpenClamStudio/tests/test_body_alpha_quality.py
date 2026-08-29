@@ -51,7 +51,216 @@ def _stylized_eye_fixture():
     return source, alpha, replacement_head
 
 
+def _stylized_turnaround_eye_fixture():
+    """Tall stylized plate with one profile eye and an authored pupil."""
+    source = np.full((300, 200, 3), 255, np.uint8)
+    alpha = np.zeros(source.shape[:2], np.uint8)
+    # Connected head and clothed body establish the full subject silhouette.
+    source[15:85, 45:155] = (60, 115, 220)
+    alpha[15:85, 45:155] = 255
+    source[80:285, 72:128] = (30, 40, 205)
+    alpha[80:285, 72:128] = 255
+    # Shaded-white surround + exact-white core deliberately matches the broad
+    # white-garment ambiguity signature. The dark pupil is enclosed by the
+    # white convex hull, as in the rejected Luffy side plate.
+    cv2.ellipse(source, (140, 45), (11, 15), 0, 0, 360,
+                (232, 236, 240), cv2.FILLED)
+    cv2.ellipse(source, (140, 45), (8, 12), 0, 0, 360,
+                (255, 255, 255), cv2.FILLED)
+    cv2.ellipse(source, (142, 45), (3, 5), 0, 0, 360,
+                (20, 20, 20), cv2.FILLED)
+    return source, alpha
+
+
+def _stylized_turnaround_eye_fragment_fixture():
+    """Profile sclera whose exact-white core is one thin 3x23 fragment."""
+    source = np.full((300, 200, 3), 255, np.uint8)
+    alpha = np.zeros(source.shape[:2], np.uint8)
+    source[15:85, 30:170] = (60, 115, 220)
+    alpha[15:85, 30:170] = 255
+    source[80:285, 72:128] = (30, 40, 205)
+    alpha[80:285, 72:128] = 255
+    cv2.ellipse(source, (140, 45), (11, 13), 0, 0, 360,
+                (232, 236, 240), cv2.FILLED)
+    source[34:57, 132] = 255
+    # Keep one connected 24-pixel component with the exact dimensions from the
+    # rejected provider plate: 3x23, fragmented by shaded antialiasing.
+    source[45, 132] = (232, 236, 240)
+    source[45, 133:135] = 255
+    cv2.ellipse(source, (142, 45), (3, 5), 0, 0, 360,
+                (20, 20, 20), cv2.FILLED)
+    return source, alpha
+
+
+def _stylized_turnaround_low_fill_eye_fixture():
+    """Profile eye with the provider's wider 21x38 low-fill white island."""
+    source = np.full((540, 240, 3), 255, np.uint8)
+    alpha = np.zeros(source.shape[:2], np.uint8)
+    source[15:90, 10:230] = (60, 115, 220)
+    alpha[15:90, 10:230] = 255
+    source[80:520, 95:145] = (30, 40, 205)
+    alpha[80:520, 95:145] = 255
+    cv2.ellipse(source, (160, 45), (17, 24), 0, 0, 360,
+                (232, 236, 240), cv2.FILLED)
+    # An L-shaped exact-white island is connected and has the same dimensions,
+    # area, and low fill as the second retained provider side plate. Its own
+    # hull does not contain the pupil; the complete pale sclera does.
+    source[27:65, 150:153] = 255
+    source[45, 153:171] = 255
+    source[58:65, 152] = (232, 236, 240)
+    cv2.ellipse(source, (168, 52), (3, 5), 0, 0, 360,
+                (20, 20, 20), cv2.FILLED)
+    return source, alpha
+
+
 class BodyAlphaQualityTests(unittest.TestCase):
+    def test_stylized_turnaround_eye_requires_verified_side_or_back_lane(self):
+        source, alpha = _stylized_turnaround_eye_fixture()
+        authored_white_eye = (
+            body_alpha._strict_plate(source)
+            & (alpha >= body_alpha.VISIBLE_ALPHA))
+
+        for view in ("side", "back"):
+            with self.subTest(view=view):
+                refined, report = body_alpha.refine(
+                    source, _rgba(source, alpha),
+                    verified_stylized=True,
+                    stylized_turnaround_view=view)
+                self.assertTrue(report["valid"], report)
+                self.assertFalse(
+                    report["ambiguous_white_subject_components"])
+                self.assertTrue(any(
+                    item["kind"] == "stylized-turnaround-eye"
+                    and item["view"] == view
+                    for item in report["protected_white_detail_components"]),
+                    report)
+                # The authored exact-white sclera must survive. Normal matte
+                # cleanup remains free to remove a few shaded antialias pixels
+                # around its outer edge.
+                np.testing.assert_array_equal(
+                    alpha[authored_white_eye],
+                    refined[:, :, 3][authored_white_eye])
+
+        for verified, view in (
+                (False, "side"), (True, None), (True, "front")):
+            with self.subTest(verified=verified, view=view):
+                _refined, report = body_alpha.refine(
+                    source, _rgba(source, alpha),
+                    verified_stylized=verified,
+                    stylized_turnaround_view=view)
+                self.assertFalse(report["valid"], report)
+                self.assertTrue(
+                    report["ambiguous_white_subject_components"])
+                self.assertFalse(any(
+                    item["kind"] == "stylized-turnaround-eye"
+                    for item in report["protected_white_detail_components"]))
+
+    def test_exact_thin_profile_sclera_fragment_is_stylized_only(self):
+        source, alpha = _stylized_turnaround_eye_fragment_fixture()
+        authored_white = (
+            body_alpha._strict_plate(source)
+            & (alpha >= body_alpha.VISIBLE_ALPHA))
+
+        refined, report = body_alpha.refine(
+            source, _rgba(source, alpha),
+            verified_stylized=True,
+            stylized_turnaround_view="side")
+
+        self.assertTrue(report["valid"], report)
+        protected = [
+            item for item in report["protected_white_detail_components"]
+            if item["kind"] == "stylized-turnaround-eye"
+        ]
+        self.assertEqual([[132, 34, 3, 23]], [
+            item["bounds"] for item in protected])
+        np.testing.assert_array_equal(
+            alpha[authored_white], refined[:, :, 3][authored_white])
+
+        for verified, view in ((False, "side"), (True, "front")):
+            with self.subTest(verified=verified, view=view):
+                _refined, strict_report = body_alpha.refine(
+                    source, _rgba(source, alpha),
+                    verified_stylized=verified,
+                    stylized_turnaround_view=view)
+                self.assertFalse(strict_report["valid"], strict_report)
+                self.assertEqual(
+                    [[132, 34, 3, 23]],
+                    [item["bounds"] for item in strict_report[
+                        "ambiguous_white_subject_components"]])
+
+    def test_exact_low_fill_profile_sclera_is_stylized_only(self):
+        source, alpha = _stylized_turnaround_low_fill_eye_fixture()
+        refined, report = body_alpha.refine(
+            source, _rgba(source, alpha),
+            verified_stylized=True,
+            stylized_turnaround_view="side")
+
+        self.assertTrue(report["valid"], report)
+        protected = [
+            item for item in report["protected_white_detail_components"]
+            if item["kind"] == "stylized-turnaround-eye"
+        ]
+        self.assertEqual([[150, 27, 21, 38]], [
+            item["bounds"] for item in protected])
+        exact_white = (
+            body_alpha._strict_plate(source)
+            & (alpha >= body_alpha.VISIBLE_ALPHA))
+        np.testing.assert_array_equal(
+            alpha[exact_white], refined[:, :, 3][exact_white])
+
+        _refined, photo_report = body_alpha.refine(
+            source, _rgba(source, alpha),
+            verified_stylized=False,
+            stylized_turnaround_view="side")
+        self.assertFalse(photo_report["valid"], photo_report)
+        self.assertEqual(
+            [[150, 27, 21, 38]],
+            [item["bounds"] for item in photo_report[
+                "ambiguous_white_subject_components"]])
+
+    def test_stylized_turnaround_lane_still_rejects_white_clothing(self):
+        source, alpha = _stylized_turnaround_eye_fixture()
+        # A white garment patch with a dark button copies the eye's local
+        # colour topology but is below the tightly bounded upper-head region.
+        cv2.ellipse(source, (120, 135), (11, 15), 0, 0, 360,
+                    (232, 236, 240), cv2.FILLED)
+        cv2.ellipse(source, (120, 135), (8, 12), 0, 0, 360,
+                    (255, 255, 255), cv2.FILLED)
+        cv2.ellipse(source, (122, 135), (3, 5), 0, 0, 360,
+                    (20, 20, 20), cv2.FILLED)
+
+        _refined, report = body_alpha.refine(
+            source, _rgba(source, alpha),
+            verified_stylized=True,
+            stylized_turnaround_view="side")
+
+        self.assertFalse(report["valid"], report)
+        self.assertTrue(report["ambiguous_white_subject_components"])
+        self.assertIn("non-white wardrobe", report["reason"])
+
+    def test_side_preflight_forwards_verified_turnaround_lane(self):
+        source, alpha = _stylized_turnaround_eye_fixture()
+        rgba = _rgba(source, alpha)
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = os.path.join(directory, "side-source.png")
+            self.assertTrue(cv2.imwrite(source_path, source))
+
+            def cutout(_source, destination, **_options):
+                return bool(cv2.imwrite(destination, rgba))
+
+            with mock.patch.object(
+                    body, "_allow_stylized_source", return_value=True), \
+                    mock.patch.object(
+                        body.cutout, "render", side_effect=cutout):
+                report = body._preflight_alpha_source(
+                    directory, source_path, "side",
+                    log=lambda _message: None)
+
+        self.assertTrue(report["valid"], report)
+        self.assertTrue(any(
+            item["kind"] == "stylized-turnaround-eye"
+            for item in report["protected_white_detail_components"]), report)
+
     def test_stylized_neutral_eye_is_not_a_detached_shadow(self):
         source, alpha, replacement_head = _stylized_eye_fixture()
         # A narrow neutral eyelid/pupil detail is surrounded by a pale sclera.

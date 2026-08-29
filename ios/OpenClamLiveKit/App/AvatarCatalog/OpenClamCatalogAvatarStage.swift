@@ -84,6 +84,33 @@ enum OpenClamAvatarFaceAnimationPolicy {
     static let minimumInterval: TimeInterval = 1.0 / 60.0
 }
 
+enum OpenClamAvatarEyelidPlatePlan: Equatable, Sendable {
+    case interpolatedStrip
+    case canonicalOpen
+    case semanticClosed(frame: Int)
+}
+
+enum OpenClamAvatarEyelidPlatePolicy {
+    /// Photographs retain the production eight-frame eyelid interpolation.
+    /// Stylized packages instead contain seven transparent frames followed by
+    /// one full semantic-eye replacement; a late opaque switch prevents a
+    /// human-sized lid from ever appearing inside an oversized cartoon eye.
+    static func plan(
+        for eye: CaptainAyerEyeReactionState,
+        frameCount: Int,
+        sourceMedium: OpenClamAvatarSourceMedium
+    ) -> OpenClamAvatarEyelidPlatePlan {
+        guard sourceMedium.isStylized else { return .interpolatedStrip }
+        let closedFrame = max(0, frameCount - 1)
+        guard frameCount > 1,
+              eye.upperFrame >= closedFrame,
+              eye.upperOpacity >= 0.78 else {
+            return .canonicalOpen
+        }
+        return .semanticClosed(frame: closedFrame)
+    }
+}
+
 /// A catalog avatar is a photographic face registered into a photographic
 /// body plate. Moving that face surface independently from the body makes the
 /// skin drift inside otherwise stationary hair and also asks Core Animation
@@ -138,7 +165,8 @@ enum OpenClamAvatarFaceRegistrationPolicy {
 /// and JPEG noise at every 58-105 ms phoneme cue.
 enum OpenClamAvatarFacePlatePolicy {
     static func plan(
-        for state: CaptainAyerAvatarRenderState
+        for state: CaptainAyerAvatarRenderState,
+        sourceMedium: OpenClamAvatarSourceMedium = .photograph
     ) -> OpenClamAvatarFacePlatePlan {
         let base = OpenClamAvatarFacePlateLayer(
             viseme: .silence,
@@ -148,6 +176,28 @@ enum OpenClamAvatarFacePlatePolicy {
         let previous = state.previous.catalogViseme
         let current = state.current.catalogViseme
         let blend = OpenClamAvatarSpeechPatchTransition.opacity(for: state.blend)
+
+        if sourceMedium.isStylized, previous != current {
+            // Provider-painted cartoon line art must never be crossfaded: two
+            // opaque mouth drawings at once read as a doubled lip/nose even
+            // when their geometry is correctly registered. Switch at the
+            // midpoint while the immutable silence head remains underneath.
+            let selected = blend < 0.5 ? previous : current
+            guard selected != .silence else {
+                return OpenClamAvatarFacePlatePlan(base: base, speechPatch: nil)
+            }
+            return OpenClamAvatarFacePlatePlan(
+                base: base,
+                speechPatch: OpenClamAvatarSpeechPatchPlan(
+                    back: OpenClamAvatarFacePlateLayer(
+                        viseme: selected,
+                        opacity: 1,
+                        scope: .speechPatch
+                    ),
+                    front: nil
+                )
+            )
+        }
 
         if previous == current {
             guard current != .silence else {
@@ -190,18 +240,58 @@ enum OpenClamAvatarFacePlatePolicy {
 
 struct OpenClamAvatarSpeechPatchGeometry: Equatable, Sendable {
     static let canonicalSize = CGSize(width: 1_024, height: 1_024)
-    static let featherRadius: CGFloat = 18
+    static let photographicFeatherRadius: CGFloat = 18
+    static let stylizedFeatherRadius: CGFloat = 6
 
     let coreBounds: CGRect
     let conservativeDynamicBounds: CGRect
+    let featherRadius: CGFloat
+    let clipsFeatherToCoreBounds: Bool
+    let visemeXOffsets: [String: Double]
 
-    init(rig: OpenClamAvatarRigGeometry) {
+    init(
+        rig: OpenClamAvatarRigGeometry,
+        sourceMedium: OpenClamAvatarSourceMedium = .photograph,
+        expressionMouthBounds: CGRect? = nil,
+        speechPatch: OpenClamAvatarSpeechPatchMetadata? = nil
+    ) {
+        let canonicalBounds = CGRect(origin: .zero, size: Self.canonicalSize)
+        let authoredMouth = speechPatch?.box.cgRect ?? expressionMouthBounds
+        let canonicalMouth = authoredMouth?.intersection(canonicalBounds)
+        if sourceMedium.isStylized,
+           let declaredMouth = canonicalMouth,
+           !declaredMouth.isNull,
+           declaredMouth.width > 0,
+           declaredMouth.height > 0 {
+            visemeXOffsets = speechPatch?.visemeXOffsets ?? [:]
+            featherRadius = Self.stylizedFeatherRadius
+            clipsFeatherToCoreBounds = true
+
+            // New v4 packages publish an already nose-safe lip box. Legacy v4
+            // expression packages have no such metadata, so retain the bounded
+            // lower-four-fifths fallback for explicit stylized media only.
+            let top = speechPatch == nil
+                ? declaredMouth.minY + declaredMouth.height * 0.20
+                : declaredMouth.minY
+            coreBounds = CGRect(
+                x: declaredMouth.minX,
+                y: top,
+                width: declaredMouth.width,
+                height: max(1, declaredMouth.maxY - top)
+            )
+            conservativeDynamicBounds = coreBounds
+            return
+        }
+
+        visemeXOffsets = [:]
+        featherRadius = Self.photographicFeatherRadius
+        clipsFeatherToCoreBounds = false
         let eyeBottom = max(rig.leftEye.box.cgRect.maxY, rig.rightEye.box.cgRect.maxY)
         // Three feather radii plus an eight-pixel guard keeps even the soft
         // edge below the published eye plates. There is deliberately no upper
         // cap: an imported rig with unusually low eyes must never let speech
         // repaint those eyes merely to preserve a larger mouth patch.
-        let coreTop = max(630, eyeBottom + Self.featherRadius * 3 + 8)
+        let coreTop = max(630, eyeBottom + Self.photographicFeatherRadius * 3 + 8)
         let coreBottom: CGFloat = 916
         coreBounds = CGRect(
             x: 352,
@@ -210,8 +300,210 @@ struct OpenClamAvatarSpeechPatchGeometry: Equatable, Sendable {
             height: max(1, coreBottom - coreTop)
         )
         conservativeDynamicBounds = coreBounds
-            .insetBy(dx: -Self.featherRadius * 3, dy: -Self.featherRadius * 3)
-            .intersection(CGRect(origin: .zero, size: Self.canonicalSize))
+            .insetBy(dx: -featherRadius * 3, dy: -featherRadius * 3)
+            .intersection(canonicalBounds)
+    }
+
+    func translationX(for viseme: OpenClamAvatarViseme) -> CGFloat {
+        CGFloat(visemeXOffsets[viseme.rawValue] ?? 0)
+    }
+
+    var stylizedVisibleBounds: CGRect {
+        guard clipsFeatherToCoreBounds else { return coreBounds }
+        return CGRect(
+            x: coreBounds.minX + coreBounds.width * 0.03,
+            y: coreBounds.minY + coreBounds.height * 0.09,
+            width: coreBounds.width * 0.94,
+            height: coreBounds.height * 0.72
+        )
+    }
+}
+
+enum OpenClamAvatarStylizedSpeechPatchPixelPolicy {
+    static func spatialAlpha(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int
+    ) -> Double {
+        let nx = ((Double(x) + 0.5) / Double(max(1, width)) - 0.5) / 0.5
+        let ny = ((Double(y) + 0.5) / Double(max(1, height)) - 0.45) / 0.36
+        let radius = hypot(nx, ny)
+        return 1 - smoothStep((radius - 0.62) / 0.32)
+    }
+
+    static func differenceAlpha(
+        maximumChannelDelta: Int,
+        spatialAlpha: Double
+    ) -> Double {
+        min(1, max(0, spatialAlpha))
+            * smoothStep((Double(maximumChannelDelta) - 6) / 36)
+    }
+
+    private static func smoothStep(_ value: Double) -> Double {
+        let amount = min(1, max(0, value))
+        return amount * amount * (3 - 2 * amount)
+    }
+}
+
+/// Builds a transparent, lip-difference plate once per stylized viseme. The
+/// neutral head stays underneath, so identical skin is not redrawn and a
+/// provider's slightly different JPEG texture cannot reveal an oval patch.
+/// Photographic avatars never call this renderer.
+@MainActor
+enum OpenClamAvatarStylizedSpeechPatchRenderer {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let value = NSCache<NSString, UIImage>()
+        value.countLimit = 48
+        value.totalCostLimit = 24 * 1_024 * 1_024
+        return value
+    }()
+
+    static func image(
+        selected: UIImage?,
+        neutral: UIImage?,
+        geometry: OpenClamAvatarSpeechPatchGeometry,
+        viseme: OpenClamAvatarViseme
+    ) -> UIImage? {
+        guard let selected, let neutral,
+              let selectedCG = selected.cgImage,
+              let neutralCG = neutral.cgImage else { return nil }
+        let bounds = geometry.coreBounds
+        let width = max(1, Int(bounds.width.rounded()))
+        let height = max(1, Int(bounds.height.rounded()))
+        let sourceX = Int((bounds.minX - geometry.translationX(for: viseme)).rounded())
+        let sourceY = Int(bounds.minY.rounded())
+        let neutralX = Int(bounds.minX.rounded())
+        let neutralY = sourceY
+        let key = [
+            String(selected.hash), String(neutral.hash), viseme.rawValue,
+            String(sourceX), String(sourceY), String(width), String(height),
+        ].joined(separator: ":") as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        guard let selectedPixels = pixels(
+                  selectedCG, x: sourceX, y: sourceY,
+                  width: width, height: height),
+              let neutralPixels = pixels(
+                  neutralCG, x: neutralX, y: neutralY,
+                  width: width, height: height) else { return nil }
+
+        var deltas = [UInt8](repeating: 0, count: width * height)
+        for pixel in deltas.indices {
+            let index = pixel * 4
+            let red = abs(
+                Int(selectedPixels[index]) - Int(neutralPixels[index])
+            )
+            let green = abs(
+                Int(selectedPixels[index + 1]) - Int(neutralPixels[index + 1])
+            )
+            let blue = abs(
+                Int(selectedPixels[index + 2]) - Int(neutralPixels[index + 2])
+            )
+            deltas[pixel] = UInt8(max(red, max(green, blue)))
+        }
+
+        var output = selectedPixels
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                var localDelta = 0
+                for offsetY in -1 ... 1 {
+                    let sampleY = y + offsetY
+                    guard sampleY >= 0, sampleY < height else { continue }
+                    for offsetX in -1 ... 1 {
+                        let sampleX = x + offsetX
+                        guard sampleX >= 0, sampleX < width else { continue }
+                        localDelta = max(
+                            localDelta,
+                            Int(deltas[sampleY * width + sampleX])
+                        )
+                    }
+                }
+                let pixel = y * width + x
+                let index = pixel * 4
+                let alpha = OpenClamAvatarStylizedSpeechPatchPixelPolicy
+                    .differenceAlpha(
+                        maximumChannelDelta: localDelta,
+                        spatialAlpha: OpenClamAvatarStylizedSpeechPatchPixelPolicy
+                            .spatialAlpha(
+                                x: x, y: y, width: width, height: height
+                            )
+                    )
+                let outputAlpha = Int(
+                    (Double(selectedPixels[index + 3]) * alpha).rounded()
+                )
+                output[index] = UInt8(
+                    Int(selectedPixels[index]) * outputAlpha / 255
+                )
+                output[index + 1] = UInt8(
+                    Int(selectedPixels[index + 1]) * outputAlpha / 255
+                )
+                output[index + 2] = UInt8(
+                    Int(selectedPixels[index + 2]) * outputAlpha / 255
+                )
+                output[index + 3] = UInt8(outputAlpha)
+            }
+        }
+        guard let rendered = image(
+            pixels: output, width: width, height: height
+        ) else { return nil }
+        cache.setObject(rendered, forKey: key, cost: width * height * 4)
+        return rendered
+    }
+
+    private static func pixels(
+        _ image: CGImage,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int
+    ) -> [UInt8]? {
+        guard x >= 0, y >= 0, x + width <= image.width,
+              y + height <= image.height,
+              let crop = image.cropping(to: CGRect(
+                  x: x, y: y, width: width, height: height
+              )) else { return nil }
+        var result = [UInt8](repeating: 0, count: width * height * 4)
+        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue
+            | CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: &result,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return result
+    }
+
+    private static func image(
+        pixels: [UInt8],
+        width: Int,
+        height: Int
+    ) -> UIImage? {
+        let data = Data(pixels) as CFData
+        guard let provider = CGDataProvider(data: data) else { return nil }
+        let bitmapInfo = CGBitmapInfo(
+            rawValue: CGBitmapInfo.byteOrder32Big.rawValue
+                | CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        guard let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo,
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: true,
+            intent: .defaultIntent
+        ) else { return nil }
+        return UIImage(cgImage: image, scale: 1, orientation: .up)
     }
 }
 
@@ -225,24 +517,49 @@ private struct OpenClamAvatarSpeechPatchMask: View {
             let scaleY = proxy.size.height
                 / OpenClamAvatarSpeechPatchGeometry.canonicalSize.height
             let bounds = geometry.coreBounds
+            let feather = geometry.featherRadius
 
-            RoundedRectangle(
-                cornerRadius: min(bounds.width, bounds.height) * 0.34,
-                style: .continuous
-            )
-            .fill(Color.white)
-            .frame(
-                width: bounds.width * scaleX,
-                height: bounds.height * scaleY
-            )
-            .position(
-                x: bounds.midX * scaleX,
-                y: bounds.midY * scaleY
-            )
-            .blur(
-                radius: OpenClamAvatarSpeechPatchGeometry.featherRadius
-                    * min(scaleX, scaleY)
-            )
+            if geometry.clipsFeatherToCoreBounds {
+                let visible = geometry.stylizedVisibleBounds
+                Ellipse()
+                .fill(Color.white)
+                .frame(
+                    width: max(1, visible.width - feather * 2) * scaleX,
+                    height: max(1, visible.height - feather * 2) * scaleY
+                )
+                .position(
+                    x: visible.midX * scaleX,
+                    y: visible.midY * scaleY
+                )
+                .blur(radius: feather * min(scaleX, scaleY))
+                .mask {
+                    Rectangle()
+                        .fill(Color.white)
+                        .frame(
+                            width: bounds.width * scaleX,
+                            height: bounds.height * scaleY
+                        )
+                        .position(
+                            x: bounds.midX * scaleX,
+                            y: bounds.midY * scaleY
+                        )
+                }
+            } else {
+                RoundedRectangle(
+                    cornerRadius: min(bounds.width, bounds.height) * 0.34,
+                    style: .continuous
+                )
+                .fill(Color.white)
+                .frame(
+                    width: bounds.width * scaleX,
+                    height: bounds.height * scaleY
+                )
+                .position(
+                    x: bounds.midX * scaleX,
+                    y: bounds.midY * scaleY
+                )
+                .blur(radius: feather * min(scaleX, scaleY))
+            }
         }
         .clipped()
         .allowsHitTesting(false)
@@ -1286,8 +1603,16 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
     }
 
     private var facePlates: some View {
-        let plan = OpenClamAvatarFacePlatePolicy.plan(for: state)
-        let patchGeometry = OpenClamAvatarSpeechPatchGeometry(rig: avatar.geometry)
+        let plan = OpenClamAvatarFacePlatePolicy.plan(
+            for: state,
+            sourceMedium: avatar.sourceMedium
+        )
+        let patchGeometry = OpenClamAvatarSpeechPatchGeometry(
+            rig: avatar.geometry,
+            sourceMedium: avatar.sourceMedium,
+            expressionMouthBounds: avatar.expressionGeometry?.smile.box.cgRect,
+            speechPatch: avatar.speechPatch
+        )
 
         return ZStack {
             // This is the only identity-bearing full-head plate. It never
@@ -1296,23 +1621,62 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
 
             if plan.speechPatch != nil
                 || (showsReactionMouth && reaction.wideMouthOpacity > 0) {
-                ZStack {
-                    if let patch = plan.speechPatch {
-                        assetImage(.viseme(patch.back.viseme))
-                        if let front = patch.front {
-                            assetImage(.viseme(front.viseme))
-                                .opacity(front.opacity)
+                if avatar.sourceMedium.isStylized {
+                    GeometryReader { proxy in
+                        ZStack {
+                            if let patch = plan.speechPatch {
+                                speechPatchImage(
+                                    patch.back.viseme,
+                                    geometry: patchGeometry,
+                                    canvasSize: proxy.size
+                                )
+                                if let front = patch.front {
+                                    speechPatchImage(
+                                        front.viseme,
+                                        geometry: patchGeometry,
+                                        canvasSize: proxy.size
+                                    )
+                                    .opacity(front.opacity)
+                                }
+                            }
+
+                            if showsReactionMouth, reaction.wideMouthOpacity > 0 {
+                                speechPatchImage(
+                                    .wide,
+                                    geometry: patchGeometry,
+                                    canvasSize: proxy.size
+                                )
+                                .opacity(reaction.wideMouthOpacity)
+                            }
+                        }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .compositingGroup()
+                        .mask {
+                            OpenClamAvatarSpeechPatchMask(geometry: patchGeometry)
                         }
                     }
+                } else {
+                    // Preserve the reviewed photographic renderer byte-for-byte
+                    // in behavior and layout; only explicit stylized metadata
+                    // enters the translated, tighter compositor above.
+                    ZStack {
+                        if let patch = plan.speechPatch {
+                            assetImage(.viseme(patch.back.viseme))
+                            if let front = patch.front {
+                                assetImage(.viseme(front.viseme))
+                                .opacity(front.opacity)
+                            }
+                        }
 
-                    if showsReactionMouth, reaction.wideMouthOpacity > 0 {
-                        assetImage(.viseme(.wide))
+                        if showsReactionMouth, reaction.wideMouthOpacity > 0 {
+                            assetImage(.viseme(.wide))
                             .opacity(reaction.wideMouthOpacity)
+                        }
                     }
-                }
-                .compositingGroup()
-                .mask {
-                    OpenClamAvatarSpeechPatchMask(geometry: patchGeometry)
+                    .compositingGroup()
+                    .mask {
+                        OpenClamAvatarSpeechPatchMask(geometry: patchGeometry)
+                    }
                 }
             }
 
@@ -1340,6 +1704,46 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
 
     private func assetImage(_ role: OpenClamAvatarAssetRole) -> some View {
         OpenClamAvatarAssetImage(image: imageStore.image(for: avatar, role: role))
+    }
+
+    @ViewBuilder
+    private func speechPatchImage(
+        _ viseme: OpenClamAvatarViseme,
+        geometry: OpenClamAvatarSpeechPatchGeometry,
+        canvasSize: CGSize
+    ) -> some View {
+        if avatar.sourceMedium.isStylized,
+           let patch = OpenClamAvatarStylizedSpeechPatchRenderer.image(
+               selected: imageStore.image(for: avatar, role: .viseme(viseme)),
+               neutral: imageStore.image(for: avatar, role: .viseme(.silence)),
+               geometry: geometry,
+               viseme: viseme
+           ) {
+            let bounds = geometry.coreBounds
+            let scaleX = canvasSize.width
+                / OpenClamAvatarSpeechPatchGeometry.canonicalSize.width
+            let scaleY = canvasSize.height
+                / OpenClamAvatarSpeechPatchGeometry.canonicalSize.height
+            OpenClamAvatarAssetImage(image: patch)
+                .frame(
+                    width: bounds.width * scaleX,
+                    height: bounds.height * scaleY
+                )
+                .position(
+                    x: bounds.midX * scaleX,
+                    y: bounds.midY * scaleY
+                )
+        } else {
+            // Keep the reviewed photographic full-plate patch and its legacy
+            // positioning unchanged. The explicit stylized branch above is
+            // the only route that creates a difference-matted crop.
+            assetImage(.viseme(viseme))
+                .offset(
+                    x: geometry.translationX(for: viseme)
+                        * canvasSize.width
+                        / OpenClamAvatarSpeechPatchGeometry.canonicalSize.width
+                )
+        }
     }
 }
 
@@ -1431,6 +1835,20 @@ enum OpenClamAvatarExpressionMouthCompositingPolicy {
     }
 }
 
+enum OpenClamAvatarExpressionMouthMaskPolicy {
+    /// Expression-mouth atlases for stylized avatars contain provider-painted
+    /// pixels around the lips. Restrict those pixels to the same authored,
+    /// nose-safe matte used by ordinary stylized speech. Photographs retain
+    /// the established unmasked expression-mouth renderer.
+    static func maskGeometry(
+        for speechPatchGeometry: OpenClamAvatarSpeechPatchGeometry,
+        sourceMedium: OpenClamAvatarSourceMedium
+    ) -> OpenClamAvatarSpeechPatchGeometry? {
+        guard sourceMedium.isStylized else { return nil }
+        return speechPatchGeometry
+    }
+}
+
 enum OpenClamAvatarExpressionMouthPolicy {
     static func dominant(
         _ state: CaptainAyerExpressionLayerRenderState,
@@ -1456,7 +1874,8 @@ enum OpenClamAvatarExpressionMouthPolicy {
         previous: OpenClamAvatarViseme,
         current: OpenClamAvatarViseme,
         speechBlend: Double,
-        geometry: OpenClamAvatarExpressionGeometry
+        geometry: OpenClamAvatarExpressionGeometry,
+        sourceMedium: OpenClamAvatarSourceMedium = .photograph
     ) -> [OpenClamAvatarExpressionSpriteSample] {
         let strengths: [Double]
         let visemes: [OpenClamAvatarViseme]
@@ -1474,9 +1893,27 @@ enum OpenClamAvatarExpressionMouthPolicy {
         guard strengths.count >= 2, !visemes.isEmpty else { return [] }
         let strength = bracket(values: strengths, target: amount)
         let fallback = visemes.firstIndex(of: .silence) ?? 0
-        let previousRow = emotionOffset + (visemes.firstIndex(of: previous) ?? fallback)
-        let currentRow = emotionOffset + (visemes.firstIndex(of: current) ?? fallback)
-        let blend = min(1, max(0, speechBlend))
+        let boundedBlend = min(1, max(0, speechBlend))
+        if sourceMedium.isStylized {
+            // Drawn lips are complete authored cells, not photographic
+            // deformation samples. Blending either neighbouring visemes or
+            // neighbouring strength states paints two ink/teeth contours at
+            // once and recreates the blurred, double-lip artifact. Select one
+            // cell at the timing midpoint and keep the photo interpolation
+            // path below unchanged.
+            let selected = boundedBlend < 0.5 ? previous : current
+            let row = emotionOffset
+                + (visemes.firstIndex(of: selected) ?? fallback)
+            let state = strength.mix > 0.5 ? strength.high : strength.low
+            return [
+                .init(frame: row * strengths.count + state, opacity: 1),
+            ]
+        }
+        let previousRow = emotionOffset
+            + (visemes.firstIndex(of: previous) ?? fallback)
+        let currentRow = emotionOffset
+            + (visemes.firstIndex(of: current) ?? fallback)
+        let blend = boundedBlend
         let raw = [
             (previousRow * strengths.count + strength.low, (1 - blend) * (1 - strength.mix)),
             (previousRow * strengths.count + strength.high, (1 - blend) * strength.mix),
@@ -1490,6 +1927,28 @@ enum OpenClamAvatarExpressionMouthPolicy {
         return merged.keys.sorted().map {
             .init(frame: $0, opacity: min(1, merged[$0] ?? 0))
         }
+    }
+
+    static func viseme(
+        forFrame frame: Int,
+        kind: OpenClamAvatarExpressionMouthKind,
+        geometry: OpenClamAvatarExpressionGeometry
+    ) -> OpenClamAvatarViseme {
+        let strengths: [Double]
+        let visemes: [OpenClamAvatarViseme]
+        switch kind {
+        case .smile:
+            strengths = geometry.smileStrengths
+            visemes = geometry.smileVisemes
+        case .emotion:
+            strengths = geometry.emotionMouthStrengths
+            visemes = geometry.emotionMouthVisemes
+        }
+        guard frame >= 0, !strengths.isEmpty, !visemes.isEmpty else {
+            return .silence
+        }
+        let row = frame / strengths.count
+        return visemes[row % visemes.count]
     }
 
     static func bracket(
@@ -1524,7 +1983,17 @@ private struct OpenClamCatalogExpressionMouthLayers: View {
                 state,
                 geometry: geometry
             )
-            ZStack(alignment: .topLeading) {
+            let speechPatchGeometry = OpenClamAvatarSpeechPatchGeometry(
+                rig: avatar.geometry,
+                sourceMedium: avatar.sourceMedium,
+                expressionMouthBounds: geometry.smile.box.cgRect,
+                speechPatch: avatar.speechPatch
+            )
+            let maskGeometry = OpenClamAvatarExpressionMouthMaskPolicy.maskGeometry(
+                for: speechPatchGeometry,
+                sourceMedium: avatar.sourceMedium
+            )
+            let mouthLayers = ZStack(alignment: .topLeading) {
                 if let active {
                     let layer = layer(for: active.kind)
                     let samples = OpenClamAvatarExpressionMouthPolicy.samples(
@@ -1533,7 +2002,8 @@ private struct OpenClamCatalogExpressionMouthLayers: View {
                         previous: speechState.previous.catalogViseme,
                         current: speechState.current.catalogViseme,
                         speechBlend: speechState.blend,
-                        geometry: geometry
+                        geometry: geometry,
+                        sourceMedium: avatar.sourceMedium
                     )
                     ZStack {
                         ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
@@ -1545,6 +2015,15 @@ private struct OpenClamCatalogExpressionMouthLayers: View {
                             .frame(
                                 width: layer.sprite.box.width * scaleX,
                                 height: layer.sprite.box.height * scaleY
+                            )
+                            .offset(
+                                x: speechPatchGeometry.translationX(
+                                    for: OpenClamAvatarExpressionMouthPolicy.viseme(
+                                        forFrame: sample.frame,
+                                        kind: active.kind,
+                                        geometry: geometry
+                                    )
+                                ) * scaleX
                             )
                             .opacity(sample.opacity)
                             .blendMode(
@@ -1573,7 +2052,26 @@ private struct OpenClamCatalogExpressionMouthLayers: View {
                     )
                 }
             }
-            .compositingGroup()
+            Group {
+                if let maskGeometry {
+                    mouthLayers
+                        .frame(
+                            width: proxy.size.width,
+                            height: proxy.size.height,
+                            alignment: .topLeading
+                        )
+                        .compositingGroup()
+                        .mask {
+                            OpenClamAvatarSpeechPatchMask(geometry: maskGeometry)
+                        }
+                } else {
+                    // Keep the reviewed photographic expression renderer
+                    // unchanged. Only explicit stylized media receives the
+                    // nose-safe clipping matte above.
+                    mouthLayers
+                        .compositingGroup()
+                }
+            }
         }
         .allowsHitTesting(false)
     }
@@ -1733,6 +2231,7 @@ private struct OpenClamCatalogReactionLayers: View {
                         eye,
                         role: .eyeLeft,
                         geometry: avatar.geometry.leftEye,
+                        sourceMedium: avatar.sourceMedium,
                         in: proxy.size
                     )
                 }
@@ -1741,6 +2240,7 @@ private struct OpenClamCatalogReactionLayers: View {
                         eye,
                         role: .eyeRight,
                         geometry: avatar.geometry.rightEye,
+                        sourceMedium: avatar.sourceMedium,
                         in: proxy.size
                     )
                 }
@@ -1791,13 +2291,40 @@ private struct OpenClamCatalogReactionLayers: View {
         _ eye: CaptainAyerEyeReactionState,
         role: OpenClamAvatarAssetRole,
         geometry: OpenClamAvatarSpriteGeometry,
+        sourceMedium: OpenClamAvatarSourceMedium,
         in size: CGSize
     ) -> some View {
-        if let lowerFrame = eye.lowerFrame {
-            verticalSprite(role: role, frame: lowerFrame, geometry: geometry, in: size)
-        }
-        verticalSprite(role: role, frame: eye.upperFrame, geometry: geometry, in: size)
+        switch OpenClamAvatarEyelidPlatePolicy.plan(
+            for: eye,
+            frameCount: geometry.frameCount,
+            sourceMedium: sourceMedium
+        ) {
+        case .interpolatedStrip:
+            if let lowerFrame = eye.lowerFrame {
+                verticalSprite(
+                    role: role,
+                    frame: lowerFrame,
+                    geometry: geometry,
+                    in: size
+                )
+            }
+            verticalSprite(
+                role: role,
+                frame: eye.upperFrame,
+                geometry: geometry,
+                in: size
+            )
             .opacity(eye.upperOpacity)
+        case .canonicalOpen:
+            EmptyView()
+        case let .semanticClosed(frame):
+            verticalSprite(
+                role: role,
+                frame: frame,
+                geometry: geometry,
+                in: size
+            )
+        }
     }
 
     private func verticalSprite(

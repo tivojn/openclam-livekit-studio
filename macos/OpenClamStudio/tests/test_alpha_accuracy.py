@@ -540,6 +540,152 @@ class AlphaAccuracy(unittest.TestCase):
         self.assertEqual((255, 255, 255), tuple(stylized[14, 62, :3]))
         self.assertEqual(0, int(stylized[112, 78, 3]))
 
+    def test_stylized_eye_repair_uses_source_when_matte_hole_is_exterior(self):
+        """An eye opened through a coarse matte edge still uses authored ink."""
+        source = np.full((180, 160, 3), 255, np.uint8)
+        source[5:150, 45:112] = (76, 138, 216)
+        alpha = np.zeros((180, 160), np.uint8)
+        alpha[5:150, 45:112] = 255
+        for center in ((66, 14), (90, 14)):
+            cv2.circle(source, center, 6, (255, 255, 255), cv2.FILLED)
+            cv2.circle(source, center, 2, (18, 18, 18), cv2.FILLED)
+            cv2.circle(alpha, center, 6, 0, cv2.FILLED)
+            cv2.circle(alpha, center, 2, 255, cv2.FILLED)
+            # Connect the missing sclera to exterior alpha. RETR_CCOMP no
+            # longer sees a child cavity, matching the Luffy Move regression.
+            cv2.line(alpha, (center[0], 8), (center[0], 0), 0, 2)
+        # A white lower-body gap must remain transparent.
+        source[104:124, 75:82] = 255
+        alpha[104:124, 75:82] = 0
+        segmented = np.dstack((source.copy(), alpha))
+        segmented[:, :, :3][alpha == 0] = 0
+
+        photographic = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source])[0]
+        stylized = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source],
+            allow_stylized=True)[0]
+
+        for center in ((66, 14), (90, 14)):
+            with self.subTest(center=center):
+                self.assertEqual(0, int(photographic[
+                    center[1], center[0] - 4, 3]))
+                self.assertEqual(255, int(stylized[
+                    center[1], center[0] - 4, 3]))
+                self.assertEqual(255, int(stylized[
+                    center[1], center[0], 3]))
+                self.assertEqual((18, 18, 18), tuple(stylized[
+                    center[1], center[0], :3]))
+        self.assertEqual(0, int(stylized[112, 78, 3]))
+
+    def test_stylized_shadow_sliver_is_removed_without_photo_relaxation(self):
+        """A sparse gray cast-shadow strip is stylized-only background."""
+        source = np.full((180, 160, 3), 255, np.uint8)
+        alpha = np.zeros((180, 160), np.uint8)
+        source[30:145, 55:105] = (45, 70, 150)
+        alpha[30:145, 55:105] = 255
+        # Enclosed low-saturation wardrobe detail/highlight must survive.
+        source[55:110, 62:68] = (205, 205, 205)
+        alpha[55:110, 62:68] = 255
+        # A crooked, sparse strip models the neutral wall/contact shadow in
+        # Luffy Idle frame 0. It is connected to the exterior neutral plate,
+        # yet darker than the normal white-background veto threshold.
+        shadow_points = np.array((
+            (42, 45), (38, 55), (43, 65), (39, 75),
+            (44, 85), (40, 98),
+        ), dtype=np.int32)
+        shadow = np.zeros(alpha.shape, np.uint8)
+        cv2.polylines(
+            source, [shadow_points], False, (201, 201, 201), 2,
+            cv2.LINE_8)
+        cv2.polylines(
+            shadow, [shadow_points], False, 255, 2, cv2.LINE_8)
+        shadow_fringe = np.zeros(alpha.shape, np.uint8)
+        cv2.polylines(
+            source, [shadow_points + (4, 0)], False,
+            (150, 180, 210), 1, cv2.LINE_8)
+        cv2.polylines(
+            shadow_fringe, [shadow_points + (4, 0)], False,
+            255, 1, cv2.LINE_8)
+        shadow_satellite = np.array(
+            ((40, 102), (43, 105), (40, 108)), dtype=np.int32)
+        cv2.polylines(
+            source, [shadow_satellite], False, (201, 201, 201), 1,
+            cv2.LINE_8)
+        cv2.polylines(
+            shadow, [shadow_satellite], False, 255, 1, cv2.LINE_8)
+        alpha[(shadow > 0) | (shadow_fringe > 0)] = 160
+        segmented = np.dstack((source.copy(), alpha))
+        segmented[:, :, :3][alpha == 0] = 0
+
+        photographic = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source])[0]
+        stylized = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source],
+            allow_stylized=True)[0]
+
+        self.assertEqual(
+            int(np.count_nonzero(shadow)),
+            int(np.count_nonzero(photographic[:, :, 3][shadow > 0])))
+        self.assertEqual(
+            int(np.count_nonzero(shadow_fringe)),
+            int(np.count_nonzero(
+                photographic[:, :, 3][shadow_fringe > 0])))
+        self.assertEqual(
+            0, int(np.count_nonzero(stylized[:, :, 3][shadow > 0])))
+        self.assertEqual(
+            0, int(np.count_nonzero(
+                stylized[:, :, 3][shadow_fringe > 0])))
+        self.assertTrue(np.all(stylized[55:110, 62:68, 3] == 255))
+        self.assertTrue(np.all(
+            stylized[55:110, 62:68, :3] == (205, 205, 205)))
+
+    def test_stylized_head_plate_wedge_does_not_remove_solid_accessory(self):
+        source = np.full((180, 160, 3), 255, np.uint8)
+        alpha = np.zeros((180, 160), np.uint8)
+        source[5:150, 60:97] = (76, 138, 216)
+        alpha[5:150, 60:97] = 255
+        # Plate/object antialias around the same wedge carries more colour
+        # than the neutral core. It is removable only after the core proves
+        # the topology; a blanket saturation relaxation would be unsafe.
+        fringe_points = np.array(
+            ((60, 14), (61, 15), (60, 16), (61, 17)), dtype=np.int32)
+        fringe = np.zeros(alpha.shape, np.uint8)
+        cv2.polylines(
+            source, [fringe_points], False, (150, 180, 210), 1,
+            cv2.LINE_8)
+        cv2.polylines(
+            fringe, [fringe_points], False, 255, 1, cv2.LINE_8)
+        # Sparse neutral plate caught within a black cartoon hair spike.
+        wedge_points = np.array(
+            ((60, 17), (65, 20), (61, 23), (65, 26)), dtype=np.int32)
+        wedge = np.zeros(alpha.shape, np.uint8)
+        cv2.polylines(
+            source, [wedge_points], False, (190, 190, 190), 1,
+            cv2.LINE_8)
+        cv2.polylines(
+            wedge, [wedge_points], False, 255, 1, cv2.LINE_8)
+        # A compact gray head accessory touches the plate but is solid, not a
+        # sparse triangular gap, and must remain authored foreground.
+        source[17:26, 92:97] = (190, 190, 190)
+        segmented = np.dstack((source.copy(), alpha))
+
+        photographic = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source])[0]
+        stylized = motion._stabilise_segmented(
+            [segmented], poses=[_pose()], source_frames=[source],
+            allow_stylized=True)[0]
+
+        self.assertTrue(np.all(photographic[:, :, 3][wedge > 0] == 255))
+        self.assertEqual(
+            0, int(np.count_nonzero(stylized[:, :, 3][wedge > 0])))
+        self.assertTrue(np.all(photographic[:, :, 3][fringe > 0] == 255))
+        self.assertEqual(
+            0, int(np.count_nonzero(stylized[:, :, 3][fringe > 0])))
+        self.assertTrue(np.all(stylized[17:26, 92:97, 3] == 255))
+        self.assertTrue(np.all(
+            stylized[17:26, 92:97, :3] == (190, 190, 190)))
+
     def test_full_stabiliser_preserves_calf_gap_and_repairs_real_dropout(self):
         alpha = np.zeros((160, 120), np.uint8)
         alpha[10:150, 30:90] = 255

@@ -2,6 +2,78 @@ import XCTest
 @testable import OpenClamLiveKit
 
 final class OpenClamCatalogAvatarStageTests: XCTestCase {
+    func testStylizedBlinkUsesOnlyCanonicalOpenOrFullEyeClosedPlate() {
+        let open = CaptainAyerEyeReactionState(
+            lowerFrame: nil,
+            upperFrame: 0,
+            upperOpacity: 0
+        )
+        let half = CaptainAyerEyeReactionState(
+            lowerFrame: 5,
+            upperFrame: 6,
+            upperOpacity: 0.95
+        )
+        let approachingClosed = CaptainAyerEyeReactionState(
+            lowerFrame: 6,
+            upperFrame: 7,
+            upperOpacity: 0.77
+        )
+        let closed = CaptainAyerEyeReactionState(
+            lowerFrame: 6,
+            upperFrame: 7,
+            upperOpacity: 0.78
+        )
+
+        for medium in [OpenClamAvatarSourceMedium.anime,
+                       .illustration, .rendered3D, .gameArt] {
+            XCTAssertEqual(
+                OpenClamAvatarEyelidPlatePolicy.plan(
+                    for: open, frameCount: 8, sourceMedium: medium
+                ),
+                .canonicalOpen
+            )
+            XCTAssertEqual(
+                OpenClamAvatarEyelidPlatePolicy.plan(
+                    for: half, frameCount: 8, sourceMedium: medium
+                ),
+                .canonicalOpen
+            )
+            XCTAssertEqual(
+                OpenClamAvatarEyelidPlatePolicy.plan(
+                    for: approachingClosed, frameCount: 8, sourceMedium: medium
+                ),
+                .canonicalOpen
+            )
+            XCTAssertEqual(
+                OpenClamAvatarEyelidPlatePolicy.plan(
+                    for: closed, frameCount: 8, sourceMedium: medium
+                ),
+                .semanticClosed(frame: 7)
+            )
+        }
+    }
+
+    func testPhotographicBlinkRetainsInterpolatedEightFramePolicy() {
+        for state in [
+            CaptainAyerEyeReactionState(
+                lowerFrame: nil, upperFrame: 0, upperOpacity: 0
+            ),
+            CaptainAyerEyeReactionState(
+                lowerFrame: 3, upperFrame: 4, upperOpacity: 0.5
+            ),
+            CaptainAyerEyeReactionState(
+                lowerFrame: 6, upperFrame: 7, upperOpacity: 1
+            ),
+        ] {
+            XCTAssertEqual(
+                OpenClamAvatarEyelidPlatePolicy.plan(
+                    for: state, frameCount: 8, sourceMedium: .photograph
+                ),
+                .interpolatedStrip
+            )
+        }
+    }
+
     func testFullExpressionFaceSurfaceStaysRegisteredForEverySpeechHeadPose() {
         let canonicalRotation = -0.343
         let bodyScale: CGFloat = 1.27
@@ -63,6 +135,41 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
             "The completed photographic mouth patch must replace the base pixels normally; "
                 + "adding it to the face washes out lips and teeth."
         )
+    }
+
+    func testExpressionMouthUsesNoseSafeMaskForStylizedSourcesOnly() throws {
+        let avatar = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
+        let authoredPatch = OpenClamAvatarSpeechPatchGeometry(
+            rig: avatar.geometry,
+            sourceMedium: .anime,
+            expressionMouthBounds: CGRect(x: 408, y: 668, width: 230, height: 132),
+            speechPatch: .init(
+                box: .init(x: 418, y: 704, width: 205, height: 88),
+                visemeXOffsets: [OpenClamAvatarViseme.open.rawValue: 9.5]
+            )
+        )
+
+        XCTAssertNil(
+            OpenClamAvatarExpressionMouthMaskPolicy.maskGeometry(
+                for: authoredPatch,
+                sourceMedium: .photograph
+            ),
+            "Photographic expression mouths must retain the existing unmasked renderer."
+        )
+
+        for medium in [OpenClamAvatarSourceMedium.anime,
+                       .illustration, .rendered3D, .gameArt] {
+            let mask = try XCTUnwrap(
+                OpenClamAvatarExpressionMouthMaskPolicy.maskGeometry(
+                    for: authoredPatch,
+                    sourceMedium: medium
+                )
+            )
+            XCTAssertEqual(mask, authoredPatch)
+            XCTAssertEqual(mask.coreBounds, CGRect(x: 418, y: 704, width: 205, height: 88))
+            XCTAssertTrue(mask.clipsFeatherToCoreBounds)
+            XCTAssertGreaterThan(mask.coreBounds.minY, 700, "the stylized mask must stay below the nose tip")
+        }
     }
 
     func testGridAtlasAddressesEveryFullExpressionMouthFrameInRowMajorOrder() {
@@ -601,6 +708,152 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
         XCTAssertEqual(exactSilenceEnd.speechPatch?.front?.viseme, .silence)
         XCTAssertEqual(exactSilenceEnd.speechPatch?.front?.opacity ?? -1, 1, accuracy: 0.0001)
         XCTAssertNil(idle.speechPatch)
+    }
+
+    func testPhotographicSpeechPatchKeepsLegacyGeometryAndCrossfade() throws {
+        let avatar = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
+        let geometry = OpenClamAvatarSpeechPatchGeometry(
+            rig: avatar.geometry,
+            sourceMedium: .photograph,
+            expressionMouthBounds: CGRect(x: 400, y: 680, width: 240, height: 150),
+            speechPatch: .init(
+                box: .init(x: 410, y: 700, width: 220, height: 110),
+                visemeXOffsets: [OpenClamAvatarViseme.open.rawValue: 24]
+            )
+        )
+
+        let eyeBottom = max(
+            avatar.geometry.leftEye.box.cgRect.maxY,
+            avatar.geometry.rightEye.box.cgRect.maxY
+        )
+        XCTAssertEqual(geometry.coreBounds.minX, 352)
+        XCTAssertEqual(geometry.coreBounds.minY, max(630, eyeBottom + 62))
+        XCTAssertEqual(geometry.coreBounds.maxY, 916)
+        XCTAssertEqual(geometry.featherRadius, 18)
+        XCTAssertFalse(geometry.clipsFeatherToCoreBounds)
+        XCTAssertEqual(geometry.translationX(for: .open), 0)
+
+        let plan = OpenClamAvatarFacePlatePolicy.plan(
+            for: .init(previous: .open, current: .wide, blend: 0.4),
+            sourceMedium: .photograph
+        )
+        XCTAssertEqual(plan.speechPatch?.back.viseme, .open)
+        XCTAssertEqual(plan.speechPatch?.front?.viseme, .wide)
+        XCTAssertEqual(plan.speechPatch?.front?.opacity ?? -1, 0.4, accuracy: 0.0001)
+    }
+
+    func testStylizedSpeechPatchExcludesNoseAndUsesAuthoredVisemeOffsets() throws {
+        let avatar = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
+        var offsets = Dictionary(
+            uniqueKeysWithValues: OpenClamAvatarViseme.allCases.map {
+                ($0.rawValue, 0.0)
+            }
+        )
+        offsets[OpenClamAvatarViseme.open.rawValue] = 12.669
+        offsets[OpenClamAvatarViseme.velar.rawValue] = 28.223
+        let speechPatch = OpenClamAvatarSpeechPatchMetadata(
+            box: .init(x: 413, y: 699, width: 215, height: 96),
+            visemeXOffsets: offsets
+        )
+        let geometry = OpenClamAvatarSpeechPatchGeometry(
+            rig: avatar.geometry,
+            sourceMedium: .anime,
+            expressionMouthBounds: CGRect(x: 412, y: 674, width: 225, height: 125),
+            speechPatch: speechPatch
+        )
+
+        XCTAssertEqual(geometry.coreBounds, CGRect(x: 413, y: 699, width: 215, height: 96))
+        XCTAssertEqual(geometry.conservativeDynamicBounds, geometry.coreBounds)
+        XCTAssertEqual(geometry.featherRadius, 6)
+        XCTAssertTrue(geometry.clipsFeatherToCoreBounds)
+        XCTAssertGreaterThan(geometry.coreBounds.minY, 691, "the alternate Luffy nose ends above the speech plate")
+        XCTAssertGreaterThan(geometry.stylizedVisibleBounds.minY, geometry.coreBounds.minY)
+        XCTAssertLessThan(geometry.stylizedVisibleBounds.maxY, geometry.coreBounds.maxY)
+        XCTAssertEqual(
+            geometry.stylizedVisibleBounds.midX,
+            geometry.coreBounds.midX,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(geometry.translationX(for: .silence), 0)
+        XCTAssertEqual(geometry.translationX(for: .open), 12.669, accuracy: 0.0001)
+        XCTAssertEqual(geometry.translationX(for: .velar), 28.223, accuracy: 0.0001)
+    }
+
+    func testStylizedSpeechDifferenceMatteRejectsSkinButKeepsLipInk() {
+        let centre = OpenClamAvatarStylizedSpeechPatchPixelPolicy.spatialAlpha(
+            x: 99, y: 44, width: 200, height: 100
+        )
+        let nose = OpenClamAvatarStylizedSpeechPatchPixelPolicy.spatialAlpha(
+            x: 99, y: 0, width: 200, height: 100
+        )
+        let chin = OpenClamAvatarStylizedSpeechPatchPixelPolicy.spatialAlpha(
+            x: 99, y: 99, width: 200, height: 100
+        )
+        XCTAssertGreaterThan(centre, 0.99)
+        XCTAssertLessThan(nose, 0.01)
+        XCTAssertLessThan(chin, 0.01)
+        XCTAssertEqual(
+            OpenClamAvatarStylizedSpeechPatchPixelPolicy.differenceAlpha(
+                maximumChannelDelta: 6, spatialAlpha: centre
+            ),
+            0,
+            accuracy: 0.0001,
+            "JPEG/skin noise must not become a visible face patch."
+        )
+        XCTAssertGreaterThan(
+            OpenClamAvatarStylizedSpeechPatchPixelPolicy.differenceAlpha(
+                maximumChannelDelta: 42, spatialAlpha: centre
+            ),
+            0.99,
+            "Authored lip, tooth, and mouth-interior contrast must remain opaque."
+        )
+    }
+
+    func testStylizedSpeechAndExpressionMouthsHardSwitchAtMidpoint() {
+        let early = OpenClamAvatarFacePlatePolicy.plan(
+            for: .init(previous: .open, current: .wide, blend: 0.49),
+            sourceMedium: .illustration
+        )
+        XCTAssertEqual(early.speechPatch?.back.viseme, .open)
+        XCTAssertNil(early.speechPatch?.front)
+        let late = OpenClamAvatarFacePlatePolicy.plan(
+            for: .init(previous: .open, current: .wide, blend: 0.5),
+            sourceMedium: .illustration
+        )
+        XCTAssertEqual(late.speechPatch?.back.viseme, .wide)
+        XCTAssertNil(late.speechPatch?.front)
+
+        let geometry = fullExpressionGeometry()
+        for (blend, expected) in [(0.49, OpenClamAvatarViseme.silence),
+                                  (0.5, OpenClamAvatarViseme.velar)] {
+            let samples = OpenClamAvatarExpressionMouthPolicy.samples(
+                kind: .smile,
+                // Deliberately between authored states. A stylized mouth must
+                // choose one complete drawing rather than crossfade the 0.18
+                // and 0.34 cells into blurred/double line art.
+                amount: 0.26,
+                previous: .silence,
+                current: .velar,
+                speechBlend: blend,
+                geometry: geometry,
+                sourceMedium: .anime
+            )
+            XCTAssertEqual(samples.count, 1)
+            XCTAssertEqual(
+                OpenClamAvatarExpressionMouthPolicy.viseme(
+                    forFrame: samples[0].frame,
+                    kind: .smile,
+                    geometry: geometry
+                ),
+                expected
+            )
+            XCTAssertEqual(
+                samples[0].frame % geometry.smileStrengths.count,
+                1,
+                "The equidistant 0.26 amount must deterministically choose the lower 0.18 drawing."
+            )
+            XCTAssertEqual(samples[0].opacity, 1, accuracy: 0.0001)
+        }
     }
 
     func testFullExpressionMouthPolicyInterpolatesStrengthAndProductionViseme() throws {

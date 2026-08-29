@@ -237,19 +237,41 @@ def build_smile(key, key_lm, visemes, states=None, log=print):
     """
     strengths = list(SMILE_STATES if states is None else states)
     box = _smile_box(key.shape, key_lm)
-    patches, names = [], []
+    try:
+        key_lip = np.asarray(key_lm[face.OUTER_LIP], np.float64)
+        key_centre_x = float(key_lip[:, 0].mean())
+        # Registration is deliberately horizontal only.  A viseme's vertical
+        # lip centre legitimately moves as its jaw opens, while provider-made
+        # cartoon frames can drift sideways by tens of pixels.
+        offset_limit = min(96.0, max(4.0, float(np.ptp(key_lip[:, 0])) * .35))
+    except (IndexError, TypeError, ValueError):
+        key_centre_x = None
+        offset_limit = 0.0
+    patches, names, x_offsets = [], [], {}
     for name, image in visemes:
         lm, _ = face.detect(image)
         if lm is None:
             lm = key_lm
             log(f"  smile {name}: landmarks unavailable; using registered keyframe geometry")
-        names.append(str(name))
+        runtime_name = str(name)
+        names.append(runtime_name)
+        offset = 0.0
+        if key_centre_x is not None and runtime_name != "sil":
+            try:
+                lip = np.asarray(lm[face.OUTER_LIP], np.float64)
+                candidate = key_centre_x - float(lip[:, 0].mean())
+                if np.isfinite(candidate):
+                    offset = float(np.clip(candidate, -offset_limit, offset_limit))
+            except (IndexError, TypeError, ValueError):
+                pass
+        x_offsets[runtime_name] = round(offset, 4)
         patches.extend(_smile_patch(image, lm, strength, box)
                        for strength in strengths)
     log(f"  laughter mouth: {len(names)} visemes x {len(strengths)} states, "
         f"patch {box[2]}x{box[3]}")
     return dict(states=[round(float(v), 4) for v in strengths],
-                visemes=names, box=box, patches=patches)
+                visemes=names, box=box, patches=patches,
+                viseme_x_offsets=x_offsets)
 
 
 def build_emotion_mouths(key, key_lm, visemes, states=None, log=print):

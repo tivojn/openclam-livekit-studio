@@ -17,7 +17,7 @@ An avatar is a self-contained folder:
 Swapping the avatar is therefore just pointing `active.json` at another slug -
 nothing else in the project is avatar-specific.
 """
-import os, re, json, time, shutil, datetime, threading, traceback, tempfile, copy, uuid
+import os, re, json, time, shutil, datetime, threading, traceback, tempfile, copy, uuid, hashlib
 from . import anatomy, prep, generate, compose, render, visemes, measure, rig, face
 
 CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -656,29 +656,75 @@ def _replace_staged_render(raw_dir, target_name, donor_path):
     return target
 
 
-def _stage_safe_visemes(raw_dir, rejected, emit):
-    """Replace irreparable or uncomposable speech plates in a private stage."""
+def _row_satisfies_viseme_contract(row, target_name):
+    """Return whether measured pixels are safe when used as ``target_name``.
+
+    A donor being acceptable for *its own* phoneme is not enough.  RR, for
+    example, deliberately targets a narrower mouth than DD; copying a narrow
+    RR plate into DD can therefore preserve the exact width failure the local
+    repair is meant to remove.  Evaluate the donor's actual composed geometry
+    against the destination contract instead.
+    """
+    if not isinstance(row, dict) or target_name not in visemes.TARGETS:
+        return False
+    try:
+        ratio = float(row["ratio"])
+        width_ratio = float(row["width_ratio"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    max_ratio, want_width = visemes.TARGETS[target_name]
+    return (
+        measure._aperture_within_limit(ratio, float(max_ratio))
+        and abs(width_ratio - float(want_width)) <= 0.12
+    )
+
+
+def _stage_safe_visemes(
+        raw_dir, rejected, emit, measurements=None, require_proof=False):
+    """Replace irreparable speech plates in a disposable raw stage.
+
+    ``measurements`` are the already-composed rows returned by
+    :func:`measure.audit`.  Stylized builds require this proof so a merely
+    nearby phoneme can never be copied unless its pixels also satisfy the
+    destination viseme's aperture and width contract.  The legacy unproved
+    path remains available for photographic builds and old local callers.
+    """
     unsafe = {str(row.get("name") or "") for row in (rejected or [])}
+    measured = {
+        str(row.get("name") or ""): row
+        for row in (measurements or []) if isinstance(row, dict)
+    }
     repairs = {}
     for name in visemes.SPEECH_ORDER:
         if name not in unsafe or name not in SAFE_VISEME_DONORS:
             continue
         donor_name = next((candidate for candidate in SAFE_VISEME_DONORS[name]
                            if candidate not in unsafe
-                           and _raw_render_path(raw_dir, candidate)), None)
+                           and _raw_render_path(raw_dir, candidate)
+                           and (not require_proof or
+                                _row_satisfies_viseme_contract(
+                                    measured.get(candidate), name))), None)
         if not donor_name:
+            if require_proof:
+                emit(f"  {name}: no retained donor is proven safe for the "
+                     "destination articulation contract")
             continue
         donor = _raw_render_path(raw_dir, donor_name)
         _replace_staged_render(raw_dir, name, donor)
         repairs[name] = donor_name
+        donor_label = "target-verified" if require_proof else "nearby"
         emit(f"  {name}: generated plate stayed unsafe or uncomposable "
-             f"- using nearby {donor_name} speech plate in this private rebuild")
+             f"- using {donor_label} {donor_name} speech plate in this private "
+             "rebuild")
     return repairs
 
 
-def _stage_safe_consonants(raw_dir, rejected, emit):
+def _stage_safe_consonants(
+        raw_dir, rejected, emit, measurements=None, require_proof=False):
     """Compatibility wrapper for the original consonant-only repair API."""
-    return _stage_safe_visemes(raw_dir, rejected, emit)
+    return _stage_safe_visemes(
+        raw_dir, rejected, emit, measurements=measurements,
+        require_proof=require_proof)
 
 
 def _apply_recorded_stage_repairs(raw_dir, repairs, emit):
@@ -858,7 +904,8 @@ def recompose_avatar(slug, profile, log=print, progress=None):
             hard_overs = _hard_articulation_rows(over)
             if hard_overs:
                 local_viseme_repairs.update(_stage_safe_consonants(
-                    stage_raw, hard_overs, emit))
+                    stage_raw, hard_overs, emit, measurements=aperture,
+                    require_proof=allow_stylized))
                 if local_viseme_repairs:
                     report, key_metrics = compose.compose_all(
                         stage_keyframe, stage_raw, stage_visemes,
@@ -945,7 +992,108 @@ def recompose_avatar(slug, profile, log=print, progress=None):
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
+def _file_sha256(path):
+    if not path or not os.path.isfile(path):
+        return ""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+FACE_REBUILD_ARTIFACTS = (
+    "head.png",
+    "keyframe.png",
+    "raw",
+    "visemes",
+    "diag",
+    "preview.mp4",
+    "sheet.jpg",
+    # Publish the restored descriptor only after every file it names is back.
+    "manifest.json",
+)
+
+FACE_REBUILD_TRANSIENTS = (
+    ".head-keyframe.png",
+    ".head-keyframe.png.best",
+    "head.png.best",
+)
+
+
+def _copy_face_rebuild_artifact(source, destination):
+    """Copy one registry-owned artifact without following a symlink.
+
+    A rebuild transaction is a safety boundary, not an import path.  Refusing
+    unexpected links prevents a damaged registry from making the backup walk
+    outside the avatar directory while still keeping the ordinary file/tree
+    copy deliberately simple and portable.
+    """
+    if os.path.islink(source):
+        raise RuntimeError(
+            f"cannot transactionally rebuild linked artifact: "
+            f"{os.path.basename(source)}")
+    if os.path.isdir(source):
+        shutil.copytree(source, destination, symlinks=True)
+    elif os.path.isfile(source):
+        shutil.copy2(source, destination)
+
+
+def _begin_face_rebuild_transaction(directory, manifest):
+    """Privately snapshot the published talking face before a full rebuild.
+
+    Draft avatars have nothing usable to preserve.  A ready avatar does: its
+    generated canonical head and the retained raw/composited plates are one
+    authored set, while body and motion metadata in the manifest point at that
+    exact identity.  The face files are therefore backed up as a unit before a
+    new head or keyframe can be staged.  Body/motion files themselves are not
+    copied (they can be very large) because build_avatar only removes them
+    after the replacement face has passed every gate.
+    """
+    if not isinstance(manifest, dict) or manifest.get("status") != "ready":
+        return None
+    backup = tempfile.mkdtemp(prefix=".face-rebuild-", dir=directory)
+    present = []
+    try:
+        for relative in FACE_REBUILD_ARTIFACTS:
+            source = os.path.join(directory, relative)
+            if not os.path.exists(source):
+                continue
+            _copy_face_rebuild_artifact(
+                source, os.path.join(backup, relative))
+            present.append(relative)
+        return {
+            "backup": backup,
+            "present": tuple(present),
+            "manifest": copy.deepcopy(manifest),
+        }
+    except Exception:
+        shutil.rmtree(backup, ignore_errors=True)
+        raise
+
+
+def _restore_face_rebuild_transaction(directory, transaction):
+    """Atomically put every previously published face artifact back."""
+    present = set(transaction.get("present") or ())
+    backup = transaction["backup"]
+    for relative in FACE_REBUILD_ARTIFACTS:
+        live = os.path.join(directory, relative)
+        _remove_artifact(live)
+        if relative in present:
+            os.replace(os.path.join(backup, relative), live)
+    for relative in FACE_REBUILD_TRANSIENTS:
+        _remove_artifact(os.path.join(directory, relative))
+    return copy.deepcopy(transaction["manifest"])
+
+
+def _finish_face_rebuild_transaction(transaction):
+    if transaction:
+        shutil.rmtree(transaction.get("backup") or "", ignore_errors=True)
+
+
+def build_avatar(
+        slug, shapes=None, log=None, quality="high", notes="",
+        remove_headwear=None):
     d = adir(slug)
     m = read_manifest(slug)
     if not m:
@@ -965,19 +1113,30 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
     key = os.path.join(d, "keyframe.png")
     raw, out = os.path.join(d, "raw"), os.path.join(d, "visemes")
     diag = os.path.join(d, "diag")
-    os.makedirs(raw, exist_ok=True); os.makedirs(out, exist_ok=True)
+    previous_head_policy = bool(
+        ((m.get("head") or {}).get("remove_headwear", False)))
+    # Missing means "keep this avatar's current policy". This matters for
+    # repair/top-up calls that regenerate a subset of visemes without showing
+    # the build preferences dialog. A brand-new/legacy avatar naturally falls
+    # back to the safe Preserve default (False).
+    remove_headwear = (previous_head_policy if remove_headwear is None
+                       else bool(remove_headwear))
     names = list(shapes or visemes.ORDER)
+    previous_head_digest = _file_sha256(os.path.join(d, "head.png"))
     unknown = sorted(set(names) - set(visemes.ORDER))
     if unknown:
         raise ValueError(f"unknown viseme shapes: {', '.join(unknown)}")
 
-    m["status"] = "building"
-    m["progress"] = dict(done=0, total=len(names), stage="render")
-    m["log"] = []
-    m.pop("error", None)          # a retry must not inherit the last failure
-    write_manifest(slug, m)
-
+    rebuild_transaction = _begin_face_rebuild_transaction(d, m)
     try:
+        os.makedirs(raw, exist_ok=True); os.makedirs(out, exist_ok=True)
+
+        m["status"] = "building"
+        m["progress"] = dict(done=0, total=len(names), stage="render")
+        m["log"] = []
+        m.pop("error", None)      # a retry must not inherit the last failure
+        write_manifest(slug, m)
+
         source_report = m.get("source_metrics") or m.get("metrics") or {}
         source_medium = _source_medium(source_report)
         source_keyframe = os.path.join(
@@ -1005,7 +1164,8 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
                 source_keyframe, head_path, provider=head_provider,
                 log=emit, quality=quality, pose_note=pose_note,
                 keep=notes, overwrite=bool(pose_attempt),
-                source_medium=source_medium)
+                source_medium=source_medium,
+                remove_headwear=remove_headwear)
             head_metrics = prep.build_keyframe(
                 head_path, staged_keyframe, diag_dir=diag,
                 allow_stylized=(source_medium != "photograph"))
@@ -1044,6 +1204,8 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
             provider=head_provider.get("name"),
             model=head_provider.get("model"),
             source_medium=source_medium,
+            remove_headwear=remove_headwear,
+            headwear_policy=("remove" if remove_headwear else "preserve"),
         )
         write_manifest(slug, m)
 
@@ -1152,7 +1314,10 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
                     prefix=".safe-visemes-", dir=d) as safe_raw:
                 shutil.copytree(raw, safe_raw, dirs_exist_ok=True)
                 local_viseme_repairs.update(
-                    _stage_safe_visemes(safe_raw, failed_rows, emit))
+                    _stage_safe_visemes(
+                        safe_raw, failed_rows, emit,
+                        measurements=aperture,
+                        require_proof=(source_medium != "photograph")))
                 if local_viseme_repairs:
                     report, kmet = compose.compose_all(
                         key, safe_raw, out, diag_dir=diag, log=emit,
@@ -1206,6 +1371,24 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
                  preview="preview.mp4", sheet="sheet.jpg",
                  quality=dict(worst_resid_px=worst, worst_off_region_delta=drift,
                               shapes=len(report), missing=missing))
+        # A body or motion take authored against another canonical head is not
+        # a reusable asset.  Invalidate it only after the replacement talking
+        # face has passed every gate, so a rejected rebuild never destroys the
+        # last usable authored set. Owner notes can alter identity accessories
+        # even when the provider happens to return byte-identical head pixels.
+        current_head_digest = _file_sha256(head_path)
+        derived_identity_changed = (
+            previous_head_digest != current_head_digest
+            or previous_head_policy != remove_headwear
+            or bool(str(notes or "").strip())
+        )
+        if derived_identity_changed and (m.get("body") or m.get("motion")):
+            from . import body, motion
+            body.remove(d)
+            motion.remove(d)
+            m.pop("body", None)
+            m.pop("motion", None)
+            emit("canonical head changed - cleared stale body and motion assets")
         if repair:
             m["rig_repair"] = repair
         else:
@@ -1214,11 +1397,33 @@ def build_avatar(slug, shapes=None, log=None, quality="high", notes=""):
     except Exception as e:
         emit("ERROR: " + str(e))
         emit(traceback.format_exc()[-1500:])
+        structured_repair = getattr(e, "repair", None)
+        if rebuild_transaction:
+            # Restore the complete prior authored face and its manifest before
+            # exposing the rejection.  Keeping status=ready means Chat/Talk,
+            # calibration, the old body and every motion take remain usable;
+            # re-raising makes the worker report a failed rebuild instead of
+            # exporting the restored avatar as though the new build passed.
+            failure_log = list(lines[-400:])
+            m = _restore_face_rebuild_transaction(
+                d, rebuild_transaction)
+            m["status"] = "ready"
+            m["error"] = str(e)
+            m["log"] = failure_log
+            if isinstance(structured_repair, dict):
+                m["rig_repair"] = structured_repair
+            else:
+                m.pop("rig_repair", None)
+            write_manifest(slug, m)
+            raise
         m["status"] = "error"
         m["error"] = str(e)
-        structured_repair = getattr(e, "repair", None)
         if isinstance(structured_repair, dict):
             m["rig_repair"] = structured_repair
+    finally:
+        for relative in FACE_REBUILD_TRANSIENTS:
+            _remove_artifact(os.path.join(d, relative))
+        _finish_face_rebuild_transaction(rebuild_transaction)
     write_manifest(slug, m)
     return m
 
@@ -1245,6 +1450,11 @@ if __name__ == "__main__":
     b.add_argument("slug"); b.add_argument("--shapes", nargs="*")
     b.add_argument("--keep", default="",
                    help="what must survive the build, e.g. his bandana")
+    b.add_argument("--remove-headwear", action="store_true", default=None,
+                   help="remove source-worn hats/headwear instead of preserving them")
+    b.add_argument("--preserve-headwear", action="store_false",
+                   dest="remove_headwear", default=None,
+                   help="preserve source-worn hats/headwear (the new-avatar default)")
     sub.add_parser("list", help="list avatars")
     c = sub.add_parser("activate"); c.add_argument("slug")
     e = sub.add_parser("delete"); e.add_argument("slug")
@@ -1258,7 +1468,9 @@ if __name__ == "__main__":
         if args.build:
             build_avatar(m["slug"])
     elif args.cmd == "build":
-        build_avatar(args.slug, shapes=args.shapes, notes=args.keep)
+        build_avatar(
+            args.slug, shapes=args.shapes, notes=args.keep,
+            remove_headwear=args.remove_headwear)
     elif args.cmd == "list":
         for m in list_avatars():
             print(f"{'*' if m.get('active') else ' '} {m['slug']:24s} {m['status']:9s} "

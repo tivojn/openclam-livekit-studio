@@ -406,9 +406,9 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertTrue(response["started"])
             self.assertEqual("masculine", response["body_presentation"])
             self.assertTrue(response["pose_remapped"])
-            self.assertEqual("side-cross", response["pose"])
+            self.assertEqual("folded-cross", response["pose"])
             arguments = worker.call_args.kwargs["args"]
-            self.assertEqual("side-cross", arguments[3]["id"])
+            self.assertEqual("folded-cross", arguments[3]["id"])
             self.assertNotIn(arguments[3]["id"], motion.HEEL_IDLE_POSE_IDS)
 
     def test_feminine_body_preserves_manual_heel_request(self):

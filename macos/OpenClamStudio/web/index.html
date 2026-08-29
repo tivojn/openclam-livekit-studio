@@ -2423,11 +2423,13 @@
     const headContext = headCanvas.getContext('2d', { alpha: true });
     const headReplacementCanvas = document.createElement('canvas');
     const headReplacementContext = headReplacementCanvas.getContext('2d', { alpha: true });
-    const stylizedMouthCanvas = document.createElement('canvas');
-    const stylizedMouthContext = stylizedMouthCanvas.getContext('2d', { alpha: true });
     const stylizedMouthMaskCanvas = document.createElement('canvas');
     const stylizedMouthMaskContext = stylizedMouthMaskCanvas.getContext('2d', { alpha: true });
+    const stylizedMouthNeutralCanvas = document.createElement('canvas');
+    const stylizedMouthNeutralContext = stylizedMouthNeutralCanvas.getContext(
+      '2d', { alpha: true, willReadFrequently: true });
     let stylizedMouthMaskKey = '';
+    let stylizedMouthPatchCache = new WeakMap();
     let lastBodyGeometry = null;
 
     let currentViseme = 'sil';
@@ -3261,6 +3263,20 @@
         'game art', 'game-art', '3d render', '3d-render', 'soft-3d',
       ].includes(medium) ? 'replace' : 'blend';
     };
+    const STYLIZED_HEAD_HANDOFF_VERSION = 2;
+    const authoredHeadHandoffReady = (body, clearMask, authoredMask) => Boolean(
+      body && body.head_composite === 'replace'
+      && body.head_handoff_version === STYLIZED_HEAD_HANDOFF_VERSION
+      && body.head_clear_mask && clearMask && authoredMask);
+    const legacyStylizedHeadHandoffReady = (
+      runtime, body, clearMask, authoredMask) => Boolean(
+      isStylizedFaceRuntime(runtime)
+      && body && body.head_composite === 'replace'
+      && !Object.prototype.hasOwnProperty.call(body, 'head_handoff_version')
+      && body.head_clear_mask && clearMask && authoredMask
+      && runtime && runtime.stylized_mouth
+      && runtime.stylized_mouth.basis === 'canonical-outer-lip-v1'
+      && runtimeBox(runtime.stylized_mouth));
 
     const hardenMaskAlpha = (pixels, threshold = 32) => {
       let opaque = 0;
@@ -3274,7 +3290,16 @@
       }
       return opaque;
     };
-
+    const preserveMaskAlpha = pixels => {
+      let covered = 0;
+      for (let index = 0; index + 3 < pixels.length; index += 4) {
+        pixels[index] = 255;
+        pixels[index + 1] = 255;
+        pixels[index + 2] = 255;
+        if (pixels[index + 3] > 0) covered += 1;
+      }
+      return covered;
+    };
     const prepareHeadReplacementMask = body => {
       headReplacementActive = false;
       headReplacementCanvas.width = portraitWidth;
@@ -3286,18 +3311,38 @@
       if (bodyHeadCompositeMode(body) !== 'replace') return;
 
       try {
-        // A stylized face oval is intentionally narrower than its ears, jaw,
-        // hair and headwear. Erasing only that oval leaves the generated body
-        // anatomy visible around the animated head as a second chin/cheek/ear
-        // outline. The canonical rig cutout is the authoritative full head
-        // silhouette; older packages without it retain their authored mask.
-        const replacementSource = cutoutImage || headMask;
+        // Current stylized bodies ship two coordinated masks: the body-space
+        // eraser removes duplicate provider anatomy above the jaw, while this
+        // authored portrait-space mask retains its soft jaw-to-neck handoff.
+        // Using the broader cutout here, then hardening it, used to carry a
+        // portrait neck strip onto the body and create a horizontal colour
+        // seam. Old packages without the coordinated eraser keep their hard
+        // full-silhouette fallback so duplicate cheeks/ears stay impossible.
+        const authoredHandoff = authoredHeadHandoffReady(
+          body, bodyHeadClearMask, headMask);
+        // A short-lived pre-v2 stylized build already shipped the coordinated
+        // body eraser and soft portrait mask but omitted the version marker.
+        // Its broad cutout includes the complete source neck; hardening that
+        // fallback is the horizontal throat seam visible on the real Luffy
+        // close-up. Recover only this narrowly identifiable bundle shape and
+        // terminate its authored mask immediately below the measured lips.
+        // Unknown versions still fail closed to the old hard replacement.
+        const recoveredLegacyHandoff = legacyStylizedHeadHandoffReady(
+          manifest, body, bodyHeadClearMask, headMask);
+        const replacementSource = authoredHandoff || recoveredLegacyHandoff
+          ? headMask : (cutoutImage || headMask);
         if (!replacementSource) return;
         headReplacementContext.drawImage(
           replacementSource, 0, 0, portraitWidth, portraitHeight);
         const matte = headReplacementContext.getImageData(
           0, 0, portraitWidth, portraitHeight);
-        headReplacementActive = hardenMaskAlpha(matte.data) > 0;
+        // The unversioned coordinated bundle already carries the correct soft
+        // mask: its alpha overlaps the body-space eraser through the whole
+        // jaw/neck transition. Preserve that authored alpha exactly. Trimming
+        // it at the mouth would expose a transparent throat gap.
+        headReplacementActive = (authoredHandoff || recoveredLegacyHandoff
+          ? preserveMaskAlpha(matte.data)
+          : hardenMaskAlpha(matte.data)) > 0;
         headReplacementContext.putImageData(matte, 0, 0);
       } catch (_) {
         // Same-origin runtime assets are readable. If an older custom package
@@ -3354,6 +3399,7 @@
         currentViseme = 'sil';
         previousViseme = 'sil';
         stylizedMouthMaskKey = '';
+        stylizedMouthPatchCache = new WeakMap();
         bodyImage = null;
         headMask = null;
         bodyHeadClearMask = null;
@@ -4119,10 +4165,80 @@
     const selectStylizedVisemeImage = (oldImage, newImage, blend) => (
       newImage && newImage !== oldImage && blend >= .5 ? newImage : oldImage
     );
+    const stylizedEmotionMouthSample = (
+      states, rows, amount, emotionIndex, oldName, newName, blend) => {
+      if (!Array.isArray(states) || !states.length
+          || !Array.isArray(rows) || !rows.length) return null;
+      const selectedName = blend >= .5 ? newName : oldName;
+      const fallbackRow = Math.max(0, rows.indexOf('sil'));
+      const visemeRow = rows.includes(selectedName)
+        ? rows.indexOf(selectedName) : fallbackRow;
+      const emotionRow = Math.max(0, Math.floor(Number(emotionIndex) || 0));
+      return {
+        state: nearestIndex(states, amount),
+        row: emotionRow * rows.length + visemeRow,
+        weight: 1,
+      };
+    };
+    const stylizedEmotionMouthPlacement = (
+      spec, sample, selectedName) => {
+      const safeBox = stylizedVisemeGeometry();
+      const atlasBox = runtimeBox(spec);
+      if (!safeBox || !atlasBox || !sample
+          || !Array.isArray(spec && spec.states) || !spec.states.length) return null;
+      const [safeX, safeY, safeWidth, safeHeight] = safeBox;
+      const [atlasX, atlasY, atlasWidth, atlasHeight] = atlasBox;
+      const registration = stylizedMouthRegistration(selectedName, safeWidth);
+      const cell = Math.max(0, Math.floor(Number(sample.state) || 0))
+        + Math.max(0, Math.floor(Number(sample.row) || 0)) * spec.states.length;
+      return {
+        sourceX: safeX - atlasX - registration,
+        sourceY: cell * atlasHeight + safeY - atlasY,
+        width: safeWidth,
+        height: safeHeight,
+        destinationX: safeX,
+        destinationY: safeY,
+      };
+    };
     const faceEyelidPolicy = (stylized, stylizedBlinkReady, closure) => {
       if (!stylized) return 'photo-strip';
       return stylizedBlinkReady && closure >= .78
         ? 'stylized-closed' : 'static-canonical';
+    };
+    // Keep the authored lip drawing but never transfer an oval of provider
+    // skin.  Flat/soft-3-D art makes even a well feathered colour patch read as
+    // a sticker. This spatial envelope is deliberately lip-centred and the
+    // per-viseme compositor below further multiplies it by a source-vs-neutral
+    // difference matte, leaving unchanged skin literally canonical.
+    const stylizedMouthMaskAlpha = (x, y, width, height) => {
+      const nx = ((Number(x) + .5) / Math.max(1, Number(width)) - .5) / .5;
+      const ny = ((Number(y) + .5) / Math.max(1, Number(height)) - .45) / .36;
+      const radius = Math.hypot(nx, ny);
+      return 1 - expressionSmoothStep((radius - .62) / .32);
+    };
+    const stylizedMouthDifferenceAlpha = (maximumDelta, spatialAlpha) => (
+      Math.max(0, Math.min(1, Number(spatialAlpha) || 0))
+        * expressionSmoothStep((Number(maximumDelta) - 6) / 36)
+    );
+    const stylizedMouthToneShift = (source, target, limit = 24) => (
+      [0, 1, 2].map(index => Math.max(-limit, Math.min(limit,
+        (Number(target && target[index]) || 0)
+          - (Number(source && source[index]) || 0))))
+    );
+    const stylizedMouthMedian = values => {
+      if (!Array.isArray(values) || !values.length) return 0;
+      const sorted = values.slice().sort((left, right) => left - right);
+      const middle = Math.floor(sorted.length * .5);
+      return sorted.length % 2
+        ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) * .5;
+    };
+    const stylizedMouthRegistration = (name, width) => {
+      const offsets = manifest && manifest.stylized_mouth
+        && manifest.stylized_mouth.viseme_x_offsets;
+      const offset = Number(offsets && offsets[name]);
+      const limit = Math.max(0, Number(width) * .35);
+      return Number.isFinite(offset)
+        ? Math.max(-limit, Math.min(limit, offset)) : 0;
     };
     const prepareStylizedMouthMask = (width, height) => {
       const roundedWidth = Math.max(1, Math.round(width));
@@ -4134,15 +4250,10 @@
       stylizedMouthMaskCanvas.height = roundedHeight;
       const pixels = stylizedMouthMaskContext.createImageData(
         roundedWidth, roundedHeight);
-      const featherX = Math.max(4, Math.min(16, Math.round(roundedWidth * .055)));
-      const featherY = Math.max(4, Math.min(14, Math.round(roundedHeight * .075)));
       for (let y = 0; y < roundedHeight; y += 1) {
-        const vertical = Math.min(y / featherY,
-          (roundedHeight - 1 - y) / featherY);
         for (let x = 0; x < roundedWidth; x += 1) {
-          const horizontal = Math.min(x / featherX,
-            (roundedWidth - 1 - x) / featherX);
-          const edge = expressionSmoothStep(Math.min(horizontal, vertical));
+          const edge = stylizedMouthMaskAlpha(
+            x, y, roundedWidth, roundedHeight);
           const index = (y * roundedWidth + x) * 4;
           pixels.data[index] = 255;
           pixels.data[index + 1] = 255;
@@ -4152,19 +4263,146 @@
       }
       stylizedMouthMaskContext.putImageData(pixels, 0, 0);
     };
-    const drawStylizedVisemePatch = (target, oldImage, newImage, blend) => {
-      const box = stylizedVisemeGeometry();
-      if (!target || !oldImage || !box) return;
+    const prepareStylizedMouthPatch = (
+      selectedImage, neutralImage, selectedName, box) => {
+      if (!selectedImage || !neutralImage || !box) return null;
       const [x, y, width, height] = box;
       const roundedWidth = Math.max(1, Math.round(width));
       const roundedHeight = Math.max(1, Math.round(height));
-      if (stylizedMouthCanvas.width !== roundedWidth) stylizedMouthCanvas.width = roundedWidth;
-      if (stylizedMouthCanvas.height !== roundedHeight) stylizedMouthCanvas.height = roundedHeight;
+      const registration = stylizedMouthRegistration(selectedName, width);
+      const cacheKey = [roundedWidth, roundedHeight, registration,
+        neutralImage.currentSrc || neutralImage.src || 'neutral'].join(':');
+      const cached = stylizedMouthPatchCache.get(selectedImage);
+      if (cached && cached.key === cacheKey) return cached.canvas;
+
+      const patch = document.createElement('canvas');
+      patch.width = roundedWidth;
+      patch.height = roundedHeight;
+      const patchContext = patch.getContext(
+        '2d', { alpha: true, willReadFrequently: true });
       prepareStylizedMouthMask(roundedWidth, roundedHeight);
-      stylizedMouthContext.setTransform(1, 0, 0, 1, 0, 0);
-      stylizedMouthContext.globalCompositeOperation = 'source-over';
-      stylizedMouthContext.globalAlpha = 1;
-      stylizedMouthContext.clearRect(0, 0, roundedWidth, roundedHeight);
+      patchContext.drawImage(
+        selectedImage, x - registration, y, width, height,
+        0, 0, roundedWidth, roundedHeight);
+
+      stylizedMouthNeutralCanvas.width = roundedWidth;
+      stylizedMouthNeutralCanvas.height = roundedHeight;
+      stylizedMouthNeutralContext.setTransform(1, 0, 0, 1, 0, 0);
+      stylizedMouthNeutralContext.globalCompositeOperation = 'source-over';
+      stylizedMouthNeutralContext.globalAlpha = 1;
+      stylizedMouthNeutralContext.clearRect(
+        0, 0, roundedWidth, roundedHeight);
+      stylizedMouthNeutralContext.drawImage(
+        neutralImage, x, y, width, height,
+        0, 0, roundedWidth, roundedHeight);
+
+      let differenceMatteReady = false;
+      try {
+        const sourcePixels = patchContext.getImageData(
+          0, 0, roundedWidth, roundedHeight);
+        const neutralPixels = stylizedMouthNeutralContext.getImageData(
+          0, 0, roundedWidth, roundedHeight);
+        const sourceSamples = [[], [], []];
+        const neutralSamples = [[], [], []];
+        for (let py = 0; py < roundedHeight; py += 1) {
+          for (let px = 0; px < roundedWidth; px += 1) {
+            const feather = stylizedMouthMaskAlpha(
+              px, py, roundedWidth, roundedHeight);
+            if (feather < .08 || feather > .42) continue;
+            const index = (py * roundedWidth + px) * 4;
+            if (sourcePixels.data[index + 3] < 240
+                || neutralPixels.data[index + 3] < 240) continue;
+            const sourceLuma = (sourcePixels.data[index]
+              + sourcePixels.data[index + 1]
+              + sourcePixels.data[index + 2]) / 3;
+            const neutralLuma = (neutralPixels.data[index]
+              + neutralPixels.data[index + 1]
+              + neutralPixels.data[index + 2]) / 3;
+            const maximumDelta = Math.max(
+              Math.abs(sourcePixels.data[index]
+                - neutralPixels.data[index]),
+              Math.abs(sourcePixels.data[index + 1]
+                - neutralPixels.data[index + 1]),
+              Math.abs(sourcePixels.data[index + 2]
+                - neutralPixels.data[index + 2]));
+            // Ignore moved ink/hair. The remaining annulus is the same skin
+            // material in both plates and gives a robust local colour match.
+            if (sourceLuma < 35 || neutralLuma < 35 || maximumDelta > 72) continue;
+            for (let channel = 0; channel < 3; channel += 1) {
+              sourceSamples[channel].push(sourcePixels.data[index + channel]);
+              neutralSamples[channel].push(neutralPixels.data[index + channel]);
+            }
+          }
+        }
+        const sourceMedian = sourceSamples.map(stylizedMouthMedian);
+        const neutralMedian = neutralSamples.map(stylizedMouthMedian);
+        const shift = sourceSamples[0].length >= 12
+          ? stylizedMouthToneShift(sourceMedian, neutralMedian) : [0, 0, 0];
+        for (let index = 0; index + 3 < sourcePixels.data.length; index += 4) {
+          for (let channel = 0; channel < 3; channel += 1) {
+            sourcePixels.data[index + channel] = Math.max(0, Math.min(255,
+              sourcePixels.data[index + channel] + shift[channel]));
+          }
+        }
+        const maximumDeltas = new Uint8Array(roundedWidth * roundedHeight);
+        for (let py = 0; py < roundedHeight; py += 1) {
+          for (let px = 0; px < roundedWidth; px += 1) {
+            const pixel = py * roundedWidth + px;
+            const index = pixel * 4;
+            maximumDeltas[pixel] = Math.max(
+              Math.abs(sourcePixels.data[index]
+                - neutralPixels.data[index]),
+              Math.abs(sourcePixels.data[index + 1]
+                - neutralPixels.data[index + 1]),
+              Math.abs(sourcePixels.data[index + 2]
+                - neutralPixels.data[index + 2]));
+          }
+        }
+        // A one-pixel maximum filter retains anti-aliased ink immediately
+        // beside a high-contrast lip/tooth edge without admitting the broad
+        // low-delta skin texture that exposed the old patch boundary.
+        for (let py = 0; py < roundedHeight; py += 1) {
+          for (let px = 0; px < roundedWidth; px += 1) {
+            let localDelta = 0;
+            for (let oy = -1; oy <= 1; oy += 1) {
+              const sampleY = py + oy;
+              if (sampleY < 0 || sampleY >= roundedHeight) continue;
+              for (let ox = -1; ox <= 1; ox += 1) {
+                const sampleX = px + ox;
+                if (sampleX < 0 || sampleX >= roundedWidth) continue;
+                localDelta = Math.max(localDelta,
+                  maximumDeltas[sampleY * roundedWidth + sampleX]);
+              }
+            }
+            const index = (py * roundedWidth + px) * 4;
+            const alpha = stylizedMouthDifferenceAlpha(
+              localDelta,
+              stylizedMouthMaskAlpha(
+                px, py, roundedWidth, roundedHeight));
+            sourcePixels.data[index + 3] = Math.round(
+              sourcePixels.data[index + 3] * alpha);
+          }
+        }
+        patchContext.putImageData(sourcePixels, 0, 0);
+        differenceMatteReady = true;
+      } catch (_) {
+        // Same-origin assets are readable. Preserve the bounded oval fallback
+        // for a legacy custom package whose image origin forbids pixel access.
+      }
+      if (!differenceMatteReady) {
+        patchContext.globalCompositeOperation = 'destination-in';
+        patchContext.globalAlpha = 1;
+        patchContext.drawImage(stylizedMouthMaskCanvas, 0, 0);
+        patchContext.globalCompositeOperation = 'source-over';
+      }
+      stylizedMouthPatchCache.set(selectedImage, { key: cacheKey, canvas: patch });
+      return patch;
+    };
+    const drawStylizedVisemePatch = (
+      target, oldImage, newImage, blend, oldName, newName, neutralImage) => {
+      const box = stylizedVisemeGeometry();
+      if (!target || !oldImage || !box) return;
+      const [x, y, width, height] = box;
       // RGB crossfading two pieces of drawn line art creates a captured frame
       // with two lips/jaw lines (the user's blurred/double-lip artifact). A
       // stylized viseme is therefore discrete; the 18 ms timing remains only
@@ -4172,13 +4410,36 @@
       // full-frame crossfade below.
       const selectedImage = selectStylizedVisemeImage(
         oldImage, newImage, blend);
-      stylizedMouthContext.drawImage(selectedImage, x, y, width, height,
-        0, 0, roundedWidth, roundedHeight);
-      stylizedMouthContext.globalCompositeOperation = 'destination-in';
-      stylizedMouthContext.globalAlpha = 1;
-      stylizedMouthContext.drawImage(stylizedMouthMaskCanvas, 0, 0);
-      stylizedMouthContext.globalCompositeOperation = 'source-over';
-      target.drawImage(stylizedMouthCanvas, x, y, width, height);
+      const selectedName = selectedImage === newImage ? newName : oldName;
+      const patch = prepareStylizedMouthPatch(
+        selectedImage, neutralImage || oldImage, selectedName, box);
+      if (patch) target.drawImage(patch, x, y, width, height);
+    };
+    const drawStylizedEmotionMouthSample = (
+      target, image, spec, sample, selectedName) => {
+      const placement = stylizedEmotionMouthPlacement(
+        spec, sample, selectedName);
+      if (!target || !image || !placement) return;
+      const { sourceX, sourceY, width, height,
+        destinationX, destinationY } = placement;
+      if (stripBlendCanvas.width !== width) stripBlendCanvas.width = width;
+      if (stripBlendCanvas.height !== height) stripBlendCanvas.height = height;
+      stripBlendContext.setTransform(1, 0, 0, 1, 0, 0);
+      stripBlendContext.globalCompositeOperation = 'source-over';
+      stripBlendContext.globalAlpha = 1;
+      stripBlendContext.clearRect(0, 0, width, height);
+      stripBlendContext.drawImage(image,
+        sourceX, sourceY, width, height,
+        0, 0, width, height);
+      // The expression atlases carry a larger provider-painted lower-face
+      // rectangle. Reuse the ordinary stylized lip matte so neither that
+      // rectangle nor a shifted viseme can repaint the philtrum/nose.
+      prepareStylizedMouthMask(width, height);
+      stripBlendContext.globalCompositeOperation = 'destination-in';
+      stripBlendContext.drawImage(stylizedMouthMaskCanvas, 0, 0);
+      stripBlendContext.globalCompositeOperation = 'source-over';
+      target.drawImage(stripBlendCanvas,
+        destinationX, destinationY, width, height);
     };
     const stripBracket = (values, target) => {
       if (!Array.isArray(values) || values.length < 2) return { low: 0, high: 0, mix: 0 };
@@ -4280,7 +4541,8 @@
         if (neutralImage) {
           faceContext.drawImage(neutralImage, 0, 0, portraitWidth, portraitHeight);
           drawStylizedVisemePatch(faceContext, oldImage || neutralImage,
-            newImage || oldImage || neutralImage, blend);
+            newImage || oldImage || neutralImage, blend,
+            previousViseme, currentViseme, neutralImage);
         }
       } else {
         // Photorealistic runtimes retain the reviewed full-frame crossfade.
@@ -4322,14 +4584,30 @@
         speechExpressionState, speechExpressionPlan, audioSignal, reducedMotion.matches);
       // Every explicit emotion owns a viseme-indexed lower-face atlas. Only
       // the dominant expression is painted, so multiple semantic channels
-      // cannot stamp competing skin patches. Crossfades preserve both the TTS
-      // phoneme and expression strength while teeth, tongue and lips remain a
-      // single photographic surface beneath all upper-face tissue.
+      // cannot stamp competing skin patches. Photographs keep their smooth
+      // phoneme/strength interpolation. Drawn and soft-3-D mouths select one
+      // complete authored cell at a time; blending adjacent ink/teeth drawings
+      // is the double/blurred-lip defect this stylized route exists to prevent.
       const drawVisemeMouth = (spec, image, amount, emotionIndex = 0) => {
         if (!spec || !image || !Array.isArray(spec.states)
             || !Array.isArray(spec.visemes) || amount <= .004) return;
         const states = spec.states;
         const rows = spec.visemes;
+        const atlasRows = rows.length
+          * Math.max(1, (spec.emotions || ['smile']).length);
+        if (stylizedRuntime) {
+          const sample = stylizedEmotionMouthSample(
+            states, rows, amount, emotionIndex,
+            previousViseme, currentViseme, blend);
+          if (sample) {
+            const selectedName = blend >= .5 ? currentViseme : previousViseme;
+            const registeredName = rows.includes(selectedName)
+              ? selectedName : (rows.includes('sil') ? 'sil' : rows[0]);
+            drawStylizedEmotionMouthSample(
+              faceContext, image, spec, sample, registeredName);
+          }
+          return;
+        }
         const rowOffset = emotionIndex * rows.length;
         const fallbackRow = Math.max(0, rows.indexOf('sil'));
         const oldRow = rowOffset + (rows.includes(previousViseme)
@@ -4338,7 +4616,7 @@
           ? rows.indexOf(currentViseme) : fallbackRow);
         const strength = stripBracket(states, amount);
         drawStripSamples(faceContext, image, spec, states.length,
-          rows.length * Math.max(1, (spec.emotions || ['smile']).length), [
+          atlasRows, [
             { state: strength.low, row: oldRow,
               weight: (1 - blend) * (1 - strength.mix) },
             { state: strength.high, row: oldRow,

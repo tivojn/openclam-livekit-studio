@@ -156,6 +156,8 @@ enum OpenClamAvatarCatalog {
             sourceSlug: sourceSlug,
             sourceRelativeRuntimePath: "bundled/\(directory)",
             includedByteCount: includedByteCount,
+            sourceMedium: manifest.sourceMedium ?? .photograph,
+            speechPatch: manifest.speechPatch,
             geometry: manifest.rig,
             expressionGeometry: manifest.expression,
             compatibility: fullExpressionCompatibility,

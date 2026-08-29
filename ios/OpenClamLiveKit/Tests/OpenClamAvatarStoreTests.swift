@@ -140,7 +140,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
                 try XCTUnwrap(URL(string:
-                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json?changed=1"
+                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.4/shared/avatar-store-v1/catalog/v1/catalog.json?changed=1"
                 ))
             )
         )
@@ -356,7 +356,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertTrue(OpenClamAvatarStoreReleasePolicy.isAvailable)
         XCTAssertEqual(
             OpenClamAvatarStoreReleasePolicy.productionCatalogURL.absoluteString,
-            "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.3/shared/avatar-store-v1/catalog/v1/catalog.json"
+            "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.4/shared/avatar-store-v1/catalog/v1/catalog.json"
         )
         XCTAssertEqual(
             OpenClamAvatarStoreReleasePolicy.catalogURL,

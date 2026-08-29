@@ -29,6 +29,8 @@ final class OpenClamAvatarPackageTests: XCTestCase {
 
         XCTAssertEqual(descriptor.id, "golden-guide")
         XCTAssertEqual(descriptor.displayName, "Golden Guide")
+        XCTAssertEqual(descriptor.sourceMedium, .photograph)
+        XCTAssertNil(descriptor.speechPatch)
         XCTAssertTrue(descriptor.motions.isEmpty)
         XCTAssertTrue(descriptor.compatibility.supportsFullLocalStage)
         XCTAssertEqual(
@@ -131,6 +133,8 @@ final class OpenClamAvatarPackageTests: XCTestCase {
 
         let expression = try XCTUnwrap(descriptor.expressionGeometry)
         XCTAssertEqual(descriptor.id, "full-expression-guide")
+        XCTAssertEqual(descriptor.sourceMedium, .photograph)
+        XCTAssertNil(descriptor.speechPatch)
         XCTAssertTrue(descriptor.compatibility.supportsMacV22ExpressionParity)
         XCTAssertEqual(expression.smileVisemes, OpenClamAvatarViseme.allCases)
         XCTAssertEqual(expression.emotionMouthVisemes, OpenClamAvatarViseme.allCases)
@@ -158,6 +162,89 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         XCTAssertEqual(Set(reloaded.assets.keys), fullExpressionAssetRoles)
         XCTAssertEqual(Set(reloaded.motions.keys), [.edgeIdle, .moves])
         XCTAssertTrue(reloaded.compatibility.supportsMacV22ExpressionParity)
+    }
+
+    func testFullExpressionV4ImportsValidatedSpeechPatchAndReloads() throws {
+        let archive = try fullExpressionV4Archive { manifest in
+            manifest["sourceMedium"] = "illustration"
+            manifest["speechPatch"] = self.validSpeechPatchManifest()
+        }
+        let root = try temporaryDirectory()
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        let descriptor = try store.installArchive(at: archive)
+
+        XCTAssertEqual(descriptor.sourceMedium, .illustration)
+        let speechPatch = try XCTUnwrap(descriptor.speechPatch)
+        XCTAssertEqual(
+            speechPatch.box,
+            OpenClamAvatarRect(x: 400, y: 680, width: 240, height: 150)
+        )
+        XCTAssertEqual(speechPatch.xOffset(for: .silence), 0)
+        XCTAssertEqual(speechPatch.xOffset(for: .bilabial), -96)
+        XCTAssertEqual(speechPatch.xOffset(for: .labiodental), 96)
+        XCTAssertEqual(speechPatch.xOffset(for: .open), 3)
+
+        let reloaded = try XCTUnwrap(store.loadInstalledDescriptors().first)
+        XCTAssertEqual(reloaded.sourceMedium, .illustration)
+        XCTAssertEqual(reloaded.speechPatch, speechPatch)
+    }
+
+    func testSpeechPatchIsRejectedByV2AndV3Manifests() throws {
+        let v2 = try archiveByMutatingManifest { manifest in
+            manifest["speechPatch"] = self.validSpeechPatchManifest()
+        }
+        try assertImportError(.privateMetadataNotAllowed, archive: v2)
+
+        let v3 = try archiveByMutatingMotionManifest { manifest in
+            manifest["speechPatch"] = self.validSpeechPatchManifest()
+        }
+        try assertImportError(.privateMetadataNotAllowed, archive: v3)
+    }
+
+    func testFullExpressionV4RejectsIncompleteSpeechPatchVisemes() throws {
+        let archive = try fullExpressionV4Archive { manifest in
+            var speechPatch = self.validSpeechPatchManifest()
+            var offsets = try XCTUnwrap(
+                speechPatch["visemeXOffsets"] as? [String: Double]
+            )
+            offsets.removeValue(forKey: OpenClamAvatarViseme.rounded.rawValue)
+            speechPatch["visemeXOffsets"] = offsets
+            manifest["speechPatch"] = speechPatch
+        }
+        try assertImportError(.privateMetadataNotAllowed, archive: archive)
+    }
+
+    func testFullExpressionV4RejectsInvalidSpeechPatchCalibration() throws {
+        let outsideFace = try fullExpressionV4Archive { manifest in
+            var speechPatch = self.validSpeechPatchManifest()
+            speechPatch["box"] = [
+                "x": 900, "y": 680, "width": 240, "height": 150,
+            ]
+            manifest["speechPatch"] = speechPatch
+        }
+        try assertImportError(.invalidRig, archive: outsideFace)
+
+        let excessiveOffset = try fullExpressionV4Archive { manifest in
+            var speechPatch = self.validSpeechPatchManifest()
+            var offsets = try XCTUnwrap(
+                speechPatch["visemeXOffsets"] as? [String: Double]
+            )
+            offsets[OpenClamAvatarViseme.open.rawValue] = 96.001
+            speechPatch["visemeXOffsets"] = offsets
+            manifest["speechPatch"] = speechPatch
+        }
+        try assertImportError(.invalidRig, archive: excessiveOffset)
+
+        let movingSilence = try fullExpressionV4Archive { manifest in
+            var speechPatch = self.validSpeechPatchManifest()
+            var offsets = try XCTUnwrap(
+                speechPatch["visemeXOffsets"] as? [String: Double]
+            )
+            offsets[OpenClamAvatarViseme.silence.rawValue] = 0.001
+            speechPatch["visemeXOffsets"] = offsets
+            manifest["speechPatch"] = speechPatch
+        }
+        try assertImportError(.invalidRig, archive: movingSilence)
     }
 
     func testFullExpressionV4RejectsWrongExpressionAtlasGeometry() throws {
@@ -1294,6 +1381,21 @@ final class OpenClamAvatarPackageTests: XCTestCase {
                 .underEyeLeft, .underEyeRight,
             ] + OpenClamAvatarViseme.allCases.map(OpenClamAvatarAssetRole.viseme)
         )
+    }
+
+    private func validSpeechPatchManifest() -> [String: Any] {
+        var offsets = Dictionary(
+            uniqueKeysWithValues: OpenClamAvatarViseme.allCases.enumerated().map {
+                ($0.element.rawValue, Double($0.offset - 7))
+            }
+        )
+        offsets[OpenClamAvatarViseme.silence.rawValue] = 0
+        offsets[OpenClamAvatarViseme.bilabial.rawValue] = -96
+        offsets[OpenClamAvatarViseme.labiodental.rawValue] = 96
+        return [
+            "box": ["x": 400, "y": 680, "width": 240, "height": 150],
+            "visemeXOffsets": offsets,
+        ]
     }
 
     private func temporaryDirectory() throws -> URL {

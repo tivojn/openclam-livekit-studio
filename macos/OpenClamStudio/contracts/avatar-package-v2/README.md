@@ -35,6 +35,11 @@ profile must never contain source portraits, prompts, histories, credentials,
 provider receipts, generation metadata, raw body turns, raw motion frames, or
 macOS authoring libraries.
 
+All iPhone versions may optionally carry the authoritative `sourceMedium`
+classification (`photograph`, `game art`, `anime`, `illustration`, or
+`3d render`). Packages made before this field remain valid and are treated as
+photographic; missing metadata never opts a package into stylized rendering.
+
 ## Limits
 
 - Archive: 32 MiB maximum
@@ -99,6 +104,13 @@ Those gains keep future manually tuned or automatically corrected avatars
 visually consistent between macOS and iOS. Import is fail-closed:
 v4 is accepted only when every role, state bank, dimension, hash, MIME type,
 and path is complete. Version 2 and 3 packages continue to import unchanged.
+
+A rebuilt non-photographic v4 package may additionally carry `speechPatch`:
+one nose-safe canonical lip rectangle and a bounded horizontal registration
+offset for every one of the 15 visemes (with silence fixed at zero). The iOS
+renderer uses this only with an explicit stylized `sourceMedium`; photo
+packages retain their legacy lower-face geometry and crossfade. Versions 2 and
+3 reject `speechPatch`.
 
 V4 permits 64 MiB archives, 96 MiB of expanded encoded assets, and a maximum
 single image dimension of 8,192 pixels while retaining the 16 MiB per-image

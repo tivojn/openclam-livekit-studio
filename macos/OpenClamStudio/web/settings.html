@@ -299,6 +299,11 @@ body{padding-bottom:84px}
   font:inherit;font-size:14px;resize:vertical}
 .keep-row{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
 .keep-card .keep-warn{color:var(--dim);font-size:12.5px;margin-bottom:14px}
+.keep-toggle{display:flex;gap:10px;align-items:flex-start;margin:12px 0 2px;
+  padding:11px 12px;border:1px solid var(--line);border-radius:9px;cursor:pointer}
+.keep-toggle input{margin-top:2px;accent-color:var(--ink)}
+.keep-toggle span{display:block;font-size:13px;line-height:1.35}
+.keep-toggle small{display:block;color:var(--dim);font-size:12px;line-height:1.4;margin-top:3px}
 .tier{font-size:12px;color:var(--dim);margin-top:8px}
 .tier b{color:var(--ink);font-weight:600}
 .inherit{margin-top:16px;padding:16px;border:1px solid var(--line);border-radius:8px;
@@ -3303,7 +3308,8 @@ function card(a) {
   const thumb = `/files/${a.slug}/keyframe.png`;
   const progress = avatarProgress(a), percent = Math.round(progress.value * 100);
   return `<div class="av ${on ? 'active' : ''}" data-slug="${esc(a.slug)}"
-    data-busy="${busy ? '1' : '0'}" data-job-kind="${esc((a.job && a.job.kind) || 'build')}">
+    data-busy="${busy ? '1' : '0'}" data-job-kind="${esc((a.job && a.job.kind) || 'build')}"
+    data-remove-headwear="${Boolean((a.head || {}).remove_headwear) ? '1' : '0'}">
     <div class="thumb" style="background-image:url('${thumb}'),url('/files/${a.slug}/source.png')">
       <span class="badge pill ${on ? 'act' : duo ? 'act' : busy ? 'warn' : pill}">${esc(busy
         ? ((a.job && a.job.kind) === 'calibration' ? 'calibrating' : 'building')
@@ -3552,10 +3558,13 @@ async function act(what, slug, btn) {
   // A build normalises the face and dresses the body from a house prompt,
   // which is how a character's bandana and earrings quietly disappeared
   // (owner, 2026-08-04). Ask what to KEEP before spending twenty minutes.
-  let keep = '';
+  let buildPreferences = null;
   if (what === 'build' || what === 'pipeline') {
-    keep = await askKeep(name || slug);
-    if (keep === null) return;          // cancelled
+    const avatarCard = btn.closest('.av');
+    const currentRemoveHeadwear = avatarCard &&
+      avatarCard.dataset.removeHeadwear === '1';
+    buildPreferences = await askKeep(name || slug, currentRemoveHeadwear);
+    if (buildPreferences === null) return;          // cancelled
   }
   btn.disabled = true;
   if (what === 'activate') {
@@ -3563,7 +3572,9 @@ async function act(what, slug, btn) {
   }
   const r = await api('/api/avatar/' + what, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(keep ? { slug, notes: keep } : { slug })
+    body: JSON.stringify(buildPreferences
+      ? { slug, ...buildPreferences }
+      : { slug })
   });
   if (r.detail) { alert(r.detail); btn.disabled = false; return; }
   if (r.error) {
@@ -3655,7 +3666,7 @@ async function editPersona(slug, who) {
 
 /* One question before a long build: what must survive it. Empty is the
    normal answer, so Enter alone gets on with the job. */
-function askKeep(who) {
+function askKeep(who, currentRemoveHeadwear=false) {
   return new Promise(resolve => {
     const scrim = document.createElement('div');
     scrim.className = 'keep-scrim';
@@ -3673,12 +3684,19 @@ function askKeep(who) {
          well as the body, since accessories like a bandana live on the
          head plate.</p>
       <textarea id="keep-note" rows="3" placeholder="Add extra comments, e.g. keep the character's original clothing, the bandana, the earrings"></textarea>
+      <label class="keep-toggle">
+        <input id="remove-headwear" type="checkbox" ${currentRemoveHeadwear ? 'checked' : ''}>
+        <span><strong>Remove hats and headwear</strong>
+          <small>Off by default: preserve the exact hat, bandana, head scarf, or other headwear visible in the source through the face, body, and every animation. Turn this on only when you want it removed and the covered hair reconstructed.</small>
+        </span>
+      </label>
       <div class="keep-row">
         <button class="btn" data-keep="cancel">Cancel</button>
         <button class="btn primary" data-keep="go">Build</button>
     </div></div>`;
     document.body.append(scrim);
     const field = scrim.querySelector('#keep-note');
+    const removeHeadwear = scrim.querySelector('#remove-headwear');
     let settled = false;
     const done = value => {
       if (settled) return;
@@ -3689,11 +3707,16 @@ function askKeep(who) {
     };
     activateManagedModal(scrim, field, () => done(null));
     field.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) done(field.value.trim());
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        done({notes: field.value.trim(), remove_headwear: removeHeadwear.checked});
+      }
     });
     scrim.addEventListener('click', event => {
       const act = event.target.dataset && event.target.dataset.keep;
-      if (act === 'go') done(field.value.trim());
+      if (act === 'go') done({
+        notes: field.value.trim(),
+        remove_headwear: removeHeadwear.checked
+      });
       else if (act === 'cancel' || event.target === scrim) done(null);
     });
   });

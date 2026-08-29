@@ -1897,6 +1897,84 @@ assert.equal(selectStylizedVisemeImage(oldMouth, newMouth, .49), oldMouth,
 assert.equal(selectStylizedVisemeImage(oldMouth, newMouth, .50), newMouth,
   'a stylized mouth must hard-switch to exactly one new drawing at the midpoint');
 
+const stylizedEmotionMouthSource = inline[1].match(
+  /(const stylizedEmotionMouthSample = \(\n      states, rows, amount, emotionIndex, oldName, newName, blend\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(stylizedEmotionMouthSource,
+  'the stylized emotional-mouth selector must remain independently testable');
+const stylizedEmotionMouthSample = new Function(
+  `'use strict'; const nearestIndex = (values, target) => values.reduce((best, value, index) => Math.abs(value - target) < Math.abs(values[best] - target) ? index : best, 0); ${stylizedEmotionMouthSource[1]}; return stylizedEmotionMouthSample;`,
+)();
+assert.deepEqual(
+  stylizedEmotionMouthSample([0, .34, .68, 1], ['sil', 'aa'], .52, 2,
+    'sil', 'aa', .49),
+  { state: 2, row: 4, weight: 1 },
+  'stylized emotion speech must select one old viseme/strength cell');
+assert.deepEqual(
+  stylizedEmotionMouthSample([0, .34, .68, 1], ['sil', 'aa'], .52, 2,
+    'sil', 'aa', .50),
+  { state: 2, row: 5, weight: 1 },
+  'stylized emotion speech must hard-switch to one new viseme cell');
+
+const stylizedEmotionPlacementSource = inline[1].match(
+  /(const stylizedEmotionMouthPlacement = \(\n      spec, sample, selectedName\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(stylizedEmotionPlacementSource,
+  'the stylized emotion-mouth crop/registration must remain independently testable');
+const stylizedEmotionMouthPlacement = new Function(
+  'runtimeBox', 'stylizedVisemeGeometry', 'stylizedMouthRegistration',
+  `'use strict'; ${stylizedEmotionPlacementSource[1]}; return stylizedEmotionMouthPlacement;`,
+)(
+  value => value && value.box,
+  () => [397, 662, 237, 121],
+  name => (name === 'aa' ? -20 : 0),
+);
+assert.deepEqual(
+  stylizedEmotionMouthPlacement(
+    { box: [385, 631, 260, 145], states: [0, .34, .68, 1] },
+    { state: 2, row: 5, weight: 1 },
+    'aa',
+  ),
+  {
+    sourceX: 32,
+    sourceY: 3221,
+    width: 237,
+    height: 121,
+    destinationX: 397,
+    destinationY: 662,
+  },
+  'stylized emotion cells must crop to the nose-safe lip box and apply the authored x offset',
+);
+assert.match(source,
+  /const drawStylizedEmotionMouthSample = \([\s\S]{0,1800}prepareStylizedMouthMask\(width, height\);[\s\S]{0,220}globalCompositeOperation = 'destination-in';/,
+  'stylized emotional mouths must use the ordinary oval lip matte, never the broad atlas rectangle');
+
+const stylizedMouthMaskSource = inline[1].match(
+  /(const stylizedMouthMaskAlpha = \(x, y, width, height\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(stylizedMouthMaskSource,
+  'the stylized mouth handoff mask must remain independently testable');
+const stylizedMouthMaskAlpha = new Function(
+  `'use strict'; const expressionSmoothStep = value => { const amount = Math.max(0, Math.min(1, Number(value) || 0)); return amount * amount * (3 - 2 * amount); }; ${stylizedMouthMaskSource[1]}; return stylizedMouthMaskAlpha;`,
+)();
+assert.ok(stylizedMouthMaskAlpha(49, 51, 100, 100) > .99,
+  'the authored lip core must be fully replaced');
+assert.ok(stylizedMouthMaskAlpha(49, 0, 100, 100) < .01,
+  'the provider patch must disappear before it reaches the nose');
+assert.equal(stylizedMouthMaskAlpha(0, 0, 100, 100), 0,
+  'the provider patch must have no rectangular corner coverage');
+
+const stylizedMouthToneSource = inline[1].match(
+  /(const stylizedMouthToneShift = \(source, target, limit = 24\) => \([\s\S]*?\n    \);)/,
+);
+assert.ok(stylizedMouthToneSource,
+  'the stylized mouth colour handoff must remain independently testable');
+const stylizedMouthToneShift = new Function(
+  `'use strict'; ${stylizedMouthToneSource[1]}; return stylizedMouthToneShift;`,
+)();
+assert.deepEqual(stylizedMouthToneShift([100, 200, 250], [160, 150, 0]),
+  [24, -24, -24], 'provider skin correction must stay bounded');
+
 const faceEyelidPolicySource = inline[1].match(
   /(const faceEyelidPolicy = \(stylized, stylizedBlinkReady, closure\) => \{[\s\S]*?\n    \};)/,
 );
@@ -1934,10 +2012,50 @@ assert.deepEqual([...replacementPixels], [
   255, 255, 255, 255,
   255, 255, 255, 255,
 ]);
-assert.match(source, /const replacementSource = cutoutImage \|\| headMask;/,
-  'stylized replacement must use the complete canonical head silhouette, not only the face oval');
+const preserveMaskSource = inline[1].match(
+  /(const preserveMaskAlpha = pixels => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(preserveMaskSource,
+  'the authored jaw/neck feather must remain independently testable');
+const preserveMaskAlpha = new Function(
+  `'use strict'; ${preserveMaskSource[1]}; return preserveMaskAlpha;`,
+)();
+const featherPixels = new Uint8ClampedArray([
+  1, 2, 3, 17,
+  4, 5, 6, 128,
+]);
+assert.equal(preserveMaskAlpha(featherPixels), 2);
+assert.deepEqual([...featherPixels], [
+  255, 255, 255, 17,
+  255, 255, 255, 128,
+], 'a marker-v2 stylized body must retain the authored under-jaw alpha ramp');
+const authoredHandoffSource = inline[1].match(
+  /(const authoredHeadHandoffReady = \(body, clearMask, authoredMask\) => Boolean\([\s\S]*?\n      && body\.head_clear_mask && clearMask && authoredMask\);)/,
+);
+assert.ok(authoredHandoffSource,
+  'the jaw handoff version gate must remain independently testable');
+const authoredHeadHandoffReady = new Function(
+  `'use strict'; const STYLIZED_HEAD_HANDOFF_VERSION = 2; ${authoredHandoffSource[1]}; return authoredHeadHandoffReady;`,
+)();
+const legacyHandoff = {
+  head_composite: 'replace', head_clear_mask: 'assets/head-clear-mask.png',
+};
+const currentHandoff = {
+  ...legacyHandoff, head_handoff_version: 2,
+};
+assert.equal(authoredHeadHandoffReady(legacyHandoff, {}, {}), false,
+  'legacy v3 bodies must keep the hard silhouette fallback');
+assert.equal(authoredHeadHandoffReady(currentHandoff, {}, {}), true,
+  'only the reviewed v2 authored jaw handoff may preserve its alpha ramp');
+assert.equal(authoredHeadHandoffReady(
+  { ...legacyHandoff, head_handoff_version: 3 }, {}, {}), false,
+  'future handoff versions must fail closed');
+assert.match(source, /const replacementSource = authoredHandoff \|\| recoveredLegacyHandoff\n          \? headMask : \(cutoutImage \|\| headMask\);/,
+  'a coordinated current or narrowly recovered stylized body must use its authored full-head/jaw handoff mask');
+assert.match(source, /\? preserveMaskAlpha\(matte\.data\)\n          : hardenMaskAlpha\(matte\.data\)/,
+  'only legacy stylized packages may harden the complete cutout fallback');
 assert.match(source, /headReplacementContext\.drawImage\(\n          replacementSource/,
-  'the complete stylized silhouette must become the hard erase-and-draw matte');
+  'the selected complete stylized silhouette must become the live head matte');
 
 const drawBodyHeadSource = inline[1].match(
   /(const drawBodyHeadLayer = \(target, head, replacementMask, mode, width, height\) => \{[\s\S]*?\n    \};)/,

@@ -164,13 +164,22 @@ def configure_stylized_body_replacement(
     runtime_manifest = json.loads(runtime_manifest_path.read_text())
     runtime_body = runtime_manifest["body"]
     runtime_body["head_composite"] = "replace"
+    runtime_body["head_handoff_version"] = package.STYLIZED_HEAD_HANDOFF_VERSION
+    runtime_body["head_clear_mask"] = "assets/head-clear-mask.png"
     runtime_body["options"] = {"style": "anime", "medium": "anime"}
     runtime_manifest_path.write_text(json.dumps(runtime_manifest))
+    png(
+        runtime / "head-clear-mask.png",
+        (runtime_body["width"], runtime_body["height"]),
+        color=(255, 255, 255, 255),
+    )
 
     authored_body = {
         "image": "body.png",
         "head_mask": "head-mask.png",
         "head_composite": "replace",
+        "head_handoff_version": package.STYLIZED_HEAD_HANDOFF_VERSION,
+        "head_clear_mask": "head-clear-mask.png",
         "width": runtime_body["width"],
         "height": runtime_body["height"],
         "face_transform": runtime_body["face_transform"],
@@ -183,6 +192,10 @@ def configure_stylized_body_replacement(
         authoring / "body" / "body-composite.png",
         (runtime_body["width"], runtime_body["height"]),
         color=(240, 30, 40, 255),
+    )
+    shutil.copy2(
+        runtime / "head-clear-mask.png",
+        authoring / "body" / "head-clear-mask.png",
     )
 
 
@@ -238,6 +251,14 @@ def add_full_expression_runtime(runtime: Path) -> None:
     png(runtime / "eyebag_l.png", (7, 4 * len(under_states)))
     png(runtime / "eyebag_r.png", (7, 4 * len(under_states)))
     manifest.update({
+        "stylized_mouth": {
+            "basis": "canonical-outer-lip-v1",
+            "box": [400, 694, 12, 18],
+            "viseme_x_offsets": {
+                name: (12.5 if name == "aa" else 0.0)
+                for name in package.IOS_VISEMES
+            },
+        },
         "smile": {
             "src": "assets/smile.png", "box": smile_box,
             "states": smile_states, "visemes": list(package.IOS_VISEMES),
@@ -267,6 +288,10 @@ def add_full_expression_runtime(runtime: Path) -> None:
 
 
 class AvatarContractParityTests(unittest.TestCase):
+    SOURCE_MEDIA = {
+        "photograph", "game art", "anime", "illustration", "3d render",
+    }
+
     def test_vendored_schemas_match_suite_contract_when_both_exist(self):
         for name in (
                 "README.md", "manifest.schema.json", "macos-full.schema.json",
@@ -287,6 +312,18 @@ class AvatarContractParityTests(unittest.TestCase):
         manifest["format"] = "vivieen-avatar"
         with self.assertRaises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(schema).validate(manifest)
+
+    def test_ios_schemas_allow_legacy_missing_source_medium_but_bound_new_values(self):
+        for name in (
+                "manifest.schema.json", "ios-light-v3.schema.json",
+                "ios-full-expression-v4.schema.json"):
+            with self.subTest(schema=name):
+                schema = json.loads((SCHEMA_ROOT / name).read_text())
+                self.assertNotIn("sourceMedium", schema["required"])
+                self.assertEqual(
+                    set(schema["properties"]["sourceMedium"]["enum"]),
+                    self.SOURCE_MEDIA,
+                )
 
 
 class MacFullAvatarPackageTests(unittest.TestCase):
@@ -432,6 +469,7 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
         )
         self.assertEqual(manifest["variant"], "ios-light")
         self.assertEqual(manifest["version"], 2)
+        self.assertEqual(manifest["sourceMedium"], "photograph")
         self.assertNotIn("motions", manifest)
         with zipfile.ZipFile(archive) as bundle:
             self.assertEqual(len(bundle.infolist()), 19)
@@ -442,6 +480,7 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 *{f"assets/{value}" for value in package.IOS_ROLE_FILENAMES.values()},
             })
             loaded = json.loads(bundle.read("manifest.json"))
+            self.assertEqual(loaded["sourceMedium"], "photograph")
             jsonschema.Draft202012Validator(
                 json.loads((SCHEMA_ROOT / "manifest.schema.json").read_text())
             ).validate(loaded)
@@ -464,17 +503,86 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
     def test_explicit_stylized_replace_packages_baked_body_pixels(self):
         configure_stylized_body_replacement(self.authoring, self.runtime)
         archive = self.root / "Cartoon-iPhone.avtr"
-        package.export_ios_light(
+        manifest = package.export_ios_light(
             "cartoon", "Cartoon", self.authoring, self.runtime, archive)
+
+        self.assertEqual(manifest["sourceMedium"], "illustration")
 
         with zipfile.ZipFile(archive) as bundle, \
                 Image.open(io.BytesIO(bundle.read("assets/body.png"))) as packaged, \
                 Image.open(self.authoring / "body" / "body-composite.png") as baked:
             self.assertEqual(
+                json.loads(bundle.read("manifest.json"))["sourceMedium"],
+                "illustration",
+            )
+            self.assertEqual(
                 baked.convert("RGBA").tobytes(),
                 packaged.convert("RGBA").tobytes(),
             )
             self.assertEqual((240, 30, 40, 255), packaged.convert("RGBA").getpixel((0, 0)))
+
+    def test_stylized_bake_requires_current_coordinated_head_handoff(self):
+        configure_stylized_body_replacement(self.authoring, self.runtime)
+        runtime_manifest = json.loads(
+            (self.runtime / "manifest.json").read_text())
+        current_body = runtime_manifest["body"]
+
+        for marker in (None, True, "2", 1, 3):
+            with self.subTest(runtime_marker=marker):
+                candidate = dict(current_body)
+                if marker is None:
+                    candidate.pop("head_handoff_version", None)
+                else:
+                    candidate["head_handoff_version"] = marker
+                with self.assertRaisesRegex(
+                        package.AvatarPackageError,
+                        "handoff metadata is missing or unsupported"):
+                    package._ios_body_source(
+                        self.authoring,
+                        self.runtime,
+                        candidate,
+                        "illustration",
+                    )
+
+        authored_path = self.authoring / "body" / "body.json"
+        authored = json.loads(authored_path.read_text())
+        authored["head_handoff_version"] = 1
+        authored_path.write_text(json.dumps(authored))
+        with self.assertRaisesRegex(
+                package.AvatarPackageError,
+                "authored stylized iPhone body handoff metadata"):
+            package._ios_body_source(
+                self.authoring,
+                self.runtime,
+                current_body,
+                "illustration",
+            )
+
+        authored["head_handoff_version"] = package.STYLIZED_HEAD_HANDOFF_VERSION
+        authored_path.write_text(json.dumps(authored))
+        (self.authoring / "body" / "head-clear-mask.png").unlink()
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "head clear mask is missing"):
+            package._ios_body_source(
+                self.authoring,
+                self.runtime,
+                current_body,
+                "illustration",
+            )
+
+        png(
+            self.authoring / "body" / "head-clear-mask.png",
+            (current_body["width"], current_body["height"]),
+            color=(1, 2, 3, 255),
+        )
+        with self.assertRaisesRegex(
+                package.AvatarPackageError, "runtime is stale"):
+            package._ios_body_source(
+                self.authoring,
+                self.runtime,
+                current_body,
+                "illustration",
+            )
 
     def test_photo_unknown_and_corrupt_sources_never_package_cartoon_bake(self):
         for source_medium in ("photograph", "unknown", "corrupt-future-value"):
@@ -485,8 +593,9 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 configure_stylized_body_replacement(
                     authoring, runtime, source_medium=source_medium)
                 archive = self.root / f"{source_medium}-iPhone.avtr"
-                package.export_ios_light(
+                manifest = package.export_ios_light(
                     "avatar", "Avatar", authoring, runtime, archive)
+                self.assertEqual(manifest["sourceMedium"], "photograph")
                 with zipfile.ZipFile(archive) as bundle, \
                         Image.open(io.BytesIO(bundle.read("assets/body.png"))) as packaged, \
                         Image.open(runtime / "body.png") as raw:
@@ -537,6 +646,10 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
             )
 
     def test_v22_exports_full_expression_v4_with_all_fifteen_visemes(self):
+        authoring_manifest_path = self.authoring / "manifest.json"
+        authoring_manifest = json.loads(authoring_manifest_path.read_text())
+        authoring_manifest["source_metrics"] = {"source_medium": "anime"}
+        authoring_manifest_path.write_text(json.dumps(authoring_manifest))
         add_full_expression_runtime(self.runtime)
         archive = self.root / "Nova-iPhone-Full-Expression.avtr"
         manifest = package.export_ios_light(
@@ -545,6 +658,17 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
 
         self.assertEqual(manifest["version"], package.IOS_EXPRESSION_VERSION)
         self.assertEqual(manifest["variant"], "ios-light")
+        self.assertEqual(manifest["sourceMedium"], "anime")
+        self.assertEqual(
+            manifest["speechPatch"],
+            {
+                "box": {"x": 400.0, "y": 701.2, "width": 12.0, "height": 10.8},
+                "visemeXOffsets": {
+                    name: (12.5 if name == "aa" else 0.0)
+                    for name in package.IOS_VISEMES
+                },
+            },
+        )
         self.assertEqual(manifest["expression"]["smileVisemes"], list(package.IOS_VISEMES))
         self.assertEqual(
             manifest["expression"]["emotionMouthEmotions"],
@@ -566,6 +690,7 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 (SCHEMA_ROOT / "ios-full-expression-v4.schema.json").read_text()
             )).validate(loaded)
             self.assertEqual(loaded["expression"]["smile"]["storage"], "gridAtlas")
+            self.assertEqual(loaded["speechPatch"], manifest["speechPatch"])
             self.assertEqual(
                 loaded["expression"]["emotionMouth"]["storage"], "gridAtlas"
             )
@@ -591,6 +716,37 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
             self.assertIn("assets/emotion-mouth-atlas.png", bundle.namelist())
             self.assertIn("assets/forehead-left.png", bundle.namelist())
             self.assertIn("assets/under-eye-right.png", bundle.namelist())
+
+    def test_v4_photo_package_does_not_opt_into_stylized_speech_composition(self):
+        add_full_expression_runtime(self.runtime)
+        archive = self.root / "Photo-iPhone-Full-Expression.avtr"
+        manifest = package.export_ios_light(
+            "photo", "Photo", self.authoring, self.runtime, archive
+        )
+
+        self.assertEqual(manifest["sourceMedium"], "photograph")
+        self.assertNotIn("speechPatch", manifest)
+        with zipfile.ZipFile(archive) as bundle:
+            self.assertNotIn("speechPatch", json.loads(bundle.read("manifest.json")))
+
+    def test_stylized_v4_rejects_incomplete_viseme_registration(self):
+        authoring_manifest_path = self.authoring / "manifest.json"
+        authoring_manifest = json.loads(authoring_manifest_path.read_text())
+        authoring_manifest["source_metrics"] = {"source_medium": "illustration"}
+        authoring_manifest_path.write_text(json.dumps(authoring_manifest))
+        add_full_expression_runtime(self.runtime)
+        runtime_manifest_path = self.runtime / "manifest.json"
+        runtime_manifest = json.loads(runtime_manifest_path.read_text())
+        runtime_manifest["stylized_mouth"]["viseme_x_offsets"].pop("kk")
+        runtime_manifest_path.write_text(json.dumps(runtime_manifest))
+
+        with self.assertRaisesRegex(
+                package.AvatarPackageError,
+                "speech registration is incomplete"):
+            package.export_ios_light(
+                "cartoon", "Cartoon", self.authoring, self.runtime,
+                self.root / "invalid-stylized-v4.avtr",
+            )
 
     def test_v22_exports_bounded_per_avatar_expression_calibration(self):
         add_full_expression_runtime(self.runtime)
@@ -641,6 +797,73 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
                 column = index % 3
                 row = index // 3
                 self.assertEqual(atlas.getpixel((column * 2, row)), expected)
+
+    def test_stylized_semantic_blink_strip_is_transparent_until_full_closure(self):
+        source = self.root / "semantic-eye.png"
+        destination = self.root / "semantic-eye-strip.png"
+        plate = Image.new("RGBA", (11, 7), (0, 0, 0, 0))
+        # A full authored eye oval, intentionally much larger than a human lid
+        # mesh, with a curved closed line in its lower half.
+        for y in range(1, 6):
+            for x in range(1, 10):
+                plate.putpixel((x, y), (180, 120, 80, 255))
+        for x in range(2, 9):
+            plate.putpixel((x, 4 + (1 if x in {2, 8} else 0)), (20, 15, 10, 255))
+        plate.save(source)
+
+        package._copy_semantic_eye_as_late_switch_strip(
+            source,
+            destination,
+            {"width": 11, "height": 7},
+            states=8,
+        )
+
+        with Image.open(destination) as strip:
+            strip = strip.convert("RGBA")
+            self.assertEqual(strip.size, (11, 56))
+            for frame in range(7):
+                alpha = strip.crop((0, frame * 7, 11, (frame + 1) * 7)).getchannel("A")
+                self.assertIsNone(alpha.getbbox())
+            closed = strip.crop((0, 49, 11, 56))
+            self.assertEqual(list(closed.getdata()), list(plate.getdata()))
+
+    def test_photo_semantic_blink_metadata_is_never_inspected(self):
+        malformed = {"stylized_blink": {"mode": "untrusted"}}
+        self.assertIsNone(package._ios_semantic_blink(malformed, "photograph"))
+
+    def test_legacy_stylized_blink_exports_static_transparency_not_human_strip(self):
+        runtime = {
+            "eyes": {
+                "l": {"src": "assets/eye_l.png", "box": [40, 80, 18, 9]},
+                "r": {"src": "assets/eye_r.png", "box": [90, 80, 18, 9]},
+            }
+        }
+        blink = package._ios_semantic_blink(runtime, "anime")
+        self.assertEqual(blink["mode"], "static-canonical")
+        destination = self.root / "legacy-stylized-static-eye.png"
+        package._copy_static_transparent_eye_strip(
+            destination, blink["l"]["box"], states=8
+        )
+        with Image.open(destination) as strip:
+            self.assertEqual(strip.size, (18, 72))
+            self.assertIsNone(strip.getchannel("A").getbbox())
+
+    def test_stylized_semantic_blink_uses_full_eye_bounds(self):
+        manifest = {
+            "stylized_blink": {
+                "mode": "semantic-eye-switch",
+                "l": {"src": "assets/stylized-blink-l.png", "box": [40, 80, 180, 210]},
+                "r": {"src": "assets/stylized-blink-r.png", "box": [300, 70, 190, 220]},
+            }
+        }
+        blink = package._ios_semantic_blink(manifest, "3d render")
+        self.assertEqual(blink["l"]["box"], {
+            "x": 40, "y": 80, "width": 180, "height": 210,
+        })
+        self.assertEqual(blink["r"]["box"], {
+            "x": 300, "y": 70, "width": 190, "height": 220,
+        })
+        self.assertEqual(blink["l"]["rows"], 8)
 
     def test_v4_schema_locks_role_paths_sprite_shapes_and_canonical_states(self):
         add_full_expression_runtime(self.runtime)
@@ -731,6 +954,10 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
             )
 
     def test_export_v3_includes_exact_ara_like_idle_and_move_records(self):
+        authoring_manifest_path = self.authoring / "manifest.json"
+        authoring_manifest = json.loads(authoring_manifest_path.read_text())
+        authoring_manifest["source_metrics"] = {"source_medium": "game-art"}
+        authoring_manifest_path.write_text(json.dumps(authoring_manifest))
         add_runtime_motions(self.runtime)
         archive = self.root / "Ara-iPhone.avtr"
         duplicate = self.root / "Ara-iPhone-again.avtr"
@@ -748,6 +975,7 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
             "the same runtime inputs must produce a byte-identical AVTR",
         )
         self.assertEqual(manifest["version"], 3)
+        self.assertEqual(manifest["sourceMedium"], "game art")
         self.assertEqual(set(manifest["motions"]), {"edgeIdle", "moves"})
         self.assertEqual(
             manifest["motions"]["edgeIdle"]["path"],

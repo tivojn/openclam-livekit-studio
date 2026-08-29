@@ -38,6 +38,12 @@ _MIN_GENERATED_FACE_HEIGHT_PX = 100
 _MIN_GENERATED_FACE_WIDTH_RATIO = 0.075
 _MIN_GENERATED_FACE_HEIGHT_RATIO = 0.065
 _MIN_GENERATED_FACE_AXIS_FRACTION = 0.90
+# Body schema v3 predates the short jaw handoff.  Runtime consumers must not
+# infer the new alpha semantics merely from ``head_clear_mask`` because legacy
+# v3 stylized bodies already shipped that asset with a much longer portrait
+# neck tail.  This explicit marker is written only when this author authors the
+# corresponding short under-jaw feather.
+STYLIZED_HEAD_HANDOFF_VERSION = 2
 DEFAULT_BODY_PROMPT = (
     "Create a photorealistic couture-level full-body wardrobe with tailored "
     "authority, professional editorial polish, and zero fast-fashion noise. Read only "
@@ -372,12 +378,22 @@ def _prompt(options, view="front"):
     presentation, medium, presentation_rule = _presentation_context(
         options, style)
     from . import wardrobe
+    remove_headwear = bool(options.get("remove_headwear", False))
+    headwear_rule = (
+        wardrobe.REMOVE_HEADWEAR_RULE if remove_headwear
+        else wardrobe.SOURCE_HEADWEAR_RULE)
+    accessory_rule = (
+        wardrobe.REMOVE_HEADWEAR_ACCESSORY_RULE if remove_headwear
+        else wardrobe.ACCESSORY_RULE)
     # Cached house prompts carry deterministic negative clauses which must name
     # every forbidden item. Remove those exact app-authored rules before checking
     # only the owner's/model's editable prose for contradictory assignments.
     editable_direction = direction
     fixed_rules = (
         wardrobe.ACCESSORY_RULE,
+        wardrobe.REMOVE_HEADWEAR_ACCESSORY_RULE,
+        wardrobe.SOURCE_HEADWEAR_RULE,
+        wardrobe.REMOVE_HEADWEAR_RULE,
         wardrobe.AESTHETIC_COHERENCE_RULE,
         wardrobe.FASHION_FABRIC_RULE,
         wardrobe.STRUCTURAL_RULE,
@@ -438,7 +454,9 @@ def _prompt(options, view="front"):
     repeated_rules = [
         presentation_rule, wardrobe.AESTHETIC_COHERENCE_RULE,
         wardrobe.FASHION_FABRIC_RULE,
-        wardrobe.ACCESSORY_RULE, wardrobe.STRUCTURAL_RULE,
+        wardrobe.ACCESSORY_RULE, wardrobe.REMOVE_HEADWEAR_ACCESSORY_RULE,
+        wardrobe.SOURCE_HEADWEAR_RULE,
+        wardrobe.REMOVE_HEADWEAR_RULE, wardrobe.STRUCTURAL_RULE,
     ]
     house_section = ""
     if not stylised:
@@ -481,17 +499,16 @@ def _prompt(options, view="front"):
             "canonical HD head, is the identity authority."
         ),
         "side": (
-            "Create the canonical RIGHT-SIDE view. The nose, chest, knees, and toes point "
-            "exactly camera-right in a true 90-degree profile; do not drift toward front or "
-            "three-quarter. Reference 1 owns identity. Reference 2, the approved front, owns "
-            "wardrobe, body proportions, materials, color, accessories, and garment length."
+            "Create canonical RIGHT-SIDE: nose, chest, knees, and toes point exactly "
+            "camera-right in true 90-degree profile, never front/three-quarter. Reference 1 "
+            "owns identity; Reference 2 (approved front) owns wardrobe, proportions, "
+            "materials, color, headwear geometry, accessories, and garment length."
         ),
         "back": (
-            "Create the canonical BACK view. The back of the head, shoulders, spine, hips, "
-            "knees, and heels face the camera while the face remains completely out of view; "
-            "do not turn the head over a shoulder. Reference 1 owns identity and hair. "
-            "Reference 2, the approved front, owns wardrobe, body proportions, materials, color, "
-            "accessories, and garment length."
+            "Create canonical BACK: back of head, shoulders, spine, hips, knees, and heels "
+            "face camera; face fully hidden, with no over-shoulder turn. Reference 1 owns "
+            "identity/hair; Reference 2 (approved front) owns wardrobe, proportions, "
+            "materials, color, headwear geometry, accessories, and garment length."
         ),
     }[view]
     # Keep the deterministic contract compact. xAI Imagine enforces an 8 KiB
@@ -502,19 +519,19 @@ def _prompt(options, view="front"):
     # once, leaving a useful editable budget for every view/presentation branch.
     prompt = f"""Create one vertical 3:4 full-body {view}-view plate of the exact same adult person.
 
-TURNAROUND — matched FRONT / RIGHT-SIDE / BACK. One complete figure only—no triptych, split screen, duplicate, inset, or diagram. Keep one stationary pose, limbs, outfit, scale, and camera height; rotate only the camera.
+TURNAROUND — matched FRONT / RIGHT-SIDE / BACK; one complete figure, never triptych, split, duplicate, inset, or diagram. Keep pose, limbs, outfit, scale, and camera height fixed; rotate only the camera.
 
-IDENTITY LOCK — preserve the face, skull, skin, hair, brows, eyes, nose, lips, ears, and apparent age. If eyeglasses are present, preserve them exactly; never remove them. If absent, add none. Use a neutral closed mouth; never beautify, de-age, or redesign.
+IDENTITY LOCK — preserve face, skull, skin, hair, brows, eyes, nose, lips, ears, age, and any eyeglasses exactly; never remove them. If absent, add none. Apply HEADWEAR OVERRIDE below. Neutral closed mouth; never beautify, de-age, or redesign.
 
 VIEW — {view_text}
 
-COMPOSITION — complete figure, hair through both feet, with 7% clear margin. Camera at waist height, long portrait lens, minimal perspective distortion. Use a {pose_text}. Hands, legs, and footwear are complete and anatomical; no crop, props, furniture, or text.
+COMPOSITION — complete figure, hair through both feet, 7% clear margin. Waist-height long-lens camera with minimal distortion. Use a {pose_text}. Complete anatomical hands, legs, and footwear; no crop, props, furniture, or text.
 
-PROPORTION TARGET — unmistakable high-fashion runway-supermodel silhouette, roughly 7.5 to 8 heads tall. Never copy the oversized head scale of the close-up identity reference. Crown-to-chin is 12.5 to 13.3 percent of standing height. Keep hair inside that head envelope, shoulders adult-width, long sculpted legs just over half-height, and the torso compact. Reject stretched limbs, a head-heavy silhouette, or warped anatomy.
+PROPORTION TARGET — high-fashion runway-supermodel silhouette, roughly 7.5 to 8 heads tall; crown-to-chin 12.5 to 13.3 percent of standing height. Never copy the oversized head scale of the close-up reference. Hair and retained headwear stay within the clear margin. Adult-width shoulders, compact torso, long sculpted legs just over half-height. Reject stretched limbs, head-heavy silhouette, or warped anatomy.
 
 CARRY NOTHING — both hands are completely empty and visible. No bag, handbag, clutch, purse, tote, backpack, briefcase, phone, cup, umbrella, weapon, staff, or other held object; no strap or pouch on shoulder, elbow, or body.
 
-NO GOLD AND MINIMAL ACCESSORIES — {wardrobe.ACCESSORY_RULE}
+NO GOLD AND MINIMAL ACCESSORIES — {accessory_rule}
 
 EDITABLE ART DIRECTION — {direction}{house_section}
 
@@ -524,11 +541,13 @@ DECENCY FLOOR — tasteful opaque public clothing: no nudity, lingerie, bare mid
 
 STYLE — {style_text}. Match the head's lighting, colour temperature, realism, and texture. Avoid airbrushed skin, plastic fabric, exaggerated anatomy, or game UI styling.
 
-NO BLUE / NO COBALT — forbid every blue-family colour in wardrobe, footwear, accessories, props, backdrop, and light cast, including cobalt, ultramarine, navy, royal blue, sapphire, azure, cerulean, indigo, cyan, teal, turquoise, aqua, periwinkle, and blue-violet. Preserve natural eye and hair colour. Substitute vivid fuchsia, scarlet, or coral.
+NO BLUE / NO COBALT — forbid every blue-family colour in newly designed wardrobe, footwear, accessories, props, backdrop, and light cast: cobalt, ultramarine, navy, royal blue, sapphire, azure, cerulean, indigo, cyan, teal, turquoise, aqua, periwinkle, and blue-violet. Preserve natural eye and hair colour. Substitute vivid fuchsia, scarlet, or coral.
 
-NO GREEN — never green or green-tinted: no green clothing, props, backdrop, or light cast; substitute a different color. Green corrupts alpha.
+NO GREEN — no green clothing; never green or green-tinted props, backdrop, or light cast; substitute a different color. Green corrupts alpha.
 
-NO WHITE WARDROBE — no white/off-white garments and absolutely no white shoes or soles. They dissolve into the light cutout backdrop. Substitute a clearly non-white, non-green color.
+NO WHITE WARDROBE — no white/off-white garments, no white shoes or soles. They dissolve into the cutout backdrop. Substitute a clearly non-white, non-green color.
+
+HEADWEAR OVERRIDE — {headwear_rule}
 
 SOURCE PLATE—Uniform RGB-255 white continues behind and beneath the figure. Flat frontal light; the figure casts nothing. White touches every outsole edge, both sides of each heel stem, and every body/clothing gap. Return only figure and white."""
     return _fit_full_body_prompt(prompt)
@@ -894,7 +913,8 @@ def _preflight_alpha_source(
                 f"generated {view} body did not produce an RGBA plate")
         refined, alpha_quality = body_alpha.refine(
             source_bgr, body_rgba,
-            verified_stylized=allow_stylized)
+            verified_stylized=allow_stylized,
+            stylized_turnaround_view=(view if allow_stylized else None))
         if not alpha_quality["valid"]:
             try:
                 archived = _archive_rejected_body_alpha(
@@ -1081,12 +1101,16 @@ def _stylized_head_mask(cutout_image, landmarks, destination):
     face_height = max(1.0, chin - top)
     ys = np.arange(alpha.shape[0], dtype=np.float32)
 
-    # The generated plate already owns a calibrated neck and collar.  End the
-    # canonical replacement just below the jaw over a very short feather;
-    # carrying a differently shaded portrait neck farther down makes the
-    # handoff read as a rectangular patch in flat artwork.
-    fade_start = min(alpha.shape[0] - 2, chin)
-    fade_end = min(alpha.shape[0], chin + face_height * 0.16)
+    # The generated plate already owns a calibrated neck and collar.  Hand the
+    # centre throat back *at the jaw shadow*, where a material/tone transition
+    # is anatomically expected.  The previous 0.16-face-height tail carried a
+    # differently shaded strip of portrait neck onto the body and ended in a
+    # very visible collar-like seam at close-up scale.  A narrow antialiasing
+    # feather keeps the complete chin while leaving the body neck continuous
+    # with its own shoulders and chest.
+    jaw_feather = max(4.0, face_height * 0.05)
+    fade_start = min(float(alpha.shape[0]), chin)
+    fade_end = min(float(alpha.shape[0]), chin + jaw_feather)
     fade = np.ones_like(ys)
     if fade_end > fade_start:
         progress = np.clip(
@@ -1094,8 +1118,8 @@ def _stylized_head_mask(cutout_image, landmarks, destination):
         smooth = progress * progress * (3.0 - 2.0 * progress)
         fade = 1.0 - smooth
 
-    # Only rows below the chin are narrowed; hat, hair, ears, cheeks, and the
-    # complete jaw remain exactly as supplied by the canonical illustration.
+    # Only the tiny jaw handoff is narrowed; hat, hair, ears, cheeks, and the
+    # complete visible jaw remain exactly as supplied by the canonical art.
     neck_progress = np.clip(
         (ys - chin) / max(1.0, fade_end - chin), 0.0, 1.0)
     half_width = face_width * (0.36 - 0.10 * neck_progress)
@@ -1105,7 +1129,7 @@ def _stylized_head_mask(cutout_image, landmarks, destination):
         (half_width[:, None] + feather - np.abs(xs - center)) / feather,
         0.0, 1.0)
     engage = np.clip(
-        (ys - chin) / max(1.0, face_height * 0.18), 0.0, 1.0)
+        (ys - fade_start) / max(1.0, fade_end - fade_start), 0.0, 1.0)
     engage = engage * engage * (3.0 - 2.0 * engage)
     neck_gate = 1.0 - engage[:, None] * (1.0 - narrow)
     mask = np.clip(alpha * fade[:, None] * neck_gate, 0.0, 1.0)
@@ -1546,11 +1570,17 @@ def _edit_instruction(value):
     return instruction
 
 
-def _edit_prompt(instruction, view):
+def _edit_prompt(instruction, view, remove_headwear=False):
     """A bounded, view-aware prompt for one member of a matched edit set."""
     if view not in BODY_VIEWS:
         raise ValueError(f"unknown full-body view: {view}")
     from . import wardrobe
+    headwear_rule = (
+        wardrobe.REMOVE_HEADWEAR_RULE if bool(remove_headwear)
+        else wardrobe.SOURCE_HEADWEAR_RULE)
+    accessory_rule = (
+        wardrobe.REMOVE_HEADWEAR_ACCESSORY_RULE if bool(remove_headwear)
+        else wardrobe.ACCESSORY_RULE)
     reference_contract = {
         "front": (
             "Reference 1 is the approved FRONT body plate. Reference 2 is the "
@@ -1580,13 +1610,15 @@ REQUESTED CHANGE — {instruction}
 
 EDIT CONTRACT — Apply only the requested visual change, then preserve everything else from Reference 1: the exact adult person, identity, apparent age, skin tone, hairstyle, body proportions, naturally long but realistic legs, pose, hand placement, foot placement, garment fit, materials, lighting, camera height, 3:4 canvas, full-body framing, and clean studio backdrop. {view_contract} Return exactly one person and one complete figure with both hands and both feet visible and clear silhouette margins. Do not crop, zoom, rotate, add text, add props, or redesign the face. Keep the mouth neutral and closed. The three plates must remain one coherent matched turnaround.
 
-IDENTITY LOCK — Use the identity-head reference only to preserve identity and hair. Never paste a floating portrait, enlarge the head, alter facial anatomy, beautify, de-age, or change eyewear.
+IDENTITY LOCK — Use the identity-head reference only to preserve identity, hair, eyewear, and the structured headwear state. Never paste a floating portrait, enlarge the head, alter facial anatomy, beautify, de-age, or change eyewear.
 
 LOCAL CUTOUT CONTRACT — Uniform RGB-255 white continues behind and beneath the figure. Flat frontal light; the figure casts nothing. White touches every outsole edge, both sides of each heel stem, and every body/clothing gap. Return only figure and white. No green or green cast; no blue/green styling. No white or off-white wardrobe or footwear. Preserve fine hair and heel edges without smoke, veils, particles, reflections, halo, gray fringe, furniture, or scenery.
 
-GOLD AND ACCESSORIES — {wardrobe.ACCESSORY_RULE}
+GOLD AND ACCESSORIES — {accessory_rule}
 
-DECENCY AND RIG — Opaque public attire only: no nudity, lingerie, bare midriff, sheer fabric, exposed intimate areas, or extreme plunging neckline. Both hands stay empty. Nothing may be held, carried, slung, or hooked on the body."""
+DECENCY AND RIG — Opaque public attire only: no nudity, lingerie, bare midriff, sheer fabric, exposed intimate areas, or extreme plunging neckline. Both hands stay empty. Nothing may be held, carried, slung, or hooked on the body.
+
+HEADWEAR OVERRIDE — {headwear_rule}"""
 
 
 def _install_sources(avatar_dir, sources, provider, options, log=print,
@@ -1653,7 +1685,9 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             body_rgba, alpha_quality = body_alpha.refine(
                 source_bgr, body_rgba,
                 replacement_head_mask=replacement_head,
-                verified_stylized=allow_stylized)
+                verified_stylized=allow_stylized,
+                stylized_turnaround_view=(
+                    view if allow_stylized and view != "front" else None))
             if not alpha_quality["valid"]:
                 raise GeneratedBodyAlphaError(
                     f"generated {view} body failed alpha QA: "
@@ -1790,6 +1824,12 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                 "prompt": _direction(options),
                 "outfit": _clean(options.get("outfit"), 500),
                 "notes": _clean(options.get("notes"), 600),
+                # Structured identity policy. The generated canonical head is
+                # the visual authority, while this receipt keeps body edits
+                # and future motion generation from reversing the owner's
+                # explicit preserve/remove choice.
+                "remove_headwear": bool(
+                    options.get("remove_headwear", False)),
                 # Persist the exact visible-presentation branch that produced
                 # this turnaround.  Without it, a later edit/regeneration fell
                 # back to neutral and could lose the male/no-heels contract or
@@ -1803,6 +1843,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             metadata["head_composite"] = "replace"
             metadata["head_clear_mask"] = "head-clear-mask.png"
             metadata["head_clear_quality"] = clear_mask_quality
+            metadata["head_handoff_version"] = \
+                STYLIZED_HEAD_HANDOFF_VERSION
         if edit_receipt:
             metadata["edit"] = dict(edit_receipt)
         with open(os.path.join(stage, "body.json"), "w") as handle:
@@ -1980,6 +2022,8 @@ def edit(avatar_dir, instruction, log=print, progress=None):
             "Full-body editing requires xAI Grok Imagine Image 2.0 as the "
             "selected Image provider")
     current = _body_metadata(avatar_dir)
+    remove_headwear = bool(
+        (current.get("options") or {}).get("remove_headwear", False))
     current_sources = {
         view: _body_source(avatar_dir, current, view)
         for view in BODY_VIEWS
@@ -2002,7 +2046,10 @@ def edit(avatar_dir, instruction, log=print, progress=None):
             output_dir = os.path.join(provider_stage, view)
             os.makedirs(output_dir, mode=0o700)
             edited[view] = media_gen.generate_image_edit_sync(
-                _edit_prompt(instruction, view), references, provider_config,
+                _edit_prompt(
+                    instruction, view,
+                    remove_headwear=remove_headwear),
+                references, provider_config,
                 aspect_ratio="3:4", quality="high", output_dir=output_dir,
                 file_name=f"body-edit-{view}")
         options = dict(current.get("options") or {})

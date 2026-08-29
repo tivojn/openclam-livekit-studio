@@ -452,7 +452,7 @@ def _run_avatar_worker(args, log):
         raise RuntimeError(f"avatar worker exited with status {code}")
 
 
-def _build_thread(slug, shapes=None, notes=""):
+def _build_thread(slug, shapes=None, notes="", remove_headwear=None):
     w = jlog(slug, "starting")
     with _jlock:
         _jobs[slug].update(done=False, error="", log=[])
@@ -462,6 +462,10 @@ def _build_thread(slug, shapes=None, notes=""):
             build_args.extend(["--shapes", *shapes])
         if notes:
             build_args.extend(["--keep", notes])
+        if remove_headwear is True:
+            build_args.append("--remove-headwear")
+        elif remove_headwear is False:
+            build_args.append("--preserve-headwear")
         _run_avatar_worker(build_args, w)
         d = runtime_dir(slug)
         if os.path.isdir(d):
@@ -822,6 +826,13 @@ def _body_stage(slug, options, w, progress):
     # original before body.py chooses its strict versus stylized alpha gates.
     reg().repair_source_medium_from_source(slug, log=w)
     _recover_body_edit_transaction(slug, log=w)
+    # The canonical talking head owns this choice. A standalone body request
+    # must not silently put a removed hat back on, or drop a preserved one.
+    options = dict(options or {})
+    canonical_manifest = reg().read_manifest(slug) or {}
+    canonical_head = canonical_manifest.get("head") or {}
+    if "remove_headwear" in canonical_head:
+        options["remove_headwear"] = bool(canonical_head["remove_headwear"])
     progress("generation", .12, "Generating front, side, and back bodies")
     metadata = body.build(
         reg().adir(slug), options, log=w, progress=progress)
@@ -1036,10 +1047,59 @@ def _motion_thread(
 _PIPELINE_BODY_MEDIA = {
     "photograph": "photorealistic",
     "game art": "illustrated",
+    "game-art": "illustrated",
     "anime": "anime",
     "illustration": "illustrated",
+    "illustrated": "illustrated",
+    "cartoon": "illustrated",
+    "drawing": "illustrated",
     "3d render": "soft-3d",
+    "3d-render": "soft-3d",
+    "soft-3d": "soft-3d",
 }
+
+
+def _pipeline_source_medium(report):
+    """Whitelist one stored intake report; unknown values are photographs.
+
+    This deliberately mirrors the build/export trust boundary.  Planner prose,
+    body style, and a future arbitrary label may never opt a project into the
+    more permissive stylized face/body paths.
+    """
+    report = report if isinstance(report, dict) else {}
+    medium = str(report.get("source_medium") or "").strip().lower()
+    aliases = {
+        "game art": "game art",
+        "game-art": "game art",
+        "anime": "anime",
+        "illustration": "illustration",
+        "illustrated": "illustration",
+        "cartoon": "illustration",
+        "drawing": "illustration",
+        "3d render": "3d render",
+        "3d-render": "3d render",
+        "soft-3d": "3d render",
+    }
+    if medium in aliases:
+        return aliases[medium]
+    legacy = str(report.get("source_mode") or "").strip().lower()
+    if not medium and legacy.startswith("stylized"):
+        return "illustration"
+    return "photograph"
+
+
+def _pipeline_manifest_source_medium(manifest):
+    """Return the first authoritative stored report, or ``None`` if absent.
+
+    Presence is intentional: a malformed/empty ``source_metrics`` report fails
+    closed to photograph instead of falling through to generated-head metrics.
+    """
+    if not isinstance(manifest, dict):
+        return None
+    for key in ("source_metrics", "metrics"):
+        if key in manifest:
+            return _pipeline_source_medium(manifest.get(key))
+    return None
 
 
 def _pipeline_body_medium(body_traits, manifest):
@@ -1047,27 +1107,67 @@ def _pipeline_body_medium(body_traits, manifest):
 
     The generated prose may be rejected for a bag, colour, or garment without
     invalidating the independent source classifier.  Prefer the canonical head
-    metrics, then a validated planner trait, and fail closed to photograph.
+    source metrics, then generated-head metrics as a legacy fallback, then a
+    validated planner trait, and fail closed to photograph.  A provider may
+    normalize a stylized head enough that the local head classifier calls the
+    generated plate a photograph; that must not erase the medium the owner
+    actually uploaded.
     """
-    candidates = []
-    if isinstance(manifest, dict):
-        for key in ("metrics", "source_metrics"):
-            report = manifest.get(key)
-            if isinstance(report, dict):
-                candidates.append(report.get("source_medium"))
-                candidates.append(report.get("source_mode"))
-    if isinstance(body_traits, dict):
-        candidates.append(body_traits.get("medium"))
-    for candidate in candidates:
-        medium = str(candidate or "").strip().lower()
-        if medium in _PIPELINE_BODY_MEDIA:
-            return medium
-        if medium.startswith("stylized"):
-            return "illustration"
-    return "photograph"
+    stored_medium = _pipeline_manifest_source_medium(manifest)
+    if stored_medium is not None:
+        return stored_medium
+    # Legacy projects with neither intake nor generated-head evidence may use
+    # a validated wardrobe result for presentation only. Unknown prose still
+    # fails closed and never selects a stylized detector by itself.
+    trait_medium = _pipeline_source_medium({
+        "source_medium": body_traits.get("medium")
+        if isinstance(body_traits, dict) else None,
+    })
+    return trait_medium
 
 
-def _pipeline_thread(slug, job_id, notes=""):
+def _pipeline_face_needs_rebuild(manifest, notes, remove_headwear):
+    """Return whether one-click must rebuild the talking-face bundle.
+
+    Ready legacy heads are not silently reused after a prompt/policy upgrade.
+    The decision deliberately keys the expected prompt version from original
+    source evidence before generated-head metrics, matching the body and
+    package routing boundaries.
+    """
+    if not isinstance(manifest, dict) or manifest.get("status") != "ready":
+        return True
+    if str(notes or "").strip():
+        return True
+
+    head = manifest.get("head")
+    if not isinstance(head, dict):
+        return True
+    # These fields were introduced with the explicit preserve/remove contract.
+    # Their absence is not equivalent to an intentional Preserve selection.
+    if "remove_headwear" not in head or "headwear_policy" not in head:
+        return True
+
+    source_medium = _pipeline_manifest_source_medium(manifest) or "photograph"
+
+    from studio import generate
+    expected_version = generate.head_prompt_version(source_medium)
+    try:
+        stored_version = int(head.get("prompt_version"))
+    except (TypeError, ValueError):
+        return True
+    if stored_version != expected_version:
+        return True
+
+    requested_remove = bool(remove_headwear)
+    expected_policy = "remove" if requested_remove else "preserve"
+    return (
+        bool(head.get("remove_headwear")) != requested_remove
+        or str(head.get("headwear_policy") or "").strip().lower()
+        != expected_policy
+    )
+
+
+def _pipeline_thread(slug, job_id, notes="", remove_headwear=None):
     """One click, everything: talking face (if not built) -> full body ->
     walk, edge idle, and moves - sequentially, in one background job."""
     writer = jlog(slug, "one-click pipeline: face, full body, walk, idle, moves")
@@ -1093,17 +1193,25 @@ def _pipeline_thread(slug, job_id, notes=""):
         manifest = reg().read_manifest(slug) or {}
         manifest = reg().repair_source_medium_from_source(
             slug, manifest=manifest, log=writer)
+        previous_remove_headwear = bool(
+            ((manifest.get("head") or {}).get("remove_headwear", False)))
+        remove_headwear = (previous_remove_headwear
+                           if remove_headwear is None
+                           else bool(remove_headwear))
         # A keep-note CHANGES the head prompt, so the face that is already
         # built was made without it - skipping the face would have meant
         # the one thing the owner asked to keep never came back. The head
         # cache keys on the prompt, so this re-renders rather than reusing
         # (owner: his bandana is gone, 2026-08-04).
-        if manifest.get("status") != "ready" or notes:
+        rebuild_face = _pipeline_face_needs_rebuild(
+            manifest, notes, remove_headwear)
+        if rebuild_face:
             _job_progress(slug, "face", .02,
                           "One-click 1/3: building the talking face"
                           + (" with your notes" if notes else ""),
                           job_id=job_id)
-            manifest = reg().build_avatar(slug, notes=notes) or {}
+            manifest = reg().build_avatar(
+                slug, notes=notes, remove_headwear=remove_headwear) or {}
             if manifest.get("status") != "ready":
                 raise RuntimeError(
                     manifest.get("error") or "the face build failed")
@@ -1130,6 +1238,7 @@ def _pipeline_thread(slug, job_id, notes=""):
                     style=_PIPELINE_BODY_MEDIA[body_medium],
                     prompt=body_prompt,
                     notes=notes,
+                    remove_headwear=remove_headwear,
                     presentation=body_traits.get("presentation") or "androgynous",
                     medium=body_medium,
                 ).model_dump(),
@@ -1290,6 +1399,9 @@ class Slug(BaseModel):
     # What the owner asked to keep from the source portrait. Optional
     # everywhere; only the build paths read it.
     notes: str = Field(default="", max_length=600)
+    # Preserve source-worn headwear by default. This opt-in switch is shared
+    # by photo and stylized lanes but does not merge their render pipelines.
+    remove_headwear: bool | None = None
 
 
 def _rig_control_field(name):
@@ -1331,6 +1443,7 @@ class BodyProfileInput(BaseModel):
     prompt: str = Field(default="", max_length=4000)
     outfit: str = Field(default="", max_length=500)
     notes: str = Field(default="", max_length=600)
+    remove_headwear: bool = False
     # Visible styling inferred from the uploaded reference. This is not a
     # gender-identity field; it exists so the final plate includes one footwear
     # branch instead of mentioning feminine and masculine directions together.
@@ -1601,7 +1714,8 @@ async def api_build(b: Slug):
         if j and not j["done"]:
             return {"started": False, "reason": "already building"}
     threading.Thread(target=_build_thread,
-                     args=(b.slug, b.shapes, b.notes), daemon=True).start()
+                     args=(b.slug, b.shapes, b.notes, b.remove_headwear),
+                     daemon=True).start()
     return {"started": True, "slug": b.slug}
 
 
@@ -2022,6 +2136,7 @@ class PipelineRequest(BaseModel):
     # What the owner wants kept from the source portrait - a bandana, an
     # earring, a scar. Rides with the house prompt, never replaces it.
     notes: str = Field(default="", max_length=600)
+    remove_headwear: bool | None = None
 
 
 @app.post("/api/avatar/pipeline")
@@ -2038,7 +2153,8 @@ async def api_pipeline(request: PipelineRequest):
     try:
         threading.Thread(
             target=_pipeline_thread,
-            args=(request.slug, job_id, request.notes), daemon=True).start()
+            args=(request.slug, job_id, request.notes,
+                  request.remove_headwear), daemon=True).start()
     except BaseException as error:
         _finish_job(request.slug, job_id, getattr(error, "detail", error))
         raise

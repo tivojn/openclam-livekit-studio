@@ -773,7 +773,9 @@ class WardrobeIntegrationTests(unittest.TestCase):
         self.assertEqual(
             server_app._pipeline_body_medium(
                 {"medium": "3d render"}, manifest),
-            "illustration",
+            "photograph",
+            "a present but invalid authoritative intake report must not fall "
+            "through to generated-head or planner stylization",
         )
         self.assertEqual(
             server_app._pipeline_body_medium(
@@ -782,6 +784,103 @@ class WardrobeIntegrationTests(unittest.TestCase):
             ),
             "photograph",
         )
+        self.assertEqual(
+            server_app._pipeline_body_medium(
+                {"medium": "photograph"},
+                {
+                    "source_metrics": {"source_medium": "3d render"},
+                    "metrics": {"source_medium": "photograph"},
+                },
+            ),
+            "3d render",
+        )
+        self.assertEqual(
+            server_app._pipeline_body_medium(
+                {"medium": "illustration"},
+                {
+                    "source_metrics": {"source_medium": "photograph"},
+                    "metrics": {"source_medium": "illustration"},
+                },
+            ),
+            "photograph",
+        )
+        self.assertEqual(
+            server_app._pipeline_body_medium(
+                {"medium": "illustration"},
+                {
+                    "source_metrics": {"source_medium": "future-medium"},
+                    "metrics": {"source_medium": "illustration"},
+                },
+            ),
+            "photograph",
+        )
+        self.assertEqual(
+            server_app._pipeline_body_medium(
+                {"medium": "photograph"},
+                {"metrics": {"source_medium": "illustration"}},
+            ),
+            "illustration",
+            "legacy generated-head evidence remains usable only when original "
+            "source evidence is absent",
+        )
+
+    def test_one_click_rebuilds_legacy_or_stale_headwear_heads(self):
+        base = {
+            "status": "ready",
+            "source_metrics": {"source_medium": "illustration"},
+            "metrics": {"source_medium": "photograph"},
+        }
+        current_version = generate.head_prompt_version("illustration")
+
+        self.assertTrue(server_app._pipeline_face_needs_rebuild(
+            dict(base, head={"prompt_version": current_version}), "", False))
+        self.assertTrue(server_app._pipeline_face_needs_rebuild(
+            dict(base, head={
+                "prompt_version": current_version - 1,
+                "remove_headwear": False,
+                "headwear_policy": "preserve",
+            }), "", False))
+
+        current = dict(base, head={
+            "prompt_version": current_version,
+            "remove_headwear": False,
+            "headwear_policy": "preserve",
+        })
+        self.assertFalse(server_app._pipeline_face_needs_rebuild(
+            current, "", False))
+        self.assertTrue(server_app._pipeline_face_needs_rebuild(
+            current, "keep the exact straw hat", False))
+        self.assertTrue(server_app._pipeline_face_needs_rebuild(
+            current, "", True))
+
+        photo = {
+            "status": "ready",
+            "source_metrics": {"source_medium": "photograph"},
+            "head": {
+                "prompt_version": generate.head_prompt_version("photograph"),
+                "remove_headwear": True,
+                "headwear_policy": "remove",
+            },
+        }
+        self.assertFalse(server_app._pipeline_face_needs_rebuild(
+            photo, "", True))
+
+        # Unknown/future intake labels take the same fail-closed photo prompt
+        # branch as build_avatar. Passing the raw label to head_prompt_version
+        # selects the generic prompt instead and causes an endless rebuild on
+        # every one-click run even though the current photo head is valid.
+        corrupt_source = {
+            "status": "ready",
+            "source_metrics": {"source_medium": "future-medium"},
+            "metrics": {"source_medium": "illustration"},
+            "head": {
+                "prompt_version": generate.head_prompt_version("photograph"),
+                "remove_headwear": False,
+                "headwear_policy": "preserve",
+            },
+        }
+        self.assertFalse(server_app._pipeline_face_needs_rebuild(
+            corrupt_source, "", False))
 
     def test_body_prompt_accepts_a_tailored_direction(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1486,12 +1585,24 @@ class KeepFromThePortrait(unittest.TestCase):
         # One-click SKIPS the face when it is already built. With a note,
         # skipping means the one thing the owner asked to keep never comes
         # back - his bandana lives on the head plate (owner, 2026-08-04).
-        source = (ROOT / "server" / "app.py").read_text(encoding="utf-8")
-        self.assertIn('if manifest.get("status") != "ready" or notes:', source)
+        ready = {
+            "status": "ready",
+            "source_metrics": {"source_medium": "photograph"},
+            "head": {
+                "prompt_version": generate.head_prompt_version("photograph"),
+                "remove_headwear": False,
+                "headwear_policy": "preserve",
+            },
+        }
+        self.assertTrue(server_app._pipeline_face_needs_rebuild(
+            ready, "keep his bandana", False))
 
     def test_the_ui_asks_before_a_long_build(self):
         page = (ROOT / "web" / "settings.html").read_text(encoding="utf-8")
         self.assertIn("function askKeep(", page)
         self.assertIn("Add extra comments, e.g. keep the character", page)
+        self.assertIn("Remove hats and headwear", page)
+        self.assertIn("currentRemoveHeadwear=false", page)
+        self.assertIn("remove_headwear: removeHeadwear.checked", page)
         # both long builds ask
         self.assertIn("if (what === 'build' || what === 'pipeline')", page)

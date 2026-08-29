@@ -43,7 +43,7 @@ except ModuleNotFoundError:  # package-style test/import outside server/app.py
 
 
 CACHE_NAME = ".wardrobe.json"
-CACHE_VERSION = 9
+CACHE_VERSION = 10
 ANALYSIS_EDGE = 768
 PROMPT_LIMIT = 4000
 
@@ -226,7 +226,7 @@ LUXURY_VARIATIONS = (
     },
 )
 
-ACCESSORY_RULE = (
+LEGACY_ACCESSORY_RULE_V9 = (
     "Gold is forbidden everywhere in the wardrobe and styling: no gold; no "
     "gold-tone, gold-plated, gilded, or gilt jewellery, hardware, trim, thread, "
     "footwear, or garment accents; no yellow, rose, or white gold. Accessories "
@@ -235,6 +235,32 @@ ACCESSORY_RULE = (
     "jewellery; no layered necklaces, stacked rings or bracelets, multiple-earring "
     "clusters, oversized pendants, ornate belts, or accessory clutter."
 )
+
+SOURCE_HEADWEAR_RULE = (
+    "SOURCE HEADWEAR LOCK: Preserve any source-worn headwear exactly in every "
+    "view/frame: type, silhouette, brim/ties, material, colors/marks, scale, "
+    "placement, and hair relation. Never remove, replace, recolor, resize, "
+    "simplify, duplicate, detach, or crop it; if absent, add none. This overrides "
+    "palette/accessory rules."
+)
+
+REMOVE_HEADWEAR_RULE = (
+    "REMOVE HEADWEAR LOCK: The owner chose Remove hats and headwear. Keep the "
+    "identity bare-headed in every view/frame: no hat, cap, head-worn bandana, "
+    "headband/scarf, helmet, crown/tiara, hair ornament, or replacement. Preserve "
+    "the reconstructed hairline, hair, forehead, ears, identity, and medium. This "
+    "overrides conflicting editable prose."
+)
+
+ACCESSORY_RULE = (
+    "Gold is forbidden in new styling; no yellow, rose, or white gold. Accessory "
+    "omission is preferred; otherwise use at most one small, understated choice "
+    "in silver, platinum, or neutral stone. No statement jewellery, no layered "
+    "necklaces, stacks, clusters, ornate belts, or clutter. HEADWEAR OVERRIDE "
+    "alone controls headwear."
+)
+
+REMOVE_HEADWEAR_ACCESSORY_RULE = ACCESSORY_RULE
 
 LUXURY_FINISH_RULE = (
     "Keep the silhouette structured, authoritative, and polished, never revealing for "
@@ -299,7 +325,8 @@ STYLISED_RULE = (
     "quality without importing literal fashion-house tailoring, jewellery, makeup, "
     "or footwear. Never use cobalt or gold and never add accessory clutter. Do not "
     "replace a fantasy or heroic costume with office wear, and keep every essential "
-    "costume element and shoe presentation-appropriate."
+    "costume element and shoe presentation-appropriate. Source-worn identity "
+    "headwear follows SOURCE HEADWEAR LOCK and is not optional styling."
 )
 
 BLUE_PATTERN = re.compile(
@@ -593,6 +620,10 @@ SYSTEM = (
     '"hero_color" - exactly one of fuchsia, scarlet, or coral for a photograph; '
     'for a stylised subject use the dominant existing '
     'costume colour.\n'
+    '"identity_headwear" - "none" when the canonical identity reference shows '
+    'none; otherwise three to twelve words identifying the exact source-worn '
+    'hat, cap, bandana, headband, headscarf, helmet, crown, tiara, hair ornament, '
+    'or other head-attached item that must survive.\n'
     '"palette" - two or three final garment colours with their roles and rough '
     'visible-area percentages, not a menu of possibilities.\n'
     '"harmony" - one sentence explaining why the colour temperature, garment '
@@ -620,29 +651,32 @@ SYSTEM = (
     f"   FEMININE: {FEMININE_RULE}\n"
     f"   MASCULINE: {MASCULINE_RULE}\n"
     f"   ANDROGYNOUS OR AMBIGUOUS: {ANDROGYNOUS_RULE}\n"
-    f"6. GOLD AND ACCESSORIES FOR EVERY MEDIUM: {ACCESSORY_RULE}\n"
-    f"7. OUTFIT COHERENCE: {AESTHETIC_COHERENCE_RULE} {FASHION_FABRIC_RULE}\n"
-    f"8. PHOTOGRAPHIC LUXURY FINISH: {LUXURY_FINISH_RULE}\n"
-    f"9. BODY PROPORTIONS: {PROPORTION_RULE}\n"
-    "10. HARD BAN: use lightweight fabric only; never midweight, medium-weight, "
+    f"6. SOURCE HEADWEAR FOR EVERY MEDIUM: {SOURCE_HEADWEAR_RULE}\n"
+    f"7. GOLD AND OPTIONAL ACCESSORIES FOR EVERY MEDIUM: {ACCESSORY_RULE}\n"
+    f"8. OUTFIT COHERENCE: {AESTHETIC_COHERENCE_RULE} {FASHION_FABRIC_RULE}\n"
+    f"9. PHOTOGRAPHIC LUXURY FINISH: {LUXURY_FINISH_RULE}\n"
+    f"10. BODY PROPORTIONS: {PROPORTION_RULE}\n"
+    "11. HARD BAN: use lightweight fabric only; never midweight, medium-weight, "
     "tweed, boucle, felted wool, velvet, heavy leather, coat-weight cloth, heavy "
     "layering, bulky or padded outerwear, puffers, "
     "parkas, trench coats, capes, cloaks or shawls; and never baggy, slouchy, "
     "wide-leg, cargo, or oversized trousers. Keep trousers, skirts and armour "
     "greaves fitted and the full silhouette readable from shoulder to ankle.\n"
-    "11. HARD BAN: the subject carries NOTHING. Never mention, describe, or imply "
+    "12. HARD BAN: the subject carries NOTHING. Never mention, describe, or imply "
     "a bag, handbag, clutch, purse, tote, backpack, briefcase, phone, cup, "
     "umbrella, weapon, staff, or any other held or carried object, and never "
     "sling a bag or strap over a shoulder, an elbow, or across the body. Both "
     "hands stay empty. Carried props break the pose rig and cannot survive the "
     "front/side/back turnaround.\n"
-    "12. Clothing stays opaque and suitable for public view: no nudity, lingerie, "
+    "13. Clothing stays opaque and suitable for public view: no nudity, lingerie, "
     "bare midriff, sheer fabric, exposed intimate areas, extreme plunging "
     "neckline, or vulgar styling. Presence comes from structure, fit, and "
     "confidence, never exposure.\n"
-    "13. Never redesign the face, hairstyle, skin tone, or identity. Beauty notes "
+    "14. Never redesign the face, hairstyle, skin tone, or identity. Beauty notes "
     "control finish only: keep the existing hair shape, real skin texture, and "
-    "eyeglasses exactly as shown. Write wardrobe, materials, palette, accessories, "
+    "eyeglasses exactly as shown. Preserve source-worn headwear exactly under "
+    "SOURCE HEADWEAR LOCK; never call it optional or instruct its removal. Write "
+    "wardrobe, materials, palette, optional accessories, "
     "footwear, and medium-appropriate rendering detail."
 )
 
@@ -763,16 +797,22 @@ def migrate_legacy_prompt(
     # Deduplicate either spelling of the current fixed rule.  The first release
     # omitted "No" before yellow/rose/white gold; recognise that exact generated
     # form as data from this app, not as a fresh positive owner instruction.
-    buggy_rule = ACCESSORY_RULE.replace(
+    buggy_rule = LEGACY_ACCESSORY_RULE_V9.replace(
         "No yellow, rose, or white gold.",
         "yellow, rose, or white gold.",
     )
-    had_policy = ACCESSORY_RULE in prompt or buggy_rule in prompt
+    had_policy = any(rule in prompt for rule in (
+        ACCESSORY_RULE, LEGACY_ACCESSORY_RULE_V9, buggy_rule))
     if not legacy_source and ACCESSORY_RULE in prompt:
         return prompt
+    if not legacy_source and LEGACY_ACCESSORY_RULE_V9 in prompt:
+        return _clean(
+            prompt.replace(LEGACY_ACCESSORY_RULE_V9, ACCESSORY_RULE), maximum)
     if not legacy_source and buggy_rule in prompt:
         return _clean(prompt.replace(buggy_rule, ACCESSORY_RULE), maximum)
-    prompt = prompt.replace(ACCESSORY_RULE, " ").replace(buggy_rule, " ")
+    prompt = (prompt.replace(ACCESSORY_RULE, " ")
+              .replace(LEGACY_ACCESSORY_RULE_V9, " ")
+              .replace(buggy_rule, " "))
     prompt = _clean(prompt, maximum)
 
     if legacy_source:
@@ -916,6 +956,7 @@ def _parse(text):
         "palette": _clean(palette, 140),
         "look": _clean(parsed.get("look"), 90),
         "hero_color": _clean(parsed.get("hero_color"), 24).lower(),
+        "identity_headwear": _clean(parsed.get("identity_headwear"), 160),
         "harmony": _clean(parsed.get("harmony"), 280),
     }
     if traits["medium"].lower() == "photograph":
@@ -1054,6 +1095,7 @@ def _read_cache(avatar_dir, digest):
     editable = (
         prompt
         .replace(ACCESSORY_RULE, " ")
+        .replace(SOURCE_HEADWEAR_RULE, " ")
         .replace(STYLISED_RULE, " ")
     )
     # A current cache was produced after the policy gate and must never require

@@ -777,6 +777,39 @@ class RigProfileTests(unittest.TestCase):
                 with open(os.path.join(raw, f"v_{name}.png"), "rb") as handle:
                     self.assertEqual(handle.read(), f"provider {donor}".encode())
 
+    def test_stylized_dd_fallback_rejects_narrow_rr_donor_by_target_contract(self):
+        """Regression: Luffy DD 0.81 must never inherit RR at 0.72 width."""
+        measured = [
+            {"name": "closed", "ratio": .01, "width_ratio": 1.00},
+            {"name": "FF", "ratio": .04, "width_ratio": .98},
+            {"name": "DD", "ratio": .05, "width_ratio": .81},
+            {"name": "kk", "ratio": .05, "width_ratio": .70},
+            {"name": "RR", "ratio": .04, "width_ratio": .72},
+            {"name": "ih", "ratio": .06, "width_ratio": 1.03},
+        ]
+        self.assertFalse(build._row_satisfies_viseme_contract(
+            measured[4], "DD"))
+        self.assertTrue(build._row_satisfies_viseme_contract(
+            measured[5], "DD"))
+
+        with tempfile.TemporaryDirectory() as raw:
+            for row in measured:
+                name = row["name"]
+                with open(os.path.join(raw, f"v_{name}.png"), "wb") as handle:
+                    handle.write(f"provider {name}".encode())
+            repairs = build._stage_safe_visemes(
+                raw,
+                [{"name": "DD"}, {"name": "kk"}, {"name": "RR"}],
+                lambda _message: None,
+                measurements=measured,
+                require_proof=True)
+
+            self.assertEqual(
+                repairs, {"DD": "ih", "kk": "ih", "RR": "closed"})
+            for target, donor in repairs.items():
+                with open(os.path.join(raw, f"v_{target}.png"), "rb") as handle:
+                    self.assertEqual(handle.read(), f"provider {donor}".encode())
+
 
 class PublishTransactionTests(unittest.TestCase):
     def setUp(self):

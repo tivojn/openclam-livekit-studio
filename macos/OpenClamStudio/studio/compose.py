@@ -1,9 +1,11 @@
 """Pose-lock generated frames and composite only speech-coupled regions.
 
-Full-frame swaps create global flicker and head jitter. The lip and jaw core is
-therefore transferred at full strength, while a softly weighted lower-face
-envelope carries subtle mouth-corner, chin, nasolabial-fold and cheek motion.
-Eyes and the upper face remain literal keyframe pixels.
+Full-frame swaps create global flicker and head jitter. For photographs, the
+lip and jaw core is transferred at full strength while a softly weighted
+lower-face envelope carries subtle mouth-corner, chin, nasolabial-fold and
+cheek motion. For stylized sources, only the registered outer-lip union is
+transferred and locally colour-harmonized; the canonical face remains literal
+art. Eyes and the rest of the upper face remain canonical pixels.
 """
 import os, json
 import numpy as np, cv2
@@ -462,6 +464,94 @@ def _alpha_ring(mask, face_m, scale, profile=None):
     return alpha, ring
 
 
+def _stylized_mouth_alpha(shape, key_landmarks, source_landmarks, transform):
+    """Return a tight, registered lip transfer for illustrated faces.
+
+    Photographic mouths need some cheek/jaw coupling to remain anatomical, but
+    applying that broad skin envelope to rendered artwork transfers a second
+    colour grade and texture over the canonical face.  The web/iOS stylized
+    renderers already use the canonical head as their immutable identity
+    plate, so their viseme asset should contain only the union of the canonical
+    and provider-authored outer lips plus a small antialiased margin.
+    """
+    height, width = shape[:2]
+    canonical = np.asarray(key_landmarks, np.float32)[face.OUTER_LIP]
+    generated = np.asarray(source_landmarks, np.float32)[face.OUTER_LIP]
+    projected = ((np.asarray(transform, np.float32)[:, :2]
+                  @ generated.T).T
+                 + np.asarray(transform, np.float32)[:, 2])
+    points = np.vstack((canonical, projected))
+    finite = points[np.isfinite(points).all(axis=1)]
+    if len(finite) < 3:
+        return np.zeros((height, width), np.float32)
+    mouth_width = max(
+        4.0,
+        float(np.ptp(canonical[:, 0])),
+        float(np.ptp(projected[:, 0])),
+    )
+    core = np.zeros((height, width), np.uint8)
+    cv2.fillConvexPoly(
+        core, cv2.convexHull(np.round(finite).astype(np.int32)), 255)
+    # Eight percent retains moving corners and the immediate lip antialiasing
+    # but cannot reach the nose, chin edge, cheek texture, or face outline.
+    margin = max(2, int(round(mouth_width * 0.08)))
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (margin * 2 + 1, margin * 2 + 1))
+    support = cv2.dilate(core, kernel)
+    sigma = max(0.8, mouth_width * 0.025)
+    alpha = cv2.GaussianBlur(
+        support, (0, 0), sigma).astype(np.float32) / 255.0
+    alpha[core > 0] = 1.0
+    return np.clip(alpha, 0.0, 1.0)
+
+
+def _stylized_patch_harmonize(key, donor, alpha):
+    """Match local low-frequency colour while preserving authored mouth art.
+
+    A provider can keep the correct character yet return a slightly warmer or
+    smoother frame.  A single global RGB offset does not follow the face's
+    shaded gradient and leaves a visible oval patch.  Matching only the broad
+    low-frequency field retains the donor's lip lines, teeth, tongue and oral
+    interior while making its surrounding skin converge on the canonical art.
+    """
+    support = alpha > 0.02
+    points = cv2.findNonZero(support.astype(np.uint8))
+    if points is None:
+        return donor.astype(np.float32)
+    _x, _y, width, _height = cv2.boundingRect(points)
+    sigma = max(4.0, float(width) * 0.42)
+    canonical_low = cv2.GaussianBlur(
+        key.astype(np.float32), (0, 0), sigma)
+    donor_low = cv2.GaussianBlur(
+        donor.astype(np.float32), (0, 0), sigma)
+    correction = np.clip(canonical_low - donor_low, -48.0, 48.0)
+    return np.clip(donor.astype(np.float32) + correction, 0.0, 255.0)
+
+
+def _finish_viseme_bank(viseme_dir, diag_dir, log, profile,
+                        allow_stylized=False):
+    """Apply photographic dental/shadow correction only to photographs.
+
+    The tooth detector and warm-cavity targets are explicitly photographic.
+    Running them over a cartoon elects fragments from unrelated mouth shapes,
+    inpaints line art, and pastes those fragments back into every viseme.  The
+    stylized generation contract already locks the character's dental design;
+    keep those authored pixels intact.
+    """
+    if allow_stylized:
+        log("  stylized mouth plates preserved: no photographic dental or "
+            "oral-shadow rewrite")
+        return [], []
+    dental_donors = _select_dental_donors(
+        viseme_dir, profile, allow_stylized=False)
+    oral_shadows = soften_oral_shadows(
+        viseme_dir, log, allow_stylized=False)
+    teeth = canonicalize_teeth(
+        viseme_dir, diag_dir, log, selected=dental_donors, profile=profile,
+        allow_stylized=False)
+    return oral_shadows, teeth
+
+
 def _detect_composition_face(image, allow_stylized=False):
     """Return a production mesh, with an explicit cartoon-only fallback.
 
@@ -495,8 +585,12 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
     os.makedirs(out_dir, exist_ok=True)
     if diag_dir:
         os.makedirs(diag_dir, exist_ok=True)
-        cv2.imwrite(os.path.join(diag_dir, "02_mask_mouth.png"),
-                    (prepared["mouth"][0] * 255).astype(np.uint8))
+        # The stylized mask is registered per generated plate below.  Writing
+        # the broad photographic envelope here made diagnostics claim that
+        # cheeks/jaw were still transferred even after the stylized fix.
+        if not allow_stylized:
+            cv2.imwrite(os.path.join(diag_dir, "02_mask_mouth.png"),
+                        (prepared["mouth"][0] * 255).astype(np.uint8))
         cv2.imwrite(os.path.join(diag_dir, "03_mask_eyes.png"),
                     (prepared["eyes"][0] * 255).astype(np.uint8))
         for name, region in masks["mouth"]["regions"].items():
@@ -528,10 +622,31 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
         proj = (M[:, :2] @ slm[face.RIGID].T).T + M[:, 2]
         resid = float(np.linalg.norm(proj - klm[face.RIGID], axis=1).mean())
 
-        alpha, ring = prepared["eyes" if name in visemes.EYE_SHAPES else "mouth"]
         wl = warped.astype(np.float32)
-        off = kl[ring].mean(axis=0) - wl[ring].mean(axis=0)
-        wl = np.clip(wl + off, 0, 255)
+        if allow_stylized and name not in visemes.EYE_SHAPES:
+            alpha = _stylized_mouth_alpha(
+                key.shape, klm, slm, M)
+            if diag_dir and name in {"closed", "ah"}:
+                cv2.imwrite(
+                    os.path.join(
+                        diag_dir, f"02_mask_mouth_stylized_{name}.png"),
+                    np.round(alpha * 255.0).astype(np.uint8))
+            # Keep the legacy report useful: measure the surrounding canonical
+            # difference even though the stylized compositor now performs a
+            # spatial low-frequency match rather than applying this scalar.
+            hard = (alpha > 0.08).astype(np.uint8) * 255
+            outer = cv2.dilate(
+                hard, cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (17, 17)))
+            ring = (outer > 0) & (hard == 0) & (face_m > 0)
+            off = (kl[ring].mean(axis=0) - wl[ring].mean(axis=0)
+                   if np.any(ring) else np.zeros(3, np.float32))
+            wl = _stylized_patch_harmonize(kl, wl, alpha)
+        else:
+            alpha, ring = prepared[
+                "eyes" if name in visemes.EYE_SHAPES else "mouth"]
+            off = kl[ring].mean(axis=0) - wl[ring].mean(axis=0)
+            wl = np.clip(wl + off, 0, 255)
         out = (kl * (1 - alpha[..., None]) + wl * alpha[..., None]).astype(np.uint8)
         cv2.imwrite(os.path.join(out_dir, f"v_{name}.jpg"), out,
                     [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -547,12 +662,8 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
         log(f"  {name:7s} rigid residual {resid:5.2f}px   off-region delta {outside:.4f}"
             + (f"   foreshortening {fs:.2f}" if fs else ""))
 
-    dental_donors = _select_dental_donors(
-        out_dir, profile, allow_stylized=allow_stylized)
-    oral_shadows = soften_oral_shadows(
-        out_dir, log, allow_stylized=allow_stylized)
-    teeth = canonicalize_teeth(
-        out_dir, diag_dir, log, selected=dental_donors, profile=profile,
+    oral_shadows, teeth = _finish_viseme_bank(
+        out_dir, diag_dir, log, profile,
         allow_stylized=allow_stylized)
     if diag_dir:
         json.dump(dict(keyframe=kmet, visemes=report, teeth=teeth,

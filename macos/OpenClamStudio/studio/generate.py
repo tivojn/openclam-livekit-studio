@@ -12,60 +12,88 @@ from . import visemes
 
 MAX_WORKERS = 4
 RETRIES = 2
-# The established photo prompt remains v3 so adding cartoon support does not
-# invalidate or re-bill every existing photographic avatar.
-HEAD_PROMPT_VERSION = 3
-ILLUSTRATION_HEAD_PROMPT_VERSION = 1
-PRESERVE_MEDIUM_HEAD_PROMPT_VERSION = 1
-HEAD_PROMPT = """Create an ultra-high-definition square identity head reference from the supplied photo.
+# Headwear is now an explicit build policy. Bump every prompt lane so a source
+# that was previously rendered under the old photo "no hats" contract cannot
+# silently reuse a hatless canonical head. The prompt text itself remains part
+# of the cache signature, so Preserve and Remove never share a render.
+HEAD_PROMPT_VERSION = 4
+ILLUSTRATION_HEAD_PROMPT_VERSION = 2
+PRESERVE_MEDIUM_HEAD_PROMPT_VERSION = 2
+
+HEADWEAR_PRESERVE_CONTRACT = """HEADWEAR POLICY — PRESERVE. Any source-worn hat, cap, bandana, headband, headscarf, helmet, crown, tiara, hair ornament, or other identity-bearing headwear is part of identity, not optional styling. Keep its exact kind, silhouette, brim and tie geometry, material, colors and pattern, markings, scale, placement, and relationship to the hair. Never remove, replace, recolor, shrink, simplify, duplicate, detach, or crop it. If the source shows no headwear, add none."""
+
+HEADWEAR_REMOVE_CONTRACT = """HEADWEAR POLICY — REMOVE. The owner explicitly chose Remove hats and headwear. Remove every hat, cap, head-worn bandana, headband, headscarf, helmet, crown, tiara, hair ornament, and other head-attached item from the supplied source. Reconstruct the same character's plausible underlying hairline, hair, scalp, forehead, and ears cleanly in the original visual medium; preserve identity and do not add a replacement accessory. This explicit removal policy overrides any conflicting free-text keep note."""
+
+_PHOTO_HEAD_PROMPT_CORE = """Create an ultra-high-definition square identity head reference from the supplied photo.
 
 IDENTITY — preserve the exact same adult person's facial identity, skull and facial proportions, skin tone and texture, apparent age, hairline, hairstyle, eyebrows, eye shape and color, nose, lips, ears, and distinctive natural features. Do not beautify, de-age, stylize, or redesign the person.
 
 EYEWEAR — if the supplied photo shows the person wearing eyeglasses, those glasses are part of their identity. Keep the exact same pair on the face: same frame shape, rim style, frame thickness, frame color and material, temple arms, lens shape and any lens tint, sitting at the same position on the nose and ears. Never remove them, never swap them for a different pair, and never render an unglassed version of this person. If the supplied photo shows no eyeglasses, do not add any.
 
-FRAMING — show only the complete head and hair, centered and fully visible, with at most a very small neutral upper-neck transition below the jaw. No shoulders, collarbones, chest, torso, arms, or hands. No clothing of any kind, jewelry, earrings, hats, headwear, headphones, other accessories, props, or text anywhere in the image — eyeglasses already worn in the supplied photo are the single exception and must be kept exactly as described above. Do not crop the hair, chin, jaw, or ears.
+FRAMING — show only the complete head, hair, ears, eyeglasses already worn, and any headwear retained by the final policy below, centered and fully visible, with at most a very small neutral upper-neck transition below the jaw. No shoulders, collarbones, chest, torso, arms, hands, clothing, jewelry, earrings, headphones, handheld props, added accessories, or text. Do not crop the crown, brim, ties, hair, chin, jaw, or ears.
 
 POSE — face the camera straight on with an upright head, eyes naturally open, and a neutral closed mouth. Preserve realistic asymmetry. Use even soft studio light and a plain neutral background with clean separation around every hair edge.
 
 This is a reusable identity asset for facial animation and later full-body image editing, not a fashion portrait or profile photograph."""
 
-STYLIZED_HEAD_PROMPT = """Create an ultra-high-definition square, animation-ready head reference from the supplied illustration.
+_STYLIZED_HEAD_PROMPT_CORE = """Create an ultra-high-definition square, animation-ready head reference from the supplied illustration.
 
 CHARACTER IDENTITY — preserve the exact same illustrated character, apparent age, face silhouette, skin palette, eye and iris design, eyebrows, nose, mouth design, ears, hairline, hairstyle, scars, linework, shading language, and every distinctive identity feature. Preserve the source medium and drawing style exactly. Do not photorealize, beautify, de-age, redesign, or substitute a generic anime character.
-
-IDENTITY-BEARING HEADWEAR — keep the exact hat, headwear, glasses, hair ornaments, or other head-attached item already present in the source when it identifies the character. Preserve its shape, colors, markings, placement, and relationship to the hair. Do not add any item that is absent from the source.
 
 TRACKABLE FACE — render one coherent, unobstructed face, straight toward the camera, with stable bilateral eye placement and a single anatomically connected brow, nose, cheek, jaw, and mouth region. Gently normalize only the camera pose and facial layout needed for reliable facial animation; keep the character's stylized proportions and recognizability. No duplicate eyes, brows, lips, teeth, tongues, face fragments, or detached features.
 
 EXPRESSION — eyes naturally open and looking at the camera. Use a calm neutral expression and one closed, relaxed mouth with no visible teeth or tongue. Preserve the source's characteristic lip and mouth line style while closing an open grin.
 
-FRAMING — show the complete head, hair, ears, and identity-bearing headwear, centered and fully visible, with a very small neutral upper-neck transition below the jaw. No shoulders, collarbones, chest, torso, arms, hands, clothing, handheld props, text, or extra characters. Do not crop the crown, brim, hair, chin, jaw, or ears.
+FRAMING — show the complete head, hair, ears, glasses, and any headwear retained by the final policy below, centered and fully visible, with a very small neutral upper-neck transition below the jaw. No shoulders, collarbones, chest, torso, arms, hands, clothing, handheld props, added accessories, text, or extra characters. Do not crop the crown, brim, ties, hair, chin, jaw, or ears.
 
 Use even clean light and a plain neutral background with crisp separation around the entire illustrated silhouette. This is a reusable character identity plate for facial animation, not a new artwork or costume design."""
 
-PRESERVE_MEDIUM_HEAD_PROMPT = """Create an ultra-high-definition square, animation-ready head reference from the supplied image.
+_PRESERVE_MEDIUM_HEAD_PROMPT_CORE = """Create an ultra-high-definition square, animation-ready head reference from the supplied image.
 
 VISUAL MEDIUM — preserve the source medium exactly. If the source is a photograph, keep it fully photographic with the same natural skin and hair detail. If it is an illustration, animation still, painting, 3D render, or other artwork, keep that exact linework, shading, texture, palette, and rendering language. Never convert a drawing into a photo or a photo into artwork.
 
-IDENTITY — preserve the exact same adult person or character: face silhouette, skull and facial proportions, apparent age, complexion or skin palette, eyes, brows, nose, mouth design, ears, hairline, hairstyle, scars, glasses, identity-bearing headwear, and all distinctive natural or drawn features. Do not beautify, de-age, redesign, or substitute a generic face.
+IDENTITY — preserve the exact same adult person or character: face silhouette, skull and facial proportions, apparent age, complexion or skin palette, eyes, brows, nose, mouth design, ears, hairline, hairstyle, scars, glasses, and all distinctive natural or drawn features. Do not beautify, de-age, redesign, or substitute a generic face.
 
 TRACKABLE FACE — render one coherent, unobstructed face straight toward the camera with stable bilateral eye placement and a single connected brow, nose, cheek, jaw, and mouth region. Gently normalize only camera pose and facial layout needed for animation. No duplicate or detached facial features.
 
 EXPRESSION — eyes naturally open and looking at the camera. Use a calm neutral expression and one closed, relaxed mouth with no visible teeth or tongue.
 
-FRAMING — show the complete head, hair, ears, glasses, and identity-bearing headwear, centered and fully visible, with only a very small neutral upper-neck transition. No shoulders, chest, torso, arms, hands, handheld props, text, or extra characters. Do not crop the crown, brim, hair, chin, jaw, or ears. Use even clean light and a plain neutral background."""
+FRAMING — show the complete head, hair, ears, glasses, and any headwear retained by the final policy below, centered and fully visible, with only a very small neutral upper-neck transition. No shoulders, chest, torso, arms, hands, handheld props, added accessories, text, or extra characters. Do not crop the crown, brim, ties, hair, chin, jaw, or ears. Use even clean light and a plain neutral background."""
 
 
-def head_prompt_for(source_medium):
+def headwear_contract(remove_headwear=False):
+    """Return the final, authoritative source-headwear instruction."""
+    return (HEADWEAR_REMOVE_CONTRACT if bool(remove_headwear)
+            else HEADWEAR_PRESERVE_CONTRACT)
+
+
+def _with_headwear_policy(core, remove_headwear=False):
+    return core.rstrip() + "\n\n" + headwear_contract(remove_headwear)
+
+
+# Public default prompts remain useful to QA/tests and document the safe
+# default: source-worn headwear survives unless the owner opts out.
+HEAD_PROMPT = _with_headwear_policy(_PHOTO_HEAD_PROMPT_CORE)
+STYLIZED_HEAD_PROMPT = _with_headwear_policy(_STYLIZED_HEAD_PROMPT_CORE)
+PRESERVE_MEDIUM_HEAD_PROMPT = _with_headwear_policy(
+    _PRESERVE_MEDIUM_HEAD_PROMPT_CORE)
+
+
+def head_prompt_for(source_medium, remove_headwear=False):
     """Return the medium-safe canonical-head prompt and its cache version."""
     medium = str(source_medium or "unknown").lower()
     # Compatibility for draft manifests created by the first crop-fallback
     # implementation before detection path and medium were separated.
     if medium.startswith("stylized") or medium in {"illustration", "cartoon", "drawing"}:
-        return STYLIZED_HEAD_PROMPT, ILLUSTRATION_HEAD_PROMPT_VERSION
+        return _with_headwear_policy(
+            _STYLIZED_HEAD_PROMPT_CORE, remove_headwear), \
+            ILLUSTRATION_HEAD_PROMPT_VERSION
     if medium in {"photo", "photograph", "photographic"}:
-        return HEAD_PROMPT, HEAD_PROMPT_VERSION
-    return PRESERVE_MEDIUM_HEAD_PROMPT, PRESERVE_MEDIUM_HEAD_PROMPT_VERSION
+        return _with_headwear_policy(
+            _PHOTO_HEAD_PROMPT_CORE, remove_headwear), HEAD_PROMPT_VERSION
+    return _with_headwear_policy(
+        _PRESERVE_MEDIUM_HEAD_PROMPT_CORE, remove_headwear), \
+        PRESERVE_MEDIUM_HEAD_PROMPT_VERSION
 
 
 def head_prompt_version(source_medium):
@@ -87,7 +115,8 @@ def default_head_provider():
 
 def generate_head(reference, destination, provider=None, quality="high",
                   timeout=1800, log=print, overwrite=False, pose_note="",
-                  keep="", source_medium="photograph"):
+                  keep="", source_medium="photograph",
+                  remove_headwear=False):
     """Create and cache the canonical head-only identity asset used downstream.
 
     pose_note carries a measured correction ("previous attempt: yaw -9.1deg
@@ -105,10 +134,18 @@ def generate_head(reference, destination, provider=None, quality="high",
     # normalises the face, and normalising quietly removed the very things
     # that made a character recognisable (owner, 2026-08-04). It joins the
     # signature below, so changing it correctly re-renders.
-    prompt, prompt_version = head_prompt_for(source_medium)
+    prompt, prompt_version = head_prompt_for(
+        source_medium, remove_headwear=remove_headwear)
+    # The structured policy must be the last word. Strip it temporarily so
+    # measured pose corrections and owner notes can be inserted without ever
+    # overriding an explicit Remove toggle.
+    policy = headwear_contract(remove_headwear)
+    if prompt.endswith(policy):
+        prompt = prompt[:-len(policy)].rstrip()
     prompt += pose_note
     if keep:
         prompt += f"\nMUST KEEP from the source portrait: {keep}"
+    prompt += "\n\n" + policy
 
     signature = hashlib.sha256((
         f"v{prompt_version}\n{provider['name']}\n{provider.get('model')}\n"

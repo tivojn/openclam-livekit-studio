@@ -17,7 +17,7 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from studio import anatomy, blink, build, compose, export, face, measure, render, rig
+from studio import anatomy, blink, build, compose, export, expression, face, measure, render, rig
 from studio import visemes
 
 
@@ -245,6 +245,7 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
                 handle.write(
                     '{"image":"body.png","head_mask":"head-mask.png",'
                     '"head_composite":"replace",'
+                    '"head_handoff_version":2,'
                     '"head_clear_mask":"head-clear-mask.png"}')
             manifest = {
                 "status": "ready",
@@ -264,8 +265,34 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
             self.assertEqual(
                 "assets/head-clear-mask.png",
                 published["body"]["head_clear_mask"])
+            self.assertEqual(2, published["body"]["head_handoff_version"])
             self.assertTrue(os.path.isfile(
                 os.path.join(runtime_dir, "head-clear-mask.png")))
+
+    def test_stylized_head_handoff_version_is_explicit_and_fails_closed(self):
+        base = {
+            "v": 3,
+            "head_composite": "replace",
+            "head_clear_mask": "head-clear-mask.png",
+        }
+        legacy = export._runtime_body_metadata(base)
+        self.assertNotIn("head_handoff_version", legacy)
+
+        current = export._runtime_body_metadata({
+            **base,
+            "head_handoff_version": export.STYLIZED_HEAD_HANDOFF_VERSION,
+        })
+        self.assertEqual(
+            export.STYLIZED_HEAD_HANDOFF_VERSION,
+            current["head_handoff_version"])
+
+        # Reject bool/string aliases and every unreviewed version.  Runtime
+        # must never infer the new feather semantics from a legacy clear mask.
+        for marker in (True, "2", 1, 3):
+            candidate = export._runtime_body_metadata({
+                **base, "head_handoff_version": marker,
+            })
+            self.assertNotIn("head_handoff_version", candidate)
 
 
 class BuildRoutingTests(unittest.TestCase):
@@ -511,7 +538,11 @@ class StylizedRendererAssetTests(unittest.TestCase):
                 mock.patch.object(
                     export.face, "detect_for_intake",
                     side_effect=AssertionError(
-                        "photo runtime invoked permissive intake")) as intake:
+                        "photo runtime invoked permissive intake")) as intake, \
+                mock.patch.object(
+                    export, "_harmonic_stylized_skin",
+                    side_effect=AssertionError(
+                        "photo runtime invoked stylized skin fill")) as fill:
             os.makedirs(os.path.join(directory, "raw"))
             cv2.imwrite(os.path.join(directory, "raw", "v_blink.png"), _image())
             result = export._publish_stylized_blink_source(
@@ -521,6 +552,41 @@ class StylizedRendererAssetTests(unittest.TestCase):
                 }, directory, "photograph", log=lambda _message: None)
         self.assertIsNone(result)
         intake.assert_not_called()
+        fill.assert_not_called()
+
+    def test_harmonic_stylized_skin_has_no_disk_or_radial_seam(self):
+        height, width = 84, 112
+        grid_y, grid_x = np.mgrid[:height, :width]
+        # Each channel is a linear skin-lighting field.  A correct discrete
+        # harmonic fill reconstructs it exactly; a radial inpaint/fitted disk
+        # leaves a measurable circular residual in the eye interior.
+        expected = np.dstack((
+            72.0 + grid_x * .34 + grid_y * .08,
+            112.0 + grid_x * .24 + grid_y * .15,
+            174.0 + grid_x * .18 + grid_y * .11,
+        )).astype(np.uint8)
+        canonical = expected.copy()
+        cv2.ellipse(canonical, (56, 42), (26, 20), 0, 0, 360,
+                    (246, 246, 246), -1)
+        cv2.ellipse(canonical, (56, 42), (26, 20), 0, 0, 360,
+                    (18, 18, 18), 3)
+        cv2.circle(canonical, (56, 42), 7, (8, 8, 8), -1)
+        mask = np.zeros((height, width), np.uint8)
+        cv2.ellipse(mask, (56, 42), (29, 23), 0, 0, 360, 255, -1)
+
+        filled = export._harmonic_stylized_skin(canonical, mask > 0)
+
+        self.assertIsNotNone(filled)
+        error = np.abs(
+            filled.astype(np.int16) - expected.astype(np.int16)
+        ).max(2)
+        self.assertLessEqual(
+            float(np.percentile(error[mask > 0], 99)), 1.0,
+            "a linear canonical skin field must not become a circular disk",
+        )
+        self.assertTrue(np.array_equal(
+            filled[mask == 0], canonical[mask == 0]
+        ), "harmonic reconstruction may change only the full-eye mask")
 
     def test_stylized_blink_export_accepts_closed_sclera_despite_noisy_mesh(self):
         key = np.full((80, 96, 3), (70, 100, 150), np.uint8)
@@ -575,11 +641,45 @@ class StylizedRendererAssetTests(unittest.TestCase):
                     cv2.IMREAD_UNCHANGED)
                 self.assertIsNotNone(plate)
                 self.assertEqual(4, plate.shape[2])
-                self.assertEqual(0, int(plate[0, 0, 3]))
+                self.assertLessEqual(
+                    int(plate[0, 0, 3]), 24,
+                    "the crop edge may contain only the canonical seam feather",
+                )
                 self.assertGreater(int(plate[plate.shape[0] // 2,
                                              plate.shape[1] // 2, 3]), 250)
                 x, y, width, height = result[side]["box"]
                 neutral_patch = key[y:y + height, x:x + width]
+                neutral_hsv = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2HSV)
+                open_sclera = (
+                    (neutral_hsv[:, :, 1] < 40)
+                    & (neutral_hsv[:, :, 2] > 200)
+                )
+                self.assertGreater(
+                    int(np.count_nonzero(open_sclera)), 30,
+                    "fixture must contain an oversized authored sclera",
+                )
+                self.assertGreaterEqual(
+                    int(np.min(plate[:, :, 3][open_sclera])), 250,
+                    "the semantic plate must fully occlude every open-eye pixel",
+                )
+                opacity = plate[:, :, 3].astype(np.float32)[:, :, None] / 255.0
+                rendered = np.clip(
+                    plate[:, :, :3].astype(np.float32) * opacity
+                    + neutral_patch.astype(np.float32) * (1.0 - opacity),
+                    0,
+                    255,
+                ).astype(np.uint8)
+                rendered_hsv = cv2.cvtColor(rendered, cv2.COLOR_BGR2HSV)
+                remaining_sclera = (
+                    (rendered_hsv[:, :, 1] < 72)
+                    & (rendered_hsv[:, :, 2] > 155)
+                    & open_sclera
+                )
+                self.assertEqual(
+                    0,
+                    int(np.count_nonzero(remaining_sclera)),
+                    "a closed cartoon eye must not retain a smaller white eye",
+                )
                 feather = (plate[:, :, 3] > 2) & (plate[:, :, 3] < 24)
                 if np.any(feather):
                     self.assertLessEqual(int(np.max(np.abs(
@@ -588,6 +688,103 @@ class StylizedRendererAssetTests(unittest.TestCase):
                 self.assertEqual(
                     f"assets/stylized-blink-{side}.png",
                     result[side]["src"])
+
+    def test_stylized_blink_retries_stable_global_when_local_lid_is_clipped(self):
+        key = np.full((80, 96, 3), (70, 100, 150), np.uint8)
+        for centre in ((25, 26), (69, 26)):
+            cv2.ellipse(key, centre, (12, 10), 0, 0, 360,
+                        (245, 245, 245), -1)
+            cv2.circle(key, centre, 3, (10, 10, 10), -1)
+        shut = np.full_like(key, (70, 100, 150))
+        cv2.line(shut, (15, 31), (35, 31), (20, 20, 20), 3,
+                 cv2.LINE_AA)
+        cv2.line(shut, (59, 31), (79, 31), (20, 20, 20), 3,
+                 cv2.LINE_AA)
+        landmarks = _landmarks(96)
+        identity = np.array([[1., 0., 0.], [0., 1., 0.]])
+        # This deliberately moves the authored lid above the bounded local
+        # crop.  Publication may recover only from the already stability-gated
+        # global affine, not by weakening the lid topology threshold.
+        clipped_local = np.array([[1., 0., 0.], [0., 1., -18.]])
+        logs = []
+        with tempfile.TemporaryDirectory() as directory:
+            raw = os.path.join(directory, "raw")
+            runtime = os.path.join(directory, "runtime")
+            os.makedirs(raw)
+            cv2.imwrite(os.path.join(raw, "v_blink.png"), shut)
+            with mock.patch.object(
+                    export.face, "detect_for_intake",
+                    return_value=(landmarks, np.eye(4), {})), \
+                    mock.patch.object(export.cv2, "estimateAffine2D",
+                                      return_value=(identity, None)), \
+                    mock.patch.object(
+                        export.cv2, "estimateAffinePartial2D",
+                        return_value=(clipped_local, None)), \
+                    mock.patch.object(export.blink, "_aperture",
+                                      side_effect=[20., 4., 20., 4.]):
+                result = export._publish_stylized_blink_source(
+                    key, directory, {
+                        "r": {"box": [14, 18, 22, 17]},
+                        "l": {"box": [58, 18, 22, 17]},
+                    }, runtime, "3d render", log=logs.append)
+
+            self.assertEqual("semantic-eye-switch", result["mode"])
+            self.assertEqual(2, sum(
+                "using stable global lid alignment" in message
+                for message in logs
+            ))
+            for side in blink.SIDES:
+                self.assertTrue(os.path.isfile(os.path.join(
+                    runtime, f"stylized-blink-{side}.png"
+                )))
+
+    def test_global_lid_fallback_keeps_foreign_art_gate_fail_closed(self):
+        key = np.full((80, 96, 3), (70, 100, 150), np.uint8)
+        for centre in ((25, 26), (69, 26)):
+            cv2.ellipse(key, centre, (12, 10), 0, 0, 360,
+                        (245, 245, 245), -1)
+            cv2.circle(key, centre, 3, (10, 10, 10), -1)
+        shut = np.full_like(key, (70, 100, 150))
+        cv2.line(shut, (15, 31), (35, 31), (20, 20, 20), 3)
+        cv2.line(shut, (59, 31), (79, 31), (20, 20, 20), 3)
+        # Keep the shard separate from the valid lower lid so topology can
+        # succeed and the post-fallback foreign-art gate itself is exercised.
+        cv2.rectangle(shut, (19, 22), (31, 25), (5, 5, 5), -1)
+        landmarks = _landmarks(96)
+        identity = np.array([[1., 0., 0.], [0., 1., 0.]])
+        clipped_local = np.array([[1., 0., 0.], [0., 1., -18.]])
+        logs = []
+        with tempfile.TemporaryDirectory() as directory:
+            raw = os.path.join(directory, "raw")
+            runtime = os.path.join(directory, "runtime")
+            os.makedirs(raw)
+            cv2.imwrite(os.path.join(raw, "v_blink.png"), shut)
+            with mock.patch.object(
+                    export.face, "detect_for_intake",
+                    return_value=(landmarks, np.eye(4), {})), \
+                    mock.patch.object(export.cv2, "estimateAffine2D",
+                                      return_value=(identity, None)), \
+                    mock.patch.object(
+                        export.cv2, "estimateAffinePartial2D",
+                        return_value=(clipped_local, None)), \
+                    mock.patch.object(export.blink, "_aperture",
+                                      side_effect=[20., 4., 20., 4.]):
+                result = export._publish_stylized_blink_source(
+                    key, directory, {
+                        "r": {"box": [14, 18, 22, 17]},
+                        "l": {"box": [58, 18, 22, 17]},
+                    }, runtime, "illustration", log=logs.append)
+
+            self.assertIsNone(result)
+            self.assertTrue(any(
+                "contains foreign dark art" in message for message in logs
+            ))
+            self.assertFalse(any(
+                os.path.isfile(os.path.join(
+                    runtime, f"stylized-blink-{side}.png"
+                ))
+                for side in blink.SIDES
+            ))
 
     def test_stylized_blink_rejects_foreign_dark_art_in_eye_plate(self):
         key = np.full((80, 96, 3), (70, 100, 150), np.uint8)
@@ -645,6 +842,33 @@ class StylizedRendererAssetTests(unittest.TestCase):
                 - max(mouth[1], eye[1]))
             self.assertEqual(0, overlap_width * overlap_height)
 
+    def test_smile_build_records_per_viseme_horizontal_registration(self):
+        key_landmarks = _landmarks(100)
+        angles = np.linspace(0.0, np.pi * 2.0, len(face.OUTER_LIP),
+                             endpoint=False)
+        key_landmarks[face.OUTER_LIP, 0] = 53.0 + np.cos(angles) * 10.0
+        key_landmarks[face.OUTER_LIP, 1] = 50.0 + np.sin(angles) * 3.0
+        shifted = key_landmarks.copy()
+        shifted[face.OUTER_LIP, 0] -= 12.5
+        key = _image(100)
+        with mock.patch.object(
+                expression.face, "detect",
+                side_effect=[(key_landmarks, None), (shifted, None)]), \
+                mock.patch.object(expression, "_smile_box",
+                                  return_value=[35, 44, 30, 16]), \
+                mock.patch.object(expression, "_smile_patch",
+                                  return_value=np.zeros((16, 30, 4), np.uint8)):
+            result = expression.build_smile(
+                key, key_landmarks, [("sil", key), ("aa", key)],
+                states=[0], log=lambda _message: None)
+
+        self.assertEqual(result["viseme_x_offsets"], {"sil": 0.0, "aa": 7.0})
+        self.assertEqual(
+            result["viseme_x_offsets"]["aa"],
+            round(.35 * np.ptp(key_landmarks[face.OUTER_LIP, 0]), 4),
+            "registration is bounded by the canonical mouth width",
+        )
+
     def test_pet_refresh_uses_canonical_neutral_only_for_stylized_runtime(self):
         key = np.full((48, 64, 3), (50, 110, 180), np.uint8)
         provider_neutral = np.full((48, 64, 3), (180, 90, 40), np.uint8)
@@ -662,6 +886,11 @@ class StylizedRendererAssetTests(unittest.TestCase):
                         "v": export.RUNTIME_VERSION,
                         "frames": {"sil": {"open": "assets/sil_open.jpg"}},
                         "eyes": {},
+                        "stylized_mouth": {
+                            "box": [20, 22, 24, 14],
+                            "basis": "canonical-outer-lip-v1",
+                            "viseme_x_offsets": {"sil": 0.0, "aa": 6.25},
+                        },
                     }, handle)
                 source_manifest = {
                     "status": "ready",
@@ -688,6 +917,13 @@ class StylizedRendererAssetTests(unittest.TestCase):
                 target = key if expects_key else provider_neutral
                 self.assertLess(float(np.mean(np.abs(
                     refreshed.astype(np.int16) - target.astype(np.int16)))), 2.0)
+                if expects_key:
+                    with open(os.path.join(runtime, "manifest.json")) as handle:
+                        refreshed_manifest = json.load(handle)
+                    self.assertEqual(
+                        refreshed_manifest["stylized_mouth"]["viseme_x_offsets"],
+                        {"sil": 0.0, "aa": 6.25},
+                    )
 
     def test_web_renderer_narrows_cartoon_motion_but_preserves_photo_branch(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -699,8 +935,22 @@ class StylizedRendererAssetTests(unittest.TestCase):
         self.assertIn("drawStylizedVisemePatch(faceContext", source)
         self.assertIn("const neutralImage = visemeImages.get('sil')", source)
         self.assertIn("manifest && manifest.stylized_mouth", source)
+        self.assertIn("manifest.stylized_mouth.viseme_x_offsets", source)
         self.assertNotIn("runtimeBox(manifest && manifest.smile)", source)
         self.assertIn("blend >= .5", source)
+        self.assertIn("const stylizedMouthMaskAlpha", source)
+        self.assertIn("const stylizedMouthToneShift", source)
+        self.assertIn("const authoredHeadHandoffReady", source)
+        self.assertIn(
+            "body.head_handoff_version === STYLIZED_HEAD_HANDOFF_VERSION",
+            source)
+        self.assertIn("? preserveMaskAlpha(matte.data)", source)
+        self.assertIn("const stylizedEmotionMouthSample", source)
+        self.assertIn("const stylizedEmotionMouthPlacement", source)
+        self.assertIn("drawStylizedEmotionMouthSample(", source)
+        self.assertIn("prepareStylizedMouthMask(width, height)", source)
+        self.assertIn("stripBlendContext.globalCompositeOperation = 'destination-in'", source)
+        self.assertIn("weight: (1 - blend) * (1 - strength.mix)", source)
         self.assertIn("Photorealistic runtimes retain the reviewed full-frame crossfade", source)
         self.assertIn("manifest.stylized_blink.mode === 'semantic-eye-switch'", source)
         self.assertIn("closure >= .78", source)
@@ -718,18 +968,121 @@ class StylizedRendererAssetTests(unittest.TestCase):
         policy = re.search(
             r"(const faceEyelidPolicy = \(stylized, stylizedBlinkReady, closure\)"
             r" => \{[\s\S]*?\n    \};)", source)
+        mouth_mask = re.search(
+            r"(const stylizedMouthMaskAlpha = \(x, y, width, height\) => \{"
+            r"[\s\S]*?\n    \};)", source)
+        tone_shift = re.search(
+            r"(const stylizedMouthToneShift = \(source, target, limit = 24\) => \("
+            r"[\s\S]*?\n    \);)", source)
+        difference_alpha = re.search(
+            r"(const stylizedMouthDifferenceAlpha = \(maximumDelta, spatialAlpha\)"
+            r" => \([\s\S]*?\n    \);)", source)
+        preserve_mask = re.search(
+            r"(const preserveMaskAlpha = pixels => \{[\s\S]*?\n    \};)",
+            source)
+        handoff_ready = re.search(
+            r"(const authoredHeadHandoffReady = \(body, clearMask, authoredMask\)"
+            r" => Boolean\([\s\S]*?\n      && body\.head_clear_mask"
+            r" && clearMask && authoredMask\);)", source)
+        legacy_handoff_ready = re.search(
+            r"(const legacyStylizedHeadHandoffReady = \(\n"
+            r"      runtime, body, clearMask, authoredMask\) => Boolean\("
+            r"[\s\S]*?\n      && runtimeBox\(runtime\.stylized_mouth\)\);)", source)
+        emotion_sample = re.search(
+            r"(const stylizedEmotionMouthSample = \(\n"
+            r"      states, rows, amount, emotionIndex, oldName, newName, blend\)"
+            r" => \{[\s\S]*?\n    \};)", source)
         self.assertIsNotNone(selector)
         self.assertIsNotNone(policy)
+        self.assertIsNotNone(mouth_mask)
+        self.assertIsNotNone(tone_shift)
+        self.assertIsNotNone(difference_alpha)
+        self.assertIsNotNone(preserve_mask)
+        self.assertIsNotNone(handoff_ready)
+        self.assertIsNotNone(legacy_handoff_ready)
+        self.assertIsNotNone(emotion_sample)
         script = f"""
           'use strict';
+          const STYLIZED_HEAD_HANDOFF_VERSION = 2;
+          const expressionSmoothStep = value => {{
+            const amount = Math.max(0, Math.min(1, Number(value) || 0));
+            return amount * amount * (3 - 2 * amount);
+          }};
+          const nearestIndex = (values, target) => values.reduce(
+            (best, value, index) => Math.abs(value - target)
+              < Math.abs(values[best] - target) ? index : best, 0);
+          const runtimeBox = value => Array.isArray(value && value.box)
+            && value.box.length === 4 ? value.box.map(Number) : null;
+          const isStylizedFaceRuntime = value =>
+            value && value.source_medium === '3d render';
           {selector.group(1)}
           {policy.group(1)}
+          {mouth_mask.group(1)}
+          {tone_shift.group(1)}
+          {difference_alpha.group(1)}
+          {preserve_mask.group(1)}
+          {handoff_ready.group(1)}
+          {legacy_handoff_ready.group(1)}
+          {emotion_sample.group(1)}
           const oldImage = {{ id: 'old' }};
           const newImage = {{ id: 'new' }};
+          const alphaPixels = new Uint8ClampedArray([
+            1, 2, 3, 17, 4, 5, 6, 128
+          ]);
+          const alphaCount = preserveMaskAlpha(alphaPixels);
           process.stdout.write(JSON.stringify({{
             mouth: [
               selectStylizedVisemeImage(oldImage, newImage, .49).id,
               selectStylizedVisemeImage(oldImage, newImage, .50).id
+            ],
+            mouthMask: [
+              stylizedMouthMaskAlpha(49, 51, 100, 100),
+              stylizedMouthMaskAlpha(49, 0, 100, 100),
+              stylizedMouthMaskAlpha(0, 0, 100, 100)
+            ],
+            toneShift: stylizedMouthToneShift(
+              [100, 200, 250], [160, 150, 0]),
+            differenceAlpha: [
+              stylizedMouthDifferenceAlpha(6, 1),
+              stylizedMouthDifferenceAlpha(42, 1),
+              stylizedMouthDifferenceAlpha(255, 0)
+            ],
+            preservedMask: {{ count: alphaCount, pixels: Array.from(alphaPixels) }},
+            handoff: [
+              authoredHeadHandoffReady({{
+                head_composite: 'replace', head_clear_mask: 'clear.png'
+              }}, {{}}, {{}}),
+              authoredHeadHandoffReady({{
+                head_composite: 'replace', head_clear_mask: 'clear.png',
+                head_handoff_version: 2
+              }}, {{}}, {{}}),
+              authoredHeadHandoffReady({{
+                head_composite: 'replace', head_clear_mask: 'clear.png',
+                head_handoff_version: 3
+              }}, {{}}, {{}})
+            ],
+            legacyHandoff: [
+              legacyStylizedHeadHandoffReady({{
+                source_medium: '3d render',
+                stylized_mouth: {{ basis: 'canonical-outer-lip-v1', box: [1, 2, 3, 4] }}
+              }}, {{
+                head_composite: 'replace', head_clear_mask: 'clear.png'
+              }}, {{}}, {{}}),
+              legacyStylizedHeadHandoffReady({{
+                source_medium: '3d render',
+                stylized_mouth: {{ basis: 'canonical-outer-lip-v1', box: [1, 2, 3, 4] }}
+              }}, {{
+                head_composite: 'replace', head_clear_mask: 'clear.png',
+                head_handoff_version: 1
+              }}, {{}}, {{}})
+            ],
+            emotion: [
+              stylizedEmotionMouthSample(
+                [0, .34, .68, 1], ['sil', 'aa'], .52, 2,
+                'sil', 'aa', .49),
+              stylizedEmotionMouthSample(
+                [0, .34, .68, 1], ['sil', 'aa'], .52, 2,
+                'sil', 'aa', .50)
             ],
             lids: [
               faceEyelidPolicy(true, false, 1),
@@ -743,6 +1096,21 @@ class StylizedRendererAssetTests(unittest.TestCase):
             ["node", "-e", script], text=True, cwd=root)
         observed = json.loads(output)
         self.assertEqual(["old", "new"], observed["mouth"])
+        self.assertGreater(observed["mouthMask"][0], .99)
+        self.assertLess(observed["mouthMask"][1], .01)
+        self.assertEqual(0, observed["mouthMask"][2])
+        self.assertEqual([24, -24, -24], observed["toneShift"])
+        self.assertEqual([0, 1, 0], observed["differenceAlpha"])
+        self.assertEqual(2, observed["preservedMask"]["count"])
+        self.assertEqual(
+            [255, 255, 255, 17, 255, 255, 255, 128],
+            observed["preservedMask"]["pixels"])
+        self.assertEqual([False, True, False], observed["handoff"])
+        self.assertEqual([True, False], observed["legacyHandoff"])
+        self.assertEqual([
+            {"state": 2, "row": 4, "weight": 1},
+            {"state": 2, "row": 5, "weight": 1},
+        ], observed["emotion"])
         self.assertEqual([
             "static-canonical", "static-canonical",
             "stylized-closed", "photo-strip",

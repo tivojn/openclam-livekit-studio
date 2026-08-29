@@ -318,7 +318,119 @@ def _replacement_head_region(mask, alpha):
     return region
 
 
-def _plate_leaks(source, rgba, *, replacement_head_mask=None):
+def _stylized_turnaround_eye(
+        source, alpha, component, record, *, view=None):
+    """Recognise one compact authored cartoon eye on side/back plates.
+
+    Side and three-quarter-back references are retained as motion/turnaround
+    evidence, so unlike the front plate their faces are not replaced by the
+    canonical talking head. A large cartoon sclera can contain an exact-white
+    island with a shaded-white surround, which deliberately resembles the
+    forbidden white-clothing signature. Exempt only the eye topology itself:
+    a compact upper-head island, near one side of the silhouette, with an
+    opaque dark pupil enclosed by its white convex hull. A location hint on
+    its own is never enough, and callers must separately prove stylized intake.
+    """
+    if view not in {"side", "back"}:
+        return False
+    visible = alpha >= VISIBLE_ALPHA
+    points = cv2.findNonZero(visible.astype(np.uint8))
+    if points is None:
+        return False
+    person_x, person_y, person_width, person_height = cv2.boundingRect(points)
+    _left, _top, width, height = record["bounds"]
+    if person_width < 12 or person_height < 24 or width < 3 or height < 3:
+        return False
+    centre_x = float(record["centroid"][0])
+    centre_y = float(record["centroid"][1])
+    relative_x = (centre_x - person_x) / person_width
+    relative_y = (centre_y - person_y) / person_height
+    if not (
+            0.0 <= relative_y <= 0.20
+            and (relative_x <= 0.38 or relative_x >= 0.62)
+            and width <= max(12, round(person_width * 0.18))
+            and height <= max(14, round(person_height * 0.10))):
+        return False
+    box_area = width * height
+    fill = float(record["source_area"]) / max(1, box_area)
+    aspect = width / max(1.0, float(height))
+    fragmented_sclera = (
+        record["source_area"] <= 256
+        and fill >= 0.08
+        and (min(width, height) <= 4 or 0.20 <= aspect <= 2.5))
+    if not (
+            (0.18 <= fill <= 0.88 and 0.24 <= aspect <= 2.5)
+            or fragmented_sclera):
+        return False
+
+    maximum = np.max(source[:, :, :3], axis=2)
+
+    def authored_pupil(candidate):
+        points = cv2.findNonZero(candidate.astype(np.uint8))
+        if points is None:
+            return False
+        hull = cv2.convexHull(points)
+        hull_mask = np.zeros(alpha.shape, dtype=np.uint8)
+        cv2.drawContours(hull_mask, [hull], -1, 1, cv2.FILLED)
+        pupil = (
+            (hull_mask > 0)
+            & ~candidate
+            & visible
+            & (maximum <= 96)
+        )
+        pupil_pixels = int(np.count_nonzero(pupil))
+        candidate_pixels = int(np.count_nonzero(candidate))
+        required = max(6, round(candidate_pixels * 0.025))
+        return required <= pupil_pixels <= candidate_pixels * 0.55
+
+    # The dark authored pupil must be inside the white island's convex hull,
+    # not merely beside it as a garment button, outline, or hair strand.
+    if authored_pupil(component):
+        return True
+    if not fragmented_sclera:
+        return False
+
+    # Provider antialiasing can split a profile sclera into several tiny
+    # exact-white islands. Reconstruct only the connected opaque pale eye
+    # surface that contains this fragment, then require the same enclosed pupil
+    # topology and compact upper-face geometry. This admits the observed 3x23
+    # sclera strip without turning a generic 24-pixel white garment detail into
+    # an exemption.
+    hsv = cv2.cvtColor(source[:, :, :3], cv2.COLOR_BGR2HSV)
+    pale = (
+        (hsv[:, :, 2] >= 175)
+        & (hsv[:, :, 1] <= 45)
+        & visible
+    )
+    _count, labels = cv2.connectedComponents(
+        pale.astype(np.uint8), connectivity=8)
+    pale_labels = np.unique(labels[component])
+    pale_labels = pale_labels[pale_labels > 0]
+    if len(pale_labels) != 1:
+        return False
+    sclera = labels == int(pale_labels[0])
+    sclera_points = cv2.findNonZero(sclera.astype(np.uint8))
+    if sclera_points is None:
+        return False
+    eye_x, eye_y, eye_width, eye_height = cv2.boundingRect(sclera_points)
+    eye_centre_x = eye_x + eye_width * 0.5
+    eye_centre_y = eye_y + eye_height * 0.5
+    eye_relative_x = (eye_centre_x - person_x) / person_width
+    eye_relative_y = (eye_centre_y - person_y) / person_height
+    eye_aspect = eye_width / max(1.0, float(eye_height))
+    if not (
+            0.0 <= eye_relative_y <= 0.20
+            and (eye_relative_x <= 0.38 or eye_relative_x >= 0.62)
+            and eye_width <= max(12, round(person_width * 0.18))
+            and eye_height <= max(14, round(person_height * 0.10))
+            and 0.24 <= eye_aspect <= 1.6):
+        return False
+    return authored_pupil(sclera)
+
+
+def _plate_leaks(
+        source, rgba, *, replacement_head_mask=None,
+        verified_stylized=False, stylized_turnaround_view=None):
     """Classify strict-white alpha as repairable plate or protected detail."""
     alpha = rgba[:, :, 3]
     replacement_head = _replacement_head_region(
@@ -377,6 +489,18 @@ def _plate_leaks(source, rgba, *, replacement_head_mask=None):
                 protected |= replacement_head
                 protected_white.append({
                     "kind": "canonical-head-replacement",
+                    "bounds": record["bounds"],
+                    "visible_pixels": record["visible_pixels"],
+                })
+                continue
+            if (verified_stylized and not is_exterior
+                    and _stylized_turnaround_eye(
+                        source, alpha, component, record,
+                        view=stylized_turnaround_view)):
+                protected |= component
+                protected_white.append({
+                    "kind": "stylized-turnaround-eye",
+                    "view": stylized_turnaround_view,
                     "bounds": record["bounds"],
                     "visible_pixels": record["visible_pixels"],
                 })
@@ -882,12 +1006,15 @@ def _decontaminate_white_matte(source, rgba, blocked=None):
 
 def quality(
         source, rgba, *, baseline_alpha=None, baseline_highlights=None,
-        replacement_head_mask=None, verified_stylized=False):
+        replacement_head_mask=None, verified_stylized=False,
+        stylized_turnaround_view=None):
     """Audit one final body cutout and return JSON-safe hard-gate metrics."""
     _validate(source, rgba)
     contract = _plate_contract(source)
     plate = _plate_leaks(
-        source, rgba, replacement_head_mask=replacement_head_mask)
+        source, rgba, replacement_head_mask=replacement_head_mask,
+        verified_stylized=verified_stylized,
+        stylized_turnaround_view=stylized_turnaround_view)
     shadow = _floor_shadow(
         source, rgba, replacement_head_mask=replacement_head_mask,
         verified_stylized=verified_stylized)
@@ -1018,7 +1145,7 @@ def quality(
 
 def refine(
         source, rgba, *, replacement_head_mask=None,
-        verified_stylized=False):
+        verified_stylized=False, stylized_turnaround_view=None):
     """Remove only proven plate pixels, then run the body hard gate.
 
     Cast shadows are reported but deliberately not cut: a dark neutral pixel
@@ -1028,7 +1155,9 @@ def refine(
     _validate(source, rgba)
     baseline = rgba[:, :, 3].copy()
     plate = _plate_leaks(
-        source, rgba, replacement_head_mask=replacement_head_mask)
+        source, rgba, replacement_head_mask=replacement_head_mask,
+        verified_stylized=verified_stylized,
+        stylized_turnaround_view=stylized_turnaround_view)
     output = rgba.copy()
     strict_remove = plate["exterior_mask"] | plate["enclosed_mask"]
     blocked = plate["protected_mask"] | plate["ambiguity_block_mask"]
@@ -1054,7 +1183,24 @@ def refine(
         source, output, baseline_alpha=baseline,
         baseline_highlights=plate["supported_highlight_mask"],
         replacement_head_mask=replacement_head_mask,
-        verified_stylized=verified_stylized)
+        verified_stylized=verified_stylized,
+        stylized_turnaround_view=stylized_turnaround_view)
+    # Matte decontamination can make a protected white island cease matching
+    # the broad ambiguity signature during the final audit. Retain the
+    # first-pass evidence so diagnostics still say which narrow exemption was
+    # required, rather than reporting a mysterious pass with no protected eye.
+    protected = report["protected_white_detail_components"]
+    protected_keys = {
+        (item.get("kind"), tuple(item.get("bounds") or ()), item.get("view"))
+        for item in protected
+    }
+    for item in plate["protected_white"]:
+        key = (
+            item.get("kind"), tuple(item.get("bounds") or ()),
+            item.get("view"))
+        if key not in protected_keys:
+            protected.append(item)
+            protected_keys.add(key)
     report["repaired_exterior_plate_components"] = plate["exterior"]
     report["repaired_enclosed_plate_components"] = plate["enclosed"]
     report["preserved_ambiguous_white_subject_components"] = (

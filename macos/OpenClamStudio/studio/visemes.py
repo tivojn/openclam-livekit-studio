@@ -23,6 +23,17 @@ Three lessons are baked into these prompts:
     numbers for the QA pass, so the prompt and the verifier cannot drift apart.
 """
 
+PHOTO_HEADWEAR_STATE_LOCK = (
+    "HEADWEAR STATE LOCK - preserve the exact canonical headwear state shown "
+    "in the input photograph. If the subject wears a hat, cap, bandana, "
+    "headband, headscarf, helmet, crown, tiara, hair ornament, or other "
+    "head-attached item, keep its exact shape, placement, scale, angle, "
+    "material, colors, markings, and relationship to the hair. If the subject "
+    "is bare-headed, keep the subject bare-headed. Do not add, remove, replace, "
+    "redesign, recolor, resize, or reposition any headwear.\n\n"
+)
+
+
 BASE = (
     "Edit this portrait photograph. This is a LIP-SYNC SPEECH SHAPE (viseme) frame "
     "for a talking-head animation, so the ONLY thing that may change is natural "
@@ -38,7 +49,7 @@ BASE = (
     "a smile; permit only the subtle lower-face muscle movement physically caused "
     "by the requested sound. Keep photographic realism with visible skin texture "
     "and pores.\n\n"
-)
+) + PHOTO_HEADWEAR_STATE_LOCK
 
 AMPLITUDE = (
     "AMPLITUDE - THE SINGLE MOST IMPORTANT CONSTRAINT:\n"
@@ -381,8 +392,8 @@ BLINK_PROMPT = (
     "bone structure, head position, head angle, head size, camera framing, crop, "
     "eyebrows, nose, ears, hair, jewellery, clothing, shoulders, skin tone, freckles, "
     "makeup, lighting, colour grade and background. Do not re-frame, re-pose, "
-    "re-light or retouch. Keep photographic realism with visible skin texture."
-    + BLINK_CLOSER)
+    "re-light or retouch. Keep photographic realism with visible skin texture.\n\n"
+    + PHOTO_HEADWEAR_STATE_LOCK + BLINK_CLOSER)
 
 ORDER = ["closed", "PP", "FF", "TH", "DD", "nn", "kk", "CH", "SS", "RR",
          "ah", "eh", "ih", "oh", "oo", "blink"]
@@ -422,6 +433,16 @@ def stylized_pose_clause(yaw, roll):
 
 def _is_stylized_medium(source_medium):
     value = str(source_medium or "photo").strip().lower()
+    # Intake normalises rendered/cartoon-like sources to these labels.  They
+    # are not photographs: routing them through the photographic prompt asks
+    # the provider to invent pores, realistic eyelids and realistic dental
+    # texture.  That produced Luffy's pasted-looking mouth and a tiny made-up
+    # blink inside his established oversized eyes.  Keep this list aligned
+    # with export._STYLIZED_SOURCE_MEDIA while accepting descriptive suffixes
+    # such as "3d render / game character".
+    if value.startswith(("3d render", "3d-render", "soft-3d",
+                         "game art", "game-art")):
+        return True
     return value.startswith((
         "stylized", "illustration", "illustrated", "cartoon", "anime",
         "comic", "drawing", "drawn", "painting", "painted", "toon"))
@@ -489,12 +510,12 @@ def _preserve_medium_prompt(name, yaw=None, roll=None):
 
 
 def prompt_for(name, yaw=None, roll=None, source_medium="photo"):
-    """Return a medium-aware edit prompt without disturbing photo cache keys.
+    """Return a medium-aware edit prompt with canonical headwear locked.
 
-    The default/photo branch deliberately retains the original assembly and
-    strings byte for byte. ``generate.generate_one`` includes this final prompt
-    in its cache digest, so a stylized build receives a distinct cache key while
-    every existing photo render remains reusable.
+    ``generate.generate_one`` includes the final prompt in its cache digest, so
+    adding the photo headwear-state contract intentionally invalidates legacy
+    photo plates that could silently lose or invent headwear. The stylized path
+    already carries its own identity-bearing headwear lock.
     """
     medium = str(source_medium or "unknown").strip().lower()
     if medium in {"unknown", "uncertain", "preserve"}:
@@ -514,8 +535,8 @@ def prompt_for(name, yaw=None, roll=None, source_medium="photo"):
                 + f"{desc}\n\nHOW FAR THE MOUTH OPENS:\n{opening}"
                 + STYLIZED_CLOSER)
 
-    # Do not refactor this branch into the stylized blocks. Its exact output is
-    # part of the existing photo-render cache signature.
+    # Keep the photographic rendering contract separate from the stylized
+    # blocks. Its output is part of the photo-render cache signature.
     if name in EYE_SHAPES:
         return BLINK_PROMPT
     group, desc, opening = SHAPES[name]

@@ -1,4 +1,5 @@
 """Regressions for anatomically complete stylized standing-head replacement."""
+import inspect
 import os
 import tempfile
 import unittest
@@ -34,7 +35,13 @@ def _stylized_portrait():
 
 
 class StylizedHeadCompositeTests(unittest.TestCase):
-    def test_complete_mask_keeps_hat_ears_jaw_and_neck_but_drops_bust(self):
+    def test_new_jaw_handoff_is_explicitly_versioned_at_authoring(self):
+        self.assertEqual(2, body.STYLIZED_HEAD_HANDOFF_VERSION)
+        source = inspect.getsource(body._install_sources)
+        self.assertIn('metadata["head_handoff_version"]', source)
+        self.assertIn("STYLIZED_HEAD_HANDOFF_VERSION", source)
+
+    def test_complete_mask_keeps_hat_ears_and_jaw_but_hands_neck_to_body(self):
         portrait = _stylized_portrait()
         landmarks = _oval_landmarks()
         with tempfile.TemporaryDirectory() as directory:
@@ -45,8 +52,10 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         self.assertEqual("full-silhouette", mode)
         self.assertGreater(int(mask[20, 90]), 250)   # hat
         self.assertGreater(int(mask[85, 44]), 250)   # left ear
-        self.assertGreater(int(mask[126, 90]), 250)  # jaw / upper neck
-        self.assertGreater(int(mask[129, 90]), 64)   # short jaw feather
+        self.assertGreater(int(mask[126, 90]), 250)  # complete jaw
+        self.assertGreater(int(mask[129, 90]), 64)   # short under-jaw feather
+        self.assertLess(int(mask[129, 90]), 250)
+        self.assertEqual(0, int(mask[132, 90]))      # body owns the neck
         self.assertEqual(0, int(mask[178, 90]))      # source bust/clothing
 
     def test_body_clear_expands_only_in_face_band_and_preserves_hat_and_neck(self):
@@ -89,7 +98,12 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         # deep-neck clear geometry exactly matches canonical support.
         self.assertTrue(np.array_equal(clear[20], (mask[20] > 4) * 255))
         self.assertTrue(np.array_equal(clear[150], np.zeros(180, np.uint8)))
+        # The body-space eraser stops at the canonical jaw.  It must not erase
+        # the donor beneath the soft under-jaw handoff, or the feather would
+        # reveal transparent background instead of the continuous body neck.
+        self.assertEqual(0, int(clear[129, 90]))
         self.assertEqual(255, int(preview[20, 90, 3]))
+        self.assertEqual(255, int(preview[129, 90, 3]))
         self.assertEqual(255, int(preview[133, 90, 3]))
         self.assertGreater(receipt["anatomy_pixels"], 0)
 
