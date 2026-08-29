@@ -2276,6 +2276,7 @@
     let selectedFeedback = null;
     let selectingFeedback = false;
     let turnController = null;
+    let turnControllerOrigin = null;
     let thinkingNode = null;
     let openClawSessionID = '';
     let pendingComposerAttachments = [];
@@ -3886,8 +3887,66 @@
     const LIVE_MOUTH_RELEASE_MS = 48;
     const LIVE_MOUTH_DWELL_MS = 72;
     const LIVE_TALK_STATUS_RELEASE_MS = 520;
+    const LIVE_TALK_TTS_TIMING_TOPIC = 'openclam.tts-timing.v1';
+    const LIVE_TALK_TTS_TIMING_STALL_MS = 900;
+    const LIVE_TALK_TTS_TIMING_MAX_PACKET_BYTES = 4096;
+    const LIVE_TALK_TTS_TIMING_MAX_TEXT_CHARACTERS = 512;
+    const LIVE_TALK_TTS_TOKEN_MIDPOINT = .46;
+    const LIVE_TALK_TTS_MIN_SCALED_CUE_MS = 24;
+    const LIVE_TALK_TTS_RESET_GUARD_MS = 520;
     const makeReactiveMouthState = () => ({ viseme: 'sil', changedAt: 0, audibleUntil: 0 });
     const makeLiveTalkAudioState = () => ({ speaking: false, audibleUntil: 0 });
+    const makeLiveTalkTTSTimingState = () => ({
+      generation: null,
+      segment: null,
+      sequence: 0,
+      generationStarted: false,
+      unseenGenerationTombstoned: false,
+      closedThroughGeneration: 0,
+      closedThroughSegment: 0,
+      ended: false,
+      lastTimedEnd: -1,
+      lastPacketAt: -Infinity,
+      fallbackBlockedUntil: -Infinity,
+      activeCue: null,
+      queuedCues: [],
+    });
+    const resetLiveTalkTTSTimingState = (state, now = 0, invalidateUnseen = false) => {
+      if (!state) return;
+      const tombstoneNextGeneration = Boolean(
+        invalidateUnseen && !state.generationStarted && !state.unseenGenerationTombstoned,
+      );
+      if (Number.isSafeInteger(state.generation)) {
+        state.closedThroughGeneration = Math.max(
+          Number(state.closedThroughGeneration) || 0,
+          state.generation + (tombstoneNextGeneration ? 1 : 0),
+        );
+        state.unseenGenerationTombstoned = Boolean(invalidateUnseen);
+      } else if (tombstoneNextGeneration) {
+        // A barge-in can beat the first reliable timing packet. Tombstone the
+        // next generation so its late start/cues cannot reopen the old voice.
+        state.closedThroughGeneration = Math.max(
+          Number(state.closedThroughGeneration) || 0,
+          (Number(state.closedThroughGeneration) || 0) + 1,
+        );
+        state.unseenGenerationTombstoned = true;
+      }
+      if (Number.isSafeInteger(state.segment)) {
+        state.closedThroughSegment = Math.max(
+          Number(state.closedThroughSegment) || 0, state.segment,
+        );
+      }
+      state.generation = null;
+      state.segment = null;
+      state.sequence = 0;
+      state.generationStarted = false;
+      state.ended = true;
+      state.lastPacketAt = Number.isFinite(now) ? now : -Infinity;
+      state.fallbackBlockedUntil = Number.isFinite(now)
+        ? now + LIVE_TALK_TTS_RESET_GUARD_MS : Infinity;
+      state.activeCue = null;
+      state.queuedCues = [];
+    };
     const reactiveMouthState = makeReactiveMouthState();
 
     const liveTalkAudioTransition = (state, signal, now) => {
@@ -3955,6 +4014,242 @@
       return valid.has('sil') ? 'sil' : [...valid][0] || 'sil';
     };
 
+    // LiveKit's TranscriptSynchronizer emits the word being played as a
+    // TimedString. Convert that authoritative TTS text into the same 15-shape
+    // vocabulary as typed-chat speech. Audio energy gates lifecycle/status;
+    // it does not choose a random mouth shape while synchronized text exists.
+    const liveTalkTextVisemeCues = (text, validNames) => {
+      const valid = new Set((Array.isArray(validNames) ? validNames : []).map(String));
+      const cues = [];
+      const add = (name, durationMs, alternatives = []) => {
+        const viseme = firstAvailableViseme(valid, [name, ...alternatives]);
+        const duration = Math.max(70, Math.min(150, Number(durationMs) || 84));
+        const previous = cues[cues.length - 1];
+        if (previous && previous.viseme === viseme && previous.durationMs + duration <= 210) {
+          previous.durationMs += duration;
+        } else {
+          cues.push({ viseme, durationMs: duration });
+        }
+      };
+      const source = String(text || '').normalize('NFKC').toLowerCase();
+      const digraphs = {
+        th: ['TH', 96, ['FF', 'SS']], ch: ['CH', 96, ['SS', 'ih']],
+        sh: ['CH', 96, ['SS', 'ih']], ph: ['FF', 96, ['TH', 'SS']],
+        wh: ['ou', 108, ['oh', 'RR']], ck: ['kk', 76, ['DD', 'nn']],
+        qu: ['kk', 82, ['DD', 'nn']], ee: ['ih', 112, ['E', 'aa']],
+        ea: ['ih', 112, ['E', 'aa']], oo: ['ou', 112, ['oh', 'aa']],
+        ou: ['ou', 112, ['oh', 'aa']], ow: ['ou', 112, ['oh', 'aa']],
+        ai: ['E', 112, ['aa', 'ih']], ay: ['E', 112, ['aa', 'ih']],
+        oa: ['oh', 112, ['ou', 'aa']],
+      };
+      const letters = {
+        a: ['aa', 112, ['E', 'ih']], e: ['E', 112, ['ih', 'aa']],
+        i: ['ih', 112, ['E', 'aa']], y: ['ih', 105, ['E', 'aa']],
+        o: ['oh', 112, ['ou', 'aa']], u: ['ou', 112, ['oh', 'aa']],
+        w: ['ou', 96, ['oh', 'RR']], m: ['PP', 74, ['nn', 'sil']],
+        b: ['PP', 74, ['nn', 'sil']], p: ['PP', 74, ['nn', 'sil']],
+        f: ['FF', 96, ['TH', 'SS']], v: ['FF', 96, ['TH', 'SS']],
+        t: ['DD', 76, ['nn', 'TH']], d: ['DD', 76, ['nn', 'TH']],
+        l: ['DD', 82, ['nn', 'RR']], h: ['DD', 76, ['nn', 'ih']],
+        n: ['nn', 82, ['DD', 'RR']], k: ['kk', 76, ['DD', 'nn']],
+        g: ['kk', 76, ['DD', 'nn']], c: ['kk', 76, ['SS', 'DD']],
+        q: ['kk', 76, ['DD', 'nn']], j: ['CH', 96, ['SS', 'ih']],
+        s: ['SS', 96, ['FF', 'TH']], z: ['SS', 96, ['FF', 'TH']],
+        x: ['SS', 96, ['kk', 'CH']], r: ['RR', 82, ['nn', 'ou']],
+      };
+      let index = 0;
+      while (index < source.length && cues.length < 48) {
+        const pair = source.slice(index, index + 2);
+        if (digraphs[pair]) {
+          add(...digraphs[pair]);
+          index += 2;
+          continue;
+        }
+        const character = source[index];
+        if (/\s/u.test(character)) {
+          index += 1;
+          continue;
+        }
+        if (/[.,!?;:\u3002\uff0c\uff01\uff1f\uff1b\uff1a]/u.test(character)) {
+          add('sil', /[.!?\u3002\uff01\uff1f]/u.test(character) ? 120 : 78);
+          index += 1;
+          continue;
+        }
+        if (letters[character]) {
+          add(...letters[character]);
+          index += 1;
+          continue;
+        }
+        if (/[^\x00-\x7f]/u.test(character)) {
+          // We do not have trustworthy Mandarin/CJK phoneme metadata here.
+          // Keep synchronized non-Latin speech on a stable neutral vowel plate;
+          // never invent random mouth shapes from Unicode code-point values.
+          add('aa', 108, ['E', 'ih', 'nn']);
+        }
+        index += 1;
+      }
+      return cues;
+    };
+
+    const scaleLiveTalkTTSCues = (cues, packet) => {
+      const output = cues.map(cue => ({ ...cue }));
+      const intervalMs = packet && packet.startTime !== null
+        ? (Number(packet.endTime) - Number(packet.startTime)) * 1000 : NaN;
+      if (!Number.isFinite(intervalMs) || intervalMs < 40 || intervalMs > 2400) return output;
+      const sourceDuration = output.reduce((sum, cue) => sum + cue.durationMs, 0);
+      if (!sourceDuration) return output;
+      const scale = intervalMs / sourceDuration;
+      return output.map(cue => ({
+        ...cue,
+        durationMs: Math.max(LIVE_TALK_TTS_MIN_SCALED_CUE_MS, cue.durationMs * scale),
+      }));
+    };
+
+    const parseLiveTalkTTSTimingPacket = payload => {
+      try {
+        const bytes = typeof payload === 'string'
+          ? new TextEncoder().encode(payload) : payload;
+        if (!bytes || !Number.isFinite(bytes.byteLength)
+            || bytes.byteLength < 2 || bytes.byteLength > LIVE_TALK_TTS_TIMING_MAX_PACKET_BYTES) return null;
+        const raw = typeof payload === 'string'
+          ? payload : new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const packet = JSON.parse(raw);
+        if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return null;
+        const segment = Number(packet.segment);
+        const generation = Number(packet.generation);
+        const sequence = Number(packet.sequence);
+        if (packet.event === 'start' || packet.event === 'end') {
+          if (Object.keys(packet).sort().join('|') !== 'event|generation|schema_version|segment|sequence'
+              || packet.schema_version !== 1
+              || !Number.isSafeInteger(generation) || generation < 1
+              || !Number.isSafeInteger(segment) || segment < 1
+              || !Number.isSafeInteger(sequence) || sequence < 1) return null;
+          return {
+            event: packet.event, generation, segment, sequence,
+            text: '', startTime: null, endTime: null,
+          };
+        }
+        const expectedKeys = packet.start_time === undefined
+          ? 'end_time|generation|schema_version|segment|sequence|text'
+          : 'end_time|generation|schema_version|segment|sequence|start_time|text';
+        if (Object.keys(packet).sort().join('|') !== expectedKeys) return null;
+        const text = typeof packet.text === 'string' ? packet.text : '';
+        const endTime = Number(packet.end_time);
+        const startTime = packet.start_time === undefined ? null : Number(packet.start_time);
+        if (packet.schema_version !== 1 || !text || text.length > LIVE_TALK_TTS_TIMING_MAX_TEXT_CHARACTERS
+            || !Number.isSafeInteger(generation) || generation < 1
+            || !Number.isSafeInteger(segment) || segment < 1
+            || !Number.isSafeInteger(sequence) || sequence < 1
+            || !Number.isFinite(endTime) || endTime < 0 || endTime > 7200
+            || (startTime !== null && (!Number.isFinite(startTime) || startTime < 0 || startTime > endTime))) return null;
+        return { event: 'cue', generation, segment, sequence, text, startTime, endTime };
+      } catch (_) {
+        return null;
+      }
+    };
+
+    const acceptLiveTalkTTSTiming = (state, packet, now, validNames) => {
+      if (!state || !packet || !Number.isFinite(now)) return false;
+      if (packet.generation <= (Number(state.closedThroughGeneration) || 0)
+          || packet.segment <= (Number(state.closedThroughSegment) || 0)) return false;
+      if (packet.event === 'start') {
+        if (packet.sequence !== 1) return false;
+        if (state.generationStarted) {
+          const stalled = Number.isFinite(state.lastPacketAt)
+            && now - state.lastPacketAt > LIVE_TALK_TTS_TIMING_STALL_MS;
+          const strictlyNewer = Number.isSafeInteger(state.generation)
+            && Number.isSafeInteger(state.segment)
+            && packet.generation > state.generation && packet.segment > state.segment;
+          if (!stalled || !strictlyNewer) return false;
+          // Reliable data can still be lost. Once the authoritative lane has
+          // genuinely stalled, a strictly newer lifecycle start closes the
+          // abandoned generation and restores timed visemes without waiting
+          // for an unrelated user or track reset.
+          state.closedThroughGeneration = Math.max(
+            Number(state.closedThroughGeneration) || 0, state.generation,
+          );
+          state.closedThroughSegment = Math.max(
+            Number(state.closedThroughSegment) || 0, state.segment,
+          );
+          state.generationStarted = false;
+          state.ended = true;
+          state.activeCue = null;
+          state.queuedCues = [];
+        }
+        if (state.generation !== null && packet.generation <= state.generation) return false;
+        state.generation = packet.generation;
+        state.segment = packet.segment;
+        state.sequence = packet.sequence;
+        state.generationStarted = true;
+        state.unseenGenerationTombstoned = false;
+        state.ended = false;
+        state.lastTimedEnd = -1;
+        state.lastPacketAt = now;
+        state.fallbackBlockedUntil = -Infinity;
+        state.activeCue = null;
+        state.queuedCues = [];
+        return true;
+      }
+      if (!state.generationStarted || packet.generation !== state.generation
+          || packet.segment !== state.segment || packet.sequence <= state.sequence) return false;
+      if (packet.event !== 'end'
+          && packet.endTime + .08 < state.lastTimedEnd) return false;
+      state.sequence = packet.sequence;
+      state.lastPacketAt = now;
+      if (packet.event === 'end') {
+        state.closedThroughSegment = Math.max(
+          Number(state.closedThroughSegment) || 0, packet.segment,
+        );
+        state.closedThroughGeneration = Math.max(
+          Number(state.closedThroughGeneration) || 0, packet.generation,
+        );
+        state.generationStarted = false;
+        state.ended = true;
+        state.activeCue = null;
+        state.queuedCues = [];
+        return true;
+      }
+      const cues = scaleLiveTalkTTSCues(
+        liveTalkTextVisemeCues(packet.text, validNames), packet,
+      );
+      if (!cues.length) return false;
+      state.lastTimedEnd = packet.endTime;
+
+      // TranscriptSynchronizer publishes a token halfway through its spoken
+      // interval. Discard the already-heard first half and animate the remaining
+      // phonetic shapes instead of replaying the whole word late.
+      let skipped = cues.reduce((sum, cue) => sum + cue.durationMs, 0)
+        * LIVE_TALK_TTS_TOKEN_MIDPOINT;
+      const remaining = cues.map(cue => ({ ...cue }));
+      while (remaining.length > 1 && skipped >= remaining[0].durationMs) {
+        skipped -= remaining.shift().durationMs;
+      }
+      if (remaining.length) remaining[0].durationMs = Math.max(
+        LIVE_TALK_TTS_MIN_SCALED_CUE_MS, remaining[0].durationMs - skipped,
+      );
+      const first = remaining.shift();
+      state.activeCue = first ? { viseme: first.viseme, endsAt: now + first.durationMs } : null;
+      state.queuedCues = remaining;
+      return Boolean(state.activeCue);
+    };
+
+    const liveTalkSynchronizedViseme = (state, now) => {
+      if (!state) return null;
+      if (now < state.fallbackBlockedUntil) return 'sil';
+      if (!Number.isFinite(state.lastPacketAt)) return null;
+      while (state.activeCue && now >= state.activeCue.endsAt) {
+        const boundary = state.activeCue.endsAt;
+        const next = state.queuedCues.shift();
+        state.activeCue = next
+          ? { viseme: next.viseme, endsAt: boundary + next.durationMs } : null;
+      }
+      if (state.activeCue) return state.activeCue.viseme;
+      // Do not bounce back to spectrum guessing in ordinary gaps between words.
+      // Close naturally, and only degrade when the synchronized stream has truly
+      // disappeared (older agent build, packet loss, or a broken text lane).
+      return now - state.lastPacketAt <= LIVE_TALK_TTS_TIMING_STALL_MS ? 'sil' : null;
+    };
+
     const classifyAudioViseme = (signal, validNames) => {
       const valid = new Set((Array.isArray(validNames) ? validNames : []).map(String));
       const intensity = Math.max(0, Math.min(1, Number(signal.relative) || 0));
@@ -4014,8 +4309,13 @@
         while (speechTrackIndex + 1 < speechTrack.length && Number(speechTrack[speechTrackIndex + 1][0]) <= time) speechTrackIndex += 1;
         return String((speechTrack[speechTrackIndex] && speechTrack[speechTrackIndex][1]) || 'sil');
       }
-      if (speechSource || hasAttachedAgentAudio()) {
-        const available = manifest && manifest.visemes ? manifest.visemes : ['sil'];
+      const available = manifest && manifest.visemes ? manifest.visemes : ['sil'];
+      if (hasAttachedAgentAudio()) {
+        const synchronized = liveTalkSynchronizedViseme(live && live.ttsTimingState, now);
+        if (synchronized !== null) return synchronized;
+        return reactiveAudioViseme(reactiveMouthState, audioSignal, now, available);
+      }
+      if (speechSource) {
         return reactiveAudioViseme(reactiveMouthState, audioSignal, now, available);
       }
       reactiveMouthState.viseme = 'sil';
@@ -4783,6 +5083,10 @@
         && manifest.stylized_blink.mode === 'semantic-eye-switch'
         && ['l', 'r'].every(key => layers.stylizedBlink[key]
           && runtimeBox(manifest.stylized_blink[key]));
+      // Keep the photographic strip renderer behind an explicit policy gate.
+      // The stylized branch below remains per-eye because its semantic plates
+      // switch independently, while photo strips retain smooth interpolation.
+      const eyelidPolicy = faceEyelidPolicy(false, false, 0);
       if (stylizedRuntime) {
         // Two pieces of drawn eye line art must never be blended. Switch each
         // seam-gated semantic plate only at near-maximum closure. The small
@@ -4797,7 +5101,8 @@
             box[0], box[1], box[2], box[3]);
         }
         faceContext.globalAlpha = 1;
-      } else if (manifest.eyes && Array.isArray(manifest.eyes.states)) {
+      } else if (eyelidPolicy === 'photo-strip'
+        && manifest.eyes && Array.isArray(manifest.eyes.states)) {
         // The calibrated human lid strips deliberately stay photo-only. If a
         // reviewed cartoon blink plate is missing or rejected, keep the
         // canonical eyes static; falling back here recreates the tiny inner
@@ -6086,6 +6391,33 @@
       }
     };
 
+    const AUTOMATIC_TTS_MAX_BYTES = 3000;
+    const AUTOMATIC_TTS_TRUNCATION_SUFFIX = ' The rest is visible in chat.';
+    const automaticSpokenProjection = value => {
+      const text = String(value || '').trim();
+      const encoder = new TextEncoder();
+      if (encoder.encode(text).length <= AUTOMATIC_TTS_MAX_BYTES) return text;
+      const suffixBytes = encoder.encode(AUTOMATIC_TTS_TRUNCATION_SUFFIX).length;
+      const budget = Math.max(0, AUTOMATIC_TTS_MAX_BYTES - suffixBytes);
+      let prefix = '';
+      let bytes = 0;
+      for (const character of text) {
+        const width = encoder.encode(character).length;
+        if (bytes + width > budget) break;
+        prefix += character;
+        bytes += width;
+      }
+      prefix = prefix.trimEnd();
+      const boundaryFloor = Math.floor(prefix.length * .72);
+      let naturalBoundary = -1;
+      for (const match of prefix.matchAll(/[.!?\u3002\uff01\uff1f\n]\s*|[\s,;\uff0c\uff1b]/gu)) {
+        const end = match.index + match[0].length;
+        if (end >= boundaryFloor) naturalBoundary = end;
+      }
+      if (naturalBoundary > 0) prefix = prefix.slice(0, naturalBoundary).trimEnd();
+      return `${prefix}${AUTOMATIC_TTS_TRUNCATION_SUFFIX}`;
+    };
+
     async function readAloud(text) {
       if (live) {
         notify('Hang up Live Talk before playing a separate read-aloud voice.');
@@ -6966,24 +7298,36 @@
       })]);
     };
 
+    const armDelegatedTurnDeadline = (controller, deadlineAt) => setTimeout(() => {
+      if (turnController === controller && turnControllerOrigin === 'live-agent-bridge') {
+        controller.abort();
+      }
+    }, Math.max(0, deadlineAt - performance.now()));
+
     async function submitOpenClawTurn(value, agentID, options = {}) {
       stopSpeech();
       if (!options.keepAvatarMode) await openChat(false);
       resumeChatSpeakingPose();
-      addMessage('user', value, { readable: false });
+      if (!options.userAlreadyRendered) addMessage('user', value, { readable: false });
       const inputAttachments = Array.isArray(options.attachments)
         ? options.attachments.slice(0, 8) : [];
       for (const attachment of inputAttachments) {
         await appendOpenClawAttachment(attachment, { role: 'user' });
       }
       const work = createWorkTimeline();
-      turnController = new AbortController();
+      const controller = new AbortController();
+      turnController = controller;
+      turnControllerOrigin = options.liveAgentBridge ? 'live-agent-bridge' : 'typed';
+      const delegatedDeadlineTimer = options.liveAgentBridge
+        && Number.isFinite(options.deadlineAt)
+        ? armDelegatedTurnDeadline(controller, options.deadlineAt) : null;
       sendButton.disabled = true;
       pttButton.disabled = true;
       agentModeSelect.disabled = true;
       setStatus('Connecting to OpenClaw…', 'busy');
       let finalText = '';
       let liveReply = null;
+      const latestAssistantTextBeforeTurn = latestAssistantText;
       try {
         const response = await fetch('/api/openclaw/turn', {
           method: 'POST',
@@ -6994,7 +7338,7 @@
             prompt: value,
             input_handles: inputAttachments.map(attachment => attachment.handle),
           }),
-          signal: turnController.signal,
+          signal: controller.signal,
         });
         if (!response.ok || !response.body) throw new Error(`OpenClaw request failed (${response.status})`);
         const reader = response.body.getReader();
@@ -7045,8 +7389,22 @@
           addMessage('assistant', completedText);
         }
         finishWorkTimeline(work, 'completed');
-        setStatus('Ready', 'good');
+        // Connected OpenClaw turns stream their own text but do not carry
+        // synthesized audio. Reuse the exact same /say + timed-viseme path as
+        // the message Read Aloud control so typed and push-to-talk agent turns
+        // speak automatically. A delegated Live Talk action is the exception:
+        // its cloud agent owns the audible TTS stream and local playback would
+        // create a second, overlapping voice.
+        if (!options.liveAgentBridge) {
+          await readAloud(automaticSpokenProjection(completedText));
+        }
+        else setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
+        return { ok: true, text: completedText };
       } catch (error) {
+        if (liveReply && liveReply.row.classList.contains('streaming')) {
+          liveReply.row.remove();
+          latestAssistantText = latestAssistantTextBeforeTurn;
+        }
         finishWorkTimeline(work, 'failed');
         if (error.name !== 'AbortError') {
           resumeChatSpeakingPose();
@@ -7057,25 +7415,30 @@
             renderPendingAttachments();
           }
         }
+        return { ok: false, text: '' };
       } finally {
-        turnController = null;
-        agentModeSelect.disabled = false;
-        pttButton.disabled = Boolean(live);
-        sendButton.disabled = !composer.value.trim() && !pendingComposerAttachments.length;
+        if (delegatedDeadlineTimer !== null) clearTimeout(delegatedDeadlineTimer);
+        if (turnController === controller) {
+          turnController = null;
+          turnControllerOrigin = null;
+          agentModeSelect.disabled = false;
+          pttButton.disabled = Boolean(live);
+          sendButton.disabled = !composer.value.trim() && !pendingComposerAttachments.length;
+        }
       }
     }
 
     async function submitLocalTurn(text, options = {}) {
       const value = String(text || '').trim();
-      if (!value || turnController || avatarOnlyMotion) return;
-      if (live) {
+      if (!value || turnController || (avatarOnlyMotion && !options.liveAgentBridge)) return;
+      if (live && !options.liveAgentBridge) {
         notify('Hang up Live Talk before sending a regular chat message.');
         return;
       }
       stopSpeech();
       if (!options.keepAvatarMode) await openChat(false);
       resumeChatSpeakingPose();
-      addMessage('user', value, { readable: false });
+      if (!options.userAlreadyRendered) addMessage('user', value, { readable: false });
       await refreshAttachmentRouteCapability();
       const inputAttachments = (Array.isArray(options.attachments) ? options.attachments : [])
         .filter(attachment => attachment && attachment.local).slice(0, 8)
@@ -7089,17 +7452,23 @@
       for (const attachment of inputAttachments) await appendLocalAttachment(attachment);
       history.push({ role: 'user', content: localTurnContent(value, inputAttachments) });
       addWorking();
-      turnController = new AbortController();
+      const controller = new AbortController();
+      turnController = controller;
+      turnControllerOrigin = options.liveAgentBridge ? 'live-agent-bridge' : 'typed';
       sendButton.disabled = true;
       pttButton.disabled = true;
       setStatus('Thinking…', 'busy');
       let liveReply = null;
+      const latestAssistantTextBeforeTurn = latestAssistantText;
       try {
         const response = await fetch('/reply/stream', {
           method: 'POST',
           headers: { 'Accept': 'application/x-ndjson', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-          body: JSON.stringify({ history }),
-          signal: turnController.signal,
+          body: JSON.stringify({
+            history,
+            suppress_local_tts: Boolean(options.liveAgentBridge),
+          }),
+          signal: controller.signal,
         });
         if (!response.ok || !response.body) throw new Error(`Model request failed (${response.status})`);
         const reader = response.body.getReader();
@@ -7152,11 +7521,18 @@
         history.push({ role: 'assistant', content: answer });
         if (history.length > 24) history.splice(0, history.length - 24);
         await appendMedia(result.media);
-        if (result.audio) await playSpeech(result.audio, result.track || [], answer);
-        else setStatus('Ready', 'good');
+        if (result.audio && !options.liveAgentBridge) {
+          await playSpeech(result.audio, result.track || [], answer);
+        } else {
+          setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
+        }
+        return { ok: true, text: answer };
       } catch (error) {
         removeWorking();
-        if (liveReply) liveReply.row.remove();
+        if (liveReply) {
+          liveReply.row.remove();
+          latestAssistantText = latestAssistantTextBeforeTurn;
+        }
         if (!pendingComposerAttachments.length && inputAttachments.length) {
           pendingComposerAttachments = inputAttachments;
           renderPendingAttachments();
@@ -7168,16 +7544,20 @@
           addMessage('assistant', message, { readable: false });
           setStatus('Check model settings', '');
         }
+        return { ok: false, text: '' };
       } finally {
-        turnController = null;
-        pttButton.disabled = Boolean(live);
-        sendButton.disabled = !composer.value.trim() && !pendingComposerAttachments.length;
+        if (turnController === controller) {
+          turnController = null;
+          turnControllerOrigin = null;
+          pttButton.disabled = Boolean(live);
+          sendButton.disabled = !composer.value.trim() && !pendingComposerAttachments.length;
+        }
       }
     }
 
     async function submitTurn(text, options = {}) {
       const value = String(text || '').trim();
-      if (!value || turnController || avatarOnlyMotion) return;
+      if (!value || turnController || (avatarOnlyMotion && !options.liveAgentBridge)) return;
       const agentID = selectedOpenClawAgent();
       if (agentID) return submitOpenClawTurn(value, agentID, options);
       return submitLocalTurn(value, options);
@@ -7343,7 +7723,13 @@
     };
 
     const EMAIL_RPC = 'openclam.prepareEmailDraft.v1';
+    const AGENT_TURN_RPC = 'openclam.submitAgentTurn.v1';
     const MAX_RPC_BYTES = 12000;
+    const MAX_AGENT_TURN_REPLY_BYTES = 6000;
+    const LIVE_TALK_USER_SEGMENT_JOIN_MS = 1200;
+    const LIVE_TALK_DELEGATED_REPLY_EXPIRY_MS = 45000;
+    const LIVE_TALK_AGENT_RPC_DEADLINE_MARGIN_MS = 1500;
+    const LIVE_TALK_OPENCLAW_REQUIRED_MESSAGE = 'Live Talk actions need a selected and connected OpenClaw agent. Choose one in the conversation agent menu, then try again.';
     const utf8Size = value => new TextEncoder().encode(String(value || '')).length;
     const canonicalWords = value => String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ');
     const containsWord = (value, term) => (` ${value} `).includes(` ${term} `);
@@ -7400,6 +7786,49 @@
           || !explicitEmailRequest(rootValue.spoken_request, values.recipient_name)) return null;
       return { request_id: rootValue.request_id, spoken_request: rootValue.spoken_request, recipient_name: values.recipient_name, subject: values.subject, body: values.body };
     };
+
+    const parseAgentTurnRequest = payload => {
+      if (typeof payload !== 'string' || utf8Size(payload) > MAX_RPC_BYTES) return null;
+      let rootValue;
+      try { rootValue = JSON.parse(payload); } catch (_) { return null; }
+      if (!exactObject(rootValue, ['schema_version', 'request_id', 'spoken_request'])
+          || rootValue.schema_version !== 1
+          || !/^[0-9a-f]{64}$/.test(String(rootValue.request_id || ''))
+          || typeof rootValue.spoken_request !== 'string'
+          || !rootValue.spoken_request.trim()
+          || utf8Size(rootValue.spoken_request) > 8000) return null;
+      return {
+        request_id: rootValue.request_id,
+        spoken_request: rootValue.spoken_request,
+      };
+    };
+
+    const boundedAgentTurnReply = value => {
+      const clean = String(value || '')
+        .replace(/\[([^\]\r\n]{1,160})\]\([A-Za-z][A-Za-z0-9+.-]*:[^)\r\n]{1,1024}\)/g, '$1')
+        .replace(/<\/?(?:speak|voice|prosody|break|emphasis|expr|amazon:effect|mstts:express-as|say-as|phoneme|sub|p|s)(?:\s+[^<>\r\n]{0,511})?\s*\/?>/gi, ' ')
+        .replace(/[\[(]\s*(?:(?:very|slightly|softly|deeply)\s+)?(?:angry|calm|cheerful|crying|empathetic|excited|fearful|happy|horrified|laugh(?:s|ed|ing)?|loudly|neutral|pause|playful|quietly|sad|sarcastic|serious|sigh(?:s|ed|ing)?|sobbing|surprised|upbeat|warm|whisper(?:s|ed|ing)?|shout(?:s|ed|ing)?)\s*[\])]/gi, ' ')
+        .replace(/\[/g, '\uff3b').replace(/\]/g, '\uff3d')
+        .replace(/</g, '\uff1c').replace(/>/g, '\uff1e')
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      let bytes = 0;
+      let output = '';
+      for (const character of clean) {
+        const width = utf8Size(character);
+        if (bytes + width > MAX_AGENT_TURN_REPLY_BYTES) break;
+        output += character;
+        bytes += width;
+      }
+      return output.trim();
+    };
+
+    const agentTurnRPCAnswer = (status, spokenReply = '') => JSON.stringify({
+      schema_version: 1,
+      status,
+      spoken_reply: status === 'completed' ? boundedAgentTurnReply(spokenReply) : '',
+    });
 
     const emailDraftText = (recipient, subject, body) => [
       'Unsent email draft',
@@ -7539,25 +7968,187 @@
     };
 
     const waitForMatchingFinalUserTurn = async (session, spokenRequest, timeout) => {
-      const expected = canonicalWords(spokenRequest);
-      if (!expected) return false;
+      if (!canonicalWords(spokenRequest)) return false;
       const deadline = performance.now() + Math.min(5000, Math.max(0, timeout - 1500));
       do {
         if (live !== session) return false;
-        if (canonicalWords(session.latestFinalUserTranscript) === expected) return true;
+        if (matchesFinalLiveTalkUserTurn(session, spokenRequest)) return true;
         await new Promise(resolve => setTimeout(resolve, 25));
       } while (performance.now() < deadline);
-      return canonicalWords(session.latestFinalUserTranscript) === expected;
+      return matchesFinalLiveTalkUserTurn(session, spokenRequest);
     };
 
-    const appendFinalUserTurnSegment = (session, text) => {
+    const beginLiveTalkUserInput = (session, segmentID, now) => {
+      const identifier = String(segmentID || '').slice(0, 240);
+      const firstForSegment = !identifier || !session.seenUserTranscriptSegments.has(identifier);
+      if (!firstForSegment) return false;
+      if (identifier) {
+        session.seenUserTranscriptSegments.add(identifier);
+        while (session.seenUserTranscriptSegments.size > 128) {
+          session.seenUserTranscriptSegments.delete(
+            session.seenUserTranscriptSegments.values().next().value,
+          );
+        }
+      }
+      const priorFinal = session.finalUserTurnSegments.length > 0;
+      const separatedByTime = Number.isFinite(session.lastUserFinalAt)
+        && now - session.lastUserFinalAt > LIVE_TALK_USER_SEGMENT_JOIN_MS;
+      const interruptsDelegatedTurn = Boolean(
+        turnController && turnControllerOrigin === 'live-agent-bridge'
+      );
+      const speechGeneration = Number.isFinite(session.agentSpeechGeneration)
+        ? session.agentSpeechGeneration : 0;
+      const interruptedGeneration = Number.isFinite(session.interruptedAgentSpeechGeneration)
+        ? session.interruptedAgentSpeechGeneration : -1;
+      const interruptsAgentSpeech = Boolean(
+        agentSpeaking && interruptedGeneration !== speechGeneration
+      );
+      if (interruptsAgentSpeech) {
+        session.interruptedAgentSpeechGeneration = speechGeneration;
+      }
+      const startsNewTurn = interruptsDelegatedTurn || interruptsAgentSpeech
+        || !session.userTurnOpen
+        || session.assistantOutputSinceUser || (priorFinal && separatedByTime);
+      const interruptsAssistant = session.assistantOutputSinceUser
+        || interruptsAgentSpeech || interruptsDelegatedTurn;
+      const invalidatesUnseenTiming = interruptsAgentSpeech || interruptsDelegatedTurn;
+      if (startsNewTurn && interruptsAssistant) {
+        // A final transcript from the interrupted audio can arrive after the
+        // first segment of the new user turn. Keep that older generation
+        // classified as late so it cannot close or split the new turn.
+        session.interruptedAgentSpeechGeneration = Math.max(
+          interruptedGeneration, speechGeneration,
+        );
+      }
+      if (startsNewTurn && interruptsDelegatedTurn) {
+        const interruptedController = turnController;
+        turnController = null;
+        turnControllerOrigin = null;
+        interruptedController.abort();
+        agentModeSelect.disabled = false;
+      }
+      // Historical assistant output starts a normal next turn, but it must not
+      // tombstone that turn's not-yet-seen TTS generation. Only a real barge-in
+      // against active agent speech or an in-flight delegated turn can make a
+      // late unseen generation belong to the interrupted response.
+      resetLiveTalkTTSTimingState(session.ttsTimingState, now, invalidatesUnseenTiming);
+      reactiveMouthState.viseme = 'sil';
+      reactiveMouthState.audibleUntil = 0;
+      currentViseme = 'sil';
+      if (priorFinal && (!session.userTurnOpen
+          || session.assistantOutputSinceUser || interruptsAgentSpeech
+          || interruptsDelegatedTurn
+          || separatedByTime)) {
+        session.finalUserTurnSegments = [];
+        session.latestFinalUserTranscript = '';
+        session.userTurnFinalSegmentIDs.clear();
+      }
+      // Keep a bounded exact delegated-reply expectation across a barge-in.
+      // LiveKit can finalize the old TTS transcript after the new user has
+      // started speaking; consuming it later is safer than letting it mutate
+      // the new turn boundary. Expiry and exact text matching bound this state.
+      session.userTurnOpen = true;
+      session.assistantOutputSinceUser = false;
+      return true;
+    };
+
+    const updatePendingLiveTalkUserSegment = (session, segmentID, final) => {
+      const pending = session.pendingUserTranscriptSegments
+        || (session.pendingUserTranscriptSegments = new Set());
+      const identifier = String(segmentID || '__anonymous__').slice(0, 240);
+      if (final) {
+        pending.delete(identifier);
+        return;
+      }
+      if (pending.size >= 128) {
+        // Pathological transcript fan-out must fail closed without unbounded
+        // memory. This sentinel intentionally blocks action RPCs for the rest
+        // of the call rather than guessing which unfinished speech was stale.
+        pending.add('__overflow__');
+        return;
+      }
+      pending.add(identifier);
+    };
+
+    const matchesFinalLiveTalkUserTurn = (session, spokenRequest) => {
+      const expected = canonicalWords(spokenRequest);
+      return Boolean(expected
+        && !(session.pendingUserTranscriptSegments
+          && session.pendingUserTranscriptSegments.size)
+        && canonicalWords(session.latestFinalUserTranscript) === expected);
+    };
+
+    const appendFinalUserTurnSegment = (session, text, segmentID = '', now = 0) => {
       if (!session.userTurnOpen) {
         session.finalUserTurnSegments = [];
         session.userTurnOpen = true;
       }
+      const identifier = String(segmentID || '').slice(0, 240);
+      if (identifier && session.userTurnFinalSegmentIDs.has(identifier)) {
+        return session.latestFinalUserTranscript;
+      }
+      if (identifier) session.userTurnFinalSegmentIDs.add(identifier);
       session.finalUserTurnSegments.push(text);
       session.latestFinalUserTranscript = session.finalUserTurnSegments.join(' ');
+      session.lastUserFinalAt = Number.isFinite(now) ? now : 0;
       return session.latestFinalUserTranscript;
+    };
+
+    const delegatedReplyExpiryMs = value => Math.min(
+      600000,
+      Math.max(
+        LIVE_TALK_DELEGATED_REPLY_EXPIRY_MS,
+        20000 + [...String(value || '')].length * 100,
+      ),
+    );
+
+    const rememberExpectedDelegatedAssistantReply = (session, text, now) => {
+      const normalized = canonicalWords(text);
+      if (!normalized) return false;
+      session.expectedDelegatedAssistantReplies = (
+        session.expectedDelegatedAssistantReplies || []
+      ).filter(item => item.expiresAt > now).slice(-3);
+      session.expectedDelegatedAssistantReplies.push({
+        normalized,
+        expiresAt: now + delegatedReplyExpiryMs(text),
+      });
+      return true;
+    };
+
+    const consumeExpectedDelegatedAssistantReply = (session, text, now) => {
+      const normalized = canonicalWords(text);
+      const pending = (session.expectedDelegatedAssistantReplies || [])
+        .filter(item => item.expiresAt > now);
+      const index = pending.findIndex(item => item.normalized === normalized);
+      if (index < 0) {
+        session.expectedDelegatedAssistantReplies = pending;
+        return false;
+      }
+      pending.splice(index, 1);
+      session.expectedDelegatedAssistantReplies = pending;
+      return true;
+    };
+
+    const assistantTranscriptDisposition = (session, text, now) => {
+      const suppress = consumeExpectedDelegatedAssistantReply(session, text, now);
+      const generation = Number.isFinite(session.agentSpeechGeneration)
+        ? session.agentSpeechGeneration : 0;
+      const interruptedGeneration = Number.isFinite(session.interruptedAgentSpeechGeneration)
+        ? session.interruptedAgentSpeechGeneration : -1;
+      const lateInterrupted = Boolean(
+        session.userTurnOpen && interruptedGeneration >= 0
+        && generation <= interruptedGeneration
+      );
+      return {
+        suppress,
+        preserveUserTurn: suppress || lateInterrupted,
+      };
+    };
+
+    const claimLiveTalkRPCRequest = (requestIDs, requestID, maximum) => {
+      if (requestIDs.has(requestID) || requestIDs.size >= maximum) return false;
+      requestIDs.add(requestID);
+      return true;
     };
 
     const handleEmailRPC = async (session, invocation) => {
@@ -7567,12 +8158,64 @@
       const request = parseEmailRequest(invocation.payload);
       if (!request || !await waitForMatchingFinalUserTurn(session, request.spoken_request, timeout)
           || !trustedEmailInvocation(session, invocation, timeout)) return answer('rejected');
-      if (session.replayedEmailRequests.has(request.request_id)) return answer('rejected');
-      session.replayedEmailRequests.add(request.request_id);
-      while (session.replayedEmailRequests.size > 64) {
-        session.replayedEmailRequests.delete(session.replayedEmailRequests.values().next().value);
-      }
+      if (!claimLiveTalkRPCRequest(
+        session.replayedEmailRequests, request.request_id, 64,
+      )) return answer('rejected');
       return answer(presentEmailReview(request));
+    };
+
+    const trustedAgentTurnInvocation = (session, invocation, timeout) => {
+      const agents = trustedAgents(session.room);
+      return live === session && session.agentReady && !session.ending
+        && document.visibilityState === 'visible'
+        && agents.length === 1 && agents[0].identity === invocation.callerIdentity
+        && Number.isFinite(timeout) && timeout >= 30000 && timeout <= 310000;
+    };
+
+    const handleAgentTurnRPC = async (session, invocation) => {
+      const timeout = Number(invocation.responseTimeout);
+      const rpcDeadlineAt = performance.now()
+        + Math.max(1, timeout - LIVE_TALK_AGENT_RPC_DEADLINE_MARGIN_MS);
+      if (!trustedAgentTurnInvocation(session, invocation, timeout)) {
+        return agentTurnRPCAnswer('rejected');
+      }
+      const request = parseAgentTurnRequest(invocation.payload);
+      if (!request || !await waitForMatchingFinalUserTurn(
+        session, request.spoken_request, timeout,
+      ) || !trustedAgentTurnInvocation(session, invocation, timeout)) {
+        return agentTurnRPCAnswer('rejected');
+      }
+      if (session.replayedAgentTurnRequests.has(request.request_id)) {
+        return agentTurnRPCAnswer('rejected');
+      }
+      if (turnController || document.querySelector('.email-review')) {
+        return agentTurnRPCAnswer('busy');
+      }
+      const agentID = selectedOpenClawAgent();
+      if (!agentID) {
+        setStatus('Select an OpenClaw agent for Live Talk actions', '');
+        return agentTurnRPCAnswer('completed', LIVE_TALK_OPENCLAW_REQUIRED_MESSAGE);
+      }
+      if (!claimLiveTalkRPCRequest(
+        session.replayedAgentTurnRequests, request.request_id, 128,
+      )) return agentTurnRPCAnswer('rejected');
+
+      const result = await submitOpenClawTurn(request.spoken_request, agentID, {
+        keepAvatarMode: true,
+        liveAgentBridge: true,
+        userAlreadyRendered: true,
+        deadlineAt: rpcDeadlineAt,
+      });
+      const spokenReply = boundedAgentTurnReply(result && result.text);
+      if (!result || !result.ok || !spokenReply
+          || !trustedAgentTurnInvocation(session, invocation, timeout)) {
+        return agentTurnRPCAnswer('failed');
+      }
+      // The selected typed route already owns the visible assistant message,
+      // Work timeline, and returned attachments. The LiveKit transcript of the
+      // exact TTS echo must therefore drive expression only, not add a duplicate.
+      rememberExpectedDelegatedAssistantReply(session, spokenReply, performance.now());
+      return agentTurnRPCAnswer('completed', spokenReply);
     };
 
     const setLiveButton = state => {
@@ -7602,6 +8245,7 @@
       if (live !== session) return;
       session.agentReady = false;
       session.remoteAudioState = makeLiveTalkAudioState();
+      session.ttsTimingState = makeLiveTalkTTSTimingState();
       agentSpeaking = false;
       currentViseme = 'sil';
       clearTimeout(session.guard);
@@ -7630,6 +8274,7 @@
       }
       session.agentReady = true;
       session.remoteAudioState = makeLiveTalkAudioState();
+      session.ttsTimingState = makeLiveTalkTTSTimingState();
       clearTimeout(session.guard);
       stopConnectionSound(session);
       setLiveButton('connected');
@@ -7645,29 +8290,81 @@
       for (const segment of segments || []) {
         const text = String(segment.text || '').trim();
         if (!text) continue;
+        const now = performance.now();
+        const segmentID = String(segment.id || '').slice(0, 240);
+        if (role === 'user') {
+          beginLiveTalkUserInput(session, segmentID, now);
+          updatePendingLiveTalkUserSegment(session, segmentID, Boolean(segment.final));
+        }
+        let assistantDisposition = null;
         if (segment.final) {
           const key = `${role}:${String(segment.id || text)}`;
           if (session.finalTranscriptIDs.has(key)) continue;
           session.finalTranscriptIDs.add(key);
+          if (role === 'assistant') {
+            // Classify an expected echo or interrupted-generation final before
+            // touching the current user-turn state. A late final must not split
+            // a multi-segment barge-in.
+            assistantDisposition = assistantTranscriptDisposition(session, text, now);
+          }
           if (role === 'user') {
-            appendFinalUserTurnSegment(session, text);
+            appendFinalUserTurnSegment(session, text, segmentID, now);
           } else {
-            session.userTurnOpen = false;
-            // A final agent transcript supplies semantic intent while the
-            // already-attached audio analyser continues to supply prosody.
+            if (!assistantDisposition.preserveUserTurn) {
+              session.assistantOutputSinceUser = true;
+              session.userTurnOpen = false;
+            }
+            // The final transcript supplies phrase-level emotional intent.
+            // Lip shapes use the separate audio-synchronized TTS timing lane.
             speechExpressionTimeline = makeSpeechExpressionTimeline(text);
             speechExpressionPlan = speechExpressionPlanAt(
               speechExpressionTimeline, 0, makeSpeechExpressionPlan(text));
           }
-          addMessage(role, text, { readable: role === 'assistant' });
+          const suppressAssistant = role === 'assistant' && assistantDisposition.suppress;
+          if (!suppressAssistant) {
+            addMessage(role, text, { readable: role === 'assistant' });
+          }
+        } else if (role === 'assistant') {
+          const generation = Number.isFinite(session.agentSpeechGeneration)
+            ? session.agentSpeechGeneration : 0;
+          const interruptedGeneration = Number.isFinite(session.interruptedAgentSpeechGeneration)
+            ? session.interruptedAgentSpeechGeneration : -1;
+          if (!(session.userTurnOpen && interruptedGeneration >= 0
+              && generation <= interruptedGeneration)) {
+            session.assistantOutputSinceUser = true;
+          }
         } else if (role === 'user') {
           setStatus(`Hearing “${text.slice(0, 54)}”`, 'live');
         }
       }
     };
 
+    const handleLiveTalkTTSTimingData = (session, payload, participant, topic) => {
+      if (live !== session || session.ending || topic !== LIVE_TALK_TTS_TIMING_TOPIC
+          || !participant || !participant.isAgent) return false;
+      const agents = trustedAgents(session.room);
+      if (agents.length !== 1 || agents[0].identity !== participant.identity) return false;
+      const packet = parseLiveTalkTTSTimingPacket(payload);
+      if (!packet) return false;
+      const available = manifest && Array.isArray(manifest.visemes) ? manifest.visemes : ['sil'];
+      const accepted = acceptLiveTalkTTSTiming(
+        session.ttsTimingState, packet, performance.now(), available,
+      );
+      if (accepted && (packet.event === 'start' || packet.event === 'cue')) {
+        session.assistantOutputSinceUser = true;
+      }
+      return accepted;
+    };
+
     const releaseAgentAudioAttachment = attachment => {
       if (!attachment) return;
+      try {
+        if (attachment.endedHandler && attachment.track.mediaStreamTrack) {
+          attachment.track.mediaStreamTrack.removeEventListener(
+            'ended', attachment.endedHandler,
+          );
+        }
+      } catch (_) { /* event source already released */ }
       try { attachment.track.detach(attachment.element); } catch (_) { /* already detached */ }
       try { attachment.source.disconnect(); } catch (_) { /* already disconnected */ }
       try { attachment.element.pause(); } catch (_) { /* already paused */ }
@@ -7699,7 +8396,19 @@
         const stream = new MediaStream([track.mediaStreamTrack]);
         source = graph.createMediaStreamSource(stream);
         source.connect(audioAnalyser);
-        session.audioAttachments.set(key, { track, element, source, stream });
+        const endedHandler = () => {
+          if (live !== session || session.ending) return;
+          resetLiveTalkTTSTimingState(session.ttsTimingState, performance.now(), true);
+          reactiveMouthState.viseme = 'sil';
+          reactiveMouthState.audibleUntil = 0;
+          currentViseme = 'sil';
+        };
+        if (typeof track.mediaStreamTrack.addEventListener === 'function') {
+          track.mediaStreamTrack.addEventListener('ended', endedHandler, { once: true });
+        }
+        session.audioAttachments.set(key, {
+          track, element, source, stream, endedHandler,
+        });
         void roomAudioReady(session);
       } catch (_) {
         releaseAgentAudioAttachment({ track, element, source });
@@ -7742,11 +8451,21 @@
         agentReady: false,
         finalTranscriptIDs: new Set(),
         finalUserTurnSegments: [],
+        userTurnFinalSegmentIDs: new Set(),
+        seenUserTranscriptSegments: new Set(),
+        pendingUserTranscriptSegments: new Set(),
         userTurnOpen: false,
         latestFinalUserTranscript: '',
+        lastUserFinalAt: -Infinity,
+        assistantOutputSinceUser: false,
+        agentSpeechGeneration: 0,
+        interruptedAgentSpeechGeneration: -1,
         replayedEmailRequests: new Set(),
+        replayedAgentTurnRequests: new Set(),
+        expectedDelegatedAssistantReplies: [],
         audioAttachments: new Map(),
         remoteAudioState: makeLiveTalkAudioState(),
+        ttsTimingState: makeLiveTalkTTSTimingState(),
         audioStartPromise: null,
         pendingDraft: null,
         ending: false,
@@ -7769,6 +8488,7 @@
 
       const room = session.room;
       room.registerRpcMethod(EMAIL_RPC, invocation => handleEmailRPC(session, invocation));
+      room.registerRpcMethod(AGENT_TURN_RPC, invocation => handleAgentTurnRPC(session, invocation));
       room.on(library.RoomEvent.ParticipantConnected, participant => {
         if (participant.isAgent) markAgentReady(session);
       });
@@ -7782,6 +8502,10 @@
         const key = track.sid || (track.mediaStreamTrack && track.mediaStreamTrack.id);
         const attachment = session.audioAttachments.get(key);
         if (attachment) {
+          resetLiveTalkTTSTimingState(session.ttsTimingState, performance.now(), true);
+          reactiveMouthState.viseme = 'sil';
+          reactiveMouthState.audibleUntil = 0;
+          currentViseme = 'sil';
           releaseAgentAudioAttachment(attachment);
           session.audioAttachments.delete(key);
           if (!session.audioAttachments.size) {
@@ -7790,13 +8514,24 @@
           }
         }
       });
+      room.on(library.RoomEvent.TrackMuted, (_publication, participant) => {
+        if (live !== session || !participant || !participant.isAgent) return;
+        resetLiveTalkTTSTimingState(session.ttsTimingState, performance.now(), true);
+        reactiveMouthState.viseme = 'sil';
+        reactiveMouthState.audibleUntil = 0;
+        currentViseme = 'sil';
+      });
       room.on(library.RoomEvent.AudioPlaybackStatusChanged, canPlay => {
         if (live === session && !session.ending && !canPlay) roomAudioReady(session);
+      });
+      room.on(library.RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+        handleLiveTalkTTSTimingData(session, payload, participant, topic);
       });
       room.on(library.RoomEvent.TranscriptionReceived, (segments, participant) => handleTranscript(session, segments, participant));
       room.on(library.RoomEvent.ActiveSpeakersChanged, participants => {
         if (live !== session) return;
         const nextAgentSpeaking = participants.some(participant => participant.isAgent);
+        if (nextAgentSpeaking && !agentSpeaking) session.agentSpeechGeneration += 1;
         if (nextAgentSpeaking !== agentSpeaking) resumeChatSpeakingPose();
         agentSpeaking = nextAgentSpeaking;
       });
@@ -7804,6 +8539,7 @@
         if (live !== session) return;
         session.agentReady = false;
         session.remoteAudioState = makeLiveTalkAudioState();
+        session.ttsTimingState = makeLiveTalkTTSTimingState();
         setLiveButton('connecting');
         startConnectionSound(session);
         setStatus('Live Talk · reconnecting…', 'busy');
@@ -7845,6 +8581,12 @@
       live = null;
       if (!session) return;
       session.ending = true;
+      if (turnController && turnControllerOrigin === 'live-agent-bridge') {
+        const delegatedController = turnController;
+        turnController = null;
+        turnControllerOrigin = null;
+        delegatedController.abort();
+      }
       clearTimeout(session.guard);
       stopConnectionSound(session);
       agentSpeaking = false;
@@ -7854,15 +8596,18 @@
       speechExpressionPlan = makeSpeechExpressionPlan('');
       reactiveMouthState.viseme = 'sil';
       reactiveMouthState.audibleUntil = 0;
+      session.ttsTimingState = makeLiveTalkTTSTimingState();
       for (const attachment of session.audioAttachments.values()) releaseAgentAudioAttachment(attachment);
       session.audioAttachments.clear();
       try { session.room.unregisterRpcMethod(EMAIL_RPC); } catch (_) { /* no registration */ }
+      try { session.room.unregisterRpcMethod(AGENT_TURN_RPC); } catch (_) { /* no registration */ }
       session.room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
       session.room.disconnect().catch(() => {});
       // An unsent draft is useful after the call ends; keep its visible review
       // card until the user explicitly copies or dismisses it.
       setLiveButton('idle');
       pttButton.disabled = Boolean(turnController);
+      agentModeSelect.disabled = false;
       if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(false);
       setStatus(reason === 'timeout' ? 'Live Talk did not answer' : reason === 'error' ? 'Live Talk unavailable' : 'Ready', reason === 'error' || reason === 'timeout' ? '' : 'good');
       resizeComposer();
@@ -8462,7 +9207,11 @@
         else if (selectionActions.classList.contains('show')) hideSelectionActions(true);
         else if (document.querySelector('.email-review')) closeEmailReview();
         else if (live) stopLiveTalk('ended');
-        else if (turnController) { turnController.abort(); turnController = null; removeWorking(); setStatus('Ready', 'good'); }
+        else if (turnController) {
+          turnController.abort();
+          removeWorking();
+          setStatus('Ready', 'good');
+        }
         else closeChat();
         return;
       }

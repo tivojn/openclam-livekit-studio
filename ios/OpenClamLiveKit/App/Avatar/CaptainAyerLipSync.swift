@@ -127,14 +127,16 @@ struct CaptainAyerLipSyncTimeline: Equatable, Sendable {
     }
 }
 
-/// A Live Talk-only mouth clock. LiveKit 2.16 publishes participant audio
-/// levels but does not expose phoneme timestamps, so the fallback deliberately
-/// uses a few stable articulation bands instead of changing plates at the
-/// audio-meter cadence. A provider-supplied timeline always takes precedence.
+/// A Live Talk-only mouth clock. Trusted playback-paced timing packets drive
+/// the authoritative viseme lane; participant audio levels remain a smoothed,
+/// low-frequency fallback only when that lane is absent or has genuinely
+/// stalled.
 struct CaptainAyerLiveTalkMouthDriver: Equatable, Sendable {
     static let minimumVisemeHold: TimeInterval = 0.105
     static let speechEnterLevel = 0.018
     static let speechExitLevel = 0.010
+    static let timedLaneStallDuration: TimeInterval = 0.9
+    static let timedLaneResetGuard: TimeInterval = 0.52
 
     private static let wideEnterLevel = 0.060
     private static let wideExitLevel = 0.040
@@ -160,7 +162,11 @@ struct CaptainAyerLiveTalkMouthDriver: Equatable, Sendable {
     }
 
     private let startedAt: TimeInterval
-    private let timedTimeline: CaptainAyerLipSyncTimeline?
+    private var timedTimeline: CaptainAyerLipSyncTimeline?
+    private var timedTimelineStartedAt: TimeInterval?
+    private var timedLaneLastPacketAt: TimeInterval?
+    private var timedLaneFallbackBlockedUntil = -TimeInterval.infinity
+    private var usesDynamicTimedLane = false
     private var smoothedLevel = 0.0
     private var lastSampleAt: TimeInterval?
     private var band = Band.silence
@@ -174,11 +180,11 @@ struct CaptainAyerLiveTalkMouthDriver: Equatable, Sendable {
     ) {
         self.startedAt = startedAt
         self.timedTimeline = timedTimeline
+        timedTimelineStartedAt = timedTimeline == nil ? nil : startedAt
         transitionedAt = startedAt - Self.minimumVisemeHold
     }
 
     mutating func update(audioLevel: Float, at sampleTime: TimeInterval) {
-        guard timedTimeline == nil else { return }
         let rawLevel = Double(audioLevel.isFinite ? min(1, max(0, audioLevel)) : 0)
         if let lastSampleAt {
             let elapsed = min(0.5, max(0, sampleTime - lastSampleAt))
@@ -201,9 +207,71 @@ struct CaptainAyerLiveTalkMouthDriver: Equatable, Sendable {
         transitionedAt = sampleTime
     }
 
+    /// Marks the authoritative playback-paced timing lane as present before
+    /// its first word cue arrives. While the lane is healthy the mouth stays
+    /// closed between words instead of fluttering back to RMS guesses.
+    mutating func activateTimedLane(at sampleTime: TimeInterval) {
+        usesDynamicTimedLane = true
+        timedTimeline = nil
+        timedTimelineStartedAt = nil
+        timedLaneLastPacketAt = sampleTime
+        timedLaneFallbackBlockedUntil = -TimeInterval.infinity
+    }
+
+    mutating func applyTimedTimeline(
+        _ timeline: CaptainAyerLipSyncTimeline,
+        at sampleTime: TimeInterval
+    ) {
+        usesDynamicTimedLane = true
+        timedTimeline = timeline
+        timedTimelineStartedAt = sampleTime
+        timedLaneLastPacketAt = sampleTime
+        timedLaneFallbackBlockedUntil = -TimeInterval.infinity
+    }
+
+    mutating func finishTimedLane(at sampleTime: TimeInterval) {
+        usesDynamicTimedLane = true
+        timedTimeline = nil
+        timedTimelineStartedAt = nil
+        timedLaneLastPacketAt = sampleTime
+        timedLaneFallbackBlockedUntil = -TimeInterval.infinity
+    }
+
+    /// Barge-in closes the current timed generation and briefly blocks the
+    /// audio-level fallback. This prevents queued audio from reopening a late
+    /// mouth pose while the remote agent is being interrupted.
+    mutating func invalidateTimedLane(at sampleTime: TimeInterval) {
+        usesDynamicTimedLane = true
+        timedTimeline = nil
+        timedTimelineStartedAt = nil
+        timedLaneLastPacketAt = nil
+        timedLaneFallbackBlockedUntil = sampleTime + Self.timedLaneResetGuard
+        smoothedLevel = 0
+        lastSampleAt = sampleTime
+        band = .silence
+        previousViseme = .silence
+        currentViseme = .silence
+        transitionedAt = sampleTime
+    }
+
     func renderState(at sampleTime: TimeInterval) -> CaptainAyerAvatarRenderState {
-        if let timedTimeline {
+        if !usesDynamicTimedLane, let timedTimeline {
             return timedTimeline.renderState(at: max(0, sampleTime - startedAt))
+        }
+        if usesDynamicTimedLane {
+            if sampleTime < timedLaneFallbackBlockedUntil {
+                return .idle
+            }
+            if let timedTimeline, let timedTimelineStartedAt {
+                let elapsed = max(0, sampleTime - timedTimelineStartedAt)
+                if elapsed < timedTimeline.duration {
+                    return timedTimeline.renderState(at: elapsed)
+                }
+            }
+            if let timedLaneLastPacketAt,
+               sampleTime - timedLaneLastPacketAt <= Self.timedLaneStallDuration {
+                return .idle
+            }
         }
         guard previousViseme != currentViseme else {
             return .init(previous: currentViseme, current: currentViseme, blend: 1)
@@ -1272,8 +1340,8 @@ final class CaptainAyerLipSyncController: ObservableObject {
     }
 
     /// Starts a Live Talk generation without changing the regular TTS path.
-    /// Exact provider viseme timing wins when present; current LiveKit sessions
-    /// pass nil and use the smoothed audio-level fallback instead.
+    /// Exact trusted-agent viseme timing wins when present; the smoothed
+    /// audio-level fallback is retained only for absent or stalled timing.
     func beginLiveTalk(
         text: String,
         generation: Int,
@@ -1299,6 +1367,54 @@ final class CaptainAyerLipSyncController: ObservableObject {
             audioLevel: level,
             at: date.timeIntervalSinceReferenceDate
         )
+        liveTalkMouthDriver = driver
+    }
+
+    func activateLiveTalkTimedVisemes(
+        generation: Int,
+        at date: Date = Date()
+    ) {
+        guard self.generation == generation,
+              phase == .speaking,
+              var driver = liveTalkMouthDriver else { return }
+        driver.activateTimedLane(at: date.timeIntervalSinceReferenceDate)
+        liveTalkMouthDriver = driver
+    }
+
+    func applyLiveTalkTimedVisemeTimeline(
+        _ timedTimeline: CaptainAyerLipSyncTimeline,
+        generation: Int,
+        at date: Date = Date()
+    ) {
+        guard self.generation == generation,
+              phase == .speaking,
+              var driver = liveTalkMouthDriver else { return }
+        driver.applyTimedTimeline(
+            timedTimeline,
+            at: date.timeIntervalSinceReferenceDate
+        )
+        liveTalkMouthDriver = driver
+    }
+
+    func finishLiveTalkTimedVisemes(
+        generation: Int,
+        at date: Date = Date()
+    ) {
+        guard self.generation == generation,
+              phase == .speaking,
+              var driver = liveTalkMouthDriver else { return }
+        driver.finishTimedLane(at: date.timeIntervalSinceReferenceDate)
+        liveTalkMouthDriver = driver
+    }
+
+    func invalidateLiveTalkTimedVisemes(
+        generation: Int,
+        at date: Date = Date()
+    ) {
+        guard self.generation == generation,
+              phase == .speaking,
+              var driver = liveTalkMouthDriver else { return }
+        driver.invalidateTimedLane(at: date.timeIntervalSinceReferenceDate)
         liveTalkMouthDriver = driver
     }
 

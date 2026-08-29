@@ -269,6 +269,305 @@ final class AgentConnectorTests: XCTestCase {
         )
     }
 
+    func testPairedLiveTalkAgentTurnTraversesConnectorAndKeepsOneVisibleResult() async throws {
+        let suite = "AgentConnectorTests.live-talk.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let history = ConversationHistoryController(
+            store: .init(fileURL: directory.appendingPathComponent("history.json"))
+        )
+        let conversation = ConversationModel(
+            preferences: defaults,
+            historyController: history
+        )
+        let historyIsReady = await conversation.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        let connectionID = UUID()
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher"
+        )
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID().uuidString)",
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            connector: LiveTalkAgentStubConnector(),
+            tokenVault: InMemoryAgentConnectorTokenVault(),
+            outboxVault: InMemoryAgentConnectorOutboxVault()
+        )
+        let paired = try await connections.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        XCTAssertTrue(conversation.beginLiveTalkTranscriptSession())
+        conversation.ingestLiveTalkTranscripts([
+            .init(
+                id: "live-user-segment-1",
+                role: .user,
+                text: "Search for",
+                isFinal: true
+            ),
+            .init(
+                id: "live-user-segment-2",
+                role: .user,
+                text: "McDonald's nearby",
+                isFinal: true
+            ),
+        ])
+
+        let result = await conversation.submitLiveTalkAgentTurn(
+            "Search for McDonald's nearby",
+            binding: paired.binding(for: account),
+            agentConnections: connections
+        )
+
+        XCTAssertEqual(result, .completed("The nearest result is on Main Street."))
+        XCTAssertEqual(
+            conversation.messages.filter {
+                $0.role == .user
+                    && ($0.text == "Search for" || $0.text == "McDonald's nearby")
+            }.count,
+            2
+        )
+        let assistantResults = conversation.messages.filter {
+            $0.role == .assistant && $0.text.contains("nearest result")
+        }
+        XCTAssertEqual(assistantResults.count, 1)
+        XCTAssertEqual(
+            assistantResults.first?.text,
+            "[laughing] The [nearest result](https://example.com) is on Main Street."
+        )
+        XCTAssertEqual(assistantResults.first?.workSteps.first?.category, .approval)
+        XCTAssertEqual(assistantResults.first?.workSteps.first?.state, .waiting)
+
+        // The voice agent echoes this exact terminal result through LiveKit for
+        // TTS. Even if a new user utterance arrives first, that late exact echo
+        // drives the avatar/transcript but must not add a second bubble.
+        conversation.ingestLiveTalkTranscripts([
+            .init(
+                id: "live-user-segment-1",
+                role: .user,
+                text: "Search for",
+                isFinal: true
+            ),
+            .init(
+                id: "live-user-segment-2",
+                role: .user,
+                text: "McDonald's nearby",
+                isFinal: true
+            ),
+            .init(
+                id: "next-live-user-turn",
+                role: .user,
+                text: "Thanks",
+                isFinal: true
+            ),
+        ])
+        conversation.ingestLiveTalkTranscripts([
+            .init(
+                id: "live-user-segment-1",
+                role: .user,
+                text: "Search for",
+                isFinal: true
+            ),
+            .init(
+                id: "live-user-segment-2",
+                role: .user,
+                text: "McDonald's nearby",
+                isFinal: true
+            ),
+            .init(
+                id: "next-live-user-turn",
+                role: .user,
+                text: "Thanks",
+                isFinal: true
+            ),
+            .init(
+                id: "delegated-agent-echo",
+                role: .agent,
+                text: "The nearest result is on Main Street.",
+                isFinal: true
+            ),
+        ])
+        XCTAssertEqual(
+            conversation.messages.filter {
+                $0.role == .assistant && $0.text.contains("nearest result")
+            }.count,
+            1
+        )
+    }
+
+    func testLiveTalkAgentTurnBargeInPersistsCancellationAndKeepsTranscript() async throws {
+        let suite = "AgentConnectorTests.live-talk-cancel.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let history = ConversationHistoryController(
+            store: .init(fileURL: directory.appendingPathComponent("history.json"))
+        )
+        let conversation = ConversationModel(
+            preferences: defaults,
+            historyController: history
+        )
+        let historyIsReady = await conversation.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        let connectionID = UUID()
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher"
+        )
+        let outbox = InMemoryAgentConnectorOutboxVault()
+        let sockets = ScriptedSocketConnector(scripts: [
+            [.waitForCancellation],
+            [.persistenceReceiptForLastCancel],
+        ])
+        let connector = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: AgentConnectorCursorStore(
+                defaults: defaults,
+                storagePrefix: "cursor.\(UUID().uuidString)"
+            ),
+            outboxVault: outbox,
+            socketConnector: sockets,
+            reconnectPolicy: .init(
+                maximumReconnectAttempts: 0,
+                baseDelayMilliseconds: 0
+            )
+        )
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID().uuidString)",
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            connector: connector,
+            tokenVault: InMemoryAgentConnectorTokenVault(),
+            outboxVault: outbox
+        )
+        let paired = try await connections.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        XCTAssertTrue(conversation.beginLiveTalkTranscriptSession())
+        conversation.ingestLiveTalkTranscripts([
+            .init(
+                id: "cancelled-live-user",
+                role: .user,
+                text: "Search for a nearby pharmacy",
+                isFinal: true
+            ),
+        ])
+
+        let submission = Task { @MainActor in
+            await conversation.submitLiveTalkAgentTurn(
+                "Search for a nearby pharmacy",
+                binding: paired.binding(for: account),
+                agentConnections: connections
+            )
+        }
+        for _ in 0 ..< 100
+            where sockets.sentFrames.contains(where: { $0.kind == "turn.submit" }) == false {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(sockets.sentFrames.contains(where: { $0.kind == "turn.submit" }))
+        submission.cancel()
+        let disposition = await submission.value
+        XCTAssertEqual(disposition, .failed)
+
+        XCTAssertTrue(
+            conversation.messages.contains {
+                $0.role == .user && $0.text == "Search for a nearby pharmacy"
+            }
+        )
+        XCTAssertTrue(try outbox.loadAll().isEmpty)
+        XCTAssertEqual(
+            sockets.sentFrames.filter { $0.kind == "turn.cancel" }.count,
+            1
+        )
+    }
+
+    func testLiveTalkPreSaveCancellationKeepsAuthoritativeTranscript() async throws {
+        let suite = "AgentConnectorTests.live-talk-pre-save-cancel.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let history = ConversationHistoryController(
+            store: .init(fileURL: directory.appendingPathComponent("history.json"))
+        )
+        let conversation = ConversationModel(
+            preferences: defaults,
+            historyController: history
+        )
+        let historyIsReady = await conversation.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        let connectionID = UUID()
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "researcher",
+            displayName: "Researcher"
+        )
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID().uuidString)",
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            connector: HangingStubAgentConnector(),
+            tokenVault: InMemoryAgentConnectorTokenVault(),
+            outboxVault: InMemoryAgentConnectorOutboxVault()
+        )
+        let paired = try await connections.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        XCTAssertTrue(conversation.beginLiveTalkTranscriptSession())
+        conversation.ingestLiveTalkTranscripts([
+            .init(
+                id: "pre-save-live-user",
+                role: .user,
+                text: "Email Emma about lunch",
+                isFinal: true
+            ),
+        ])
+
+        let submission = Task { @MainActor in
+            await conversation.submitLiveTalkAgentTurn(
+                "Email Emma about lunch",
+                binding: paired.binding(for: account),
+                agentConnections: connections
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        submission.cancel()
+        let disposition = await submission.value
+        XCTAssertEqual(disposition, .failed)
+        XCTAssertTrue(
+            conversation.messages.contains {
+                $0.role == .user && $0.text == "Email Emma about lunch"
+            }
+        )
+    }
+
     func testDisconnectRevokesRemotelyBeforeDeletingLocalCredential() async throws {
         let suite = "AgentConnectorTests.revoke.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -3086,6 +3385,34 @@ private struct StubAgentConnector: AgentConnector {
             continuation.yield(.cumulativeText("Hel"))
             continuation.yield(.cumulativeText("Hello"))
             continuation.yield(.completed("Hello"))
+            continuation.finish()
+        }
+    }
+}
+
+private struct LiveTalkAgentStubConnector: AgentConnector {
+    func streamTurn(
+        _ request: AgentConnectorTurnRequest,
+        clientToken: String
+    ) -> AsyncThrowingStream<AgentConnectorStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(.submissionSaved)
+            continuation.yield(.accepted)
+            continuation.yield(.work(.init(
+                revision: 1,
+                stepID: "approval:nearby-search",
+                category: .approval,
+                state: .waiting,
+                title: "Review nearby search",
+                detail: "Approval remains visible on the OpenClaw host.",
+                tool: nil,
+                command: nil,
+                path: nil,
+                output: nil
+            )))
+            continuation.yield(.completed(
+                "[laughing] The [nearest result](https://example.com) is on Main Street."
+            ))
             continuation.finish()
         }
     }

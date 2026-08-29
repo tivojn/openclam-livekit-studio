@@ -1,7 +1,10 @@
 # Privacy
 
-OpenClam Studio has no analytics, advertising SDK, device pairing, or data
-synchronization with OpenClam on iPhone.
+OpenClam Studio has no analytics, advertising SDK, or automatic data
+synchronization with OpenClam on iPhone. Its Settings page can explicitly ask
+an already configured OpenClaw channel to create a one-time iPhone pairing
+code. The code is displayed locally; the resulting iPhone credential is issued
+by the independent OpenClaw bridge and is not copied into the Mac app.
 
 ## Stored on this Mac
 
@@ -27,13 +30,20 @@ the renderer.
 - A selected cloud LLM receives the current request, relevant conversation,
   and active avatar persona.
 - A selected cloud STT service receives microphone audio.
-- A selected cloud TTS service receives reply text.
+- A selected cloud TTS service receives reply text. This includes automatic
+  read-aloud for a completed reply from the OpenClaw agent selected in the
+  conversation; long visible replies use a bounded spoken projection.
 - When enabled, Grok web search sends the question and relevant conversation
   context to xAI so its server-side search tool can retrieve current web pages
   and return cited results.
 - Live Talk sends audio through LiveKit and the selected speech/model services.
   BYOK keys required by that call travel over HTTPS to the trusted broker as a
   short-lived one-use lease; they are never room metadata.
+- If a selected OpenClaw agent is asked to perform a Live Talk action, the exact
+  finalized spoken request is sent through the paired OpenClaw connector to
+  that agent. Its bounded text result returns to the LiveKit voice agent for
+  speech while the Mac retains the visible Work state, result, and any files.
+  The connector receives no LiveKit or provider credential.
 - Avatar generation sends only the references and direction required for the
   operation to the image or video provider selected in Avatar Studio. Local
   cutout, calibration, rig assembly, and AVTR packaging stay on the Mac.

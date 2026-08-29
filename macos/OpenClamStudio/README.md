@@ -24,6 +24,15 @@ from the Mac and explicit import on the iPhone.
 - LiveKit Live Talk with independently selectable LLM, STT, TTS, model,
   language, and voice. Managed LiveKit defaults and reviewed BYOK tuples use
   the same Cloudflare broker and LiveKit agent deployment as OpenClam on iOS.
+  On macOS, ordinary conversation remains on the low-latency LiveKit model. A
+  spoken action, live/nearby search, file or media task, or explicit OpenClaw
+  request requires the foreground app's selected and connected OpenClaw agent;
+  it fails closed rather than falling back to a plain local model. The selected
+  agent's ordinary Work timeline, approval policy, generated
+  attachments, and visible result stay authoritative; LiveKit only speaks that
+  bounded result and never silently substitutes another agent. Explicit email
+  requests on both clients keep using the deterministic review-only RPC: it can
+  stage an editable unsent draft, but it cannot send one.
 - A Settings panel that creates and copies a one-time OpenClaw iPhone pairing
   code without Terminal or another OpenClaw bootstrap secret.
 - A guided **Install & connect** action for a new OpenClaw setup. The signed

@@ -838,7 +838,7 @@ class StandaloneRouteTests(unittest.TestCase):
              patch.object(self.application, "effective_persona",
                           return_value="OpenClam persona"), \
              patch.object(self.application, "_say",
-                          new=AsyncMock(return_value=spoken)):
+                          new=AsyncMock(return_value=spoken)) as say:
             result = asyncio.run(self.application.reply(
                 self.application.Turn(history=[{"role": "user", "content": "Hi"}])
             ))
@@ -848,8 +848,147 @@ class StandaloneRouteTests(unittest.TestCase):
         self.assertIn("Ollama", system)
         self.assertIn("qwen3.8-uncensored:q8_0", system)
         self.assertIn("Do not substitute a model or product name remembered from training", system)
+        say.assert_awaited_once_with("Hello", cfg)
         self.assertEqual(result["text"], "Hello")
         self.assertEqual(result["media"], [])
+
+    def test_say_enforces_common_utf8_bound_before_any_tts_provider(self):
+        oversized = "界" * 5001
+        cfg = copy.deepcopy(P.DEFAULTS)
+        with patch.object(
+            self.application.P, "speak", new=AsyncMock()
+        ) as speak:
+            with self.assertRaises(self.application.HTTPException) as caught:
+                asyncio.run(self.application.say(
+                    self.application.Say(text=oversized)
+                ))
+            direct = asyncio.run(self.application._say(oversized, cfg))
+
+        self.assertEqual(caught.exception.status_code, 413)
+        speak.assert_not_awaited()
+        self.assertEqual(direct["audio"], "")
+        self.assertEqual(direct["track"], [])
+        self.assertIn("15000-byte limit", direct["error"])
+
+    def test_say_accepts_text_at_the_shared_character_and_byte_limit(self):
+        cfg = copy.deepcopy(P.DEFAULTS)
+        samples = b"RIFF"
+        with patch.object(
+            self.application.P, "load", return_value=cfg
+        ), patch.object(
+            self.application.P, "speak", new=AsyncMock(
+                return_value=(samples, [])
+            )
+        ) as speak, patch.object(
+            self.application.align, "build", return_value=([], 0.1, "timed")
+        ), patch.object(
+            self.application.P, "to_wav", return_value=samples
+        ):
+            result = asyncio.run(self.application.say(
+                self.application.Say(text="a" * 15000)
+            ))
+
+        speak.assert_awaited_once()
+        self.assertEqual(result["tier"], "timed")
+        self.assertTrue(result["audio"])
+
+    def test_live_talk_foreground_turn_skips_only_duplicate_local_tts(self):
+        import media_gen
+
+        cfg = copy.deepcopy(P.DEFAULTS)
+        receipt = {
+            "provider": "ollama",
+            "model": "qwen3.8-uncensored:q8_0",
+            "display": "Ollama · qwen3.8-uncensored:q8_0",
+            "state": "success",
+        }
+        with patch.object(
+            self.application, "_say", new=AsyncMock()
+        ) as say, patch.object(
+            self.application.P, "last_route", return_value=receipt
+        ), patch.object(
+            media_gen, "generate_image", new=AsyncMock(
+                return_value="/tmp/search-map.png"
+            )
+        ) as generate_image, patch.object(
+            self.application, "_share_generated_file",
+            return_value="api/generated/live-talk-map",
+        ):
+            result = asyncio.run(self.application._finish_direct_reply(
+                "The selected agent finished the search.\n"
+                "<<openclam:image a nearby search map>>",
+                cfg,
+                suppress_local_tts=True,
+            ))
+
+        say.assert_not_awaited()
+        generate_image.assert_awaited_once_with(
+            "a nearby search map", cfg["image"]
+        )
+        self.assertEqual(
+            result,
+            {
+                "text": "The selected agent finished the search.",
+                "audio": "",
+                "track": [],
+                "dur": 0.0,
+                "tier": "none",
+                "media": [{
+                    "url": "api/generated/live-talk-map",
+                    "name": "a nearby search map",
+                }],
+                "llm_route": receipt,
+            },
+        )
+        self.assertFalse(self.application.Turn(history=[]).suppress_local_tts)
+        self.assertTrue(
+            self.application.Turn(
+                history=[], suppress_local_tts=True
+            ).suppress_local_tts
+        )
+        for unsafe_value in (1, 0, "true", "false", None):
+            with self.assertRaises(ValueError):
+                self.application.Turn(
+                    history=[], suppress_local_tts=unsafe_value
+                )
+
+    def test_live_talk_stream_flag_reaches_completion_without_local_tts(self):
+        cfg = copy.deepcopy(P.DEFAULTS)
+        receipt = {
+            "provider": "ollama",
+            "model": "qwen3.8-uncensored:q8_0",
+            "display": "Ollama · qwen3.8-uncensored:q8_0",
+            "state": "success",
+        }
+
+        async def streamed_reply(*_args, **_kwargs):
+            yield "Search complete."
+
+        async def collect_response():
+            response = await self.application.reply_stream(
+                self.application.Turn(
+                    history=[{"role": "user", "content": "Search nearby"}],
+                    suppress_local_tts=True,
+                )
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return [json.loads(line) for line in "".join(chunks).splitlines()]
+
+        with patch.object(self.application.P, "load", return_value=cfg), \
+             patch.object(self.application.P, "chat_stream", streamed_reply), \
+             patch.object(self.application.P, "last_route", return_value=receipt), \
+             patch.object(self.application, "_say", new=AsyncMock()) as say:
+            events = asyncio.run(collect_response())
+
+        say.assert_not_awaited()
+        self.assertEqual(events[-1]["type"], "complete")
+        self.assertEqual(events[-1]["text"], "Search complete.")
+        self.assertEqual(events[-1]["audio"], "")
+        self.assertEqual(events[-1]["track"], [])
+        self.assertEqual(events[-1]["media"], [])
+        self.assertEqual(events[-1]["llm_route"], receipt)
 
     def test_llm_test_returns_the_authoritative_route_receipt(self):
         receipt = {

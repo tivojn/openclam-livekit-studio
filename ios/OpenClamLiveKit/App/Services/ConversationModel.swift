@@ -335,6 +335,7 @@ final class ConversationModel: ObservableObject {
     private var liveTalkTranscriptMessageIDs: [String: UUID] = [:]
     private var liveTalkTranscriptDates: [String: Date] = [:]
     private var committedLiveTalkTranscriptIDs: Set<String> = []
+    private var expectedLiveTalkDelegatedAssistantReplies: [(text: String, expiresAt: Date)] = []
     let captainAyerAvatar: CaptainAyerLipSyncController
 
     init(
@@ -529,6 +530,7 @@ final class ConversationModel: ObservableObject {
         liveTalkTranscriptMessageIDs.removeAll(keepingCapacity: false)
         liveTalkTranscriptDates.removeAll(keepingCapacity: false)
         committedLiveTalkTranscriptIDs.removeAll(keepingCapacity: false)
+        expectedLiveTalkDelegatedAssistantReplies.removeAll(keepingCapacity: false)
         liveTalkStreamingMessages = []
         return true
     }
@@ -543,6 +545,10 @@ final class ConversationModel: ObservableObject {
             guard committedLiveTalkTranscriptIDs.insert(key).inserted else { continue }
             let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
+            if transcript.role == .agent,
+               consumeExpectedLiveTalkDelegatedAssistantReply(text) {
+                continue
+            }
             let messageID = liveTalkTranscriptMessageIDs[key] ?? UUID()
             let date = liveTalkTranscriptDates[key] ?? Date()
             liveTalkTranscriptMessageIDs[key] = messageID
@@ -588,6 +594,38 @@ final class ConversationModel: ObservableObject {
         liveTalkTranscriptMessageIDs.removeAll(keepingCapacity: false)
         liveTalkTranscriptDates.removeAll(keepingCapacity: false)
         committedLiveTalkTranscriptIDs.removeAll(keepingCapacity: false)
+        expectedLiveTalkDelegatedAssistantReplies.removeAll(keepingCapacity: false)
+    }
+
+    private func rememberExpectedLiveTalkDelegatedAssistantReply(_ value: String) {
+        let now = Date()
+        expectedLiveTalkDelegatedAssistantReplies.removeAll { $0.expiresAt <= now }
+        let normalized = LiveTalkEmailDraftToolBridge.canonicalize(value)
+        guard !normalized.isEmpty else { return }
+        expectedLiveTalkDelegatedAssistantReplies.append(
+            (
+                normalized,
+                now.addingTimeInterval(
+                    min(600, max(45, 20 + Double(value.count) * 0.1))
+                )
+            )
+        )
+        if expectedLiveTalkDelegatedAssistantReplies.count > 4 {
+            expectedLiveTalkDelegatedAssistantReplies.removeFirst(
+                expectedLiveTalkDelegatedAssistantReplies.count - 4
+            )
+        }
+    }
+
+    private func consumeExpectedLiveTalkDelegatedAssistantReply(_ value: String) -> Bool {
+        let now = Date()
+        expectedLiveTalkDelegatedAssistantReplies.removeAll { $0.expiresAt <= now }
+        let normalized = LiveTalkEmailDraftToolBridge.canonicalize(value)
+        guard let index = expectedLiveTalkDelegatedAssistantReplies.firstIndex(where: {
+            $0.text == normalized
+        }) else { return false }
+        expectedLiveTalkDelegatedAssistantReplies.remove(at: index)
+        return true
     }
 
     private func liveTalkTranscriptKey(for transcript: LiveTalkTranscript) -> String {
@@ -1104,7 +1142,7 @@ final class ConversationModel: ObservableObject {
                 )
                 return
             }
-            await submitToRemoteAgent(
+            _ = await submitToRemoteAgent(
                 input,
                 binding: remoteBinding,
                 submittedMessageID: submittedMessage.id,
@@ -1163,13 +1201,108 @@ final class ConversationModel: ObservableObject {
         )
     }
 
+    func submitLiveTalkAgentTurn(
+        _ rawInput: String,
+        binding: AvatarAgentConnectorBinding,
+        agentConnections: AgentConnectionModel
+    ) async -> LiveTalkAgentTurnToolDisposition {
+        guard isHistoryReady, !isChangingChat else { return .rejected }
+        guard !isWorking else { return .busy }
+        let input = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty,
+              input.utf8.count <= LiveTalkAgentTurnToolBridge.maximumSpokenRequestBytes,
+              let conversationID = historyController.selectedThreadID,
+              liveTalkTranscriptThreadID == conversationID else {
+            return .rejected
+        }
+        guard agentConnections.connection(for: binding) != nil else {
+            return .completed(
+                "Reconnect the paired OpenClaw agent in Settings before asking Live Talk to use it."
+            )
+        }
+        do {
+            if try agentConnections.pendingTurn(
+                forConnectionID: binding.connectionID
+            ) != nil {
+                return .busy
+            }
+        } catch {
+            return .failed
+        }
+
+        // The finalized LiveKit transcript is already visible. Reuse that exact
+        // message instead of rendering a second user bubble for the delegated turn.
+        let transcriptMessageIDs = Set(liveTalkTranscriptMessageIDs.values)
+        let liveUserMessages = messages.filter {
+            $0.role == .user && transcriptMessageIDs.contains($0.id)
+        }
+        let expectedInput = LiveTalkEmailDraftToolBridge.canonicalize(input)
+        var reversedSegments: [String] = []
+        var submittedMessage: ConversationMessage?
+        for message in liveUserMessages.reversed() {
+            submittedMessage = submittedMessage ?? message
+            reversedSegments.append(message.text)
+            let assembled = LiveTalkEmailDraftToolBridge.canonicalize(
+                reversedSegments.reversed().joined(separator: " ")
+            )
+            if assembled == expectedInput { break }
+        }
+        guard let submittedMessage,
+              LiveTalkEmailDraftToolBridge.canonicalize(
+                  reversedSegments.reversed().joined(separator: " ")
+              ) == expectedInput else {
+            return .rejected
+        }
+
+        stopSpeechOutput()
+        await preparePresentationForNewTurn(preserving: .unknown)
+        remoteAgentActivity = .init(
+            id: submittedMessage.id,
+            phase: .connecting,
+            title: "Connecting to OpenClaw",
+            detail: binding.displayName,
+            showsProgress: true,
+            allowsRetry: false,
+            allowsCancel: true
+        )
+        isWorking = true
+        defer { isWorking = false }
+        guard await persistConversationHistory() else {
+            remoteAgentActivity = .init(
+                id: submittedMessage.id,
+                phase: .needsAttention,
+                title: "Message not sent",
+                detail: "OpenClam could not safely save this Live Talk request.",
+                showsProgress: false,
+                allowsRetry: false,
+                allowsCancel: false
+            )
+            return .failed
+        }
+        guard let reply = await submitToRemoteAgent(
+            input,
+            binding: binding,
+            submittedMessageID: submittedMessage.id,
+            agentConnections: agentConnections,
+            onSubmissionSaved: nil,
+            preservesSubmittedMessageOnFailure: true
+        ) else {
+            return .failed
+        }
+        let spokenReply = LiveTalkAgentTurnToolBridge.boundedSpokenReply(reply)
+        guard !spokenReply.isEmpty else { return .failed }
+        rememberExpectedLiveTalkDelegatedAssistantReply(spokenReply)
+        return .completed(spokenReply)
+    }
+
     private func submitToRemoteAgent(
         _ input: String,
         binding: AvatarAgentConnectorBinding,
         submittedMessageID: UUID,
         agentConnections: AgentConnectionModel?,
-        onSubmissionSaved: (() -> Void)?
-    ) async {
+        onSubmissionSaved: (() -> Void)?,
+        preservesSubmittedMessageOnFailure: Bool = false
+    ) async -> String? {
         streamingAssistantReply = nil
         remoteAgentWorkSteps = []
         defer { streamingAssistantReply = nil }
@@ -1184,7 +1317,7 @@ final class ConversationModel: ObservableObject {
                 allowsRetry: false,
                 allowsCancel: false
             )
-            return
+            return nil
         }
         let turnID = UUID()
         let assistantMessageID = UUID()
@@ -1206,21 +1339,24 @@ final class ConversationModel: ObservableObject {
                 assistantMessageID: assistantMessageID,
                 text: input
             )
-            await consumeRemoteAgentStream(
+            return await consumeRemoteAgentStream(
                 stream,
                 connectionID: binding.connectionID,
                 turnID: turnID,
                 userMessageID: submittedMessageID,
                 assistantMessageID: assistantMessageID,
                 agentConnections: agentConnections,
-                onSubmissionSaved: onSubmissionSaved
+                onSubmissionSaved: onSubmissionSaved,
+                preservesSubmittedMessageOnFailure: preservesSubmittedMessageOnFailure
             )
         } catch {
             await reconcileUnstoredRemoteSubmission(
                 error,
                 userMessageID: submittedMessageID,
-                activityID: turnID
+                activityID: turnID,
+                preservesUserMessage: preservesSubmittedMessageOnFailure
             )
+            return nil
         }
     }
 
@@ -1324,7 +1460,7 @@ final class ConversationModel: ObservableObject {
         }
         do {
             let stream = try agentConnections.resumePendingTurn(pending)
-            await consumeRemoteAgentStream(
+            _ = await consumeRemoteAgentStream(
                 stream,
                 connectionID: pending.connectionID,
                 turnID: pending.turnID,
@@ -1473,8 +1609,9 @@ final class ConversationModel: ObservableObject {
         userMessageID: UUID,
         assistantMessageID: UUID,
         agentConnections: AgentConnectionModel,
-        onSubmissionSaved: (() -> Void)?
-    ) async {
+        onSubmissionSaved: (() -> Void)?,
+        preservesSubmittedMessageOnFailure: Bool = false
+    ) async -> String? {
         var didReportSubmissionSaved = false
         do {
             var completedText: String?
@@ -1576,6 +1713,10 @@ final class ConversationModel: ObservableObject {
                     completedText = text
                 }
             }
+            // AsyncThrowingStream ends iteration when its consumer is cancelled.
+            // Preserve that reason so the durable connector turn is cancelled too,
+            // rather than treating barge-in as a transient connection failure.
+            try Task.checkCancellation()
             guard let completedText else {
                 throw AgentConnectorError.connectionUnavailable
             }
@@ -1605,14 +1746,35 @@ final class ConversationModel: ObservableObject {
                     allowsCancel: false
                 )
             }
+            return completedText
         } catch {
             if !didReportSubmissionSaved {
+                // A cancellation can race the buffered `.submissionSaved`
+                // event after the connector has already written its durable
+                // outbox record. Never strand that exact remote turn merely
+                // because the UI consumer did not observe the receipt first.
+                if error is CancellationError,
+                   preservesSubmittedMessageOnFailure,
+                   (try? agentConnections.pendingTurn(
+                       connectionID: connectionID,
+                       turnID: turnID
+                   )) != nil {
+                    await reconcileRemoteAgentFailure(
+                        error,
+                        connectionID: connectionID,
+                        turnID: turnID,
+                        assistantMessageID: assistantMessageID,
+                        agentConnections: agentConnections
+                    )
+                    return nil
+                }
                 await reconcileUnstoredRemoteSubmission(
                     error,
                     userMessageID: userMessageID,
-                    activityID: turnID
+                    activityID: turnID,
+                    preservesUserMessage: preservesSubmittedMessageOnFailure
                 )
-                return
+                return nil
             }
             await reconcileRemoteAgentFailure(
                 error,
@@ -1621,15 +1783,19 @@ final class ConversationModel: ObservableObject {
                 assistantMessageID: assistantMessageID,
                 agentConnections: agentConnections
             )
+            return nil
         }
     }
 
     private func reconcileUnstoredRemoteSubmission(
         _ error: Error,
         userMessageID: UUID,
-        activityID: UUID
+        activityID: UUID,
+        preservesUserMessage: Bool = false
     ) async {
-        messages.removeAll { $0.id == userMessageID }
+        if !preservesUserMessage {
+            messages.removeAll { $0.id == userMessageID }
+        }
         _ = await persistConversationHistory()
         remoteAgentActivity = .init(
             id: activityID,

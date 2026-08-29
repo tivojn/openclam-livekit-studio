@@ -66,10 +66,16 @@ chunk is rejected before it is copied into the fixed-size request buffer.
 
 The returned participant JWT permits joining and subscribing. Media publishing
 is restricted to `TrackSource.MICROPHONE`; camera and screen-share publishing
-are disabled. Participant data publishing stays enabled only so the iPhone can
-return a bounded response to the agent's authenticated email-draft RPC. The app
-still applies caller, room, attempt, transcript, replay, deadline, and foreground
-checks before it stages an editable draft; the data grant is not tool authority.
+are disabled. Participant data publishing stays enabled only so the foreground
+OpenClam app can return bounded responses to two authenticated RPCs: the
+cross-client selected-agent turn bridge and the deterministic review-only
+email-draft bridge used by both clients.
+The app still applies caller, room, attempt, exact finalized-transcript, replay,
+deadline, and foreground checks. The current bridge enters the same selected
+OpenClaw workflow used by typed chat, where normal visible approval policy remains
+authoritative. Without a selected and connected OpenClaw agent, it fails closed
+rather than using a plain local language model; the data grant itself is not tool
+authority.
 
 `POST /v1/credential-leases/:id/claim` is agent-only. The agent sends:
 

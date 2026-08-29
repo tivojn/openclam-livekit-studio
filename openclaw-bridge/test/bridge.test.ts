@@ -733,11 +733,15 @@ describe("authenticated connector WebSockets", () => {
     const sessionStub = env.CONNECTOR_SESSIONS.get(
       env.CONNECTOR_SESSIONS.idFromName(created.connectionId),
     );
-    const pending = await runInDurableObject(
-      sessionStub,
-      async (_instance, state) =>
-        (await state.storage.get<SessionRecord>("session"))?.pending ?? [],
-    );
+    let pending: PendingFrame[] = [];
+    await eventually(async () => {
+      pending = await runInDurableObject(
+        sessionStub,
+        async (_instance, state) =>
+          (await state.storage.get<SessionRecord>("session"))?.pending ?? [],
+      );
+      return pending.length === 0;
+    });
     expect(pending).toHaveLength(0);
     client.close(1000, "done");
     adapter.close(1000, "done");
@@ -905,14 +909,13 @@ describe("authenticated connector WebSockets", () => {
       env.CONNECTOR_SESSIONS.idFromName(created.connectionId),
     );
     let stored: SessionRecord | undefined;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    await eventually(async () => {
       stored = await runInDurableObject(
         sessionStub,
         async (_instance, state) => state.storage.get<SessionRecord>("session"),
       );
-      if (stored?.highestClientSeq === 140) break;
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    }
+      return stored?.highestClientSeq === 140;
+    });
     expect(stored?.highestClientSeq).toBe(140);
     expect(stored?.pending).toHaveLength(0);
 

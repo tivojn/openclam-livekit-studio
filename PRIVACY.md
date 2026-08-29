@@ -66,8 +66,12 @@ that connection's unfinished saved turn while retaining chat history and
 already delivered files.
 
 The OpenClaw connector has no Telegram dependency and receives no LiveKit,
-language-model, speech-recognition, or speech-synthesis credentials. Continuous
-Live Talk remains on its separate LiveKit path.
+language-model, speech-recognition, or speech-synthesis credentials. Live Talk
+audio remains on its separate LiveKit path. When the user has selected an
+OpenClaw agent and asks Live Talk to perform an agent action, the exact finalized
+request text is sent through the paired OpenClaw connector; the bounded result
+returns to LiveKit for speech. Ordinary conversation that does not invoke that
+agent-action tool is not sent through the connector.
 
 ## Avatars
 

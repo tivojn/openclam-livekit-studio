@@ -94,14 +94,37 @@ enum LiveTalkEmailDraftToolBridge {
     }
 
     static func latestFinalUserTranscript(in messages: [ReceivedMessage]) -> String? {
-        for message in messages.reversed() where message.isFinal {
-            guard case let .userTranscript(rawText) = message.content else { continue }
-            let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                return text
+        let maximumSegmentGap: TimeInterval = 1.2
+        var reversedSegments: [String] = []
+        var newerSegmentDate: Date?
+        messageLoop: for message in messages.reversed() {
+            switch message.content {
+            case let .userTranscript(rawText):
+                let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                guard message.isFinal else {
+                    // A newer partial is an explicit barge/correction boundary.
+                    // Never let a delayed RPC bind to the older finalized turn.
+                    guard !reversedSegments.isEmpty else { return nil }
+                    break messageLoop
+                }
+                if let newerSegmentDate,
+                   newerSegmentDate.timeIntervalSince(message.timestamp) > maximumSegmentGap {
+                    break messageLoop
+                }
+                reversedSegments.append(text)
+                newerSegmentDate = message.timestamp
+            case .agentTranscript, .userInput:
+                // Once either side produces a different message, an older user
+                // segment cannot belong to the latest spoken turn. Non-final
+                // agent output is also a boundary: guessing across it could
+                // authorize a consequential action for the wrong user turn.
+                guard !reversedSegments.isEmpty else { return nil }
+                break messageLoop
             }
         }
-        return nil
+        guard !reversedSegments.isEmpty else { return nil }
+        return reversedSegments.reversed().joined(separator: " ")
     }
 
     static func matchesLatestFinalUserTranscript(
@@ -245,6 +268,178 @@ enum LiveTalkEmailDraftToolBridge {
     }
 }
 
+enum LiveTalkAgentTurnToolBridge {
+    static let rpcMethod = "openclam.submitAgentTurn.v1"
+    static let maximumPayloadBytes = 9_000
+    static let maximumSpokenRequestBytes = 8_000
+    static let maximumSpokenReplyBytes = 6_000
+    static let minimumResponseTimeout: TimeInterval = 30
+    static let maximumResponseTimeout: TimeInterval = 310
+
+    static func decodeRequest(_ payload: String) throws -> LiveTalkAgentTurnToolRequest {
+        guard let data = payload.data(using: .utf8),
+              data.count <= maximumPayloadBytes,
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(root.keys) == ["schema_version", "request_id", "spoken_request"] else {
+            throw LiveTalkAgentTurnToolBridgeError.invalidRequest
+        }
+        let decoded: WireRequest
+        do {
+            decoded = try JSONDecoder().decode(WireRequest.self, from: data)
+        } catch {
+            throw LiveTalkAgentTurnToolBridgeError.invalidRequest
+        }
+        guard decoded.schemaVersion == 1,
+              decoded.requestID.utf8.count == 64,
+              decoded.requestID.utf8.allSatisfy({
+                  (48 ... 57).contains($0) || (97 ... 102).contains($0)
+              }),
+              !decoded.spokenRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              decoded.spokenRequest.utf8.count <= maximumSpokenRequestBytes else {
+            throw LiveTalkAgentTurnToolBridgeError.invalidRequest
+        }
+        return .init(
+            requestID: decoded.requestID,
+            spokenRequest: decoded.spokenRequest
+        )
+    }
+
+    static func encodeResponse(
+        _ disposition: LiveTalkAgentTurnToolDisposition
+    ) throws -> String {
+        let status: String
+        let spokenReply: String
+        switch disposition {
+        case let .completed(reply):
+            let bounded = boundedSpokenReply(reply)
+            guard !bounded.isEmpty else {
+                throw LiveTalkAgentTurnToolBridgeError.invalidResponse
+            }
+            status = "completed"
+            spokenReply = bounded
+        case .rejected:
+            status = "rejected"
+            spokenReply = ""
+        case .busy:
+            status = "busy"
+            spokenReply = ""
+        case .foregroundRequired:
+            status = "foreground_required"
+            spokenReply = ""
+        case .failed:
+            status = "failed"
+            spokenReply = ""
+        }
+        let data = try JSONEncoder().encode(
+            WireResponse(
+                schemaVersion: 1,
+                status: status,
+                spokenReply: spokenReply
+            )
+        )
+        guard let response = String(data: data, encoding: .utf8) else {
+            throw LiveTalkAgentTurnToolBridgeError.invalidResponse
+        }
+        return response
+    }
+
+    static func boundedSpokenReply(_ value: String) -> String {
+        let collapsed = value
+            .replacingOccurrences(
+                of: #"\[([^\]\r\n]{1,160})\]\([A-Za-z][A-Za-z0-9+.-]*:[^)\r\n]{1,1024}\)"#,
+                with: "$1",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"</?(?:speak|voice|prosody|break|emphasis|expr|amazon:effect|mstts:express-as|say-as|phoneme|sub|p|s)(?=[\s/>])[^<>\r\n]{0,511}>"#,
+                with: " ",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            .replacingOccurrences(
+                of: #"[\[(]\s*(?:(?:very|slightly|softly|deeply)\s+)?(?:angry|calm|cheerful|crying|empathetic|excited|fearful|happy|horrified|laugh(?:s|ed|ing)?|loudly|neutral|pause|playful|quietly|sad|sarcastic|serious|sigh(?:s|ed|ing)?|sobbing|surprised|upbeat|warm|whisper(?:s|ed|ing)?|shout(?:s|ed|ing)?)\s*[\])]"#,
+                with: " ",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            .replacingOccurrences(of: "[", with: "［")
+            .replacingOccurrences(of: "]", with: "］")
+            .replacingOccurrences(of: "<", with: "＜")
+            .replacingOccurrences(of: ">", with: "＞")
+            .unicodeScalars
+            .filter { scalar in
+                let value = scalar.value
+                return value == 9 || value == 10 || value == 13 || value >= 32
+            }
+            .map(String.init)
+            .joined()
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+
+        var bytes = 0
+        var output = ""
+        for character in collapsed {
+            let width = String(character).utf8.count
+            guard bytes + width <= maximumSpokenReplyBytes else { break }
+            output.append(character)
+            bytes += width
+        }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func matchesLatestFinalUserTranscript(
+        _ spokenRequest: String,
+        messages: [ReceivedMessage]
+    ) -> Bool {
+        LiveTalkEmailDraftToolBridge.matchesLatestFinalUserTranscript(
+            spokenRequest,
+            messages: messages
+        )
+    }
+
+    private struct WireRequest: Decodable {
+        let schemaVersion: Int
+        let requestID: String
+        let spokenRequest: String
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case requestID = "request_id"
+            case spokenRequest = "spoken_request"
+        }
+    }
+
+    private struct WireResponse: Encodable {
+        let schemaVersion: Int
+        let status: String
+        let spokenReply: String
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case status
+            case spokenReply = "spoken_reply"
+        }
+    }
+}
+
+struct LiveTalkAgentTurnToolRequest: Equatable, Sendable {
+    let requestID: String
+    let spokenRequest: String
+}
+
+enum LiveTalkAgentTurnToolDisposition: Equatable, Sendable {
+    case completed(String)
+    case rejected
+    case busy
+    case foregroundRequired
+    case failed
+}
+
+enum LiveTalkAgentTurnToolBridgeError: Error, Equatable {
+    case invalidRequest
+    case invalidResponse
+    case untrustedCaller
+    case staleSession
+}
+
 struct LiveTalkEmailDraftToolRequest: Equatable, Sendable {
     let requestID: String
     let spokenRequest: String
@@ -312,12 +507,51 @@ enum LiveTalkEmailDraftInvocationPolicy {
     }
 }
 
+enum LiveTalkAgentTurnInvocationPolicy {
+    static func acceptsResponseTimeout(_ value: TimeInterval) -> Bool {
+        value.isFinite
+            && value >= LiveTalkAgentTurnToolBridge.minimumResponseTimeout
+            && value <= LiveTalkAgentTurnToolBridge.maximumResponseTimeout
+    }
+
+    static func canStartAfterTranscriptWait(
+        attemptMatches: Bool,
+        roomMatches: Bool,
+        phase: LiveTalkConnectionPhase,
+        trustedAgentCount: Int,
+        callerIsTrusted: Bool
+    ) -> Bool {
+        LiveTalkEmailDraftInvocationPolicy.isCurrentSession(
+            attemptMatches: attemptMatches,
+            roomMatches: roomMatches,
+            phase: phase
+        ) && LiveTalkEmailDraftInvocationPolicy.isTrustedCaller(
+            trustedAgentCount: trustedAgentCount,
+            callerIsTrusted: callerIsTrusted
+        )
+    }
+}
+
+enum LiveTalkAgentTurnBargeInPolicy {
+    static func shouldCancel(
+        sourceUserMessageIDs: Set<String>,
+        currentUserMessageIDs: Set<String>
+    ) -> Bool {
+        !currentUserMessageIDs.isSubset(of: sourceUserMessageIDs)
+    }
+}
+
 struct LiveTalkToolReplayWindow: Equatable, Sendable {
     static let maximumRequestCount = 64
+    private let maximumRequestCount: Int
     private(set) var requestIDs: Set<String> = []
 
+    init(maximumRequestCount: Int = Self.maximumRequestCount) {
+        self.maximumRequestCount = max(1, maximumRequestCount)
+    }
+
     mutating func claim(_ requestID: String) -> Bool {
-        guard requestIDs.count < Self.maximumRequestCount else { return false }
+        guard requestIDs.count < maximumRequestCount else { return false }
         return requestIDs.insert(requestID).inserted
     }
 
@@ -329,6 +563,10 @@ struct LiveTalkToolReplayWindow: Equatable, Sendable {
 typealias LiveTalkEmailDraftToolHandler = @MainActor @Sendable (
     LiveTalkEmailDraftToolRequest
 ) async -> LiveTalkEmailDraftToolDisposition
+
+typealias LiveTalkAgentTurnToolHandler = @MainActor @Sendable (
+    LiveTalkAgentTurnToolRequest
+) async -> LiveTalkAgentTurnToolDisposition
 
 enum LiveTalkConnectionPhase: Equatable, Sendable {
     case idle
@@ -492,6 +730,388 @@ struct LiveTalkRemoteSpeechGate: Equatable, Sendable {
 
     mutating func reset() {
         self = .init()
+    }
+}
+
+enum LiveTalkTTSTimingPacketEvent: Equatable, Sendable {
+    case start
+    case cue(
+        text: String,
+        startTime: TimeInterval?,
+        endTime: TimeInterval
+    )
+    case end
+}
+
+struct LiveTalkTTSTimingPacket: Equatable, Sendable {
+    let generation: Int
+    let segment: Int
+    let sequence: Int
+    let event: LiveTalkTTSTimingPacketEvent
+}
+
+enum LiveTalkTTSTimingPacketBridge {
+    static let topic = "openclam.tts-timing.v1"
+    static let maximumPacketBytes = 4_096
+    static let maximumTextCharacters = 512
+    static let maximumOrdinal = 2_147_483_647
+
+    static func acceptsSource(
+        topic: String,
+        senderIdentity: String?,
+        trustedAgentIdentities: [String]
+    ) -> Bool {
+        guard topic == self.topic,
+              trustedAgentIdentities.count == 1,
+              let senderIdentity else { return false }
+        return trustedAgentIdentities[0] == senderIdentity
+    }
+
+    static func decode(_ data: Data) throws -> LiveTalkTTSTimingPacket {
+        guard (2 ... maximumPacketBytes).contains(data.count),
+              String(data: data, encoding: .utf8) != nil else {
+            throw LiveTalkTTSTimingPacketError.invalidPacket
+        }
+        let root: [String: Any]
+        do {
+            guard let decodedRoot = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any] else {
+                throw LiveTalkTTSTimingPacketError.invalidPacket
+            }
+            root = decodedRoot
+        } catch {
+            throw LiveTalkTTSTimingPacketError.invalidPacket
+        }
+
+        if let event = root["event"] as? String {
+            guard Set(root.keys) == [
+                "schema_version", "generation", "segment", "sequence", "event",
+            ] else {
+                throw LiveTalkTTSTimingPacketError.invalidPacket
+            }
+            let decoded: BoundaryWirePacket
+            do {
+                decoded = try JSONDecoder().decode(BoundaryWirePacket.self, from: data)
+            } catch {
+                throw LiveTalkTTSTimingPacketError.invalidPacket
+            }
+            guard decoded.schemaVersion == 1,
+                  (1 ... maximumOrdinal).contains(decoded.generation),
+                  (1 ... maximumOrdinal).contains(decoded.segment),
+                  (1 ... maximumOrdinal).contains(decoded.sequence) else {
+                throw LiveTalkTTSTimingPacketError.invalidPacket
+            }
+            let packetEvent: LiveTalkTTSTimingPacketEvent
+            switch event {
+            case "start": packetEvent = .start
+            case "end": packetEvent = .end
+            default: throw LiveTalkTTSTimingPacketError.invalidPacket
+            }
+            return .init(
+                generation: decoded.generation,
+                segment: decoded.segment,
+                sequence: decoded.sequence,
+                event: packetEvent
+            )
+        }
+
+        let expectedKeys: Set<String> = root["start_time"] == nil
+            ? ["schema_version", "generation", "segment", "sequence", "text", "end_time"]
+            : [
+                "schema_version", "generation", "segment", "sequence", "text",
+                "start_time", "end_time",
+            ]
+        guard Set(root.keys) == expectedKeys else {
+            throw LiveTalkTTSTimingPacketError.invalidPacket
+        }
+        let decoded: CueWirePacket
+        do {
+            decoded = try JSONDecoder().decode(CueWirePacket.self, from: data)
+        } catch {
+            throw LiveTalkTTSTimingPacketError.invalidPacket
+        }
+        guard decoded.schemaVersion == 1,
+              (1 ... maximumOrdinal).contains(decoded.generation),
+              (1 ... maximumOrdinal).contains(decoded.segment),
+              (1 ... maximumOrdinal).contains(decoded.sequence),
+              !decoded.text.isEmpty,
+              decoded.text.utf16.count <= maximumTextCharacters,
+              decoded.endTime.isFinite,
+              (0 ... 7_200).contains(decoded.endTime),
+              decoded.startTime.map({
+                  $0.isFinite && $0 >= 0 && $0 <= decoded.endTime
+              }) ?? true else {
+            throw LiveTalkTTSTimingPacketError.invalidPacket
+        }
+        return .init(
+            generation: decoded.generation,
+            segment: decoded.segment,
+            sequence: decoded.sequence,
+            event: .cue(
+                text: decoded.text,
+                startTime: decoded.startTime,
+                endTime: decoded.endTime
+            )
+        )
+    }
+
+    private struct BoundaryWirePacket: Decodable {
+        let schemaVersion: Int
+        let generation: Int
+        let segment: Int
+        let sequence: Int
+        let event: String
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case generation, segment, sequence, event
+        }
+    }
+
+    private struct CueWirePacket: Decodable {
+        let schemaVersion: Int
+        let generation: Int
+        let segment: Int
+        let sequence: Int
+        let text: String
+        let startTime: TimeInterval?
+        let endTime: TimeInterval
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case generation, segment, sequence, text
+            case startTime = "start_time"
+            case endTime = "end_time"
+        }
+    }
+}
+
+enum LiveTalkTTSTimingPacketError: Error, Equatable {
+    case invalidPacket
+}
+
+enum LiveTalkTTSTimingUpdate: Equatable, Sendable {
+    case started
+    case cue(CaptainAyerLipSyncTimeline)
+    case ended
+}
+
+struct LiveTalkTTSTimingState: Equatable, Sendable {
+    static let stallDuration: TimeInterval = 0.9
+    static let resetGuardDuration: TimeInterval = 0.52
+    static let tokenMidpoint = 0.46
+
+    private(set) var generation: Int?
+    private(set) var segment: Int?
+    private(set) var sequence = 0
+    private(set) var generationStarted = false
+    private(set) var ended = false
+    private(set) var lastPacketAt: TimeInterval?
+    private(set) var activeTimeline: CaptainAyerLipSyncTimeline?
+    private(set) var activeTimelineStartedAt: TimeInterval?
+    private var unseenGenerationTombstoned = false
+    private var closedThroughGeneration = 0
+    private var closedThroughSegment = 0
+    private var lastTimedEnd: TimeInterval = -1
+    private var fallbackBlockedUntil = -TimeInterval.infinity
+
+    mutating func accept(
+        _ packet: LiveTalkTTSTimingPacket,
+        at sampleTime: TimeInterval,
+        planner: CaptainAyerLipSyncPlanner = .init()
+    ) -> LiveTalkTTSTimingUpdate? {
+        guard sampleTime.isFinite,
+              packet.generation > closedThroughGeneration,
+              packet.segment > closedThroughSegment else { return nil }
+
+        switch packet.event {
+        case .start:
+            guard packet.sequence == 1,
+                  generation.map({ packet.generation > $0 }) ?? true,
+                  packet.segment > (segment ?? 0) else { return nil }
+            if generationStarted {
+                guard let lastPacketAt,
+                      sampleTime - lastPacketAt > Self.stallDuration,
+                      let generation,
+                      let segment else { return nil }
+                // A reliable end marker can still be lost. After a genuine
+                // timing-lane stall, a strictly newer start atomically closes
+                // the abandoned generation so late packets cannot rewind it.
+                closedThroughGeneration = max(closedThroughGeneration, generation)
+                closedThroughSegment = max(closedThroughSegment, segment)
+            }
+            generation = packet.generation
+            segment = packet.segment
+            sequence = packet.sequence
+            generationStarted = true
+            unseenGenerationTombstoned = false
+            ended = false
+            lastTimedEnd = -1
+            lastPacketAt = sampleTime
+            fallbackBlockedUntil = -TimeInterval.infinity
+            activeTimeline = nil
+            activeTimelineStartedAt = nil
+            return .started
+
+        case .end:
+            guard generationStarted,
+                  packet.generation == generation,
+                  packet.segment == segment,
+                  packet.sequence > sequence else { return nil }
+            sequence = packet.sequence
+            lastPacketAt = sampleTime
+            closedThroughSegment = max(closedThroughSegment, packet.segment)
+            closedThroughGeneration = max(closedThroughGeneration, packet.generation)
+            generationStarted = false
+            ended = true
+            activeTimeline = nil
+            activeTimelineStartedAt = nil
+            return .ended
+
+        case let .cue(text, startTime, endTime):
+            guard generationStarted,
+                  packet.generation == generation,
+                  packet.segment == segment,
+                  packet.sequence > sequence,
+                  endTime + 0.08 >= lastTimedEnd else { return nil }
+            let interval = startTime.map { endTime - $0 }
+            let suppliedDuration = interval.flatMap {
+                (0.04 ... 2.4).contains($0) ? $0 : nil
+            }
+            let fullTimeline = planner.timeline(
+                for: text,
+                duration: suppliedDuration
+            )
+            guard fullTimeline.duration > 0 else { return nil }
+            let remaining = Self.remainingTimeline(
+                from: fullTimeline,
+                elapsed: fullTimeline.duration * Self.tokenMidpoint
+            )
+            guard remaining.duration > 0 else { return nil }
+            sequence = packet.sequence
+            lastPacketAt = sampleTime
+            lastTimedEnd = endTime
+            ended = false
+            activeTimeline = remaining
+            activeTimelineStartedAt = sampleTime
+            return .cue(remaining)
+        }
+    }
+
+    mutating func reset(
+        at sampleTime: TimeInterval,
+        invalidateUnseenGeneration: Bool
+    ) {
+        let tombstoneNext = invalidateUnseenGeneration
+            && !generationStarted
+            && !unseenGenerationTombstoned
+        if let generation {
+            closedThroughGeneration = max(
+                closedThroughGeneration,
+                generation + (tombstoneNext ? 1 : 0)
+            )
+            unseenGenerationTombstoned = invalidateUnseenGeneration
+        } else if tombstoneNext {
+            closedThroughGeneration += 1
+            unseenGenerationTombstoned = true
+        }
+        if let segment {
+            closedThroughSegment = max(closedThroughSegment, segment)
+        }
+        generation = nil
+        segment = nil
+        sequence = 0
+        generationStarted = false
+        ended = true
+        lastTimedEnd = -1
+        lastPacketAt = sampleTime.isFinite ? sampleTime : nil
+        fallbackBlockedUntil = sampleTime.isFinite
+            ? sampleTime + Self.resetGuardDuration
+            : .infinity
+        activeTimeline = nil
+        activeTimelineStartedAt = nil
+    }
+
+    func shouldOwnMouth(at sampleTime: TimeInterval) -> Bool {
+        if sampleTime < fallbackBlockedUntil { return true }
+        guard let lastPacketAt else { return false }
+        return sampleTime - lastPacketAt <= Self.stallDuration
+    }
+
+    func remainingActiveTimeline(at sampleTime: TimeInterval) -> CaptainAyerLipSyncTimeline? {
+        guard let activeTimeline, let activeTimelineStartedAt else { return nil }
+        let elapsed = max(0, sampleTime - activeTimelineStartedAt)
+        guard elapsed < activeTimeline.duration else { return nil }
+        return Self.remainingTimeline(from: activeTimeline, elapsed: elapsed)
+    }
+
+    private static func remainingTimeline(
+        from timeline: CaptainAyerLipSyncTimeline,
+        elapsed: TimeInterval
+    ) -> CaptainAyerLipSyncTimeline {
+        let clamped = min(timeline.duration, max(0, elapsed))
+        let duration = max(0, timeline.duration - clamped)
+        guard duration > 0 else { return .idle }
+        let current = timeline.renderState(at: min(
+            timeline.duration - 0.000_001,
+            clamped
+        )).current
+        var cues = [CaptainAyerLipSyncCue(offset: 0, viseme: current)]
+        for cue in timeline.cues where cue.offset > clamped {
+            let shifted = cue.offset - clamped
+            if cues.last?.viseme != cue.viseme {
+                cues.append(.init(offset: shifted, viseme: cue.viseme))
+            }
+        }
+        if cues.last?.viseme != .silence {
+            let closing = min(
+                duration,
+                max(0, duration - CaptainAyerLipSyncTimeline.fadeDuration(
+                    from: cues.last?.viseme ?? .silence,
+                    to: .silence
+                ))
+            )
+            cues.append(.init(offset: closing, viseme: .silence))
+        }
+        return .init(duration: duration, cues: cues)
+    }
+}
+
+enum LiveTalkTTSTimingBargeInPolicy {
+    static func interruptsTiming(
+        agentOrParticipantIsSpeaking: Bool,
+        delegatedTurnIsActive: Bool
+    ) -> Bool {
+        // The avatar render gate intentionally has a release tail. Using that
+        // visual tail as barge evidence would tombstone the next legitimate
+        // timing generation when a user answers promptly after normal speech.
+        agentOrParticipantIsSpeaking || delegatedTurnIsActive
+    }
+}
+
+private final class LiveTalkTTSTimingDataReceiver: NSObject, RoomDelegate,
+    @unchecked Sendable {
+    typealias Handler = @Sendable (
+        Room,
+        RemoteParticipant?,
+        Data,
+        String
+    ) -> Void
+
+    private let handler: Handler
+
+    init(handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    func room(
+        _ room: Room,
+        participant: RemoteParticipant?,
+        didReceiveData data: Data,
+        forTopic topic: String,
+        encryptionType _: EncryptionType
+    ) {
+        handler(room, participant, data, topic)
     }
 }
 
@@ -824,6 +1444,9 @@ final class LiveTalkSessionController: ObservableObject {
     private var avatarGeneration = 40_000
     private var avatarIsSpeaking = false
     private var remoteSpeechGate = LiveTalkRemoteSpeechGate()
+    private var ttsTimingState = LiveTalkTTSTimingState()
+    private var ttsTimingDataReceiver: LiveTalkTTSTimingDataReceiver?
+    private var seenTTSTimingUserMessageIDs = Set<String>()
     private var avatarReleaseTask: Task<Void, Never>?
     private var lastAgentTranscript = ""
     private var lastAgentTranscriptID: String?
@@ -832,6 +1455,10 @@ final class LiveTalkSessionController: ObservableObject {
     private var avatarExpressionTracksTranscript = false
     private var transcriptWindow = LiveTalkTranscriptWindow()
     private var emailDraftReplayWindow = LiveTalkToolReplayWindow()
+    private var agentTurnReplayWindow = LiveTalkToolReplayWindow(maximumRequestCount: 128)
+    private var activeAgentTurnTask: Task<LiveTalkAgentTurnToolDisposition, Never>?
+    private var activeAgentTurnRequestID: String?
+    private var activeAgentTurnSourceMessageIDs: Set<String> = []
 
     init(
         credentialVault: ProviderCredentialVault = KeychainProviderCredentialVault(),
@@ -854,6 +1481,7 @@ final class LiveTalkSessionController: ObservableObject {
     deinit {
         startTask?.cancel()
         avatarReleaseTask?.cancel()
+        activeAgentTurnTask?.cancel()
     }
 
     var errorMessage: String? {
@@ -869,18 +1497,23 @@ final class LiveTalkSessionController: ObservableObject {
         avatar: AvatarAgentProfile,
         sharedSettings: AIProviderSettings,
         avatarController: CaptainAyerLipSyncController,
-        emailDraftToolHandler: @escaping LiveTalkEmailDraftToolHandler = { _ in .rejected }
+        emailDraftToolHandler: @escaping LiveTalkEmailDraftToolHandler = { _ in .rejected },
+        agentTurnToolHandler: @escaping LiveTalkAgentTurnToolHandler = { _ in .rejected }
     ) {
         guard canStart else { return }
+        cancelActiveAgentTurn()
         let attempt = UUID()
         activeAttempt = attempt
         self.avatarController = avatarController
         remoteSpeechGate.reset()
+        ttsTimingState = .init()
+        seenTTSTimingUserMessageIDs.removeAll(keepingCapacity: false)
         avatarReleaseTask?.cancel()
         avatarReleaseTask = nil
         isMuted = false
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
+        agentTurnReplayWindow.clear()
         transition(.start)
         activityTitle = "Requesting a private session"
 
@@ -904,6 +1537,20 @@ final class LiveTalkSessionController: ObservableObject {
                     defaultAudioCaptureOptions: LiveTalkAudioCapturePolicy.options
                 )
             )
+            let timingReceiver = LiveTalkTTSTimingDataReceiver {
+                [weak self] room, participant, data, topic in
+                Task { @MainActor [weak self] in
+                    self?.handleTTSTimingData(
+                        data,
+                        participant: participant,
+                        topic: topic,
+                        room: room,
+                        attempt: attempt
+                    )
+                }
+            }
+            room.add(delegate: timingReceiver)
+            ttsTimingDataReceiver = timingReceiver
             let nextSession = Session(
                 tokenSource: source,
                 options: .init(
@@ -935,13 +1582,32 @@ final class LiveTalkSessionController: ObservableObject {
                             handler: emailDraftToolHandler
                         )
                     }
+                    try await room.registerRpcMethod(
+                        LiveTalkAgentTurnToolBridge.rpcMethod
+                    ) { [weak self, weak room] invocation in
+                        guard let self, let room else {
+                            throw LiveTalkAgentTurnToolBridgeError.staleSession
+                        }
+                        return try await self.handleAgentTurnToolInvocation(
+                            invocation,
+                            room: room,
+                            attempt: attempt,
+                            handler: agentTurnToolHandler
+                        )
+                    }
                 } catch {
+                    await room.unregisterRpcMethod(
+                        LiveTalkEmailDraftToolBridge.rpcMethod
+                    )
+                    await room.unregisterRpcMethod(
+                        LiveTalkAgentTurnToolBridge.rpcMethod
+                    )
                     guard let self else {
                         await endOperation(nextSession)
                         return
                     }
                     self.fail(
-                        "Live Talk could not enable foreground draft review. "
+                        "Live Talk could not enable foreground agent actions. "
                             + "End the session and try again."
                     )
                     return
@@ -1030,10 +1696,15 @@ final class LiveTalkSessionController: ObservableObject {
         startTask = nil
         pendingStart?.cancel()
         observations.removeAll()
+        cancelActiveAgentTurn()
         endingAudioBridge?.stop()
         if let endingSession {
+            detachTTSTimingReceiver(from: endingSession.room)
             await endingSession.room.unregisterRpcMethod(
                 LiveTalkEmailDraftToolBridge.rpcMethod
+            )
+            await endingSession.room.unregisterRpcMethod(
+                LiveTalkAgentTurnToolBridge.rpcMethod
             )
             await sessionEnder(endingSession)
         }
@@ -1135,6 +1806,251 @@ final class LiveTalkSessionController: ObservableObject {
         return try LiveTalkEmailDraftToolBridge.encodeResponse(disposition)
     }
 
+    private func handleAgentTurnToolInvocation(
+        _ invocation: RpcInvocationData,
+        room: Room,
+        attempt: UUID,
+        handler: @escaping LiveTalkAgentTurnToolHandler
+    ) async throws -> String {
+        guard let currentSession = session,
+              LiveTalkEmailDraftInvocationPolicy.isCurrentSession(
+                  attemptMatches: activeAttempt == attempt,
+                  roomMatches: currentSession.room === room,
+                  phase: phase
+              ) else {
+            throw LiveTalkAgentTurnToolBridgeError.staleSession
+        }
+        let trustedAgents = room.agentParticipants
+        guard LiveTalkEmailDraftInvocationPolicy.isTrustedCaller(
+            trustedAgentCount: trustedAgents.count,
+            callerIsTrusted: trustedAgents[invocation.callerIdentity] != nil
+        ) else {
+            throw LiveTalkAgentTurnToolBridgeError.untrustedCaller
+        }
+        guard LiveTalkAgentTurnInvocationPolicy.acceptsResponseTimeout(
+            invocation.responseTimeout
+        ) else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + invocation.responseTimeout
+
+        let request: LiveTalkAgentTurnToolRequest
+        do {
+            request = try LiveTalkAgentTurnToolBridge.decodeRequest(invocation.payload)
+        } catch {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+        guard try await waitForMatchingFinalUserTurn(
+            request.spokenRequest,
+            session: currentSession,
+            deadline: deadline
+        ) else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+        // Matching can wait for a final transcript for up to five seconds.
+        // Revalidate the entire authority boundary after that suspension so a
+        // hangup, replacement room, reconnect failure, or caller change cannot
+        // launch foreground OpenClaw work from a stale RPC.
+        guard let postWaitSession = session else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+        let postWaitTrustedAgents = room.agentParticipants
+        guard LiveTalkAgentTurnInvocationPolicy.canStartAfterTranscriptWait(
+            attemptMatches: activeAttempt == attempt,
+            roomMatches: postWaitSession.room === room,
+            phase: phase,
+            trustedAgentCount: postWaitTrustedAgents.count,
+            callerIsTrusted: postWaitTrustedAgents[invocation.callerIdentity] != nil
+        ) else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+        guard activeAgentTurnTask == nil else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.busy)
+        }
+        guard agentTurnReplayWindow.claim(request.requestID) else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+
+        let operation = Task { @MainActor in
+            guard !Task.isCancelled else { return LiveTalkAgentTurnToolDisposition.failed }
+            return await handler(request)
+        }
+        activeAgentTurnTask = operation
+        activeAgentTurnRequestID = request.requestID
+        activeAgentTurnSourceMessageIDs = Self.userMessageIDs(
+            in: currentSession.messages
+        )
+        let timeoutTask = Task { @MainActor in
+            let remaining = max(
+                0.05,
+                deadline - ProcessInfo.processInfo.systemUptime - 0.25
+            )
+            try? await Task.sleep(for: .seconds(remaining))
+            guard !Task.isCancelled else { return }
+            operation.cancel()
+        }
+        let disposition = await withTaskCancellationHandler {
+            await operation.value
+        } onCancel: {
+            operation.cancel()
+        }
+        timeoutTask.cancel()
+        if activeAgentTurnRequestID == request.requestID {
+            activeAgentTurnTask = nil
+            activeAgentTurnRequestID = nil
+            activeAgentTurnSourceMessageIDs.removeAll(keepingCapacity: false)
+        }
+        guard let completionSession = session,
+              LiveTalkEmailDraftInvocationPolicy.isCurrentSession(
+                  attemptMatches: activeAttempt == attempt,
+                  roomMatches: completionSession.room === room,
+                  phase: phase
+              ) else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+        let completionTrustedAgents = room.agentParticipants
+        guard LiveTalkEmailDraftInvocationPolicy.isTrustedCaller(
+            trustedAgentCount: completionTrustedAgents.count,
+            callerIsTrusted: completionTrustedAgents[invocation.callerIdentity] != nil
+        ), LiveTalkEmailDraftInvocationPolicy.hasTimeRemaining(
+            now: ProcessInfo.processInfo.systemUptime,
+            deadline: deadline
+        ) else {
+            return try LiveTalkAgentTurnToolBridge.encodeResponse(.rejected)
+        }
+        return try LiveTalkAgentTurnToolBridge.encodeResponse(disposition)
+    }
+
+    private static func userMessageIDs(in messages: [ReceivedMessage]) -> Set<String> {
+        Set(messages.compactMap { message in
+            switch message.content {
+            case .userTranscript, .userInput: message.id
+            case .agentTranscript: nil
+            }
+        })
+    }
+
+    private func cancelAgentTurnIfUserBargedIn(
+        messages: [ReceivedMessage]
+    ) {
+        guard let activeAgentTurnTask else { return }
+        let currentUserMessageIDs = Self.userMessageIDs(in: messages)
+        guard LiveTalkAgentTurnBargeInPolicy.shouldCancel(
+            sourceUserMessageIDs: activeAgentTurnSourceMessageIDs,
+            currentUserMessageIDs: currentUserMessageIDs
+        ) else { return }
+        activeAgentTurnTask.cancel()
+    }
+
+    private func cancelActiveAgentTurn() {
+        activeAgentTurnTask?.cancel()
+        activeAgentTurnTask = nil
+        activeAgentTurnRequestID = nil
+        activeAgentTurnSourceMessageIDs.removeAll(keepingCapacity: false)
+    }
+
+    private func waitForMatchingFinalUserTurn(
+        _ spokenRequest: String,
+        session expectedSession: Session,
+        deadline: TimeInterval
+    ) async throws -> Bool {
+        let matchingDeadline = min(
+            deadline,
+            ProcessInfo.processInfo.systemUptime + 5
+        )
+        repeat {
+            try Task.checkCancellation()
+            guard session === expectedSession else { return false }
+            if LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+                spokenRequest,
+                messages: expectedSession.messages
+            ) {
+                return true
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while ProcessInfo.processInfo.systemUptime < matchingDeadline
+        return LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            spokenRequest,
+            messages: expectedSession.messages
+        )
+    }
+
+    private func handleTTSTimingData(
+        _ data: Data,
+        participant: RemoteParticipant?,
+        topic: String,
+        room: Room,
+        attempt: UUID
+    ) {
+        guard let currentSession = session,
+              LiveTalkEmailDraftInvocationPolicy.isCurrentSession(
+                  attemptMatches: activeAttempt == attempt,
+                  roomMatches: currentSession.room === room,
+                  phase: phase
+              ),
+              LiveTalkTTSTimingPacketBridge.acceptsSource(
+                  topic: topic,
+                  senderIdentity: participant?.identity?.stringValue,
+                  trustedAgentIdentities: room.agentParticipants.keys.map(\.stringValue)
+              ),
+              let packet = try? LiveTalkTTSTimingPacketBridge.decode(data)
+        else { return }
+
+        let now = Date()
+        guard let update = ttsTimingState.accept(
+            packet,
+            at: now.timeIntervalSinceReferenceDate
+        ) else { return }
+        guard avatarIsSpeaking, let avatarController else { return }
+
+        switch update {
+        case .started:
+            avatarController.activateLiveTalkTimedVisemes(
+                generation: avatarGeneration,
+                at: now
+            )
+        case let .cue(timeline):
+            avatarController.applyLiveTalkTimedVisemeTimeline(
+                timeline,
+                generation: avatarGeneration,
+                at: now
+            )
+        case .ended:
+            avatarController.finishLiveTalkTimedVisemes(
+                generation: avatarGeneration,
+                at: now
+            )
+        }
+    }
+
+    private func handleTTSTimingUserMessages(
+        _ messages: [ReceivedMessage],
+        session: Session
+    ) {
+        let currentUserMessageIDs = Self.userMessageIDs(in: messages)
+        let unseenUserMessageIDs = currentUserMessageIDs
+            .subtracting(seenTTSTimingUserMessageIDs)
+        guard !unseenUserMessageIDs.isEmpty else { return }
+        seenTTSTimingUserMessageIDs.formUnion(currentUserMessageIDs)
+
+        let interruptsAssistant = LiveTalkTTSTimingBargeInPolicy.interruptsTiming(
+            agentOrParticipantIsSpeaking: session.agent.agentState == .speaking
+                || session.room.agentParticipant?.isSpeaking == true,
+            delegatedTurnIsActive: activeAgentTurnTask != nil
+        )
+        let now = Date()
+        ttsTimingState.reset(
+            at: now.timeIntervalSinceReferenceDate,
+            invalidateUnseenGeneration: interruptsAssistant
+        )
+        if interruptsAssistant, avatarIsSpeaking {
+            avatarController?.invalidateLiveTalkTimedVisemes(
+                generation: avatarGeneration,
+                at: now
+            )
+        }
+    }
+
     private func refreshFromSession() {
         guard let session else { return }
         // Session.start() records microphone/publish failures on Session even
@@ -1170,6 +2086,8 @@ final class LiveTalkSessionController: ObservableObject {
         }
 
         isMuted = !session.room.localParticipant.isMicrophoneEnabled()
+        handleTTSTimingUserMessages(session.messages, session: session)
+        cancelAgentTurnIfUserBargedIn(messages: session.messages)
         transcriptWindow.replace(with: Self.boundedTranscripts(from: session.messages))
         transcripts = transcriptWindow.items
         if let latest = transcripts.last(where: { $0.role == .agent }),
@@ -1253,6 +2171,7 @@ final class LiveTalkSessionController: ObservableObject {
                     generation: avatarGeneration,
                     at: now
                 )
+                applyCurrentTTSTimingToAvatar(at: now)
                 avatarExpressionText = text
                 avatarExpressionTracksTranscript = transcriptIsFresh
                 if transcriptIsFresh {
@@ -1274,8 +2193,38 @@ final class LiveTalkSessionController: ObservableObject {
             avatarController.updateLiveTalkAudioLevel(level, at: now)
             avatarIsSpeaking = true
         } else if avatarIsSpeaking {
+            ttsTimingState.reset(
+                at: now.timeIntervalSinceReferenceDate,
+                invalidateUnseenGeneration: false
+            )
             avatarController.finish(generation: avatarGeneration)
             avatarIsSpeaking = false
+        }
+    }
+
+    private func applyCurrentTTSTimingToAvatar(at now: Date) {
+        guard let avatarController,
+              ttsTimingState.generation != nil,
+              ttsTimingState.shouldOwnMouth(
+                  at: now.timeIntervalSinceReferenceDate
+              ) else { return }
+        avatarController.activateLiveTalkTimedVisemes(
+            generation: avatarGeneration,
+            at: now
+        )
+        if let timeline = ttsTimingState.remainingActiveTimeline(
+            at: now.timeIntervalSinceReferenceDate
+        ) {
+            avatarController.applyLiveTalkTimedVisemeTimeline(
+                timeline,
+                generation: avatarGeneration,
+                at: now
+            )
+        } else if ttsTimingState.ended {
+            avatarController.finishLiveTalkTimedVisemes(
+                generation: avatarGeneration,
+                at: now
+            )
         }
     }
 
@@ -1319,11 +2268,14 @@ final class LiveTalkSessionController: ObservableObject {
         startTask = nil
         pendingStart?.cancel()
         session = nil
+        detachTTSTimingReceiver(from: endingSession?.room)
+        cancelActiveAgentTurn()
         endingAudioBridge?.stop()
         isMuted = false
         remoteAudioLevel = 0
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
+        agentTurnReplayWindow.clear()
         avatarController?.cancelAll()
         avatarIsSpeaking = false
         remoteSpeechGate.reset()
@@ -1335,6 +2287,9 @@ final class LiveTalkSessionController: ObservableObject {
             if let endingSession {
                 await endingSession.room.unregisterRpcMethod(
                     LiveTalkEmailDraftToolBridge.rpcMethod
+                )
+                await endingSession.room.unregisterRpcMethod(
+                    LiveTalkAgentTurnToolBridge.rpcMethod
                 )
                 await sessionEnder(endingSession)
             }
@@ -1350,13 +2305,17 @@ final class LiveTalkSessionController: ObservableObject {
         observations.removeAll()
         startTask?.cancel()
         startTask = nil
+        cancelActiveAgentTurn()
+        let endingRoom = session?.room
         session = nil
+        detachTTSTimingReceiver(from: endingRoom)
         simulatorAudioBridge?.stop()
         simulatorAudioBridge = nil
         isMuted = false
         remoteAudioLevel = 0
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
+        agentTurnReplayWindow.clear()
         avatarController?.cancelAll()
         avatarController = nil
         avatarIsSpeaking = false
@@ -1375,6 +2334,17 @@ final class LiveTalkSessionController: ObservableObject {
         avatarExpressionTranscriptID = nil
         avatarExpressionText = ""
         avatarExpressionTracksTranscript = false
+        ttsTimingState = .init()
+        seenTTSTimingUserMessageIDs.removeAll(keepingCapacity: false)
+    }
+
+    private func detachTTSTimingReceiver(from room: Room?) {
+        if let ttsTimingDataReceiver {
+            room?.remove(delegate: ttsTimingDataReceiver)
+        }
+        ttsTimingDataReceiver = nil
+        ttsTimingState = .init()
+        seenTTSTimingUserMessageIDs.removeAll(keepingCapacity: false)
     }
 
     private func transition(_ event: LiveTalkLifecycle.Event) {

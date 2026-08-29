@@ -1,7 +1,11 @@
-# Copy to livekit.toml locally, then run:
-#   lk agent create --project openclam-live-voice
+# Existing deployment: authenticate, then recover its config instead of creating
+# a duplicate agent:
+#   lk cloud auth
+#   lk agent config --id <existing-agent-id> .
+#   lk agent deploy .
 #
-# The real file contains the assigned agent ID and is intentionally ignored.
+# For a genuinely new project only, copy this example to livekit.toml and run
+# `lk agent create`. The real file contains the assigned agent ID and is ignored.
 [project]
 subdomain = "openclam-live-voice-kse86f6p"
 

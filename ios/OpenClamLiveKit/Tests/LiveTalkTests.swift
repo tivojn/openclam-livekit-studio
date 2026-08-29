@@ -1083,6 +1083,208 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertEqual(responseObject["status"] as? String, "presented_for_review")
     }
 
+    func testAgentTurnToolBridgeAcceptsOnlyTheClosedBoundedContract() throws {
+        let requestID = String(repeating: "b", count: 64)
+        let payload = """
+        {
+          "schema_version": 1,
+          "request_id": "\(requestID)",
+          "spoken_request": "Search for a nearby pharmacy"
+        }
+        """
+
+        XCTAssertEqual(
+            try LiveTalkAgentTurnToolBridge.decodeRequest(payload),
+            .init(
+                requestID: requestID,
+                spokenRequest: "Search for a nearby pharmacy"
+            )
+        )
+        for invalid in [
+            payload.replacingOccurrences(
+                of: #""schema_version": 1,"#,
+                with: #""schema_version": 2,"#
+            ),
+            payload.replacingOccurrences(
+                of: #""spoken_request":"#,
+                with: #""extra": true, "spoken_request":"#
+            ),
+            payload.replacingOccurrences(of: requestID, with: "BAD"),
+        ] {
+            XCTAssertThrowsError(
+                try LiveTalkAgentTurnToolBridge.decodeRequest(invalid)
+            ) { error in
+                XCTAssertEqual(
+                    error as? LiveTalkAgentTurnToolBridgeError,
+                    .invalidRequest
+                )
+            }
+        }
+
+        let response = try LiveTalkAgentTurnToolBridge.encodeResponse(
+            .completed("Found one nearby.")
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(response.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(object.keys),
+            ["schema_version", "status", "spoken_reply"]
+        )
+        XCTAssertEqual(object["schema_version"] as? Int, 1)
+        XCTAssertEqual(object["status"] as? String, "completed")
+        XCTAssertEqual(object["spoken_reply"] as? String, "Found one nearby.")
+    }
+
+    func testAgentTurnSpokenReplyRemovesOnlyKnownSpeechControls() {
+        XCTAssertEqual(
+            LiveTalkAgentTurnToolBridge.boundedSpokenReply(
+                "Email <emma@example.com>, <voice@example.com>, and <s@example.com> about <alpha beta>."
+            ),
+            "Email ＜emma@example.com＞, ＜voice@example.com＞, and ＜s@example.com＞ about ＜alpha beta＞."
+        )
+        XCTAssertEqual(
+            LiveTalkAgentTurnToolBridge.boundedSpokenReply(
+                "<speak>Hello</speak> <mstts:express-as style=\"cheerful\">world</mstts:express-as>"
+            ),
+            "Hello world"
+        )
+        XCTAssertEqual(
+            LiveTalkAgentTurnToolBridge.boundedSpokenReply(
+                "[laughing] Keep [fact 42] and (very quietly) say hello."
+            ),
+            "Keep ［fact 42］ and say hello."
+        )
+        XCTAssertLessThanOrEqual(
+            LiveTalkAgentTurnToolBridge.boundedSpokenReply(
+                String(repeating: "界", count: 3_000)
+            ).utf8.count,
+            LiveTalkAgentTurnToolBridge.maximumSpokenReplyBytes
+        )
+    }
+
+    func testAgentTurnRPCBindsToTheCompleteFinalizedUserTurn() {
+        let messages = [
+            ReceivedMessage(
+                id: "segment-1",
+                timestamp: Date(timeIntervalSince1970: 10),
+                content: .userTranscript("Search for"),
+                isFinal: true
+            ),
+            ReceivedMessage(
+                id: "segment-2",
+                timestamp: Date(timeIntervalSince1970: 10.8),
+                content: .userTranscript("McDonald's nearby"),
+                isFinal: true
+            ),
+        ]
+
+        XCTAssertEqual(
+            LiveTalkEmailDraftToolBridge.latestFinalUserTranscript(in: messages),
+            "Search for McDonald's nearby"
+        )
+        XCTAssertTrue(
+            LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+                "Search for McDonald's nearby",
+                messages: messages
+            )
+        )
+        XCTAssertFalse(
+            LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+                "McDonald's nearby",
+                messages: messages
+            )
+        )
+    }
+
+    func testAgentTurnInvocationPolicyAcceptsOnlyTheLongBoundedRPCWindow() {
+        XCTAssertTrue(LiveTalkAgentTurnInvocationPolicy.acceptsResponseTimeout(300))
+        XCTAssertFalse(LiveTalkAgentTurnInvocationPolicy.acceptsResponseTimeout(20))
+        XCTAssertFalse(LiveTalkAgentTurnInvocationPolicy.acceptsResponseTimeout(311))
+        XCTAssertFalse(LiveTalkAgentTurnInvocationPolicy.acceptsResponseTimeout(.nan))
+    }
+
+    func testAgentTurnRevalidatesAuthorityAfterWaitingForFinalTranscript() {
+        XCTAssertTrue(
+            LiveTalkAgentTurnInvocationPolicy.canStartAfterTranscriptWait(
+                attemptMatches: true,
+                roomMatches: true,
+                phase: .connected,
+                trustedAgentCount: 1,
+                callerIsTrusted: true
+            )
+        )
+        for (attemptMatches, roomMatches, phase, agentCount, callerIsTrusted) in [
+            (false, true, LiveTalkConnectionPhase.connected, 1, true),
+            (true, false, LiveTalkConnectionPhase.connected, 1, true),
+            (true, true, LiveTalkConnectionPhase.ending, 1, true),
+            (true, true, LiveTalkConnectionPhase.idle, 1, true),
+            (true, true, LiveTalkConnectionPhase.connected, 0, false),
+            (true, true, LiveTalkConnectionPhase.connected, 2, true),
+            (true, true, LiveTalkConnectionPhase.connected, 1, false),
+        ] {
+            XCTAssertFalse(
+                LiveTalkAgentTurnInvocationPolicy.canStartAfterTranscriptWait(
+                    attemptMatches: attemptMatches,
+                    roomMatches: roomMatches,
+                    phase: phase,
+                    trustedAgentCount: agentCount,
+                    callerIsTrusted: callerIsTrusted
+                )
+            )
+        }
+    }
+
+    func testLatestFinalUserTranscriptStopsAtFinalAgentBoundary() {
+        let messages = [
+            ReceivedMessage(
+                id: "first-user-turn",
+                timestamp: Date(timeIntervalSince1970: 10),
+                content: .userTranscript("Email Emma"),
+                isFinal: true
+            ),
+            ReceivedMessage(
+                id: "agent-boundary",
+                timestamp: Date(timeIntervalSince1970: 10.2),
+                content: .agentTranscript("What should the subject be?"),
+                isFinal: true
+            ),
+            ReceivedMessage(
+                id: "second-user-turn",
+                timestamp: Date(timeIntervalSince1970: 10.4),
+                content: .userTranscript("Project update"),
+                isFinal: true
+            ),
+        ]
+
+        XCTAssertEqual(
+            LiveTalkEmailDraftToolBridge.latestFinalUserTranscript(in: messages),
+            "Project update"
+        )
+        XCTAssertNil(
+            LiveTalkEmailDraftToolBridge.latestFinalUserTranscript(
+                in: Array(messages.dropLast())
+            )
+        )
+    }
+
+    func testAgentTurnBargeInPolicyCancelsForAnyNewUserMessage() {
+        let source: Set<String> = ["final-request"]
+        XCTAssertFalse(
+            LiveTalkAgentTurnBargeInPolicy.shouldCancel(
+                sourceUserMessageIDs: source,
+                currentUserMessageIDs: source
+            )
+        )
+        XCTAssertTrue(
+            LiveTalkAgentTurnBargeInPolicy.shouldCancel(
+                sourceUserMessageIDs: source,
+                currentUserMessageIDs: source.union(["new-partial-request"])
+            )
+        )
+    }
+
     func testEmailDraftToolBridgeEnforcesTheSamePerFieldLimitsAsTheAgent() {
         let requestID = String(repeating: "a", count: 64)
         let payload = """
@@ -1191,8 +1393,14 @@ final class LiveTalkTests: XCTestCase {
         )
     }
 
-    func testEmailDraftRPCBindsToLatestFinalLiveKitUserTranscript() {
+    func testEmailAndAgentRPCRejectOldFinalAfterNewerPartialBargeIn() {
         let messages = [
+            ReceivedMessage(
+                id: "agent-boundary",
+                timestamp: Date(timeIntervalSince1970: 0),
+                content: .agentTranscript("What would you like me to do?"),
+                isFinal: true
+            ),
             ReceivedMessage(
                 id: "old-user",
                 timestamp: Date(timeIntervalSince1970: 1),
@@ -1200,30 +1408,17 @@ final class LiveTalkTests: XCTestCase {
                 isFinal: true
             ),
             ReceivedMessage(
-                id: "typed-input",
-                timestamp: Date(timeIntervalSince1970: 2),
-                content: .userInput("Email Emma"),
-                isFinal: true
-            ),
-            ReceivedMessage(
-                id: "agent",
-                timestamp: Date(timeIntervalSince1970: 3),
-                content: .agentTranscript("Okay"),
-                isFinal: true
-            ),
-            ReceivedMessage(
                 id: "partial-user",
-                timestamp: Date(timeIntervalSince1970: 4),
+                timestamp: Date(timeIntervalSince1970: 2),
                 content: .userTranscript("Email Emma and"),
                 isFinal: false
             ),
         ]
 
-        XCTAssertEqual(
-            LiveTalkEmailDraftToolBridge.latestFinalUserTranscript(in: messages),
-            "Email Olivia"
+        XCTAssertNil(
+            LiveTalkEmailDraftToolBridge.latestFinalUserTranscript(in: messages)
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             LiveTalkEmailDraftToolBridge.matchesLatestFinalUserTranscript(
                 " email—OLIVIA! ",
                 messages: messages
@@ -1240,6 +1435,268 @@ final class LiveTalkTests: XCTestCase {
                 "Email Olivia",
                 messages: messages.filter { !$0.isFinal }
             )
+        )
+    }
+
+    func testTTSTimingPacketsRequireTheSoleTrustedAgentAndExactTopic() {
+        XCTAssertTrue(
+            LiveTalkTTSTimingPacketBridge.acceptsSource(
+                topic: LiveTalkTTSTimingPacketBridge.topic,
+                senderIdentity: "voice-agent",
+                trustedAgentIdentities: ["voice-agent"]
+            )
+        )
+        for (topic, sender, agents) in [
+            ("other-topic", Optional("voice-agent"), ["voice-agent"]),
+            (LiveTalkTTSTimingPacketBridge.topic, nil, ["voice-agent"]),
+            (LiveTalkTTSTimingPacketBridge.topic, Optional("attacker"), ["voice-agent"]),
+            (LiveTalkTTSTimingPacketBridge.topic, Optional("voice-agent"), []),
+            (
+                LiveTalkTTSTimingPacketBridge.topic,
+                Optional("voice-agent"),
+                ["voice-agent", "second-agent"]
+            ),
+        ] {
+            XCTAssertFalse(
+                LiveTalkTTSTimingPacketBridge.acceptsSource(
+                    topic: topic,
+                    senderIdentity: sender,
+                    trustedAgentIdentities: agents
+                )
+            )
+        }
+    }
+
+    func testTTSTimingPacketDecoderIsStrictAndBounded() throws {
+        let start = Data(
+            #"{"schema_version":1,"generation":7,"segment":3,"sequence":1,"event":"start"}"#.utf8
+        )
+        let cue = Data(
+            #"{"schema_version":1,"generation":7,"segment":3,"sequence":2,"text":"Photo","start_time":1.2,"end_time":1.7}"#.utf8
+        )
+        let end = Data(
+            #"{"schema_version":1,"generation":7,"segment":3,"sequence":3,"event":"end"}"#.utf8
+        )
+
+        XCTAssertEqual(
+            try LiveTalkTTSTimingPacketBridge.decode(start),
+            .init(generation: 7, segment: 3, sequence: 1, event: .start)
+        )
+        XCTAssertEqual(
+            try LiveTalkTTSTimingPacketBridge.decode(cue),
+            .init(
+                generation: 7,
+                segment: 3,
+                sequence: 2,
+                event: .cue(text: "Photo", startTime: 1.2, endTime: 1.7)
+            )
+        )
+        XCTAssertEqual(
+            try LiveTalkTTSTimingPacketBridge.decode(end),
+            .init(generation: 7, segment: 3, sequence: 3, event: .end)
+        )
+
+        let invalidPackets = [
+            Data("{bad-json".utf8),
+            Data(
+                #"{"schema_version":1,"generation":7,"segment":3,"sequence":1,"event":"start","extra":true}"#.utf8
+            ),
+            Data(
+                #"{"schema_version":1,"generation":7,"segment":3,"sequence":2,"text":"Photo","start_time":2.0,"end_time":1.0}"#.utf8
+            ),
+            Data(
+                #"{"schema_version":1,"generation":7,"segment":3,"sequence":2,"text":"","end_time":1.0}"#.utf8
+            ),
+            Data(
+                #"{"schema_version":1,"generation":9223372036854775807,"segment":3,"sequence":1,"event":"start"}"#.utf8
+            ),
+            Data(
+                #"{"schema_version":1,"generation":7,"segment":9223372036854775807,"sequence":2,"text":"Photo","end_time":1.0}"#.utf8
+            ),
+            Data(
+                #"{"schema_version":1,"generation":7,"segment":3,"sequence":9223372036854775807,"event":"end"}"#.utf8
+            ),
+            Data(repeating: 0x20, count: LiveTalkTTSTimingPacketBridge.maximumPacketBytes + 1),
+        ]
+        for invalid in invalidPackets {
+            XCTAssertThrowsError(
+                try LiveTalkTTSTimingPacketBridge.decode(invalid)
+            ) { error in
+                XCTAssertEqual(
+                    error as? LiveTalkTTSTimingPacketError,
+                    .invalidPacket
+                )
+            }
+        }
+    }
+
+    func testTTSTimingStateRejectsOutOfOrderReplayAndLatePackets() throws {
+        var state = LiveTalkTTSTimingState()
+        let start = LiveTalkTTSTimingPacket(
+            generation: 1,
+            segment: 1,
+            sequence: 1,
+            event: .start
+        )
+        let cue = LiveTalkTTSTimingPacket(
+            generation: 1,
+            segment: 1,
+            sequence: 2,
+            event: .cue(text: "Photo", startTime: 0, endTime: 0.5)
+        )
+        let end = LiveTalkTTSTimingPacket(
+            generation: 1,
+            segment: 1,
+            sequence: 3,
+            event: .end
+        )
+
+        XCTAssertNil(state.accept(cue, at: 10))
+        XCTAssertEqual(state.accept(start, at: 10.1), .started)
+        guard case let .cue(timeline)? = state.accept(cue, at: 10.2) else {
+            return XCTFail("Expected a playback-paced viseme cue")
+        }
+        XCTAssertGreaterThan(timeline.duration, 0)
+        XCTAssertTrue(
+            timeline.cues.contains { $0.viseme != .silence }
+        )
+        XCTAssertNil(state.accept(cue, at: 10.3), "replay must fail closed")
+        XCTAssertNil(
+            state.accept(
+                .init(
+                    generation: 2,
+                    segment: 2,
+                    sequence: 2,
+                    event: .cue(text: "wrong generation", startTime: 0.5, endTime: 0.9)
+                ),
+                at: 10.4
+            )
+        )
+        XCTAssertEqual(state.accept(end, at: 10.5), .ended)
+        XCTAssertNil(state.accept(cue, at: 10.6), "late old cue must not reopen the mouth")
+    }
+
+    func testTTSTimingMissingEndRecoversOnlyAfterARealStall() {
+        var state = LiveTalkTTSTimingState()
+        let firstStart = LiveTalkTTSTimingPacket(
+            generation: 1, segment: 1, sequence: 1, event: .start
+        )
+        let firstCue = LiveTalkTTSTimingPacket(
+            generation: 1,
+            segment: 1,
+            sequence: 2,
+            event: .cue(text: "first", startTime: 0, endTime: 0.4)
+        )
+        let secondStart = LiveTalkTTSTimingPacket(
+            generation: 2, segment: 2, sequence: 1, event: .start
+        )
+
+        XCTAssertEqual(state.accept(firstStart, at: 20), .started)
+        XCTAssertNotNil(state.accept(firstCue, at: 20.1))
+        XCTAssertNil(
+            state.accept(
+                secondStart,
+                at: 20.1 + LiveTalkTTSTimingState.stallDuration
+            ),
+            "a new start at the stall boundary is still ambiguous"
+        )
+        XCTAssertEqual(
+            state.accept(
+                secondStart,
+                at: 20.101 + LiveTalkTTSTimingState.stallDuration
+            ),
+            .started
+        )
+        XCTAssertNil(
+            state.accept(
+                .init(generation: 1, segment: 1, sequence: 3, event: .end),
+                at: 21.2
+            ),
+            "the abandoned generation is atomically tombstoned"
+        )
+    }
+
+    func testTTSTimingResetSupportsNormalConsecutiveTurnsAndBargeIn() {
+        let firstStart = LiveTalkTTSTimingPacket(
+            generation: 1, segment: 1, sequence: 1, event: .start
+        )
+        let firstEnd = LiveTalkTTSTimingPacket(
+            generation: 1, segment: 1, sequence: 2, event: .end
+        )
+        let secondStart = LiveTalkTTSTimingPacket(
+            generation: 2, segment: 2, sequence: 1, event: .start
+        )
+
+        var normal = LiveTalkTTSTimingState()
+        XCTAssertEqual(normal.accept(firstStart, at: 30), .started)
+        XCTAssertEqual(normal.accept(firstEnd, at: 30.1), .ended)
+        normal.reset(at: 30.2, invalidateUnseenGeneration: false)
+        XCTAssertEqual(normal.accept(secondStart, at: 30.3), .started)
+
+        var activeBarge = LiveTalkTTSTimingState()
+        XCTAssertEqual(activeBarge.accept(firstStart, at: 40), .started)
+        activeBarge.reset(at: 40.1, invalidateUnseenGeneration: true)
+        XCTAssertNil(activeBarge.accept(firstEnd, at: 40.2))
+        XCTAssertEqual(activeBarge.accept(secondStart, at: 40.3), .started)
+
+        var unseenBarge = LiveTalkTTSTimingState()
+        unseenBarge.reset(at: 50, invalidateUnseenGeneration: true)
+        unseenBarge.reset(at: 50.1, invalidateUnseenGeneration: true)
+        XCTAssertNil(unseenBarge.accept(firstStart, at: 50.2))
+        XCTAssertEqual(unseenBarge.accept(secondStart, at: 50.3), .started)
+    }
+
+    func testTTSTimingBargePolicyIncludesRemoteSpeechAndDelegatedWork() {
+        XCTAssertFalse(
+            LiveTalkTTSTimingBargeInPolicy.interruptsTiming(
+                agentOrParticipantIsSpeaking: false,
+                delegatedTurnIsActive: false
+            )
+        )
+        for inputs in [
+            (true, false),
+            (false, true),
+        ] {
+            XCTAssertTrue(
+                LiveTalkTTSTimingBargeInPolicy.interruptsTiming(
+                    agentOrParticipantIsSpeaking: inputs.0,
+                    delegatedTurnIsActive: inputs.1
+                )
+            )
+        }
+    }
+
+    func testTTSTimingVisualReleaseTailDoesNotTombstoneTheNextTurn() {
+        var state = LiveTalkTTSTimingState()
+        XCTAssertEqual(
+            state.accept(
+                .init(generation: 1, segment: 1, sequence: 1, event: .start),
+                at: 60
+            ),
+            .started
+        )
+        XCTAssertEqual(
+            state.accept(
+                .init(generation: 1, segment: 1, sequence: 2, event: .end),
+                at: 60.1
+            ),
+            .ended
+        )
+
+        let avatarStillInVisualReleaseTail = true
+        XCTAssertTrue(avatarStillInVisualReleaseTail)
+        let interrupts = LiveTalkTTSTimingBargeInPolicy.interruptsTiming(
+            agentOrParticipantIsSpeaking: false,
+            delegatedTurnIsActive: false
+        )
+        XCTAssertFalse(interrupts)
+        state.reset(at: 60.2, invalidateUnseenGeneration: interrupts)
+        XCTAssertEqual(
+            state.accept(
+                .init(generation: 2, segment: 2, sequence: 1, event: .start),
+                at: 60.3
+            ),
+            .started
         )
     }
 

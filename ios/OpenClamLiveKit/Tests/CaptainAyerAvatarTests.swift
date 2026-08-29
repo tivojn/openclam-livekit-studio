@@ -154,6 +154,48 @@ final class CaptainAyerAvatarTests: XCTestCase {
         XCTAssertNotEqual(state.current, .open)
     }
 
+    func testLiveTalkDynamicTimingOwnsMouthUntilStallThenFallsBackToRMS() {
+        let start = 300.0
+        var driver = CaptainAyerLiveTalkMouthDriver(startedAt: start)
+        driver.update(audioLevel: 1, at: start)
+        XCTAssertEqual(driver.renderState(at: start + 0.08).current, .open)
+
+        driver.activateTimedLane(at: start + 0.1)
+        XCTAssertEqual(driver.renderState(at: start + 0.15), .idle)
+        let supplied = CaptainAyerLipSyncTimeline(
+            duration: 0.45,
+            cues: [
+                .init(offset: 0, viseme: .silence),
+                .init(offset: 0.04, viseme: .rounded),
+                .init(offset: 0.38, viseme: .silence),
+            ]
+        )
+        driver.applyTimedTimeline(supplied, at: start + 0.2)
+        XCTAssertEqual(driver.renderState(at: start + 0.3).current, .rounded)
+        XCTAssertEqual(
+            driver.renderState(
+                at: start + 0.2
+                    + CaptainAyerLiveTalkMouthDriver.timedLaneStallDuration
+            ),
+            .idle,
+            "RMS must not replace a healthy authoritative timing lane"
+        )
+        XCTAssertEqual(
+            driver.renderState(
+                at: start + 0.201
+                    + CaptainAyerLiveTalkMouthDriver.timedLaneStallDuration
+            ).current,
+            .open,
+            "RMS is the fallback only after the timing lane stalls"
+        )
+
+        driver.invalidateTimedLane(at: start + 1.2)
+        driver.update(audioLevel: 1, at: start + 1.25)
+        XCTAssertEqual(driver.renderState(at: start + 1.4), .idle)
+        driver.update(audioLevel: 1, at: start + 1.8)
+        XCTAssertEqual(driver.renderState(at: start + 1.8).current, .open)
+    }
+
     @MainActor
     func testLiveTalkMouthOverrideIsClearedBeforeRegularTTS() {
         let controller = CaptainAyerLipSyncController()

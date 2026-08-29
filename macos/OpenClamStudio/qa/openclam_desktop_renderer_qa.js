@@ -302,6 +302,46 @@ assert.ok(
     < localStreamingSource[1].indexOf('playSpeech(result.audio'),
   'speech must wait for the authoritative completion rather than token deltas',
 );
+assert.match(localStreamingSource[1], /suppress_local_tts: Boolean\(options\.liveAgentBridge\)/,
+  'delegated Live Talk turns must not synthesize a discarded second local voice');
+assert.match(localStreamingSource[1], /result\.audio && !options\.liveAgentBridge/,
+  'only ordinary local chat may play the local reply audio');
+assert.match(localStreamingSource[1],
+  /const latestAssistantTextBeforeTurn = latestAssistantText;[\s\S]*?liveReply\.row\.remove\(\);[\s\S]*?latestAssistantText = latestAssistantTextBeforeTurn;/,
+  'a failed local stream must not leave its removed partial as the rail read-aloud target');
+const openClawStreamingSource = inline[1].match(
+  /(async function submitOpenClawTurn\(value, agentID, options = \{\}\) \{[\s\S]*?\n    \})/,
+);
+assert.ok(openClawStreamingSource,
+  'the connected OpenClaw streaming turn must remain independently inspectable');
+assert.match(openClawStreamingSource[1],
+  /if \(!options\.liveAgentBridge\)[\s\S]{0,100}readAloud\(automaticSpokenProjection\(completedText\)\)/,
+  'ordinary connected OpenClaw replies must use a bounded projection on the working TTS path');
+assert.match(openClawStreamingSource[1],
+  /if \(liveReply && liveReply\.row\.classList\.contains\('streaming'\)\)[\s\S]{0,100}liveReply\.row\.remove\(\)/,
+  'aborted or failed streams must remove their partial assistant bubble');
+assert.match(openClawStreamingSource[1],
+  /const latestAssistantTextBeforeTurn = latestAssistantText;[\s\S]*?liveReply\.row\.remove\(\);[\s\S]*?latestAssistantText = latestAssistantTextBeforeTurn;/,
+  'a failed OpenClaw stream must not leave its removed partial as the rail read-aloud target');
+assert.match(openClawStreamingSource[1],
+  /liveReply\.bubble\.textContent = completedText/,
+  'the visible completed answer must remain full fidelity when automatic speech is bounded');
+assert.match(openClawStreamingSource[1],
+  /else setStatus\(live \? 'Live Talk · connected' : 'Ready', live \? 'live' : 'good'\);/,
+  'delegated Live Talk actions must leave audible TTS ownership with the cloud voice agent');
+const automaticProjectionSource = inline[1].match(
+  /(const AUTOMATIC_TTS_MAX_BYTES = 3000;[\s\S]*?const automaticSpokenProjection = value => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(automaticProjectionSource, 'automatic TTS projection must remain independently testable');
+const automaticSpokenProjection = new Function(
+  `'use strict'; ${automaticProjectionSource[1]}; return automaticSpokenProjection;`,
+)();
+assert.equal(automaticSpokenProjection('Short answer.'), 'Short answer.');
+const longAutomaticSpeech = automaticSpokenProjection('界'.repeat(5000));
+assert.ok(new TextEncoder().encode(longAutomaticSpeech).length <= 3000,
+  'automatic speech must remain within its UTF-8 cost bound');
+assert.ok(longAutomaticSpeech.endsWith('The rest is visible in chat.'),
+  'truncated automatic speech must tell the user where the complete answer remains');
 for (const route of ['/api/openclaw/agents', '/api/openclaw/turn', '/api/openclaw/uploads']) {
   assert.ok(source.includes(`'${route}'`), `missing same-origin OpenClaw route ${route}`);
 }
@@ -439,21 +479,192 @@ assert.equal(audioCalls.some(call => call[0] === 'pause'), true);
 assert.equal(audioCalls.some(call => call[0] === 'remove'), true);
 assert.equal(audioElements[0].srcObject, null);
 
-// Live Talk lip sync must follow the samples in that attached playback path.
-// Active-speaker notifications are a useful semantic hint, but arrive too late
-// and too coarsely to drive a mouth; a wall-clock viseme carousel is unrelated
-// to the phonetic rhythm the user actually hears.
+// Live Talk mouth shapes follow the TTS transcript synchronizer. It supplies
+// audio-paced TimedStrings (native provider alignment when available, LiveKit's
+// audio pacing otherwise). The analyser remains a last-resort fallback and owns
+// only playback lifecycle/status while synchronized words are healthy.
 const liveMouthSyncSource = source.match(
   /\/\* live-mouth-sync:start \*\/([\s\S]*?)\/\* live-mouth-sync:end \*\//,
 );
-assert.ok(liveMouthSyncSource, 'sample-driven Live Talk mouth helpers must remain independently testable');
+assert.ok(liveMouthSyncSource, 'Live Talk mouth helpers must remain independently testable');
 const mouthSync = new Function(
   `'use strict'; ${liveMouthSyncSource[1]}; return { `
     + 'makeReactiveMouthState, measureAudioSignal, classifyAudioViseme, reactiveAudioViseme, '
-    + 'makeLiveTalkAudioState, liveTalkAudioTransition, '
-    + 'LIVE_MOUTH_RELEASE_MS, LIVE_MOUTH_DWELL_MS, LIVE_TALK_STATUS_RELEASE_MS };',
+    + 'makeLiveTalkAudioState, liveTalkAudioTransition, makeLiveTalkTTSTimingState, '
+    + 'resetLiveTalkTTSTimingState, liveTalkTextVisemeCues, scaleLiveTalkTTSCues, '
+    + 'parseLiveTalkTTSTimingPacket, acceptLiveTalkTTSTiming, '
+    + 'liveTalkSynchronizedViseme, LIVE_MOUTH_RELEASE_MS, LIVE_MOUTH_DWELL_MS, '
+    + 'LIVE_TALK_STATUS_RELEASE_MS, LIVE_TALK_TTS_TIMING_STALL_MS };',
 )();
 const fullVisemes = ['sil', 'PP', 'FF', 'TH', 'DD', 'kk', 'CH', 'SS', 'nn', 'RR', 'aa', 'E', 'ih', 'oh', 'ou'];
+
+const phoneticCues = mouthSync.liveTalkTextVisemeCues('thoughtful', fullVisemes);
+assert.equal(phoneticCues[0].viseme, 'TH', 'TTS text must select the authored TH plate');
+assert.ok(phoneticCues.some(cue => cue.viseme === 'ou'),
+  'a synchronized word must retain its rounded vowel instead of spectrum guessing');
+assert.ok(phoneticCues.every(cue => cue.durationMs >= 70),
+  'TTS cues must not chatter faster than a readable mouth pose');
+const chineseCues = mouthSync.liveTalkTextVisemeCues('你好世界', fullVisemes);
+assert.ok(chineseCues.length > 0 && chineseCues.every(cue => cue.viseme === 'aa'),
+  'text without trustworthy local phoneme mapping must use one stable neutral shape');
+assert.doesNotMatch(liveMouthSyncSource[1], /codePointAt\(0\)\s*%/,
+  'CJK mouth motion must never be pseudo-randomized from Unicode code points');
+const startPacket = mouthSync.parseLiveTalkTTSTimingPacket(JSON.stringify({
+  schema_version: 1, generation: 7, segment: 7, sequence: 1, event: 'start',
+}));
+const timingPacket = mouthSync.parseLiveTalkTTSTimingPacket(JSON.stringify({
+  schema_version: 1,
+  generation: 7,
+  segment: 7,
+  sequence: 2,
+  text: 'hello ',
+  end_time: .42,
+}));
+assert.deepEqual(timingPacket, {
+  event: 'cue', generation: 7, segment: 7, sequence: 2,
+  text: 'hello ', startTime: null, endTime: .42,
+});
+const pacedStartPacket = mouthSync.parseLiveTalkTTSTimingPacket(JSON.stringify({
+  schema_version: 1, generation: 8, segment: 8, sequence: 1, event: 'start',
+}));
+const pacedPacket = mouthSync.parseLiveTalkTTSTimingPacket(JSON.stringify({
+  schema_version: 1,
+  generation: 8,
+  segment: 8,
+  sequence: 2,
+  text: 'thoughtful ',
+  start_time: .5,
+  end_time: .9,
+}));
+assert.equal(pacedPacket.endTime - pacedPacket.startTime, .4);
+const endPacket = mouthSync.parseLiveTalkTTSTimingPacket(JSON.stringify({
+  schema_version: 1, generation: 8, segment: 8, sequence: 3, event: 'end',
+}));
+assert.deepEqual(endPacket, {
+  event: 'end', generation: 8, segment: 8, sequence: 3,
+  text: '', startTime: null, endTime: null,
+});
+assert.equal(mouthSync.parseLiveTalkTTSTimingPacket('{bad-json'), null);
+assert.equal(mouthSync.parseLiveTalkTTSTimingPacket(JSON.stringify({
+  schema_version: 1, generation: 7, segment: 7, sequence: 3,
+  text: 'x'.repeat(513), end_time: .5,
+})), null, 'oversized synchronized text must fail closed');
+const timedMouth = mouthSync.makeLiveTalkTTSTimingState();
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(timedMouth, timingPacket, 90, fullVisemes), false,
+  'a cue must never create a generation without its explicit start lifecycle packet');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(timedMouth, startPacket, 95, fullVisemes), true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(timedMouth, timingPacket, 100, fullVisemes), true);
+assert.notEqual(mouthSync.liveTalkSynchronizedViseme(timedMouth, 100), 'sil',
+  'a synchronized TTS word must immediately own the mouth shape');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(timedMouth, timingPacket, 110, fullVisemes), false,
+  'replayed timing packets must not rewind the mouth');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(timedMouth, {
+  ...timingPacket, segment: 6, sequence: 99, endTime: 99,
+}, 120, fullVisemes), false,
+  'a delayed packet from an older segment must not rewind the mouth');
+assert.equal(mouthSync.liveTalkSynchronizedViseme(timedMouth, 700), 'sil',
+  'ordinary word gaps close the mouth instead of falling back to random spectrum shapes');
+assert.equal(
+  mouthSync.liveTalkSynchronizedViseme(
+    timedMouth, 100 + mouthSync.LIVE_TALK_TTS_TIMING_STALL_MS + 1,
+  ),
+  null,
+  'RMS becomes eligible only after the synchronized TTS lane has actually stalled',
+);
+const pacedMouth = mouthSync.makeLiveTalkTTSTimingState();
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, pacedStartPacket, 990, fullVisemes), true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, pacedPacket, 1000, fullVisemes), true);
+const pacedRemainingMs = (pacedMouth.activeCue ? pacedMouth.activeCue.endsAt - 1000 : 0)
+  + pacedMouth.queuedCues.reduce((sum, cue) => sum + cue.durationMs, 0);
+assert.ok(pacedRemainingMs >= 150 && pacedRemainingMs <= 270,
+  'packet start/end interval must scale the remaining playback-paced mouth cues');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, endPacket, 1100, fullVisemes), true);
+assert.equal(mouthSync.liveTalkSynchronizedViseme(pacedMouth, 1100), 'sil',
+  'an explicit utterance end must immediately clear queued mouth poses');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, {
+  ...pacedPacket, sequence: 3,
+}, 1110, fullVisemes), false,
+  'a cue from an explicitly ended segment must never reopen the mouth');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, {
+  ...pacedPacket, segment: 7, sequence: 99,
+}, 1120, fullVisemes), false,
+  'a lower segment identifier must never be treated as a fresh utterance');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, {
+  ...pacedStartPacket, generation: 9, segment: 9,
+}, 1130, fullVisemes), true,
+  'only an increasing segment identifier may start a new utterance');
+mouthSync.resetLiveTalkTTSTimingState(pacedMouth, 1140);
+assert.equal(mouthSync.liveTalkSynchronizedViseme(pacedMouth, 1140), 'sil');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, {
+  ...pacedPacket, segment: 9, sequence: 2,
+}, 1150, fullVisemes), false,
+  'barge-in must close the current segment against late queued cues');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(pacedMouth, {
+  ...pacedStartPacket, generation: 10, segment: 10,
+}, 1160, fullVisemes), true);
+const unseenBarge = mouthSync.makeLiveTalkTTSTimingState();
+mouthSync.resetLiveTalkTTSTimingState(unseenBarge, 2000, true);
+mouthSync.resetLiveTalkTTSTimingState(unseenBarge, 2001, true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(unseenBarge, {
+  ...startPacket, generation: 1, segment: 1,
+}, 2010, fullVisemes), false,
+  'barge-in must tombstone an old generation even before its first packet arrives');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(unseenBarge, {
+  ...startPacket, generation: 2, segment: 2,
+}, 2020, fullVisemes), true,
+  'repeated interruption signals stay idempotent and keep the next generation eligible');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(unseenBarge, {
+  ...timingPacket, generation: 2, segment: 2,
+}, 2030, fullVisemes), true);
+const postEndBarge = mouthSync.makeLiveTalkTTSTimingState();
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(postEndBarge, {
+  ...startPacket, generation: 1, segment: 1,
+}, 2100, fullVisemes), true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(postEndBarge, {
+  ...endPacket, generation: 1, segment: 1,
+}, 2110, fullVisemes), true);
+mouthSync.resetLiveTalkTTSTimingState(postEndBarge, 2120, true);
+mouthSync.resetLiveTalkTTSTimingState(postEndBarge, 2121, true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(postEndBarge, {
+  ...startPacket, generation: 2, segment: 2,
+}, 2130, fullVisemes), false,
+  'barge-in after an ended utterance must tombstone the unseen next generation');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(postEndBarge, {
+  ...startPacket, generation: 3, segment: 3,
+}, 2140, fullVisemes), true,
+  'the post-end unseen tombstone must remain idempotent and admit the later generation');
+const ordinaryNextTurn = mouthSync.makeLiveTalkTTSTimingState();
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(ordinaryNextTurn, {
+  ...startPacket, generation: 1, segment: 1,
+}, 2200, fullVisemes), true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(ordinaryNextTurn, {
+  ...endPacket, generation: 1, segment: 1,
+}, 2210, fullVisemes), true);
+mouthSync.resetLiveTalkTTSTimingState(ordinaryNextTurn, 2220, false);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(ordinaryNextTurn, {
+  ...startPacket, generation: 2, segment: 2,
+}, 2230, fullVisemes), true,
+  'a normal next user turn after completed speech must admit its next timing generation');
+const lostEndRecovery = mouthSync.makeLiveTalkTTSTimingState();
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(lostEndRecovery, {
+  ...startPacket, generation: 1, segment: 1,
+}, 2300, fullVisemes), true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(lostEndRecovery, {
+  ...timingPacket, generation: 1, segment: 1,
+}, 2310, fullVisemes), true);
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(lostEndRecovery, {
+  ...startPacket, generation: 2, segment: 2,
+}, 2310 + mouthSync.LIVE_TALK_TTS_TIMING_STALL_MS, fullVisemes), false,
+  'a newer start must not pre-empt an authoritative lane before its stall boundary');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(lostEndRecovery, {
+  ...startPacket, generation: 2, segment: 2,
+}, 2311 + mouthSync.LIVE_TALK_TTS_TIMING_STALL_MS, fullVisemes), true,
+  'a strictly newer start must recover after an end packet is lost and the lane stalls');
+assert.equal(mouthSync.acceptLiveTalkTTSTiming(lostEndRecovery, {
+  ...timingPacket, generation: 1, segment: 1, sequence: 3,
+}, 2320 + mouthSync.LIVE_TALK_TTS_TIMING_STALL_MS, fullVisemes), false,
+  'a late cue from the abandoned generation must remain tombstoned after recovery');
+
 const silentWave = new Uint8Array(1024).fill(128);
 const lowVoiceWave = Uint8Array.from({ length: 1024 }, (_, index) =>
   128 + Math.round(20 * Math.sin(index * Math.PI / 8)));
@@ -469,7 +680,7 @@ assert.ok(lowVoiceSignal.low > lowVoiceSignal.mid && lowVoiceSignal.low > lowVoi
 const mouthState = mouthSync.makeReactiveMouthState();
 const rounded = { ...lowVoiceSignal, rms: .03, relative: .8, low: .8, mid: .35, high: .1, centroid: .2, zcr: .03 };
 const opened = mouthSync.reactiveAudioViseme(mouthState, rounded, 100, fullVisemes);
-assert.notEqual(opened, 'sil', 'real playback energy must open the mouth immediately');
+assert.notEqual(opened, 'sil', 'RMS fallback must open the mouth on older or broken timing lanes');
 assert.equal(mouthSync.reactiveAudioViseme(mouthState, silentSignal, 120, fullVisemes), opened,
   'a sub-phoneme gap must not chatter the mouth shut');
 assert.equal(
@@ -507,14 +718,33 @@ assert.doesNotMatch(source, /Math\.floor\(now \/ 105\)/,
 assert.doesNotMatch(source, /ActiveSpeakersChanged[\s\S]{0,220}currentViseme = 'sil'/,
   'a delayed active-speaker packet must not override samples still being played');
 assert.match(source, /audioAnalyser\.getByteFrequencyData\(audioFrequencyData\)/);
-assert.match(source, /speechSource \|\| hasAttachedAgentAudio\(\)/);
+assert.match(source,
+  /const synchronized = liveTalkSynchronizedViseme\(live && live\.ttsTimingState, now\);[\s\S]{0,100}if \(synchronized !== null\) return synchronized;[\s\S]{0,120}return reactiveAudioViseme/,
+  'synchronized TTS must outrank the spectrum fallback in the actual render path');
+assert.match(source,
+  /RoomEvent\.DataReceived[\s\S]{0,180}handleLiveTalkTTSTimingData\(session, payload, participant, topic\)/,
+  'the room must consume the dedicated synchronized TTS timing topic');
+const mouthPriority = inline[1].match(
+  /(const desiredViseme = now => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(mouthPriority, 'mouth-source priority must remain independently inspectable');
+assert.ok(
+  mouthPriority[1].indexOf('speechSource && speechTrack.length')
+    < mouthPriority[1].indexOf('liveTalkSynchronizedViseme'),
+  'typed-chat exact timed visemes must retain first priority',
+);
+assert.ok(
+  mouthPriority[1].indexOf('liveTalkSynchronizedViseme')
+    < mouthPriority[1].indexOf('reactiveAudioViseme'),
+  'Live Talk synchronized TTS must retain priority over RMS/spectrum fallback',
+);
 assert.match(source, /if \(live\) syncLiveTalkAudioStatus\(live, now\)/,
   'the render loop must apply the exact samples measured for reactive visemes to Live Talk status');
 assert.match(source, /live !== session \|\| session\.ending \|\| !session\.agentReady \|\| !session\.audioAttachments\.size/,
   'audio status must be scoped to an attached, ready, current Live Talk session');
 assert.match(source, /RoomEvent\.ActiveSpeakersChanged[\s\S]{0,180}nextAgentSpeaking = participants\.some\(participant => participant\.isAgent\)[\s\S]{0,180}agentSpeaking = nextAgentSpeaking/,
   'LiveKit active-speaker semantics must continue to drive body expression independently');
-assert.match(source, /RoomEvent\.Reconnecting[\s\S]{0,180}session\.agentReady = false;[\s\S]{0,180}Live Talk · reconnecting…/,
+assert.match(source, /RoomEvent\.Reconnecting[\s\S]{0,220}session\.agentReady = false;[\s\S]{0,260}Live Talk · reconnecting…/,
   'remote audio status must remain gated while the room is reconnecting');
 assert.match(source, /function stopLiveTalk\(reason\) \{[\s\S]{0,100}live = null;[\s\S]{0,120}session\.ending = true;/,
   'stopping the call must invalidate audio status before attachments are released');
@@ -526,6 +756,29 @@ assert.doesNotMatch(transcriptSource[1], /Live Talk · speaking/,
   'assistant interim text is not proof that remote audio is still playing');
 assert.match(transcriptSource[1], /else if \(role === 'user'\)/,
   'user interim transcript feedback must remain visible');
+assert.match(transcriptSource[1], /beginLiveTalkUserInput\(session, segmentID, now\)/,
+  'the first user interim/final must cancel queued mouth cues at barge-in');
+const userInputSource = inline[1].match(
+  /(const beginLiveTalkUserInput = \(session, segmentID, now\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(userInputSource, 'Live Talk user-turn boundaries must remain independently inspectable');
+assert.match(userInputSource[1],
+  /const invalidatesUnseenTiming = interruptsAgentSpeech \|\| interruptsDelegatedTurn;/,
+  'only an actual active interruption may tombstone a not-yet-seen timing generation');
+assert.match(userInputSource[1],
+  /resetLiveTalkTTSTimingState\(session\.ttsTimingState, now, invalidatesUnseenTiming\)/,
+  'ordinary consecutive turns must preserve the next synchronized TTS generation');
+assert.doesNotMatch(userInputSource[1],
+  /resetLiveTalkTTSTimingState\(session\.ttsTimingState, now, interruptsAssistant\)/,
+  'historical assistant output must never suppress every other timed response');
+assert.match(source,
+  /RoomEvent\.TrackUnsubscribed[\s\S]{0,320}resetLiveTalkTTSTimingState\(session\.ttsTimingState, performance\.now\(\), true\)/,
+  'remote track teardown must close its timing segment immediately');
+assert.match(source,
+  /RoomEvent\.TrackMuted[\s\S]{0,260}resetLiveTalkTTSTimingState\(session\.ttsTimingState, performance\.now\(\), true\)/,
+  'remote track interruption must clear queued mouth cues');
+assert.match(source, /addEventListener\('ended', endedHandler/,
+  'the browser media-track end must also close the timing segment');
 assert.match(source, /audioMonitorGain\.gain\.value = 0/,
   'the shared analyser branch must remain inaudible while still being rendered');
 assert.match(source, /source\.connect\(graph\.destination\)/,
@@ -2223,8 +2476,9 @@ for (const bridge of [
   assert.ok(source.includes(bridge), `missing desktop shell bridge: ${bridge}`);
 }
 
-// The sole Live Talk tool is review-only: exact schema, caller/session/final
-// transcript checks, replay defense, and two local actions with no send path.
+// The legacy Live Talk email tool remains review-only for older compatible
+// agents: exact schema, caller/session/final transcript checks, replay defense,
+// and two local actions with no send path.
 assert.match(source, /openclam\.prepareEmailDraft\.v1/);
 assert.match(source, /exactObject\(rootValue, \['schema_version', 'request_id', 'spoken_request', 'tool'\]\)/);
 assert.match(source, /agents\[0\]\.identity === invocation\.callerIdentity/);
@@ -2232,11 +2486,180 @@ assert.match(source, /session\.latestFinalUserTranscript/);
 assert.match(source, /waitForMatchingFinalUserTurn/);
 assert.match(source, /Math\.min\(5000, Math\.max\(0, timeout - 1500\)\)/);
 assert.match(source, /!trustedEmailInvocation\(session, invocation, timeout\)/);
-assert.match(source, /replayedEmailRequests\.has\(request\.request_id\)/);
+assert.match(source, /claimLiveTalkRPCRequest\(\s*session\.replayedEmailRequests, request\.request_id, 64/);
 assert.match(source, /warning\.textContent = 'Unsent/);
 assert.match(source, /keep\.textContent = 'Keep in chat'/);
 assert.match(source, /copy\.textContent = 'Copy draft'/);
 assert.doesNotMatch(source, /prepareEmailDraft[\s\S]{0,9000}(openURL|sendMail|sendEmail|mailClient)/i);
+
+// The current Live Talk action tool hands the exact finalized transcript to the
+// same selected typed route. The renderer—not the cloud voice model—owns OpenClaw
+// approvals, Work events, attachments, and the visible final message.
+assert.match(source, /openclam\.submitAgentTurn\.v1/);
+assert.match(source, /exactObject\(rootValue, \['schema_version', 'request_id', 'spoken_request'\]\)/);
+assert.match(source, /const trustedAgentTurnInvocation =/);
+assert.match(source, /waitForMatchingFinalUserTurn\(\s*session, request\.spoken_request, timeout/);
+assert.match(source, /replayedAgentTurnRequests\.has\(request\.request_id\)/);
+assert.match(source, /claimLiveTalkRPCRequest\(\s*session\.replayedAgentTurnRequests, request\.request_id, 128/);
+assert.match(source,
+  /const agentID = selectedOpenClawAgent\(\);[\s\S]{0,180}!agentID[\s\S]{0,260}LIVE_TALK_OPENCLAW_REQUIRED_MESSAGE/,
+  'agentic Live Talk must fail closed with recovery guidance when OpenClaw is not selected');
+assert.match(source,
+  /submitOpenClawTurn\(request\.spoken_request, agentID, \{[\s\S]{0,180}liveAgentBridge: true,[\s\S]{0,100}userAlreadyRendered: true/,
+  'agentic Live Talk requests must call the selected tool-capable OpenClaw route directly');
+assert.doesNotMatch(source,
+  /handleAgentTurnRPC[\s\S]*?submitLocalTurn\(request\.spoken_request/,
+  'external-action requests must never fall through to a plain local LLM');
+assert.match(source, /registerRpcMethod\(AGENT_TURN_RPC/);
+assert.match(source, /unregisterRpcMethod\(AGENT_TURN_RPC/);
+assert.match(source, /rememberExpectedDelegatedAssistantReply\(session, spokenReply, performance\.now\(\)\)/,
+  'duplicate suppression must be bound to the exact delegated reply');
+assert.match(source, /expiresAt: now \+ delegatedReplyExpiryMs\(text\)/,
+  'duplicate suppression must scale to the duration of a long delegated spoken reply');
+assert.doesNotMatch(source, /suppressDelegatedAssistantTranscript/,
+  'a session-wide suppression boolean could hide an unrelated later answer');
+assert.match(source,
+  /const controller = new AbortController\(\);[\s\S]{0,140}turnController = controller;[\s\S]{0,160}turnControllerOrigin = options\.liveAgentBridge \? 'live-agent-bridge' : 'typed'/,
+  'turn controllers must retain whether they originated from Live Talk');
+assert.match(source,
+  /function stopLiveTalk\(reason\) \{[\s\S]{0,260}turnControllerOrigin === 'live-agent-bridge'[\s\S]{0,240}delegatedController\.abort\(\)/,
+  'hangup must abort a delegated OpenClaw job owned by Live Talk');
+assert.match(source,
+  /const beginLiveTalkUserInput = \(session, segmentID, now\) => \{[\s\S]{0,4500}turnControllerOrigin === 'live-agent-bridge'[\s\S]{0,1800}interruptedController\.abort\(\)/,
+  'a new Live Talk user turn must abort the delegated job it interrupts');
+assert.doesNotMatch(source,
+  /function stopLiveTalk\(reason\) \{[\s\S]{0,300}turnControllerOrigin === 'typed'[\s\S]{0,120}abort\(\)/,
+  'hangup must never abort an ordinary typed OpenClaw turn');
+assert.match(source,
+  /finally \{\s*if \(turnController === controller\) \{\s*turnController = null;\s*turnControllerOrigin = null;/,
+  'an older aborted turn must not clear a replacement controller in finally');
+assert.match(source,
+  /else if \(turnController\) \{\s*turnController\.abort\(\);\s*removeWorking\(\);\s*setStatus\('Ready', 'good'\);/,
+  'Escape must leave controller ownership intact for finally to restore controls');
+assert.doesNotMatch(source,
+  /else if \(turnController\) \{\s*turnController\.abort\(\);\s*turnController = null;/,
+  'Escape must not bypass identity-safe controller cleanup');
+assert.match(source,
+  /const rpcDeadlineAt = performance\.now\(\)[\s\S]{0,120}timeout - LIVE_TALK_AGENT_RPC_DEADLINE_MARGIN_MS/,
+  'the delegated job deadline must be owned by the incoming RPC timeout');
+assert.match(source,
+  /submitOpenClawTurn\(request\.spoken_request, agentID, \{[\s\S]{0,180}deadlineAt: rpcDeadlineAt/,
+  'the selected OpenClaw stream must receive the RPC-owned deadline');
+assert.match(source,
+  /const delegatedDeadlineTimer = options\.liveAgentBridge[\s\S]{0,220}armDelegatedTurnDeadline\(controller, options\.deadlineAt\)/,
+  'only Live Talk delegated jobs may arm the caller deadline');
+assert.match(source,
+  /if \(delegatedDeadlineTimer !== null\) clearTimeout\(delegatedDeadlineTimer\);[\s\S]{0,100}if \(turnController === controller\)/,
+  'deadline cleanup must preserve identity-safe controller ownership');
+
+const replayClaimSource = inline[1].match(
+  /(const claimLiveTalkRPCRequest = \(requestIDs, requestID, maximum\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(replayClaimSource, 'the RPC replay claim must remain independently testable');
+const claimLiveTalkRPCRequest = new Function(
+  `'use strict'; ${replayClaimSource[1]}; return claimLiveTalkRPCRequest;`,
+)();
+const replayClaims = new Set();
+for (let index = 0; index < 128; index += 1) {
+  assert.equal(claimLiveTalkRPCRequest(replayClaims, `request-${index}`, 128), true);
+}
+assert.equal(claimLiveTalkRPCRequest(replayClaims, 'request-0', 128), false,
+  'a claimed request must remain rejected for the whole Live Talk session');
+assert.equal(claimLiveTalkRPCRequest(replayClaims, 'request-128', 128), false,
+  'a full replay window must fail closed instead of evicting an older request');
+assert.equal(replayClaims.has('request-0'), true,
+  'reaching the cap must never make the first request replayable');
+
+const deadlineHelperSource = inline[1].match(
+  /(const armDelegatedTurnDeadline = \(controller, deadlineAt\) => setTimeout\([\s\S]*?\n    \}, Math\.max\(0, deadlineAt - performance\.now\(\)\)\);)/,
+);
+assert.ok(deadlineHelperSource, 'delegated deadline helper must remain independently testable');
+const makeDeadlineHarness = new Function(
+  'performance', 'setTimeout',
+  `'use strict'; let turnController = null; let turnControllerOrigin = null; `
+    + `${deadlineHelperSource[1]}; return { armDelegatedTurnDeadline, `
+    + `own: (controller, origin) => { turnController = controller; turnControllerOrigin = origin; } };`,
+);
+let scheduledDelay = null;
+let scheduledCallback = null;
+const deadlineHarness = makeDeadlineHarness(
+  { now: () => 40 },
+  (callback, delay) => { scheduledCallback = callback; scheduledDelay = delay; return 7; },
+);
+const deadlineController = { aborts: 0, abort() { this.aborts += 1; } };
+deadlineHarness.own(deadlineController, 'live-agent-bridge');
+assert.equal(deadlineHarness.armDelegatedTurnDeadline(deadlineController, 100), 7);
+assert.equal(scheduledDelay, 60, 'a never-resolving delegated fetch must stop before its caller deadline');
+scheduledCallback();
+assert.equal(deadlineController.aborts, 1, 'the deadline must abort its still-owned delegated job');
+deadlineHarness.own({}, 'live-agent-bridge');
+scheduledCallback();
+assert.equal(deadlineController.aborts, 1, 'an old deadline must not abort a replacement job');
+
+const agentContractParts = [
+  inline[1].match(/const MAX_RPC_BYTES = 12000;\s*const MAX_AGENT_TURN_REPLY_BYTES = 6000;/),
+  inline[1].match(/const utf8Size =[^;]+;/),
+  inline[1].match(/const exactObject =[\s\S]*?;/),
+  inline[1].match(/const parseAgentTurnRequest =[\s\S]*?\n    };\s*\n\s*const boundedAgentTurnReply =[\s\S]*?\n    };\s*\n\s*const agentTurnRPCAnswer =[\s\S]*?\n    }\);/),
+];
+assert.ok(agentContractParts.every(Boolean), 'agent-turn RPC contract must remain independently testable');
+const agentContract = new Function(
+  `'use strict'; ${agentContractParts.map(part => part[0]).join('\n')}; `
+    + 'return { parseAgentTurnRequest, boundedAgentTurnReply, agentTurnRPCAnswer };',
+)();
+const agentRequest = JSON.stringify({
+  schema_version: 1,
+  request_id: 'a'.repeat(64),
+  spoken_request: "Search for McDonald's nearby",
+});
+assert.deepEqual(agentContract.parseAgentTurnRequest(agentRequest), {
+  request_id: 'a'.repeat(64),
+  spoken_request: "Search for McDonald's nearby",
+});
+assert.equal(agentContract.parseAgentTurnRequest(JSON.stringify({
+  schema_version: 1,
+  request_id: 'a'.repeat(64),
+  spoken_request: 'Email Emma',
+  approve: true,
+})), null, 'unknown authority fields must fail the exact request schema');
+assert.deepEqual(JSON.parse(agentContract.agentTurnRPCAnswer('failed', 'pretend success')), {
+  schema_version: 1,
+  status: 'failed',
+  spoken_reply: '',
+});
+assert.ok(new TextEncoder().encode(
+  agentContract.boundedAgentTurnReply('界'.repeat(3000)),
+).length <= 6000, 'foreground spoken replies must remain UTF-8 byte bounded');
+assert.equal(
+  agentContract.boundedAgentTurnReply(
+    '<expr type="expression" label="angry"/><speak>[whisper] Safe result.</speak>',
+  ),
+  'Safe result.',
+  'untrusted agent, file, or web markup must cross the Live Talk boundary as plain speech',
+);
+assert.equal(
+  agentContract.boundedAgentTurnReply(
+    '<p><say-as interpret-as="digits">123</say-as> <phoneme ph="həˈloʊ">hello</phoneme></p>',
+  ),
+  '123 hello',
+  'all supported speech-control tags must be removed consistently across clients',
+);
+assert.equal(
+  agentContract.boundedAgentTurnReply(
+    "McDonald's (0.4 miles away) found [3] results; "
+      + 'see [the menu](https://example.invalid/menu), and 2 < 3.',
+  ),
+  "McDonald's (0.4 miles away) found \uff3b3\uff3d results; see the menu, and 2 \uff1c 3.",
+  'plain-speech hardening must preserve ordinary facts, parentheses, and link labels',
+);
+assert.equal(
+  agentContract.boundedAgentTurnReply(
+    'Contact <emma@example.com>, <voice@example.com>, or <s@example.com> about <alpha beta> now.',
+  ),
+  'Contact \uff1cemma@example.com\uff1e, \uff1cvoice@example.com\uff1e, or '
+    + '\uff1cs@example.com\uff1e about \uff1calpha beta\uff1e now.',
+  'ordinary angle-bracket facts must be retained while their delimiters are neutralized',
+);
 
 // Keeping an edited draft must append the exact unsent content to the real
 // conversation/history pair. It must not invoke the reply route, and modal
@@ -2308,23 +2731,167 @@ for (const unsafeRequest of [
 // The RPC must bind against their authoritative joined turn, then reset after
 // the assistant closes that turn instead of trusting only the last fragment.
 const turnAssembly = inline[1].match(
-  /(const appendFinalUserTurnSegment = \(session, text\) => \{[\s\S]*?\n    \};)/,
+  /(const beginLiveTalkUserInput = \(session, segmentID, now\) => \{[\s\S]*?const assistantTranscriptDisposition = \(session, text, now\) => \{[\s\S]*?\n    \};)/,
 );
-assert.ok(turnAssembly, 'final user turn assembly helper must remain independently testable');
-const appendFinalUserTurnSegment = new Function(
-  `'use strict'; ${turnAssembly[1]}; return appendFinalUserTurnSegment;`,
-)();
-const splitTurn = { finalUserTurnSegments: [], userTurnOpen: false, latestFinalUserTranscript: '' };
-for (const segment of ['Email Emma', 'Subject.', 'Project update.', 'Message,', 'please review the schedule.']) {
-  appendFinalUserTurnSegment(splitTurn, segment);
+assert.ok(turnAssembly, 'Live Talk turn-boundary helpers must remain independently testable');
+const turnHelpers = new Function(
+  'canonicalWords', 'resetLiveTalkTTSTimingState', 'reactiveMouthState',
+  'LIVE_TALK_USER_SEGMENT_JOIN_MS', 'LIVE_TALK_DELEGATED_REPLY_EXPIRY_MS',
+  `'use strict'; let currentViseme = 'sil'; let agentSpeaking = false; `
+    + 'let turnController = null; let turnControllerOrigin = null; '
+    + 'const agentModeSelect = { disabled: false }; '
+    + `${turnAssembly[1]}; return { `
+    + 'beginLiveTalkUserInput, updatePendingLiveTalkUserSegment, '
+    + 'matchesFinalLiveTalkUserTurn, appendFinalUserTurnSegment, '
+    + 'rememberExpectedDelegatedAssistantReply, consumeExpectedDelegatedAssistantReply, '
+    + 'assistantTranscriptDisposition, '
+    + 'setAgentSpeaking: value => { agentSpeaking = value; }, '
+    + 'setController: (controller, origin) => { '
+    + 'turnController = controller; turnControllerOrigin = origin; } };',
+)(
+  value => String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' '),
+  state => { state.reset = true; },
+  { viseme: 'sil', audibleUntil: 0 },
+  1200,
+  45000,
+);
+const splitTurn = {
+  finalUserTurnSegments: [], userTurnFinalSegmentIDs: new Set(),
+  seenUserTranscriptSegments: new Set(), userTurnOpen: false,
+  latestFinalUserTranscript: '', lastUserFinalAt: -Infinity,
+  assistantOutputSinceUser: false, ttsTimingState: {},
+  expectedDelegatedAssistantReplies: [],
+};
+turnHelpers.beginLiveTalkUserInput(splitTurn, 'u1', 100);
+for (const [index, segment] of [
+  'Email Emma', 'Subject.', 'Project update.', 'Message,', 'please review the schedule.',
+].entries()) {
+  const id = `u1-${index}`;
+  if (index) turnHelpers.beginLiveTalkUserInput(splitTurn, id, 100 + index * 20);
+  turnHelpers.appendFinalUserTurnSegment(splitTurn, segment, id, 100 + index * 20);
 }
 assert.equal(
   splitTurn.latestFinalUserTranscript,
   'Email Emma Subject. Project update. Message, please review the schedule.',
 );
-splitTurn.userTurnOpen = false;
-appendFinalUserTurnSegment(splitTurn, 'Yes, send it.');
-assert.equal(splitTurn.latestFinalUserTranscript, 'Yes, send it.');
+splitTurn.assistantOutputSinceUser = true; // assistant began, then was interrupted
+turnHelpers.beginLiveTalkUserInput(splitTurn, 'u2', 400);
+turnHelpers.appendFinalUserTurnSegment(splitTurn, 'Search for McDonald\'s', 'u2', 430);
+turnHelpers.beginLiveTalkUserInput(splitTurn, 'u2-tail', 450);
+turnHelpers.appendFinalUserTurnSegment(splitTurn, 'nearby.', 'u2-tail', 460);
+assert.equal(splitTurn.latestFinalUserTranscript, "Search for McDonald's nearby.",
+  'a barge-in must start a new exact user turn while preserving its split final segments');
+
+const activeSpeechTurn = {
+  finalUserTurnSegments: ['Old request.'], userTurnFinalSegmentIDs: new Set(['old']),
+  seenUserTranscriptSegments: new Set(), userTurnOpen: true,
+  latestFinalUserTranscript: 'Old request.', lastUserFinalAt: 100,
+  assistantOutputSinceUser: false, ttsTimingState: {},
+  expectedDelegatedAssistantReplies: [],
+  agentSpeechGeneration: 1, interruptedAgentSpeechGeneration: -1,
+};
+turnHelpers.setAgentSpeaking(true);
+turnHelpers.beginLiveTalkUserInput(activeSpeechTurn, 'barge-1', 200);
+turnHelpers.appendFinalUserTurnSegment(activeSpeechTurn, 'New request', 'barge-1', 210);
+turnHelpers.beginLiveTalkUserInput(activeSpeechTurn, 'barge-2', 220);
+turnHelpers.appendFinalUserTurnSegment(activeSpeechTurn, 'continued.', 'barge-2', 230);
+turnHelpers.setAgentSpeaking(false);
+assert.equal(activeSpeechTurn.latestFinalUserTranscript, 'New request continued.',
+  'agent-audio-only barge-in must start one new turn without splitting its later segments');
+
+const partialBargeTurn = {
+  finalUserTurnSegments: ['Old request.'], userTurnFinalSegmentIDs: new Set(['old-final']),
+  seenUserTranscriptSegments: new Set(), pendingUserTranscriptSegments: new Set(),
+  userTurnOpen: true, latestFinalUserTranscript: 'Old request.', lastUserFinalAt: 100,
+  assistantOutputSinceUser: false, ttsTimingState: {},
+  expectedDelegatedAssistantReplies: [],
+};
+turnHelpers.beginLiveTalkUserInput(partialBargeTurn, 'new-partial', 200);
+turnHelpers.updatePendingLiveTalkUserSegment(partialBargeTurn, 'new-partial', false);
+assert.equal(
+  turnHelpers.matchesFinalLiveTalkUserTurn(partialBargeTurn, 'Old request.'),
+  false,
+  'a newer unfinished utterance must immediately block an RPC for the prior final turn',
+);
+turnHelpers.updatePendingLiveTalkUserSegment(partialBargeTurn, 'new-partial', true);
+turnHelpers.appendFinalUserTurnSegment(
+  partialBargeTurn, 'No, use the new request.', 'new-partial', 230,
+);
+assert.equal(
+  turnHelpers.matchesFinalLiveTalkUserTurn(partialBargeTurn, 'Old request.'),
+  false,
+  'finalizing a correction must not revive the delayed RPC for the prior request',
+);
+
+turnHelpers.rememberExpectedDelegatedAssistantReply(splitTurn, 'Three places are ready.', 500);
+splitTurn.assistantOutputSinceUser = true;
+turnHelpers.beginLiveTalkUserInput(splitTurn, 'u3', 520);
+assert.equal(
+  turnHelpers.consumeExpectedDelegatedAssistantReply(splitTurn, 'An unrelated answer.', 530),
+  false,
+  'an unrelated assistant final must never be hidden',
+);
+assert.equal(splitTurn.expectedDelegatedAssistantReplies.length, 1,
+  'a new user turn must retain one bounded exact expectation for a late delegated echo');
+assert.equal(
+  turnHelpers.consumeExpectedDelegatedAssistantReply(splitTurn, 'Three places are ready!', 540),
+  true,
+  'the exact delegated TTS echo arriving after interruption must remain suppressed',
+);
+assert.equal(splitTurn.expectedDelegatedAssistantReplies.length, 0);
+
+const lateFinalTurn = {
+  finalUserTurnSegments: ['First fragment'], userTurnFinalSegmentIDs: new Set(['late-u1']),
+  seenUserTranscriptSegments: new Set(['late-u1']), userTurnOpen: true,
+  latestFinalUserTranscript: 'First fragment', lastUserFinalAt: 700,
+  assistantOutputSinceUser: false, ttsTimingState: {},
+  expectedDelegatedAssistantReplies: [],
+  agentSpeechGeneration: 3, interruptedAgentSpeechGeneration: 3,
+};
+const lateDisposition = turnHelpers.assistantTranscriptDisposition(
+  lateFinalTurn, 'Old interrupted answer.', 720,
+);
+assert.equal(lateDisposition.preserveUserTurn, true,
+  'a late final from the interrupted speech generation must preserve the new user turn');
+turnHelpers.beginLiveTalkUserInput(lateFinalTurn, 'late-u2', 740);
+turnHelpers.appendFinalUserTurnSegment(lateFinalTurn, 'second fragment.', 'late-u2', 750);
+assert.equal(lateFinalTurn.latestFinalUserTranscript, 'First fragment second fragment.',
+  'user seg1, late assistant final, then user seg2 must remain one authoritative turn');
+
+const longDelegatedReply = 'a'.repeat(1000);
+turnHelpers.rememberExpectedDelegatedAssistantReply(splitTurn, longDelegatedReply, 600);
+assert.equal(
+  turnHelpers.consumeExpectedDelegatedAssistantReply(
+    splitTurn, longDelegatedReply, 60600,
+  ),
+  true,
+  'an exact transcript arriving after 45 seconds must still suppress a long delegated echo',
+);
+
+const delegatedTurn = {
+  finalUserTurnSegments: [], userTurnFinalSegmentIDs: new Set(),
+  seenUserTranscriptSegments: new Set(), userTurnOpen: false,
+  latestFinalUserTranscript: '', lastUserFinalAt: -Infinity,
+  assistantOutputSinceUser: false, ttsTimingState: {},
+  expectedDelegatedAssistantReplies: [],
+};
+turnHelpers.beginLiveTalkUserInput(delegatedTurn, 'delegated-1', 1000);
+turnHelpers.appendFinalUserTurnSegment(
+  delegatedTurn, 'Search for the first place.', 'delegated-1', 1010,
+);
+const delegatedController = {
+  aborted: false,
+  abort() { this.aborted = true; },
+};
+turnHelpers.setController(delegatedController, 'live-agent-bridge');
+turnHelpers.beginLiveTalkUserInput(delegatedTurn, 'delegated-2', 1050);
+turnHelpers.appendFinalUserTurnSegment(
+  delegatedTurn, 'Search for the second place.', 'delegated-2', 1060,
+);
+assert.equal(delegatedController.aborted, true,
+  'a new user turn must abort its in-flight delegated job');
+assert.equal(delegatedTurn.latestFinalUserTranscript, 'Search for the second place.',
+  'speech after a delegated interruption must not append to the prior user turn');
 
 // Keyboard and assistive labels cover the main desktop verbs.
 assert.match(source, /event\.metaKey \|\| event\.ctrlKey/);

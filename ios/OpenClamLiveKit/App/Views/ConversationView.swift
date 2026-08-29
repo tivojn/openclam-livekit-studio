@@ -3537,6 +3537,27 @@ struct ConversationView: View {
                     request,
                     appIsActive: UIApplication.shared.applicationState == .active
                 )
+            },
+            agentTurnToolHandler: { request in
+                guard UIApplication.shared.applicationState == .active else {
+                    return .foregroundRequired
+                }
+                // Commit the authoritative final transcript before routing so
+                // the connector reuses its visible user bubble instead of adding
+                // a duplicate message.
+                conversation.ingestLiveTalkTranscripts(liveTalk.transcripts)
+                guard let binding = aiConfiguration.conversationRoute(
+                    for: conversation.historyController.selectedThreadID
+                ).connectorBinding else {
+                    return .completed(
+                        "Choose a paired OpenClaw agent for this chat before asking Live Talk to run actions."
+                    )
+                }
+                return await conversation.submitLiveTalkAgentTurn(
+                    request.spokenRequest,
+                    binding: binding,
+                    agentConnections: agentConnections
+                )
             }
         )
         synchronizeQuickDictationAudioOwnership()

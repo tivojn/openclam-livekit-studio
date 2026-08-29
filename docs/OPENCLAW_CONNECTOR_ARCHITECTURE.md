@@ -9,8 +9,20 @@ Every OpenClam avatar has an explicit agent mode:
 
 Chat and tap-to-talk use the selected agent mode. Tap-to-talk speech recognition
 and read-aloud speech synthesis remain the avatar's existing iOS selections.
-Continuous Live Talk remains an independent LiveKit feature. No mode silently
-falls back to another backend.
+Continuous Live Talk remains an independent LiveKit media feature. Ordinary
+macOS voice conversation stays on its low-latency streaming model. When that
+model selects the constrained foreground-action tool, the tool sends the exact
+latest finalized transcript through one authenticated RPC to the conversation's
+selected and connected OpenClaw agent. With no selected OpenClaw agent, the
+action fails closed and is never sent to a plain local language model. OpenClaw
+Work events, generated files, and visible approval state therefore remain
+identical to typed chat. LiveKit speaks only the bounded final text returned by
+that route. iOS registers the same closed `openclam.submitAgentTurn.v1` RPC and
+routes an agentic Live Talk request through the conversation's paired OpenClaw
+connector. The authoritative final transcript remains visible, OpenClaw work
+and approval state use the same cards as typed chat, a matching LiveKit echo is
+suppressed, and barge-in or session end cancels the exact durable connector
+turn. No mode silently falls back to another backend.
 
 Changing mode or remote agent starts a new chat. Existing chats retain the route
 that created them, so a local provider never receives an OpenClaw transcript and

@@ -80,10 +80,14 @@ xcodebuild \
 
 `Config/LiveTalk.xcconfig` contains the public broker/LiveKit trust pins and
 imports the ignored `Config/LiveTalk.local.xcconfig` when present. The local
-file supplies only the pilot bearer. Before archiving, run
-`python3 scripts/check-ios-livetalk-release-config.py`; it validates presence
-without printing the token. Never commit the local file, pilot bearer, signing
-profiles, archives, or TestFlight export material.
+file supplies only the pilot bearer. The ignored
+`Config/AgentConnector.local.xcconfig` supplies the independent OpenClaw bridge
+origin using Xcode's `https:/$()/host` spelling. Before archiving, run
+`python3 scripts/check-ios-livetalk-release-config.py` and
+`python3 scripts/check-ios-agent-connector-release-config.py`; they validate
+both release routes without printing the pilot token. Never commit either local
+file, the pilot bearer, signing profiles, archives, or TestFlight export
+material.
 
 ## Build the macOS app
 
@@ -123,6 +127,11 @@ does not require a Telegram account, Telegram bot, or publicly reachable
 OpenClaw Gateway. Chat and tap-to-talk send text through this connector; the
 avatar's existing iOS speech recognition and speaking voice remain local
 choices, while Live Talk stays a separate LiveKit feature.
+
+On macOS and iOS, ordinary casual Live Talk remains on the low-latency LiveKit
+model. Agentic actions requested during that call require the conversation's
+selected and connected OpenClaw agent; without one, the action fails closed
+with recovery guidance and is never sent to a plain local language model.
 
 The pilot bridge bootstrap is not sufficient public-user authentication. Add
 App Attest and verified-installation rate limiting before public distribution.

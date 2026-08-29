@@ -73,6 +73,8 @@ AUTH_TOKEN = os.environ.get("OPENCLAM_AUTH_TOKEN", "")
 BOOT_ID = secrets.token_hex(4)
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
+MAX_TTS_TEXT_CHARS = 15_000
+MAX_TTS_TEXT_BYTES = 15_000
 SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,62})$"
 # img/media allow https so chat cards can show pictures and play video the
 # model links to; scripts stay same-origin only.
@@ -3665,6 +3667,11 @@ async def live_talk_connection_sound():
 
 class Turn(BaseModel):
     history: list
+    # Live Talk already owns the audible TTS lane. Its trusted foreground turn
+    # bridge requests the same text/media result without paying for or producing
+    # a second, discarded local voice. Existing chat and PTT requests omit this
+    # strict, opt-in field and retain audio synthesis by default.
+    suppress_local_tts: bool = Field(default=False, strict=True)
 
 
 # Direct media tools for ordinary local chat. Live Talk tools are owned by
@@ -3787,7 +3794,7 @@ def _stream_visible_reply(raw_text):
     return text.rstrip()
 
 
-async def _finish_direct_reply(text, cfg):
+async def _finish_direct_reply(text, cfg, *, suppress_local_tts: bool = False):
     import media_gen
     cards = []
     call = _OWN_TOOL_CALL.search(text)
@@ -3810,8 +3817,10 @@ async def _finish_direct_reply(text, cfg):
             print("[openclam] media generation failed:", detail, flush=True)
             text = (text + " " if text else "") + \
                 f"(I tried to make the {kind}, but the provider said: {detail})"
-    result = await _say(text, cfg) if text else \
+    result = await _say(text, cfg) if text and not suppress_local_tts else \
         {"text": "", "audio": "", "track": [], "dur": 0.0, "tier": "none"}
+    if text and suppress_local_tts:
+        result["text"] = text
     result["media"] = cards
     result["llm_route"] = P.last_route("llm")
     return result
@@ -3849,7 +3858,11 @@ async def reply_stream(t: Turn):
             ) + "\n"
         if not raw_text:
             raw_text = "I lost that thread for a second. Say it again?"
-        result = await _finish_direct_reply(raw_text, cfg)
+        result = await _finish_direct_reply(
+            raw_text,
+            cfg,
+            suppress_local_tts=t.suppress_local_tts,
+        )
         yield json.dumps(
             {"type": "complete", **result},
             separators=(",", ":"), ensure_ascii=False,
@@ -3863,15 +3876,30 @@ async def reply_stream(t: Turn):
 
 
 class Say(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=MAX_TTS_TEXT_CHARS, strict=True)
+
+
+def _tts_text_error(text):
+    if not isinstance(text, str) or not text.strip():
+        return "Speech text must not be empty"
+    if len(text) > MAX_TTS_TEXT_CHARS or len(text.encode("utf-8")) > MAX_TTS_TEXT_BYTES:
+        return "Speech text exceeds the 15000-byte limit"
+    return ""
 
 
 @app.post("/say")
 async def say(s: Say):
+    error = _tts_text_error(s.text)
+    if error:
+        raise HTTPException(status_code=413, detail=error)
     return await _say(s.text, P.load())
 
 
 async def _say(text, cfg):
+    error = _tts_text_error(text)
+    if error:
+        return {"text": str(text or ""), "audio": "", "track": [], "dur": 0.0,
+                "tier": "none", "error": error}
     try:
         y, al = await P.speak(text, cfg["tts"])
         track, dur, tier = align.build(text, y, al)

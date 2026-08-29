@@ -35,9 +35,10 @@ export async function createParticipantToken(options: TokenOptions): Promise<str
     canPublish: true,
     canPublishSources: [TrackSource.MICROPHONE],
     canSubscribe: true,
-    // Required for the iPhone to return the narrowly registered LiveKit RPC
-    // response that stages a foreground, unsent OpenClam draft. The room and
-    // participant identity remain single-session, random, and short-lived.
+    // Required for the foreground app to return bounded responses to the
+    // deterministic review-only email RPC and the cross-client selected-agent
+    // turn RPC. The room and participant identity remain single-session, random,
+    // and short-lived; this grant is transport, not tool authority.
     canPublishData: true,
   });
   token.roomConfig = new RoomConfiguration({
