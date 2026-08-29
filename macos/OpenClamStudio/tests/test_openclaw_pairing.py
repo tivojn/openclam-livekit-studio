@@ -103,6 +103,41 @@ class OpenClawPairingTests(unittest.TestCase):
         self.assertNotIn("secret-token", str(context.exception))
         self.assertNotIn("/srv/private", str(context.exception))
 
+    def test_retired_remote_pairing_requests_safe_repair(self):
+        failed = subprocess.CompletedProcess(
+            ["openclaw"],
+            1,
+            b"",
+            (
+                b"private diagnostic\n"
+                b"[openclaw] Reason: OpenClam iPhone pairing failed (not_found).\n"
+                b"secret-token /srv/private/config\n"
+            ),
+        )
+        with patch.object(openclaw_pairing, "_executable", return_value="/bin/openclaw"), \
+             patch.object(subprocess, "run", return_value=failed):
+            with self.assertRaises(openclaw_pairing.OpenClawPairingError) as context:
+                openclaw_pairing.create_pairing_code()
+
+        self.assertTrue(context.exception.repair_required)
+        self.assertIn("expired", str(context.exception).lower())
+        self.assertNotIn("invalid", str(context.exception).lower())
+        self.assertNotIn("secret-token", str(context.exception))
+        self.assertNotIn("/srv/private", str(context.exception))
+
+    def test_success_with_malformed_stdout_remains_invalid_response(self):
+        malformed = subprocess.CompletedProcess(
+            ["openclaw"], 0, b"not-json", b"private diagnostic"
+        )
+        with patch.object(openclaw_pairing, "_executable", return_value="/bin/openclaw"), \
+             patch.object(subprocess, "run", return_value=malformed):
+            with self.assertRaises(openclaw_pairing.OpenClawPairingError) as context:
+                openclaw_pairing.create_pairing_code()
+
+        self.assertFalse(context.exception.repair_required)
+        self.assertIn("invalid response", str(context.exception).lower())
+        self.assertNotIn("private diagnostic", str(context.exception))
+
     def test_status_never_stringifies_an_untrusted_gateway_label(self):
         value = {
             "paired": True,
@@ -178,6 +213,55 @@ class OpenClawPairingTests(unittest.TestCase):
         self.assertNotIn("OPENCLAM_STUDIO_SETUP_KEY", calls[2][1]["env"])
         self.assertEqual(result["code"], pairing["code"])
         self.assertTrue(result["configured"])
+        self.assertNotIn(secret, json.dumps(result))
+
+    def test_repair_replaces_retired_channel_with_setup_key_only_in_child_env(self):
+        now = int(time.time() * 1000)
+        pairing = {
+            "v": 1,
+            "code": "OC-2345-6789-ABCD",
+            "connectionId": "11111111-1111-4111-8111-111111111111",
+            "expiresAt": now + 600_000,
+            "gatewayLabel": "OpenClam Mac",
+            "accounts": [{
+                "accountId": "main",
+                "agentId": "main",
+                "displayName": "main",
+            }],
+        }
+        secret = "safe_setup_key_0123456789_ABCDEFGH"
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            if "pair" in command:
+                return self.result(pairing)
+            return subprocess.CompletedProcess(command, 0, b"ok\n", b"")
+
+        with patch.object(openclaw_pairing, "_executable", return_value="/bin/openclaw"), \
+             patch.object(openclaw_pairing, "_plugin_package", return_value="/tmp/channel.tgz"), \
+             patch.object(openclaw_pairing, "_bridge_origin", return_value="https://bridge.example"), \
+             patch.object(openclaw_pairing, "status", return_value={
+                 "available": True,
+                 "channel_installed": True,
+                 "configured": True,
+                 "gateway_label": "OpenClam Mac",
+                 "accounts": [],
+             }), \
+             patch.object(subprocess, "run", side_effect=run):
+            result = openclaw_pairing.install_channel(secret, repair=True)
+
+        pair_call = calls[1]
+        self.assertEqual(pair_call[0], [
+            "/bin/openclaw", "openclam", "pair", "--bridge-url",
+            "https://bridge.example", "--bootstrap-secret-env",
+            "OPENCLAM_STUDIO_SETUP_KEY", "--replace", "--json",
+        ])
+        self.assertEqual(pair_call[1]["env"].get("OPENCLAM_STUDIO_SETUP_KEY"), secret)
+        self.assertNotIn("OPENCLAM_STUDIO_SETUP_KEY", calls[0][1]["env"])
+        self.assertNotIn("OPENCLAM_STUDIO_SETUP_KEY", calls[2][1]["env"])
+        self.assertTrue(result["repaired"])
+        self.assertEqual(result["code"], pairing["code"])
         self.assertNotIn(secret, json.dumps(result))
 
 

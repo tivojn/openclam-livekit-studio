@@ -230,6 +230,27 @@ class StandaloneRouteTests(unittest.TestCase):
         }
         self.assertTrue(expected.issubset(self.routes), expected - self.routes.keys())
 
+    def test_expired_openclaw_connector_returns_bounded_repair_contract(self):
+        error = self.application.openclaw_pairing.OpenClawPairingError(
+            "Reconnect this OpenClaw connection.",
+            repair_required=True,
+        )
+        with patch.object(
+            self.application.openclaw_pairing,
+            "create_pairing_code",
+            side_effect=error,
+        ):
+            response = asyncio.run(
+                self.application.api_openclaw_pairing_create()
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.body), {
+            "detail": "Reconnect this OpenClaw connection.",
+            "repair_required": True,
+        })
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
     def test_already_running_reports_the_current_job_kind(self):
         with patch.object(self.application, "_jobs", {
             "captain": {

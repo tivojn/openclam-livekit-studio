@@ -2794,11 +2794,19 @@ async def api_openclaw_pairing_create():
     try:
         return await asyncio.to_thread(openclaw_pairing.create_pairing_code)
     except openclaw_pairing.OpenClawPairingError as error:
-        raise HTTPException(409, str(error)) from error
+        return JSONResponse(
+            {
+                "detail": str(error),
+                "repair_required": bool(error.repair_required),
+            },
+            status_code=409,
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 class OpenClawInstallRequest(BaseModel):
     setup_key: str = Field(default="", max_length=256)
+    repair: bool = False
 
 
 @app.post("/api/openclaw/install")
@@ -2807,6 +2815,7 @@ async def api_openclaw_install(request: OpenClawInstallRequest):
         return await asyncio.to_thread(
             openclaw_pairing.install_channel,
             request.setup_key,
+            request.repair,
         )
     except openclaw_pairing.OpenClawPairingError as error:
         raise HTTPException(409, str(error)) from error

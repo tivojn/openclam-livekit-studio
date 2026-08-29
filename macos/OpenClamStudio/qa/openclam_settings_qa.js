@@ -287,6 +287,11 @@ excludes(/openclaw-pairing-copy[\s\S]{0,400}navigator\.clipboard\.writeText\(cod
 includes("api('/api/openclaw/pairing'");
 includes("api('/api/openclaw/pairing', {method: 'POST'}");
 includes("api('/api/openclaw/install'");
+includes('function requireOpenClawRepair(message)');
+includes('result && result.repair_required');
+includes('body: JSON.stringify({setup_key: setupKey, repair: repairing})');
+includes('Reconnect OpenClaw');
+includes('Creating a code verifies the bridge connection.');
 includes('all other channels stay unchanged');
 includes('The code is not saved here');
 includes('bridge setup key out of OpenClaw configuration and app storage');

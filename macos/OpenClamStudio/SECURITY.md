@@ -55,8 +55,11 @@ projects, or unredacted logs.
   The dormant generic engine still requires an explicit repository policy,
   strict redirect allowlisting, byte limits, SHA-256 verification, and the
   existing atomic AVTR validator. Direct local `.avtr` workflows are unchanged.
-- The packaged app does not include phone pairing, LAN relay, EnConvo routing,
-  System Audio capture, Apple Events automation, or Accessibility triggers.
+- Phone pairing is limited to explicit, short-lived OpenClaw codes. Bridge
+  setup keys are passed only to the one-shot OpenClaw child process and are
+  never stored by OpenClam. The packaged app does not include a LAN relay,
+  EnConvo routing, System Audio capture, Apple Events automation, or
+  Accessibility triggers.
 
 A process already running as the same logged-in macOS user can inspect that
 user's memory and files or tamper with an unsigned installation. That is outside

@@ -26,6 +26,10 @@ SETUP_KEY = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 class OpenClawPairingError(RuntimeError):
     """A bounded user-facing failure; child-process output is never echoed."""
 
+    def __init__(self, message: str, *, repair_required: bool = False):
+        super().__init__(message)
+        self.repair_required = repair_required
+
 
 def _executable() -> str | None:
     for candidate in (
@@ -86,6 +90,18 @@ def _run(
     if len(result.stdout) > MAX_OUTPUT_BYTES or len(result.stderr) > MAX_OUTPUT_BYTES:
         raise OpenClawPairingError("OpenClaw returned an oversized response.")
     if result.returncode != 0:
+        # The OpenClaw CLI deliberately emits only bounded public error codes
+        # for bridge failures. Recognize the recovery state Settings can
+        # resolve, but never return arbitrary child stderr.
+        if re.search(
+            rb"OpenClam iPhone pairing failed \((?:not_found|pairing_expired)\)\.",
+            result.stderr,
+        ):
+            raise OpenClawPairingError(
+                "This OpenClaw connection expired before iPhone pairing finished. "
+                "Enter the bridge setup key below to reconnect it, then create a new code.",
+                repair_required=True,
+            )
         raise OpenClawPairingError(
             "OpenClaw could not create the iPhone pairing. Check its OpenClam channel, then try again."
         )
@@ -271,7 +287,10 @@ def _pairing_result(value: object) -> dict[str, object]:
     }
 
 
-def install_channel(setup_key: str = "") -> dict[str, object]:
+def install_channel(
+    setup_key: str = "",
+    repair: bool = False,
+) -> dict[str, object]:
     if not _executable():
         raise OpenClawPairingError(
             "OpenClaw is not installed on this Mac. Install OpenClaw first."
@@ -279,7 +298,7 @@ def install_channel(setup_key: str = "") -> dict[str, object]:
     package = _plugin_package()
     existing = status()
     _run(["plugins", "install", package, "--force"], timeout=90)
-    if existing.get("configured") is True:
+    if existing.get("configured") is True and not repair:
         _run(["gateway", "restart"], timeout=35)
         updated = status()
         return {
@@ -292,17 +311,17 @@ def install_channel(setup_key: str = "") -> dict[str, object]:
         raise OpenClawPairingError(
             "Enter the OpenClam bridge setup key to connect this OpenClaw installation."
         )
-    try:
-        value = _parse_json_object(_run(
-            [
-                "openclam", "pair", "--bridge-url", _bridge_origin(),
-                "--bootstrap-secret-env", "OPENCLAM_STUDIO_SETUP_KEY", "--json",
-            ],
-            timeout=60,
-            extra_environment={"OPENCLAM_STUDIO_SETUP_KEY": key},
-        ))
-    except OpenClawPairingError as error:
-        raise OpenClawPairingError("OpenClaw returned an invalid pairing response.") from error
+    pair_arguments = [
+        "openclam", "pair", "--bridge-url", _bridge_origin(),
+        "--bootstrap-secret-env", "OPENCLAM_STUDIO_SETUP_KEY", "--json",
+    ]
+    if existing.get("configured") is True:
+        pair_arguments.insert(-1, "--replace")
+    value = _parse_json_object(_run(
+        pair_arguments,
+        timeout=60,
+        extra_environment={"OPENCLAM_STUDIO_SETUP_KEY": key},
+    ))
     result = _pairing_result(value)
     _run(["gateway", "restart"], timeout=35)
     return {
@@ -311,15 +330,13 @@ def install_channel(setup_key: str = "") -> dict[str, object]:
         "channel_installed": True,
         "configured": True,
         "updated": False,
+        "repaired": bool(repair),
         "gateway_restarted": True,
     }
 
 
 def create_pairing_code() -> dict[str, object]:
-    try:
-        value = _parse_json_object(_run(["openclam", "pair-device", "--json"]))
-    except OpenClawPairingError as error:
-        raise OpenClawPairingError("OpenClaw returned an invalid pairing response.") from error
+    value = _parse_json_object(_run(["openclam", "pair-device", "--json"]))
     result = _pairing_result(value)
 
     restart_warning = ""
