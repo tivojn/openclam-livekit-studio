@@ -16,7 +16,11 @@ vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
   getAgentScopedMediaLocalRootsForSources: mocks.getAgentScopedMediaLocalRootsForSources,
 }));
 
-import { loadOpenClamMedia, MAX_ATTACHMENT_BYTES } from "../src/media.js";
+import {
+  loadOpenClamMedia,
+  MAX_ATTACHMENT_BYTES,
+  promoteLocalAttachmentLinks,
+} from "../src/media.js";
 
 describe("OpenClam official outbound media policy", () => {
   beforeEach(() => {
@@ -60,5 +64,50 @@ describe("OpenClam official outbound media policy", () => {
       agentId: "ara",
       source: "/safe/agent/workspace/program.bin",
     })).rejects.toThrow("attachment_type_unsupported");
+  });
+
+  it("honors host-authorized media access without expanding filesystem roots", async () => {
+    const mediaAccess = {
+      localRoots: ["/safe/generated"],
+      readFile: vi.fn(),
+    };
+    await loadOpenClamMedia({
+      cfg: {} as any,
+      agentId: "ara",
+      source: "/safe/generated/movie.mp4",
+      mediaAccess,
+    });
+
+    expect(mocks.getAgentScopedMediaLocalRootsForSources).not.toHaveBeenCalled();
+    expect(mocks.loadOutboundMediaFromUrl).toHaveBeenCalledWith(
+      "/safe/generated/movie.mp4",
+      {
+        maxBytes: MAX_ATTACHMENT_BYTES,
+        mediaAccess,
+      },
+    );
+  });
+
+  it("promotes supported local Markdown links without touching web or unsupported links", () => {
+    const movie = "/Users/ara/PinkCherry/output/finished movie.mp4";
+    const numberedMovie = "/Users/ara/PinkCherry/output/finished (1).mp4";
+    const compactNumberedMovie = "/Users/ara/PinkCherry/output/finished(2).mp4";
+    const document = "file:///Users/ara/output/report.pdf";
+    const promoted = promoteLocalAttachmentLinks(
+      `[Watch it](${movie}), [First retry](${numberedMovie}), ` +
+      `[Second retry](${compactNumberedMovie}), and [Read it](<${document}>). ` +
+      "[Website](https://example.com/movie.mp4) [Source](/Users/ara/code/main.swift)",
+    );
+
+    expect(promoted.sources).toEqual([
+      movie,
+      numberedMovie,
+      compactNumberedMovie,
+      document,
+    ]);
+    expect(promoted.text).toBe(
+      "Watch it, First retry, Second retry, and Read it. " +
+      "[Website](https://example.com/movie.mp4) [Source](/Users/ara/code/main.swift)",
+    );
   });
 });

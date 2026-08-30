@@ -101,4 +101,13 @@ describe("OpenClam channel status", () => {
       { accountId: "zed", name: "Writer", connected: true },
     ]);
   });
+
+  it("instructs the agent to return generated files through automatic attachment promotion", () => {
+    const hints = createOpenClamChannelBase().agentPrompt?.messageToolHints?.({
+      cfg: config,
+      accountId: "ara",
+    }) ?? [];
+    expect(hints.join(" ")).toContain("local Markdown file links");
+    expect(hints.join(" ")).toContain("do not use the message tool");
+  });
 });

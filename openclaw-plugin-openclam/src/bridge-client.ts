@@ -1,12 +1,19 @@
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
-import { uploadOpenClamAttachment } from "./attachment-upload.js";
+import {
+  OpenClamAttachmentUploadError,
+  uploadOpenClamAttachment,
+} from "./attachment-upload.js";
 import {
   readAdapterCredential,
   readAdapterState,
   writeAdapterState,
 } from "./credentials.js";
 import { dispatchOpenClamTurn } from "./inbound.js";
+import {
+  MAX_ATTACHMENTS_PER_TURN,
+  MAX_ATTACHMENT_BYTES_PER_TURN,
+} from "./media.js";
 import {
   createFrame,
   encodeFrame,
@@ -16,12 +23,18 @@ import {
   safeTurnErrorPayload,
   truncateUnicode,
 } from "./protocol.js";
+import {
+  redactPrivatePathReferences,
+  rememberMediaReplacement,
+  replaceExactMediaReferences,
+} from "./privacy.js";
 import type {
   AdapterState,
   ActivityStatus,
   ClientFrame,
   ConnectorFrame,
   FrameKind,
+  OpenClamAttachment,
   OpenClamAttachmentUpload,
   ResolvedOpenClamAccount,
   TurnSubmitFrame,
@@ -79,6 +92,11 @@ type ActiveTurn = {
   workTimer?: NodeJS.Timeout;
   workTask?: Promise<void>;
   lastWorkFrameAt: number;
+  attachmentCount: number;
+  attachmentBytes: number;
+  attachmentCaption?: string;
+  attachmentsBySource: Map<string, OpenClamAttachment>;
+  attachmentsInFlight: Map<string, Promise<OpenClamAttachment>>;
 };
 
 type QueuedFrame = {
@@ -185,6 +203,47 @@ export class OpenClamBridgeClient {
 
   get accountCount(): number {
     return this.accounts.size;
+  }
+
+  async deliverMediaToActiveConversation(params: {
+    accountId: string;
+    conversationId: string;
+    source: string;
+    caption?: string;
+    attachment: OpenClamAttachmentUpload;
+  }): Promise<OpenClamAttachment> {
+    const active = [...this.activeTurns.values()].find((candidate) =>
+      candidate.frame.conversationId === params.conversationId &&
+      candidate.frame.payload.accountId === params.accountId
+    );
+    if (!active || active.terminal || active.controller.signal.aborted) {
+      throw new Error("openclam_conversation_inactive");
+    }
+    const source = params.source.trim();
+    const caption = params.caption?.trim();
+    if (caption) {
+      const replacements = new Map<string, string>();
+      if (source) rememberMediaReplacement(replacements, source, params.attachment.fileName);
+      active.attachmentCaption = truncateUnicode(
+        redactPrivatePathReferences(replaceExactMediaReferences(caption, replacements)),
+        MAX_TEXT_LENGTH,
+      );
+    }
+    const existing = source ? active.attachmentsBySource.get(source) : undefined;
+    if (existing) return existing;
+    const pending = source ? active.attachmentsInFlight.get(source) : undefined;
+    if (pending) return await pending;
+    const task = this.deliverAttachment(active, params.attachment);
+    if (source) active.attachmentsInFlight.set(source, task);
+    try {
+      const uploaded = await task;
+      if (source) active.attachmentsBySource.set(source, uploaded);
+      return uploaded;
+    } finally {
+      if (source && active.attachmentsInFlight.get(source) === task) {
+        active.attachmentsInFlight.delete(source);
+      }
+    }
   }
 
   async attach(ctx: AccountContext): Promise<void> {
@@ -453,6 +512,10 @@ export class OpenClamBridgeClient {
       pendingWork: new Map(),
       lastWork: new Map(),
       lastWorkFrameAt: 0,
+      attachmentCount: 0,
+      attachmentBytes: 0,
+      attachmentsBySource: new Map(),
+      attachmentsInFlight: new Map(),
     };
     this.activeTurns.set(turnId, active);
     await this.mutateState((next) => {
@@ -641,6 +704,19 @@ export class OpenClamBridgeClient {
             {
               code: "attachment_delivery_failed",
               message: "The generated file could not be delivered. Please try again.",
+              retryable: true,
+            },
+          );
+        } else if (code === "empty_reply" && active.attachmentCount > 0) {
+          const fallback = active.attachmentCaption ||
+            `Created ${active.attachmentCount} ${active.attachmentCount === 1 ? "file" : "files"}.`;
+          active.terminalPersisted = await this.beginTerminal(
+            active,
+            "assistant.completed",
+            { turnId: frame.payload.turnId, text: truncateUnicode(fallback, MAX_TEXT_LENGTH) },
+            {
+              code: "connection_interrupted",
+              message: "The connection closed before this reply could be delivered. Please try again.",
               retryable: true,
             },
           );
@@ -1052,37 +1128,57 @@ export class OpenClamBridgeClient {
   private async deliverAttachment(
     active: ActiveTurn,
     attachment: OpenClamAttachmentUpload,
-  ): Promise<void> {
+  ): Promise<OpenClamAttachment> {
     if (!this.supports(active, "attachments-v1")) {
       throw new Error("attachment_delivery_failed");
     }
+    if (
+      active.attachmentCount >= MAX_ATTACHMENTS_PER_TURN ||
+      active.attachmentBytes + attachment.buffer.byteLength > MAX_ATTACHMENT_BYTES_PER_TURN
+    ) {
+      throw new Error("attachment_limit");
+    }
+    active.attachmentCount += 1;
+    active.attachmentBytes += attachment.buffer.byteLength;
     const frame = active.frame;
-    const uploaded = await this.deps.uploadAttachment({
-      bridgeUrl: this.bridgeUrl,
-      connectionId: this.connectionId,
-      token: this.token,
-      conversationId: frame.conversationId,
-      turnId: frame.payload.turnId,
-      attachment,
-      signal: active.controller.signal,
-    });
-    const persisted = await this.sendAwaitingRelayPersistence(
-      "assistant.attachment",
-      {
+    try {
+      const uploaded = await this.deps.uploadAttachment({
+        bridgeUrl: this.bridgeUrl,
+        connectionId: this.connectionId,
+        token: this.token,
+        conversationId: frame.conversationId,
         turnId: frame.payload.turnId,
-        attachmentId: uploaded.attachmentId,
-        fileName: uploaded.fileName,
-        mediaType: uploaded.mediaType,
-        byteCount: uploaded.byteCount,
-        sha256: uploaded.sha256,
-        downloadPath: uploaded.downloadPath,
-        expiresAt: uploaded.expiresAt,
-      },
-      frame.conversationId,
-      undefined,
-      active.controller.signal,
-    );
-    if (!persisted) throw new Error("attachment_delivery_failed");
+        attachment,
+        signal: active.controller.signal,
+      });
+      const persisted = await this.sendAwaitingRelayPersistence(
+        "assistant.attachment",
+        {
+          turnId: frame.payload.turnId,
+          attachmentId: uploaded.attachmentId,
+          fileName: uploaded.fileName,
+          mediaType: uploaded.mediaType,
+          byteCount: uploaded.byteCount,
+          sha256: uploaded.sha256,
+          downloadPath: uploaded.downloadPath,
+          expiresAt: uploaded.expiresAt,
+        },
+        frame.conversationId,
+        undefined,
+        active.controller.signal,
+      );
+      if (!persisted) throw new Error("attachment_delivery_failed");
+      return uploaded;
+    } catch (error) {
+      active.attachmentCount -= 1;
+      active.attachmentBytes -= attachment.buffer.byteLength;
+      const reason = error instanceof Error ? error.message : "attachment_delivery_failed";
+      const diagnostic = error instanceof OpenClamAttachmentUploadError
+        ? ` diagnostic=${error.diagnostic}`
+        : "";
+      this.log("warn", `attachment_delivery_failed reason=${reason}${diagnostic}`);
+      throw error;
+    }
   }
 
   private async offerDelta(active: ActiveTurn, text: string): Promise<void> {

@@ -288,14 +288,15 @@ final class AgentConnectionModel: ObservableObject {
     func storedArtifactThumbnailData(
         for descriptor: ConversationAttachmentDescriptor
     ) async -> Data? {
-        guard descriptor.kind == .image,
+        guard descriptor.kind == .image || descriptor.kind == .video,
               let reference = descriptor.connectorArtifact,
               let url = await artifactService?.storedURL(for: reference) else {
             return nil
         }
         return await AgentConnectorArtifactThumbnailCache.shared.thumbnailData(
             for: url,
-            cacheKey: reference.sha256
+            cacheKey: reference.sha256,
+            kind: descriptor.kind
         )
     }
 

@@ -7,22 +7,25 @@ import UIKit
 /// trigger a fetch.
 struct MarkdownMessageView: View {
     let message: ConversationMessage
-    let localImagePreviews: [UUID: UIImage]
+    let localVisualPreviews: [UUID: UIImage]
     let onAskAISelection: ((String) -> Void)?
     let onOpenAttachment: ((ConversationAttachmentDescriptor) -> Void)?
+    let onSaveAttachment: ((ConversationAttachmentDescriptor) -> Void)?
     let onShareAttachment: ((ConversationAttachmentDescriptor) -> Void)?
 
     init(
         message: ConversationMessage,
-        localImagePreviews: [UUID: UIImage] = [:],
+        localVisualPreviews: [UUID: UIImage] = [:],
         onAskAISelection: ((String) -> Void)? = nil,
         onOpenAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil,
+        onSaveAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil,
         onShareAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil
     ) {
         self.message = message
-        self.localImagePreviews = localImagePreviews
+        self.localVisualPreviews = localVisualPreviews
         self.onAskAISelection = onAskAISelection
         self.onOpenAttachment = onOpenAttachment
+        self.onSaveAttachment = onSaveAttachment
         self.onShareAttachment = onShareAttachment
     }
 
@@ -131,75 +134,51 @@ struct MarkdownMessageView: View {
         }
     }
 
+    @ViewBuilder
     private func attachmentCard(_ attachment: ConversationAttachmentDescriptor) -> some View {
-        let localPreview = attachment.kind == .image
-            ? localImagePreviews[attachment.id]
+        let localPreview = attachment.kind.isVisual
+            ? localVisualPreviews[attachment.id]
             : nil
 
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .top, spacing: 10) {
-            if let localPreview {
-                Image(uiImage: localPreview)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 64, height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 8) {
+            if attachment.kind.isVisual {
+                visualAttachmentPreview(attachment, localPreview: localPreview)
+                attachmentMetadata(attachment)
             } else {
-                Image(systemName: attachment.kind.systemImage)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 42, height: 42)
-                    .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
-                    .accessibilityHidden(true)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(attachment.displayName)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(2)
-                if let detail = attachment.detailText {
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                if attachment.kind == .image, localPreview == nil {
-                    Text(attachment.connectorArtifact == nil
-                         ? "Image preview isn’t stored; metadata only."
-                         : "Tap Open to preview the verified image.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer(minLength: 0)
+                nonvisualAttachmentSummary(attachment)
             }
 
             if attachment.connectorArtifact != nil,
-               onOpenAttachment != nil || onShareAttachment != nil {
-                HStack(spacing: 10) {
-                    if let onOpenAttachment {
+               onSaveAttachment != nil || onShareAttachment != nil {
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    if let onSaveAttachment {
                         Button {
-                            onOpenAttachment(attachment)
+                            onSaveAttachment(attachment)
                         } label: {
-                            Label("Open", systemImage: "arrow.up.right.square")
+                            Image(systemName: "square.and.arrow.down")
+                                .frame(width: 30, height: 30)
+                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .accessibilityLabel("Save \(attachment.displayName) to Files")
+                        .accessibilityHint("Choose a filename and Files location")
                         .accessibilityIdentifier(
-                            "openclam-openclaw-file-open-\(attachment.id.uuidString)"
+                            "openclam-openclaw-file-save-\(attachment.id.uuidString)"
                         )
                     }
                     if let onShareAttachment {
                         Button {
                             onShareAttachment(attachment)
                         } label: {
-                            Label("Share", systemImage: "square.and.arrow.up")
+                            Image(systemName: "square.and.arrow.up")
+                                .frame(width: 30, height: 30)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .accessibilityLabel("Share \(attachment.displayName)")
                         .accessibilityIdentifier(
                             "openclam-openclaw-file-share-\(attachment.id.uuidString)"
                         )
@@ -218,10 +197,133 @@ struct MarkdownMessageView: View {
         )
         .accessibilityLabel(
             attachment.accessibilityDescription
-                + (localPreview == nil || attachment.kind != .image
+                + (localPreview == nil || !attachment.kind.isVisual
                     ? ""
-                    : ". Local image preview available for this app session")
+                    : ". Local visual preview available")
         )
+    }
+
+    @ViewBuilder
+    private func visualAttachmentPreview(
+        _ attachment: ConversationAttachmentDescriptor,
+        localPreview: UIImage?
+    ) -> some View {
+        if attachment.connectorArtifact != nil,
+           let onOpenAttachment {
+            Button {
+                onOpenAttachment(attachment)
+            } label: {
+                visualAttachmentPreviewContent(attachment, localPreview: localPreview)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(attachment.kind == .video
+                ? "Play \(attachment.displayName)"
+                : "Preview \(attachment.displayName)")
+            .accessibilityHint("Opens the verified attachment")
+            .accessibilityIdentifier(
+                "openclam-openclaw-file-preview-\(attachment.id.uuidString)"
+            )
+        } else {
+            visualAttachmentPreviewContent(attachment, localPreview: localPreview)
+        }
+    }
+
+    private func visualAttachmentPreviewContent(
+        _ attachment: ConversationAttachmentDescriptor,
+        localPreview: UIImage?
+    ) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.black.opacity(0.78))
+
+            if let localPreview {
+                Image(uiImage: localPreview)
+                    .resizable()
+                    .scaledToFit()
+                    .accessibilityHidden(true)
+            } else {
+                VStack(spacing: 7) {
+                    Image(systemName: attachment.kind == .video ? "video" : "photo")
+                        .font(.title3.weight(.semibold))
+                    Text("Preparing preview…")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.white.opacity(0.72))
+                .accessibilityHidden(true)
+            }
+
+            if attachment.kind == .video {
+                Image(systemName: "play.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .background(.black.opacity(0.58), in: Circle())
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 176)
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func nonvisualAttachmentSummary(
+        _ attachment: ConversationAttachmentDescriptor
+    ) -> some View {
+        if attachment.connectorArtifact != nil,
+           let onOpenAttachment {
+            Button {
+                onOpenAttachment(attachment)
+            } label: {
+                nonvisualAttachmentSummaryContent(attachment)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Preview \(attachment.displayName)")
+            .accessibilityHint("Opens the verified attachment")
+            .accessibilityIdentifier(
+                "openclam-openclaw-file-preview-\(attachment.id.uuidString)"
+            )
+        } else {
+            nonvisualAttachmentSummaryContent(attachment)
+        }
+    }
+
+    private func nonvisualAttachmentSummaryContent(
+        _ attachment: ConversationAttachmentDescriptor
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: attachment.kind.systemImage)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 42, height: 42)
+                .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+                .accessibilityHidden(true)
+
+            attachmentMetadata(attachment)
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func attachmentMetadata(
+        _ attachment: ConversationAttachmentDescriptor
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(attachment.displayName)
+                .font(.caption.weight(.semibold))
+                .lineLimit(2)
+            if let detail = attachment.detailText {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
     }
 
     private func headingTextStyle(level: Int) -> UIFont.TextStyle {
@@ -647,6 +749,10 @@ enum SafeMarkdownParser {
 }
 
 private extension ConversationAttachmentDescriptor.Kind {
+    var isVisual: Bool {
+        self == .image || self == .video
+    }
+
     var systemImage: String {
         switch self {
         case .image: "photo"

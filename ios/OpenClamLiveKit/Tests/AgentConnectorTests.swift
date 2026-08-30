@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import UIKit
 import XCTest
@@ -2903,6 +2904,122 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertLessThanOrEqual(max(thumbnail.size.width, thumbnail.size.height), 320)
         XCTAssertLessThan(relaunched.count, 2 * 1_024 * 1_024)
         XCTAssertEqual(first, relaunched)
+    }
+
+    func testPersistedGeneratedVideoGetsBoundedPosterThumbnail() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("poster-source.mp4")
+        try await makeSingleFrameVideo(at: source)
+
+        let cache = AgentConnectorArtifactThumbnailCache()
+        let thumbnailData = await cache.thumbnailData(
+            for: source,
+            cacheKey: "video-poster-thumbnail",
+            kind: .video
+        )
+        let data = try XCTUnwrap(thumbnailData)
+        let thumbnail = try XCTUnwrap(UIImage(data: data))
+
+        XCTAssertLessThanOrEqual(max(thumbnail.size.width, thumbnail.size.height), 320)
+        XCTAssertLessThan(data.count, 2 * 1_024 * 1_024)
+        XCTAssertGreaterThan(thumbnail.size.width, thumbnail.size.height)
+    }
+
+    func testConnectorArtifactFilesExportStagesUserNamedLocalCopyAndCleansIt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("content.mp4")
+        let sourceData = Data((0 ..< 4_096).map { UInt8($0 % 251) })
+        try sourceData.write(to: source)
+
+        let staged = try ConnectorArtifactExportStager.stageCopy(
+            of: source,
+            displayName: "Finished movie.mp4",
+            temporaryRoot: directory
+        )
+
+        XCTAssertEqual(staged.lastPathComponent, "Finished movie.mp4")
+        XCTAssertEqual(try Data(contentsOf: staged), sourceData)
+        XCTAssertEqual(try Data(contentsOf: source), sourceData)
+        XCTAssertNotEqual(staged.standardizedFileURL, source.standardizedFileURL)
+
+        let stagedDirectory = staged.deletingLastPathComponent()
+        ConnectorArtifactExportStager.removeStagedCopy(at: staged)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedDirectory.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    func testConnectorArtifactFilesExportSanitizesLegacyNameAndKeepsExtension() {
+        let source = URL(fileURLWithPath: "/private/content.mp4")
+
+        XCTAssertEqual(
+            ConnectorArtifactExportStager.sanitizedFilename(
+                displayName: "../Movie: Final",
+                sourceURL: source
+            ),
+            "Movie- Final.mp4"
+        )
+        let longName = String(repeating: "a", count: 240) + ".mp4"
+        let bounded = ConnectorArtifactExportStager.sanitizedFilename(
+            displayName: longName,
+            sourceURL: source
+        )
+        XCTAssertLessThanOrEqual(bounded.count, 160)
+        XCTAssertEqual((bounded as NSString).pathExtension, "mp4")
+    }
+
+    private func makeSingleFrameVideo(at url: URL) async throws {
+        let width = 96
+        let height = 54
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height,
+            ]
+        )
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+            ]
+        )
+        XCTAssertTrue(writer.canAdd(input))
+        writer.add(input)
+        XCTAssertTrue(writer.startWriting())
+        writer.startSession(atSourceTime: .zero)
+
+        var pixelBuffer: CVPixelBuffer?
+        XCTAssertEqual(
+            CVPixelBufferPoolCreatePixelBuffer(
+                nil,
+                try XCTUnwrap(adaptor.pixelBufferPool),
+                &pixelBuffer
+            ),
+            kCVReturnSuccess
+        )
+        let buffer = try XCTUnwrap(pixelBuffer)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        if let baseAddress = CVPixelBufferGetBaseAddress(buffer) {
+            memset(baseAddress, 0x7F, CVPixelBufferGetDataSize(buffer))
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        XCTAssertTrue(adaptor.append(buffer, withPresentationTime: .zero))
+        input.markAsFinished()
+
+        await withCheckedContinuation { continuation in
+            writer.finishWriting { continuation.resume() }
+        }
+        XCTAssertEqual(writer.status, .completed, writer.error?.localizedDescription ?? "")
     }
 
     private enum CancellationAttachmentTerminalKind {

@@ -1,6 +1,7 @@
 import { resolveInboundRouteEnvelopeBuilderWithRuntime } from "openclaw/plugin-sdk/inbound-envelope";
 import { MAX_TEXT_LENGTH, truncateUnicode } from "./protocol.js";
-import { loadOpenClamMedia, MAX_ATTACHMENT_BYTES_PER_TURN, MAX_ATTACHMENTS_PER_TURN, uniqueMediaSources, } from "./media.js";
+import { loadOpenClamMedia, MAX_ATTACHMENT_BYTES_PER_TURN, MAX_ATTACHMENTS_PER_TURN, promoteLocalAttachmentLinks, uniqueMediaSources, } from "./media.js";
+import { containsPrivatePathReference, redactPrivatePathReferences, rememberMediaReplacement, replaceExactMediaReferences, } from "./privacy.js";
 import { getOpenClamRuntime } from "./runtime.js";
 import { sanitizeWorkStep, sanitizeWorkText, workState, workStepId } from "./work-sanitizer.js";
 async function emitWork(sink, step) {
@@ -58,37 +59,6 @@ function mergeFinalText(current, incoming) {
     if (current.endsWith(trimmed))
         return current;
     return `${current}\n\n${trimmed}`;
-}
-function replaceExactMediaReferences(text, replacements) {
-    let safe = text;
-    for (const [source, replacement] of replacements) {
-        if (source)
-            safe = safe.split(source).join(replacement);
-    }
-    return safe;
-}
-function containsPrivatePathReference(text) {
-    return /(?:file:\/\/|(?:^|[^A-Za-z0-9_])[A-Za-z]:[\\/]|\\\\[^\s\\]+\\[^\s\\]+|(?:^|[^A-Za-z0-9_./-])\/(?!\/)[^\s)\]}>]+)/u
-        .test(text);
-}
-function redactPrivatePathReferences(text) {
-    return text
-        .replace(/file:\/\/[^\s)\]}>]+/gu, "attached file")
-        .replace(/(^|[^A-Za-z0-9_])[A-Za-z]:[\\/][^\s)\]}>]+/gu, (_match, prefix) => `${prefix}attached file`)
-        .replace(/\\\\[^\s\\]+\\[^\s)\]}>]+/gu, "attached file")
-        .replace(/(^|[^A-Za-z0-9_./-])\/(?!\/)[^\s)\]}>]+/gu, (_match, prefix) => `${prefix}attached file`);
-}
-function rememberMediaReplacement(replacements, source, replacement) {
-    replacements.set(source, replacement);
-    try {
-        const parsed = new URL(source);
-        if (parsed.protocol === "file:") {
-            replacements.set(decodeURIComponent(parsed.pathname), replacement);
-        }
-    }
-    catch {
-        // Non-URL local media references are already stored exactly above.
-    }
 }
 export async function dispatchOpenClamTurn(params) {
     const channelRuntime = getOpenClamRuntime().channel;
@@ -183,9 +153,10 @@ export async function dispatchOpenClamTurn(params) {
                     payload?.ttsSupplement !== undefined) {
                     return;
                 }
-                const sources = uniqueMediaSources(payload?.mediaUrl, payload?.mediaUrls)
+                const promoted = promoteLocalAttachmentLinks(payload?.text ?? "");
+                const sources = uniqueMediaSources(payload?.mediaUrl, [...(payload?.mediaUrls ?? []), ...promoted.sources])
                     .filter((source) => !deliveredSources.has(source));
-                const delivered = payload?.text?.trim() ?? "";
+                const delivered = promoted.text.trim();
                 if (delivered) {
                     finalObserved = truncateUnicode(mergeFinalText(finalObserved, delivered), MAX_TEXT_LENGTH);
                 }

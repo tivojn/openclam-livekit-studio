@@ -1,5 +1,6 @@
 import { buildRuntimeAccountStatusSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import { applyOpenClamAccountConfig, getOpenClamConfig, listOpenClamAccountIds, openClamPluginConfigSchema, resolveDefaultOpenClamAccountId, resolveOpenClamAccount, } from "./config.js";
+import { openClamMessaging } from "./target.js";
 export function createOpenClamChannelBase() {
     return {
         id: "openclam",
@@ -20,6 +21,12 @@ export function createOpenClamChannelBase() {
             media: true,
         },
         reload: { configPrefixes: ["channels.openclam", "bindings"] },
+        agentPrompt: {
+            messageToolHints: () => [
+                "- OpenClam automatically turns supported local Markdown file links in the ordinary final reply into secure iPhone attachment cards. To return a generated or downloaded file to the current OpenClam conversation, include `[label](/absolute/path/to/file.ext)` in the final reply; do not use the message tool to send it back to the current conversation.",
+            ],
+        },
+        messaging: openClamMessaging,
         configSchema: openClamPluginConfigSchema,
         config: {
             listAccountIds: listOpenClamAccountIds,

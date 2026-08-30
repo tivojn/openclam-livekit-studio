@@ -10,10 +10,11 @@ import {
   resolveOpenClamAccount,
 } from "./config.js";
 import type { OpenClamCoreConfig, ResolvedOpenClamAccount } from "./types.js";
+import { openClamMessaging } from "./target.js";
 
 type OpenClamBase = Pick<
   ChannelPlugin<ResolvedOpenClamAccount>,
-  "id" | "meta" | "capabilities" | "reload" | "configSchema" | "config" | "setup" | "status"
+  "id" | "meta" | "capabilities" | "reload" | "configSchema" | "config" | "setup" | "status" | "messaging" | "agentPrompt"
 >;
 
 export function createOpenClamChannelBase(): OpenClamBase {
@@ -36,6 +37,12 @@ export function createOpenClamChannelBase(): OpenClamBase {
       media: true,
     },
     reload: { configPrefixes: ["channels.openclam", "bindings"] },
+    agentPrompt: {
+      messageToolHints: () => [
+        "- OpenClam automatically turns supported local Markdown file links in the ordinary final reply into secure iPhone attachment cards. To return a generated or downloaded file to the current OpenClam conversation, include `[label](/absolute/path/to/file.ext)` in the final reply; do not use the message tool to send it back to the current conversation.",
+      ],
+    },
+    messaging: openClamMessaging,
     configSchema: openClamPluginConfigSchema,
     config: {
       listAccountIds: listOpenClamAccountIds,

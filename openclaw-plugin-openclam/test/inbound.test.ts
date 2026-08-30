@@ -387,6 +387,52 @@ describe("OpenClam inbound authorization", () => {
     })).not.toContain(sourcePath);
   });
 
+  it("automatically promotes a generated local-file link into an attachment card", async () => {
+    const source = "/Users/ara/PinkCherry/output/finished.mp4";
+    const channel = {
+      reply: {
+        finalizeInboundContext: vi.fn((value: Record<string, unknown>) => value),
+        dispatchReplyWithBufferedBlockDispatcher: vi.fn(),
+      },
+      session: { recordInboundSession: vi.fn() },
+      inbound: {
+        dispatchReply: vi.fn(async (params: any) => {
+          await params.replyOptions.onPartialReply({
+            text: `Finished. [Watch the video](${source})`,
+          });
+          await params.delivery.deliver({
+            text: `Finished. [Watch the video](${source})`,
+          });
+        }),
+      },
+    };
+    setOpenClamRuntime({ channel } as any);
+    const frame = testFrame(["attachments-v1"]);
+    const sink = testSink();
+    const loadMedia = vi.fn(async () => ({
+      buffer: Buffer.from("video"),
+      fileName: "finished.mp4",
+      mediaType: "video/mp4",
+    }));
+
+    await dispatchOpenClamTurn({
+      ctx: testContext(frame.connectionId),
+      frame,
+      signal: new AbortController().signal,
+      sink,
+      loadMedia,
+    });
+
+    expect(sink.partial).not.toHaveBeenCalled();
+    expect(loadMedia).toHaveBeenCalledWith(expect.objectContaining({ source }));
+    expect(sink.attachment).toHaveBeenCalledWith(expect.objectContaining({
+      fileName: "finished.mp4",
+      mediaType: "video/mp4",
+    }));
+    expect(sink.completed).toHaveBeenCalledWith("Finished. Watch the video");
+    expect(JSON.stringify(sink.completed.mock.calls)).not.toContain("/Users/");
+  });
+
   it("suppresses and redacts generic host paths while preserving HTTPS links", async () => {
     const privatePaths = [
       "/root/.openclaw/workspace/report.pdf",

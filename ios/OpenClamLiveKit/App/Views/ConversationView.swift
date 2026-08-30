@@ -266,9 +266,10 @@ struct ConversationView: View {
     @State private var threadPositioning = ConversationThreadPositioningState()
     @State private var activeSessionImagePreviews: [UUID: UIImage] = [:]
     @State private var activeSessionImagePreviewOrder: [UUID] = []
-    @State private var persistedConnectorImagePreviews: [UUID: UIImage] = [:]
+    @State private var persistedConnectorVisualPreviews: [UUID: UIImage] = [:]
     @State private var presentedConnectorArtifact: ConnectorArtifactPresentation?
     @State private var sharedConnectorArtifact: ConnectorArtifactPresentation?
+    @State private var exportedConnectorArtifact: ConnectorArtifactExportPresentation?
     @State private var connectorArtifactError: String?
     @State private var expandedWorkSteps: Set<String> = []
     @State private var remoteWorkStartedAt: [UUID: Date] = [:]
@@ -434,6 +435,14 @@ struct ConversationView: View {
         .sheet(item: $sharedConnectorArtifact) { presentation in
             ConnectorArtifactShareSheet(url: presentation.url)
         }
+        .sheet(
+            item: $exportedConnectorArtifact,
+            onDismiss: clearConnectorArtifactExport
+        ) { presentation in
+            ConnectorArtifactFilesExporter(url: presentation.stagedURL) { destinationURL in
+                handleConnectorArtifactExportCompletion(destinationURL: destinationURL)
+            }
+        }
     }
 
     private var conversationObservedSurface: some View {
@@ -530,8 +539,8 @@ struct ConversationView: View {
                 input = submission.instruction
             }
         }
-        .task(id: connectorImageThumbnailSnapshot) {
-            await loadPersistedConnectorImagePreviews()
+        .task(id: connectorVisualThumbnailSnapshot) {
+            await loadPersistedConnectorVisualPreviews()
         }
         .alert(
             "Live Talk",
@@ -928,12 +937,15 @@ struct ConversationView: View {
         } else {
             MarkdownMessageView(
                 message: message,
-                localImagePreviews: messageImagePreviews,
+                localVisualPreviews: messageVisualPreviews,
                 onAskAISelection: message.role == .assistant
                     ? { selectedText in stageSelectedTextForAI(selectedText) }
                     : nil,
                 onOpenAttachment: { attachment in
                     presentConnectorArtifact(attachment, forSharing: false)
+                },
+                onSaveAttachment: { attachment in
+                    saveConnectorArtifactToFiles(attachment)
                 },
                 onShareAttachment: { attachment in
                     presentConnectorArtifact(attachment, forSharing: true)
@@ -3057,6 +3069,48 @@ struct ConversationView: View {
         }
     }
 
+    private func saveConnectorArtifactToFiles(
+        _ attachment: ConversationAttachmentDescriptor
+    ) {
+        guard attachment.connectorArtifact != nil else { return }
+        Task { @MainActor in
+            guard let sourceURL = await agentConnections.storedArtifactURL(for: attachment) else {
+                connectorArtifactError = "This verified OpenClaw file is no longer stored on this iPhone."
+                return
+            }
+            clearConnectorArtifactExport()
+            do {
+                let stagedURL = try ConnectorArtifactExportStager.stageCopy(
+                    of: sourceURL,
+                    displayName: attachment.displayName
+                )
+                exportedConnectorArtifact = .init(
+                    defaultFilename: stagedURL.lastPathComponent,
+                    stagedURL: stagedURL
+                )
+            } catch {
+                connectorArtifactError = "OpenClam could not prepare this verified file for saving. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func handleConnectorArtifactExportCompletion(destinationURL: URL?) {
+        let savedName = exportedConnectorArtifact?.defaultFilename ?? "file"
+        defer { clearConnectorArtifactExport() }
+        if destinationURL != nil {
+            AccessibilityNotification.Announcement(
+                "Saved \(savedName) to Files."
+            ).post()
+        }
+    }
+
+    private func clearConnectorArtifactExport() {
+        if let stagedURL = exportedConnectorArtifact?.stagedURL {
+            ConnectorArtifactExportStager.removeStagedCopy(at: stagedURL)
+        }
+        exportedConnectorArtifact = nil
+    }
+
     private func sendInput(_ submittedValue: String? = nil) {
         guard !conversation.isWorking, !isChatTransitioning else { return }
         // A deliberate conversation turn always brings the remembered
@@ -3334,8 +3388,9 @@ struct ConversationView: View {
         photoError = nil
         presentedConnectorArtifact = nil
         sharedConnectorArtifact = nil
+        clearConnectorArtifactExport()
         connectorArtifactError = nil
-        persistedConnectorImagePreviews = [:]
+        persistedConnectorVisualPreviews = [:]
         modelSelectionError = nil
         suppressesSpeechError = true
         confirmedActionNotice = nil
@@ -3371,33 +3426,33 @@ struct ConversationView: View {
         }
     }
 
-    private var messageImagePreviews: [UUID: UIImage] {
-        persistedConnectorImagePreviews.merging(activeSessionImagePreviews) { _, active in
+    private var messageVisualPreviews: [UUID: UIImage] {
+        persistedConnectorVisualPreviews.merging(activeSessionImagePreviews) { _, active in
             active
         }
     }
 
-    private var connectorImageThumbnailSnapshot: String {
+    private var connectorVisualThumbnailSnapshot: String {
         let thread = conversation.historyController.selectedThreadID?.uuidString ?? "none"
         let artifacts: [String] = conversation.messages
             .flatMap(\.attachments)
             .compactMap { attachment -> String? in
-            guard attachment.kind == .image,
+            guard attachment.kind == .image || attachment.kind == .video,
                   let reference = attachment.connectorArtifact else { return nil }
             return attachment.id.uuidString.lowercased() + ":" + reference.sha256
             }
         return ([thread] + artifacts).joined(separator: "|")
     }
 
-    private func loadPersistedConnectorImagePreviews() async {
+    private func loadPersistedConnectorVisualPreviews() async {
         let descriptors = conversation.messages.flatMap(\.attachments).filter {
-            $0.kind == .image && $0.connectorArtifact != nil
+            ($0.kind == .image || $0.kind == .video) && $0.connectorArtifact != nil
         }
         let desiredIDs = Set(descriptors.map(\.id))
-        persistedConnectorImagePreviews = persistedConnectorImagePreviews.filter {
+        persistedConnectorVisualPreviews = persistedConnectorVisualPreviews.filter {
             desiredIDs.contains($0.key)
         }
-        for descriptor in descriptors where persistedConnectorImagePreviews[descriptor.id] == nil {
+        for descriptor in descriptors where persistedConnectorVisualPreviews[descriptor.id] == nil {
             guard !Task.isCancelled,
                   let data = await agentConnections.storedArtifactThumbnailData(for: descriptor),
                   !Task.isCancelled,
@@ -3406,7 +3461,7 @@ struct ConversationView: View {
                       $0.id == descriptor.id
                           && $0.connectorArtifact == descriptor.connectorArtifact
                   }) else { continue }
-            persistedConnectorImagePreviews[descriptor.id] = image
+            persistedConnectorVisualPreviews[descriptor.id] = image
         }
     }
 
@@ -3920,11 +3975,118 @@ private extension View {
     }
 }
 
+/// Creates a short-lived, user-named copy of an already verified connector artifact for the
+/// system Files exporter. Export never performs another network request and never exposes the
+/// app-private `content.<ext>` storage name to the user.
+enum ConnectorArtifactExportStager {
+    private static let containerName = "OpenClamArtifactExports"
+    private static let maximumFilenameLength = 160
+
+    static func stageCopy(
+        of sourceURL: URL,
+        displayName: String,
+        fileManager: FileManager = .default,
+        temporaryRoot: URL? = nil
+    ) throws -> URL {
+        let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey])
+        guard values.isRegularFile == true else {
+            throw AgentConnectorError.attachmentUnavailable
+        }
+
+        let root = (temporaryRoot ?? fileManager.temporaryDirectory)
+            .appendingPathComponent(containerName, isDirectory: true)
+        let exportDirectory = root
+            .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        do {
+            try fileManager.createDirectory(
+                at: exportDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.complete]
+            )
+            var directoryValues = URLResourceValues()
+            directoryValues.isExcludedFromBackup = true
+            var mutableDirectory = exportDirectory
+            try mutableDirectory.setResourceValues(directoryValues)
+
+            let destination = exportDirectory.appendingPathComponent(
+                sanitizedFilename(displayName: displayName, sourceURL: sourceURL),
+                isDirectory: false
+            )
+            try fileManager.copyItem(at: sourceURL, to: destination)
+            try fileManager.setAttributes(
+                [.protectionKey: FileProtectionType.complete],
+                ofItemAtPath: destination.path
+            )
+            var fileValues = URLResourceValues()
+            fileValues.isExcludedFromBackup = true
+            var mutableDestination = destination
+            try mutableDestination.setResourceValues(fileValues)
+            return destination
+        } catch {
+            try? fileManager.removeItem(at: exportDirectory)
+            throw error
+        }
+    }
+
+    static func sanitizedFilename(
+        displayName: String,
+        sourceURL: URL
+    ) -> String {
+        let normalized = displayName.replacingOccurrences(of: "\\", with: "/")
+        let leaf = normalized.split(separator: "/", omittingEmptySubsequences: true)
+            .last.map(String.init) ?? ""
+        let safeScalars = leaf.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.controlCharacters.contains(scalar) || scalar == ":" {
+                return "-"
+            }
+            return Character(scalar)
+        }
+        var candidate = String(safeScalars)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.isEmpty || candidate == "." || candidate == ".." {
+            candidate = "OpenClam file"
+        }
+
+        let sourceExtension = sourceURL.pathExtension.lowercased()
+        let hasSafeSourceExtension = sourceExtension.range(
+            of: #"^[a-z0-9]{1,12}$"#,
+            options: .regularExpression
+        ) != nil
+        if (candidate as NSString).pathExtension.isEmpty, hasSafeSourceExtension {
+            candidate += ".\(sourceExtension)"
+        }
+
+        guard candidate.count > maximumFilenameLength else { return candidate }
+        let candidateExtension = (candidate as NSString).pathExtension
+        let suffix = candidateExtension.isEmpty ? "" : ".\(candidateExtension)"
+        let stem = (candidate as NSString).deletingPathExtension
+        let maximumStemLength = max(1, maximumFilenameLength - suffix.count)
+        return String(stem.prefix(maximumStemLength)) + suffix
+    }
+
+    static func removeStagedCopy(
+        at stagedURL: URL,
+        fileManager: FileManager = .default
+    ) {
+        let exportDirectory = stagedURL.deletingLastPathComponent()
+        guard exportDirectory.deletingLastPathComponent().lastPathComponent == containerName else {
+            return
+        }
+        try? fileManager.removeItem(at: exportDirectory)
+    }
+}
+
 private struct ConnectorArtifactPresentation: Identifiable {
     let attachment: ConversationAttachmentDescriptor
     let url: URL
 
     var id: UUID { attachment.id }
+}
+
+private struct ConnectorArtifactExportPresentation: Identifiable {
+    let id = UUID()
+    let defaultFilename: String
+    let stagedURL: URL
 }
 
 private struct ConnectorArtifactPreview: View {
@@ -3966,6 +4128,7 @@ private struct ConnectorVideoPreview: View {
 
     var body: some View {
         VideoPlayer(player: player)
+            .onAppear { player.play() }
             .onDisappear { player.pause() }
             .accessibilityLabel("Generated video preview")
     }
@@ -4014,6 +4177,56 @@ private struct ConnectorArtifactShareSheet: UIViewControllerRepresentable {
         _ uiViewController: UIActivityViewController,
         context: Context
     ) {}
+}
+
+private struct ConnectorArtifactFilesExporter: UIViewControllerRepresentable {
+    let url: URL
+    let onFinish: (URL?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onFinish: onFinish)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let controller = UIDocumentPickerViewController(
+            forExporting: [url],
+            asCopy: true
+        )
+        controller.delegate = context.coordinator
+        controller.shouldShowFileExtensions = true
+        return controller
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIDocumentPickerViewController,
+        context: Context
+    ) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onFinish: (URL?) -> Void
+        private var hasFinished = false
+
+        init(onFinish: @escaping (URL?) -> Void) {
+            self.onFinish = onFinish
+        }
+
+        func documentPicker(
+            _ controller: UIDocumentPickerViewController,
+            didPickDocumentsAt urls: [URL]
+        ) {
+            finish(with: urls.first)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            finish(with: nil)
+        }
+
+        private func finish(with destinationURL: URL?) {
+            guard !hasFinished else { return }
+            hasFinished = true
+            onFinish(destinationURL)
+        }
+    }
 }
 
 private struct PickerVideoFile: Transferable {

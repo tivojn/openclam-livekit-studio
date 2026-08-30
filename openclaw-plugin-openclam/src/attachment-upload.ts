@@ -8,6 +8,26 @@ import { UUID_PATTERN } from "./types.js";
 const SHA256 = /^[0-9a-f]{64}$/u;
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/u;
 
+export class OpenClamAttachmentUploadError extends Error {
+  constructor(readonly diagnostic: string) {
+    super("attachment_upload_failed");
+    this.name = "OpenClamAttachmentUploadError";
+  }
+}
+
+function networkDiagnostic(error: unknown, aborted: boolean): string {
+  const name = error instanceof Error ? error.name : "unknown";
+  const cause = error instanceof Error && isRecord(error.cause) ? error.cause : undefined;
+  const rawCode = typeof cause?.code === "string" ? cause.code : "";
+  const code = /^[A-Z0-9_]{1,64}$/u.test(rawCode) ? `_${rawCode}` : "";
+  const rawMessage = typeof cause?.message === "string" ? cause.message : "";
+  const message = rawMessage
+    .replace(/[^A-Za-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "")
+    .slice(0, 96);
+  return `network_${name}${code}${message ? `_${message}` : ""}${aborted ? "_aborted" : ""}`;
+}
+
 function buildUploadUrl(
   bridgeUrl: string,
   connectionId: string,
@@ -125,23 +145,30 @@ export async function uploadOpenClamAttachment(params: {
         signal: params.signal,
         headers: {
           Authorization: `Bearer ${params.token}`,
-          "Content-Length": String(byteCount),
           "Content-Type": params.attachment.mediaType,
           "X-OpenClam-Conversation-Id": params.conversationId,
           "X-OpenClam-File-Name-B64": fileNameHeader(params.attachment.fileName),
           "X-OpenClam-SHA256": sha256,
           "X-OpenClam-Turn-Id": params.turnId,
         },
-        body: Uint8Array.from(params.attachment.buffer).buffer,
+        body: Buffer.from(params.attachment.buffer),
       });
-    } catch {
-      if (params.signal?.aborted || attempt === 2) throw new Error("attachment_upload_failed");
+    } catch (error) {
+      if (params.signal?.aborted || attempt === 2) {
+        throw new OpenClamAttachmentUploadError(
+          networkDiagnostic(error, params.signal?.aborted === true),
+        );
+      }
       continue;
     }
     if (response.status === 201) break;
-    if (response.status < 500 || attempt === 2) throw new Error("attachment_upload_failed");
+    if (response.status < 500 || attempt === 2) {
+      throw new OpenClamAttachmentUploadError(`http_${response.status}`);
+    }
   }
-  if (response?.status !== 201) throw new Error("attachment_upload_failed");
+  if (response?.status !== 201) {
+    throw new OpenClamAttachmentUploadError(`http_${response?.status ?? "none"}`);
+  }
   const raw = await response.text();
   if (Buffer.byteLength(raw, "utf8") > 8_192) throw new Error("invalid_attachment_response");
   let value: unknown;

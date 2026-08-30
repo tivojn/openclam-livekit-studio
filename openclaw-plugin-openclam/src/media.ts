@@ -4,7 +4,11 @@ import {
   extensionForMime,
   getAgentScopedMediaLocalRootsForSources,
 } from "openclaw/plugin-sdk/media-runtime";
-import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
+import {
+  loadOutboundMediaFromUrl,
+  type OutboundMediaLoadOptions,
+} from "openclaw/plugin-sdk/outbound-media";
+import { rewriteMarkdownLinks } from "./markdown.js";
 import { truncateUnicode } from "./protocol.js";
 import type { OpenClamAttachmentUpload } from "./types.js";
 
@@ -45,6 +49,78 @@ const SUPPORTED_MEDIA_TYPES = new Set([
   "video/webm",
 ]);
 
+const SUPPORTED_LOCAL_LINK_EXTENSIONS = new Set([
+  "csv",
+  "doc",
+  "docx",
+  "flac",
+  "gif",
+  "jpeg",
+  "jpg",
+  "json",
+  "m4a",
+  "md",
+  "mov",
+  "mp3",
+  "mp4",
+  "odp",
+  "ods",
+  "odt",
+  "ogg",
+  "pdf",
+  "png",
+  "ppt",
+  "pptx",
+  "rtf",
+  "txt",
+  "wav",
+  "webm",
+  "webp",
+  "xls",
+  "xlsx",
+  "zip",
+]);
+
+function localLinkSource(rawDestination: string): string | undefined {
+  const trimmed = rawDestination.trim();
+  const source = (trimmed.startsWith("<") && trimmed.endsWith(">")
+    ? trimmed.slice(1, -1).trim()
+    : trimmed).replace(/\\([()])/gu, "$1");
+  if (!source || /\s["']/u.test(source)) return undefined;
+  const local = source.startsWith("file://") ||
+    source.startsWith("/") ||
+    source.startsWith("~/") ||
+    /^[A-Za-z]:[\\/]/u.test(source) ||
+    source.startsWith("\\\\");
+  if (!local) return undefined;
+  let pathname = source;
+  try {
+    if (source.startsWith("file://")) pathname = decodeURIComponent(new URL(source).pathname);
+  } catch {
+    return undefined;
+  }
+  const withoutQuery = pathname.split(/[?#]/u, 1)[0] ?? "";
+  const extension = withoutQuery.slice(withoutQuery.lastIndexOf(".") + 1).toLowerCase();
+  return SUPPORTED_LOCAL_LINK_EXTENSIONS.has(extension) ? source : undefined;
+}
+
+export function promoteLocalAttachmentLinks(text: string): {
+  text: string;
+  sources: string[];
+} {
+  const sources: string[] = [];
+  const safeText = rewriteMarkdownLinks(
+    text,
+    ({ label, destination }) => {
+      const source = localLinkSource(destination);
+      if (!source) return undefined;
+      sources.push(source);
+      return label.trim() || "Attached file";
+    },
+  );
+  return { text: safeText, sources: [...new Set(sources)] };
+}
+
 function basename(value: string): string {
   const normalized = value.replace(/\\/gu, "/");
   return normalized.slice(normalized.lastIndexOf("/") + 1);
@@ -72,15 +148,24 @@ export async function loadOpenClamMedia(params: {
   cfg: OpenClawConfig;
   agentId: string;
   source: string;
+  mediaAccess?: OutboundMediaLoadOptions["mediaAccess"];
+  mediaLocalRoots?: readonly string[];
+  mediaReadFile?: OutboundMediaLoadOptions["mediaReadFile"];
 }): Promise<OpenClamAttachmentUpload> {
-  const mediaLocalRoots = getAgentScopedMediaLocalRootsForSources({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    mediaSources: [params.source],
-  });
+  const mediaLocalRoots = params.mediaLocalRoots ?? (
+    params.mediaAccess === undefined
+      ? getAgentScopedMediaLocalRootsForSources({
+        cfg: params.cfg,
+        agentId: params.agentId,
+        mediaSources: [params.source],
+      })
+      : undefined
+  );
   const loaded = await loadOutboundMediaFromUrl(params.source, {
     maxBytes: MAX_ATTACHMENT_BYTES,
-    mediaLocalRoots,
+    ...(params.mediaAccess === undefined ? {} : { mediaAccess: params.mediaAccess }),
+    ...(mediaLocalRoots === undefined ? {} : { mediaLocalRoots }),
+    ...(params.mediaReadFile === undefined ? {} : { mediaReadFile: params.mediaReadFile }),
   });
   if (loaded.buffer.byteLength < 1 || loaded.buffer.byteLength > MAX_ATTACHMENT_BYTES) {
     throw new Error("attachment_size_invalid");

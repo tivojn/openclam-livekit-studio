@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { uploadOpenClamAttachment } from "../src/attachment-upload.js";
 
@@ -55,6 +58,7 @@ describe("OpenClam attachment upload", () => {
     ]);
     expect(result).not.toHaveProperty("v");
     expect(headers[0]?.get("Authorization")).toBe(`Bearer ${"T".repeat(48)}`);
+    expect(headers[0]?.get("Content-Length")).toBeNull();
     expect(headers[0]?.get("X-OpenClam-SHA256")).toBe(
       createHash("sha256").update(body).digest("hex"),
     );
@@ -100,5 +104,55 @@ describe("OpenClam attachment upload", () => {
         }, { status: 201 });
       }) as unknown as typeof fetch,
     })).rejects.toThrow("invalid_attachment_response");
+  });
+
+  it("lets Node fetch send an exact Content-Length and Buffer body on the wire", async () => {
+    const connectionId = randomUUID();
+    const conversationId = randomUUID();
+    const turnId = randomUUID();
+    const body = Buffer.from([0x00, 0x89, 0x50, 0x4e, 0x47, 0xff]);
+    let observedLength: string | undefined;
+    let observedBody = Buffer.alloc(0);
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+      request.on("end", () => {
+        observedLength = request.headers["content-length"];
+        observedBody = Buffer.concat(chunks);
+        const attachmentId = request.url?.split("/").at(-1) ?? "";
+        response.writeHead(201, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({
+          v: 1,
+          attachmentId,
+          fileName: "wire.png",
+          mediaType: "image/png",
+          byteCount: body.byteLength,
+          sha256: createHash("sha256").update(body).digest("hex"),
+          downloadPath: `/v1/connectors/${connectionId}/attachments/${attachmentId}`,
+          expiresAt: Date.now() + 60_000,
+        }));
+      });
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+      const address = server.address() as AddressInfo;
+      await uploadOpenClamAttachment({
+        bridgeUrl: `http://127.0.0.1:${address.port}/`,
+        connectionId,
+        token: "T".repeat(48),
+        conversationId,
+        turnId,
+        attachment: { fileName: "wire.png", mediaType: "image/png", buffer: body },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+
+    expect(observedLength).toBe(String(body.byteLength));
+    expect(observedBody).toEqual(body);
   });
 });

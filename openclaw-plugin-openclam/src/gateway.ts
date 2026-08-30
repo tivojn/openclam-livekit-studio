@@ -4,6 +4,10 @@ import type { ResolvedOpenClamAccount } from "./types.js";
 
 const clients = new Map<string, OpenClamBridgeClient>();
 
+export function findOpenClamClient(connectionId: string): OpenClamBridgeClient | undefined {
+  return clients.get(connectionId.toLowerCase());
+}
+
 export async function startOpenClamAccount(
   ctx: ChannelGatewayContext<ResolvedOpenClamAccount>,
 ): Promise<void> {
@@ -12,7 +16,8 @@ export async function startOpenClamAccount(
   if (!account.configured) {
     throw new Error(`OpenClam account "${account.accountId}" is not paired`);
   }
-  let client = clients.get(account.connectionId);
+  const connectionId = account.connectionId.toLowerCase();
+  let client = clients.get(connectionId);
   if (!client) {
     client = new OpenClamBridgeClient(
       account.connectionId,
@@ -20,12 +25,12 @@ export async function startOpenClamAccount(
       account.adapterTokenFile,
       account.stateFile,
     );
-    clients.set(account.connectionId, client);
+    clients.set(connectionId, client);
   }
   try {
     await client.attach(ctx);
   } finally {
-    if (client.accountCount === 0) clients.delete(account.connectionId);
+    if (client.accountCount === 0) clients.delete(connectionId);
   }
 }
 export function resetOpenClamClientsForTest(): void {

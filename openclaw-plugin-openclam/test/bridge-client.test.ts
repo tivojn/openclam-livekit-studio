@@ -1344,4 +1344,138 @@ describe("OpenClam bridge client", () => {
     )).toHaveLength(0);
     expect(legacy.uploadAttachment).not.toHaveBeenCalled();
   });
+
+  it("delivers a message-tool file once and completes a media-only turn after the attachment", async () => {
+    const connectionId = randomUUID();
+    const conversationId = randomUUID();
+    const turnId = randomUUID();
+    const attachmentId = randomUUID();
+    let persisted = initialAdapterState(connectionId);
+    const socket = new FakeSocket();
+    const controller = new AbortController();
+    let releaseTurn!: () => void;
+    const holdTurn = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const account: ResolvedOpenClamAccount = {
+      accountId: "main",
+      agentId: "main",
+      displayName: "Main",
+      enabled: true,
+      configured: true,
+      bridgeUrl: "https://bridge.example",
+      connectionId,
+      adapterTokenFile: "/private/token",
+      stateFile: "/private/state",
+    };
+    let releaseUpload!: () => void;
+    const holdUpload = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const uploadAttachment = vi.fn(async () => {
+      await holdUpload;
+      return {
+        v: 1 as const,
+        attachmentId,
+        fileName: "movie.mp4",
+        mediaType: "video/mp4",
+        byteCount: 5,
+        sha256: "a".repeat(64),
+        downloadPath: `/v1/connectors/${connectionId}/attachments/${attachmentId}`,
+        expiresAt: Date.now() + 60_000,
+      };
+    });
+    const client = new OpenClamBridgeClient(
+      connectionId,
+      account.bridgeUrl,
+      account.adapterTokenFile,
+      account.stateFile,
+      {
+        readCredential: async () => "T".repeat(48),
+        readState: async () => structuredClone(persisted),
+        writeState: async (_path, next) => {
+          persisted = structuredClone(next);
+        },
+        createSocket: () => {
+          queueMicrotask(() => socket.open());
+          return socket as unknown as WebSocket;
+        },
+        reconnectDelay: () => 60_000,
+        uploadAttachment,
+        dispatchTurn: async () => {
+          await holdTurn;
+        },
+      },
+    );
+    const attached = client.attach({
+      cfg: {},
+      accountId: "main",
+      account,
+      abortSignal: controller.signal,
+      getStatus: () => ({ accountId: "main" }),
+      setStatus: vi.fn(),
+    } as unknown as ChannelGatewayContext<ResolvedOpenClamAccount>);
+    await waitFor(() => socket.readyState === 1);
+    socket.receive(JSON.stringify({
+      v: 1,
+      kind: "turn.submit",
+      connectionId,
+      conversationId,
+      messageId: randomUUID(),
+      seq: 1,
+      sentAt: Date.now(),
+      payload: {
+        turnId,
+        accountId: "main",
+        text: "Create a video",
+        capabilities: ["attachments-v1"],
+      },
+    }));
+    await waitFor(() => decode(socket).some((frame) => frame.kind === "turn.accepted"));
+
+    const firstTask = client.deliverMediaToActiveConversation({
+      accountId: "main",
+      conversationId,
+      source: "/safe/movie.mp4",
+      caption: "Finished at /safe/movie.mp4; notes at /private/notes.txt",
+      attachment: {
+        fileName: "movie.mp4",
+        mediaType: "video/mp4",
+        buffer: Buffer.from("video"),
+      },
+    });
+    const duplicateTask = client.deliverMediaToActiveConversation({
+      accountId: "main",
+      conversationId,
+      source: "/safe/movie.mp4",
+      caption: "Finished at /safe/movie.mp4; notes at /private/notes.txt",
+      attachment: {
+        fileName: "movie.mp4",
+        mediaType: "video/mp4",
+        buffer: Buffer.from("video"),
+      },
+    });
+    await waitFor(() => uploadAttachment.mock.calls.length === 1);
+    releaseUpload();
+    const [first, duplicate] = await Promise.all([firstTask, duplicateTask]);
+    expect(duplicate.attachmentId).toBe(first.attachmentId);
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+
+    releaseTurn();
+    await waitFor(() => persisted.completedTurnIds.includes(turnId));
+    const frames = decode(socket);
+    expect(frames.filter((frame) => frame.kind === "assistant.attachment")).toHaveLength(1);
+    expect(frames.findIndex((frame) => frame.kind === "assistant.attachment")).toBeLessThan(
+      frames.findIndex((frame) => frame.kind === "assistant.completed"),
+    );
+    expect(frames.find((frame) => frame.kind === "assistant.completed")?.payload).toMatchObject({
+      turnId,
+      text: "Finished at movie.mp4; notes at attached file",
+    });
+    expect(JSON.stringify(frames)).not.toContain("/safe/");
+    expect(JSON.stringify(frames)).not.toContain("/private/");
+
+    controller.abort();
+    await attached;
+  });
 });
