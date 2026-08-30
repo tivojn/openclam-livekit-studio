@@ -189,7 +189,10 @@ final class OpenClamConversationUITests: XCTestCase {
         composer.typeText("Keyboard layout check")
 
         XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["openclam-tts-button"].waitForExistence(timeout: 2))
+        XCTAssertFalse(
+            app.buttons["openclam-tts-button"].exists,
+            "Speech belongs in the avatar rail, not inside either composer state."
+        )
         XCTAssertTrue(app.buttons["Open sidebar"].isHittable)
         XCTAssertTrue(app.buttons["openclam-avatar-rail-fold-button"].isHittable)
 
@@ -197,11 +200,9 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(modelMenu.isHittable)
         XCTAssertGreaterThanOrEqual(modelMenu.frame.height, 44)
 
-        let textToSpeech = app.buttons["openclam-tts-button"]
         let send = app.buttons["Send message"]
-        XCTAssertTrue(textToSpeech.isHittable)
         XCTAssertTrue(send.waitForExistence(timeout: 2))
-        let controls = [attachmentMenu, textToSpeech, modelMenu, send]
+        let controls = [attachmentMenu, modelMenu, send]
         for control in controls {
             XCTAssertGreaterThanOrEqual(control.frame.width, 44)
             XCTAssertGreaterThanOrEqual(control.frame.height, 44)
@@ -214,8 +215,8 @@ final class OpenClamConversationUITests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(
             send.frame.maxY,
-            app.keyboards.element.frame.minY,
-            "The safe-area composer must remain above the software keyboard."
+            app.keyboards.element.frame.minY - 5,
+            "The safe-area composer must remain visibly raised above the software keyboard."
         )
         capture("keyboard-and-composer")
 

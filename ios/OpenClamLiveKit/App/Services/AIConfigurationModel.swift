@@ -529,7 +529,7 @@ final class AIConfigurationModel: ObservableObject {
         }
     }
 
-    /// Cloud speech adapter used by the composer speaker when a supported provider is selected.
+    /// Cloud speech adapter used by conversation read-aloud when a supported provider is selected.
     func makeCloudTextToSpeechService() throws -> any CloudTextToSpeechServicing {
         let selection = try effectiveSettings.textToSpeech.validated(for: .textToSpeech)
         return try makeCloudTextToSpeechService(for: selection)

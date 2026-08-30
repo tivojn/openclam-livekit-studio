@@ -66,7 +66,6 @@ enum ConversationComposerLayout {
     static let textVerticalInset: CGFloat = 8
     static let minimumExpandedTextHeight: CGFloat = 62
     static let restingReservedHeight: CGFloat = 72
-    static let threadClearance: CGFloat = 8
 }
 
 private struct ConversationComposerTopPreferenceKey: PreferenceKey {
@@ -77,17 +76,6 @@ private struct ConversationComposerTopPreferenceKey: PreferenceKey {
         nextValue: () -> CGFloat?
     ) {
         value = nextValue() ?? value
-    }
-}
-
-private struct ConversationComposerHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(
-        value: inout CGFloat,
-        nextValue: () -> CGFloat
-    ) {
-        value = nextValue()
     }
 }
 
@@ -315,7 +303,6 @@ struct ConversationView: View {
     @StateObject private var liveTalk = LiveTalkSessionController()
     @State private var liveTalkPTTNotice: String?
     @State private var composerTopGlobal: CGFloat?
-    @State private var composerHeight = ConversationComposerLayout.restingReservedHeight
     @State private var goToLatestMessageRequest = 0
     @FocusState private var isComposerFocused: Bool
 
@@ -343,29 +330,17 @@ struct ConversationView: View {
         }
         .navigationTitle(conversationNavigationTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .overlay(alignment: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             composer
-                // The composer floats over the shared thread/avatar canvas.
-                // Text reserves its own scroll margin below, while close-up
-                // artwork may remain visible through the material shell.
+                // Native safe-area placement keeps both composer states above
+                // the home indicator and the software keyboard. Avatar artwork
+                // may remain visible through the material shell beneath it.
                 .zIndex(100)
                 .contentShape(Rectangle())
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: ConversationComposerHeightPreferenceKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
         }
         .onPreferenceChange(ConversationComposerTopPreferenceKey.self) { top in
             guard let top, top.isFinite else { return }
             composerTopGlobal = top
-        }
-        .onPreferenceChange(ConversationComposerHeightPreferenceKey.self) { height in
-            guard height.isFinite, height > 0 else { return }
-            composerHeight = height
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -646,11 +621,6 @@ struct ConversationView: View {
         .accessibilityIdentifier("openclam-conversation-thread")
         .defaultScrollAnchor(isFreshConversation ? .top : .bottom)
         .scrollDismissesKeyboard(.interactively)
-        .contentMargins(
-            .bottom,
-            composerHeight + ConversationComposerLayout.threadClearance,
-            for: .scrollContent
-        )
         .background(assistantBackground)
     }
 
@@ -1571,7 +1541,7 @@ struct ConversationView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(OpenClamTheme.accent)
                     .disabled(!conversation.isTTSEnabled)
-                    .accessibilityHint(conversation.isTTSEnabled ? "Plays the system voice" : "Turn on the speaker in the composer first")
+                    .accessibilityHint(conversation.isTTSEnabled ? "Plays the system voice" : "Turn on speech from the avatar rail first")
                 }
             } else {
                 Button {
@@ -2364,14 +2334,12 @@ struct ConversationView: View {
                 modelSelectionMenu(expandsToWidth: true)
                 HStack(spacing: 4) {
                     attachmentMenu
-                    textToSpeechButton
                     Spacer(minLength: 4)
                     composerActionButton
                 }
             } else {
                 HStack(spacing: 4) {
                     attachmentMenu
-                    textToSpeechButton
                     Spacer(minLength: 2)
                     modelSelectionMenu(expandsToWidth: false)
                         .layoutPriority(1)
@@ -2435,18 +2403,24 @@ struct ConversationView: View {
             } label: {
                 Label("Take Photo", systemImage: "camera")
             }
-            .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
+            .disabled(
+                attachmentSelectionUnavailable
+                    || !UIImagePickerController.isSourceTypeAvailable(.camera)
+            )
 
             Button {
                 showsMediaPicker = true
             } label: {
                 Label("Choose photo or video", systemImage: "photo.on.rectangle.angled")
             }
+            .disabled(attachmentSelectionUnavailable)
+
             Button {
                 showsFileImporter = true
             } label: {
                 Label("Choose file", systemImage: "doc.badge.plus")
             }
+            .disabled(attachmentSelectionUnavailable)
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 21, weight: .medium))
@@ -2473,39 +2447,15 @@ struct ConversationView: View {
         )
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Rectangle())
-        .disabled(
-            stagedAttachments.count >= 4
-                || isLoadingAttachments
-                || isRequestActive
-                || isChatTransitioning
-                || conversation.pendingScreenContextSubmission != nil
-                || currentRemoteBinding != nil
-        )
     }
 
-    private var textToSpeechButton: some View {
-        Button {
-            let enabled = !conversation.isTTSEnabled
-            if enabled, !reserveAppAudioLane() { return }
-            conversation.setTTSEnabled(enabled)
-            if enabled {
-                conversation.speakLatestAssistantReply(using: aiConfiguration)
-            }
-            synchronizeQuickDictationAudioOwnership()
-        } label: {
-            Image(systemName: conversation.isTTSEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                .font(.system(size: 18, weight: .medium))
-                .frame(width: 44, height: 44)
-                .contentTransition(.symbolEffect(.replace))
-        }
-        .foregroundStyle(conversation.isTTSEnabled ? Color.primary : Color.secondary)
-        .frame(minWidth: 44, minHeight: 44)
-        .contentShape(Rectangle())
-        .accessibilityLabel("Text to speech")
-        .accessibilityValue(conversation.isTTSEnabled ? "On" : "Off")
-        .accessibilityHint(conversation.isTTSEnabled ? "Turns off speech and stops current audio" : "Turns on speech and reads the latest assistant reply")
-        .accessibilityIdentifier("openclam-tts-button")
-        .disabled(isChatTransitioning || liveTalk.phase.isSessionActive)
+    private var attachmentSelectionUnavailable: Bool {
+        stagedAttachments.count >= 4
+            || isLoadingAttachments
+            || isRequestActive
+            || isChatTransitioning
+            || conversation.pendingScreenContextSubmission != nil
+            || currentRemoteBinding != nil
     }
 
     private var composerActionButton: some View {
