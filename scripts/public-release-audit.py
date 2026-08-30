@@ -199,6 +199,51 @@ BRANDING_AND_RUNTIME_BINARY_HASHES = {
         "f7c01e384bb20625640b18fb2ba83ee3f0b8e75e5f31bb65c5933c86e9303e3b",
 }
 
+# The desktop renderer cannot address AppKit symbols directly from its
+# sandboxed web surface. These monochrome Apple-platform UI masks are the
+# complete reviewed symbol set exported by the native shell. Pin every byte so
+# adding or changing an icon remains an explicit public-release decision.
+MACOS_UI_SYMBOL_BINARY_HASHES = {
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/avatar-layer.png"):
+        "26407469ef8bda214ef8bceb8617b57be3f6f7228a64ab4659bdbad3aedaf235",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/avatar-picker.png"):
+        "f258a462ccfd024cd6d496f9b0628a4163fa4165ec11448881b35f1ec1590e7d",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/avatar-window.png"):
+        "12e2896359e7f803b9beddbcdd40116f433537cadc8f8f9907825a479052c16c",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/checkmark.png"):
+        "9dbec0f288a02891d6aa97f38edc3b3b880e778dae3924231d63ed719a920306",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/chevron-down.png"):
+        "61892662ee922cc944c8db821ec9ddf5a6b8137e7736ed890430548e6ec06e97",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/close-up.png"):
+        "54d3def5a0580bf15cf7c4c456f00b1c1c417c6d5fa956031f506a9f12ba05e1",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/edge-idle.png"):
+        "bb4eb398435474dff4d7d6959d125e22760d7a9c042f4dc7b8c95632cf02f8f6",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/face-mirror.png"):
+        "0b738a0edac243c7e86d77d7d48e23dbedd9a267117901c1942c75777969975a",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/horizon-walk.png"):
+        "7e290fce00d32e1dec6d0c5f1a63424699a7f10a395144af833b7d85ce8cfb47",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/moves.png"):
+        "4bd6833f388579dc29db6082ac57282b1e690b47cea173535c618a5408a587f9",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/opacity.png"):
+        "4509d81dc8ce0c775fcb666ae6a93f76191e8bf32a42726241d8dda20cedb69a",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/phone-down.png"):
+        "08954878c58408dd090955bc52df000d12d5e77688b54813131bb290a434c6fc",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/phone.png"):
+        "d80f603ea240c68c54db68dc6ea307ae059d9fabeed708951ce2b9ce45b80757",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/settings.png"):
+        "0dea54ca3b69bdeedd4d2328ae939f534f38f363c0ac44d48573569d81236119",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/speaker-slash.png"):
+        "9eaa2f5d756ecbbf8c6810b66e8f1fa6fb05921ce28c568880e7e2eb2df75020",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/standby.png"):
+        "48c6cfe49a24d084613ccd66365deee30fc27067f7aa5f1ce2f1c732a444f83a",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/stop.png"):
+        "f55715c19d24ac2f52d6cc5dc048c07343ad14efc794ea9b5629bc5da0af8b06",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/thread-layer.png"):
+        "c7df77fdcddbd7b52cba04ca9dcb325cad5d63cf2ee68f49b95e05ee9e44b217",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/waveform.png"):
+        "5d7e354a3fd8ffb4ce8ae9657f43c6ab2c48627fe401dd3f1620db2c4379e7b9",
+}
+
 # Public Avatar Store thumbnails are catalog artwork, not bundled runtime
 # avatars. Keep each release artifact behind an exact path/hash decision while
 # the catalog JSON and package payloads remain independently hash-pinned.
@@ -516,6 +561,18 @@ HISTORICAL_REVIEWED_TEXT_HASHES = {
         "fff1f8247585c0e2118b1dfb6eb5ef2d4019e4d4125930908cf9a375b948bb32",
         "fcb9ae237ae1b7ed15b3c753ebbb0d1f0b4db0d286b0093fa7dfc0c4d7d09820",
     },
+    # These attachment/privacy tests briefly used human-like home-directory
+    # fixture names. The current tree uses /Users/example; retain only the
+    # exact already-published blobs so no future personal path is exempted.
+    Path("openclaw-plugin-openclam/test/inbound.test.ts"): {
+        "bfe99329bd3abf8dbd034a409dc3391d2e06bd5093c0321e28560d6fb8f0f359",
+    },
+    Path("openclaw-plugin-openclam/test/media.test.ts"): {
+        "b3bbe9c36fcde86b967606e0b3dfc2e26b3fdcc1218300cbf5012a54a2bf14f4",
+    },
+    Path("openclaw-plugin-openclam/test/privacy.test.ts"): {
+        "ebf9ddb781236f03827166ff58fb4dbb2b50af88b44a8ee5fdf175d9d4cf2c67",
+    },
 }
 
 REQUIRED_AVATAR_BINARY_HASHES = {
@@ -527,6 +584,7 @@ AUTHORIZED_AVATAR_LEDGER_SHA256 = (
 )
 ALLOWED_BINARY_HASHES = {
     **BRANDING_AND_RUNTIME_BINARY_HASHES,
+    **MACOS_UI_SYMBOL_BINARY_HASHES,
     **AVATAR_STORE_CATALOG_BINARY_HASHES,
     **REQUIRED_AVATAR_BINARY_HASHES,
     **DETERMINISTIC_FIXTURE_BINARY_HASHES,
@@ -679,10 +737,14 @@ ALLOWED_OPENCLAW_PLUGIN_RUNTIME_PATHS = {
     Path("openclaw-plugin-openclam/dist/src/credentials.js"),
     Path("openclaw-plugin-openclam/dist/src/gateway.js"),
     Path("openclaw-plugin-openclam/dist/src/inbound.js"),
+    Path("openclaw-plugin-openclam/dist/src/markdown.js"),
     Path("openclaw-plugin-openclam/dist/src/media.js"),
+    Path("openclaw-plugin-openclam/dist/src/outbound.js"),
     Path("openclaw-plugin-openclam/dist/src/pairing.js"),
+    Path("openclaw-plugin-openclam/dist/src/privacy.js"),
     Path("openclaw-plugin-openclam/dist/src/protocol.js"),
     Path("openclaw-plugin-openclam/dist/src/runtime.js"),
+    Path("openclaw-plugin-openclam/dist/src/target.js"),
     Path("openclaw-plugin-openclam/dist/src/types.js"),
     Path("openclaw-plugin-openclam/dist/src/work-sanitizer.js"),
 }

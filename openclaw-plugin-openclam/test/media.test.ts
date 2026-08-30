@@ -89,14 +89,14 @@ describe("OpenClam official outbound media policy", () => {
   });
 
   it("promotes supported local Markdown links without touching web or unsupported links", () => {
-    const movie = "/Users/ara/PinkCherry/output/finished movie.mp4";
-    const numberedMovie = "/Users/ara/PinkCherry/output/finished (1).mp4";
-    const compactNumberedMovie = "/Users/ara/PinkCherry/output/finished(2).mp4";
-    const document = "file:///Users/ara/output/report.pdf";
+    const movie = "/Users/example/PinkCherry/output/finished movie.mp4";
+    const numberedMovie = "/Users/example/PinkCherry/output/finished (1).mp4";
+    const compactNumberedMovie = "/Users/example/PinkCherry/output/finished(2).mp4";
+    const document = "file:///Users/example/output/report.pdf";
     const promoted = promoteLocalAttachmentLinks(
       `[Watch it](${movie}), [First retry](${numberedMovie}), ` +
       `[Second retry](${compactNumberedMovie}), and [Read it](<${document}>). ` +
-      "[Website](https://example.com/movie.mp4) [Source](/Users/ara/code/main.swift)",
+      "[Website](https://example.com/movie.mp4) [Source](/Users/example/code/main.swift)",
     );
 
     expect(promoted.sources).toEqual([
@@ -107,7 +107,7 @@ describe("OpenClam official outbound media policy", () => {
     ]);
     expect(promoted.text).toBe(
       "Watch it, First retry, Second retry, and Read it. " +
-      "[Website](https://example.com/movie.mp4) [Source](/Users/ara/code/main.swift)",
+      "[Website](https://example.com/movie.mp4) [Source](/Users/example/code/main.swift)",
     );
   });
 });

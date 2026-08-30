@@ -7,7 +7,7 @@ import {
 describe("OpenClam private path redaction", () => {
   it("removes complete local Markdown destinations, including unsupported files", () => {
     const text =
-      "[Source](/Users/adam/My Project/main.swift), " +
+      "[Source](/Users/example/My Project/main.swift), " +
       "[Home](~/Private Project/main.swift), and " +
       "[Web](https://example.com/main.swift).";
 
@@ -17,7 +17,7 @@ describe("OpenClam private path redaction", () => {
 
   it("redacts full spaced absolute and home-relative file paths", () => {
     const text =
-      "Saved at /Users/adam/My Project/main.swift and copied to " +
+      "Saved at /Users/example/My Project/main.swift and copied to " +
       "~/Private Project/final report.pdf.";
 
     expect(redactPrivatePathReferences(text)).toBe(

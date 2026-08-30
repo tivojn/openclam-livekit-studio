@@ -388,7 +388,7 @@ describe("OpenClam inbound authorization", () => {
   });
 
   it("automatically promotes a generated local-file link into an attachment card", async () => {
-    const source = "/Users/ara/PinkCherry/output/finished.mp4";
+    const source = "/Users/example/PinkCherry/output/finished.mp4";
     const channel = {
       reply: {
         finalizeInboundContext: vi.fn((value: Record<string, unknown>) => value),
