@@ -10,6 +10,10 @@ xai-account.json
 
 # Generated avatar/runtime media
 web/assets/
+!web/assets/
+web/assets/*
+!web/assets/sf-symbols/
+!web/assets/sf-symbols/*.png
 web/vendor/
 qa/proof/
 models/

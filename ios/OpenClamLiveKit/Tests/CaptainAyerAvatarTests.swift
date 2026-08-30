@@ -1007,19 +1007,19 @@ final class CaptainAyerAvatarTests: XCTestCase {
     func testOverlayRailFadeDelayLeavesTimeToChooseATool() {
         XCTAssertEqual(
             CaptainAyerOverlayTuning.railFadeDelay,
-            4.0,
+            2.0,
             accuracy: 0.0001
         )
     }
 
-    func testOverlayRailIdleAppearanceRemainsClearlyVisible() {
-        XCTAssertGreaterThanOrEqual(
+    func testOverlayRailIdleAppearanceBecomesNearTransparent() {
+        XCTAssertGreaterThan(
             CaptainAyerOverlayTuning.railIdleOpacity,
-            0.65
+            0
         )
-        XCTAssertLessThan(
+        XCTAssertLessThanOrEqual(
             CaptainAyerOverlayTuning.railIdleOpacity,
-            1
+            0.15
         )
     }
 

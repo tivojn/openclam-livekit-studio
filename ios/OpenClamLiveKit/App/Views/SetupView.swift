@@ -95,7 +95,7 @@ struct SetupView: View {
                 .font(.headline)
                 .foregroundStyle(.white)
                 .frame(width: 30, height: 30)
-                .background(.indigo, in: Circle())
+                .background(OpenClamTheme.accent, in: Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.headline)
                 Text(detail).font(.subheadline).foregroundStyle(.secondary)

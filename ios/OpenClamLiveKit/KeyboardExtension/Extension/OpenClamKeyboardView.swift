@@ -98,7 +98,7 @@ final class OpenClamKeyboardViewModel: ObservableObject {
         case .inserted: .green
         case .waiting: .red
         case .needsFullAccess: .secondary
-        case .ready: .blue
+        case .ready: .primary
         }
     }
 

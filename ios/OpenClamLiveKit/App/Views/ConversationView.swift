@@ -1,6 +1,7 @@
 import Accessibility
 import AVKit
 import CoreTransferable
+import Photos
 import PhotosUI
 import QuickLook
 import SwiftUI
@@ -270,7 +271,7 @@ struct ConversationView: View {
     @State private var presentedConnectorArtifact: ConnectorArtifactPresentation?
     @State private var sharedConnectorArtifact: ConnectorArtifactPresentation?
     @State private var exportedConnectorArtifact: ConnectorArtifactExportPresentation?
-    @State private var connectorArtifactError: String?
+    @State private var connectorArtifactFeedback: ConnectorArtifactFeedback?
     @State private var expandedWorkSteps: Set<String> = []
     @State private var remoteWorkStartedAt: [UUID: Date] = [:]
     @State private var warmEarEnabled = OpenClamWarmEarControl.isEnabled
@@ -350,49 +351,41 @@ struct ConversationView: View {
                 .accessibilityHint("Shows new chat, recent chats, and Settings")
             }
 
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    dismissKeyboard()
-                    if !warmEarEnabled, appAudioActivityIsActive {
-                        liveTalkPTTNotice = "Finish the current microphone or speaker activity before preparing Quick Dictation."
-                        return
-                    }
-                    warmEarEnabled.toggle()
-                    OpenClamWarmEarControl.setEnabled(warmEarEnabled)
-                    liveTalkPTTNotice = OpenClamWarmEarControl.availabilityExplanation
-                } label: {
-                    Image(systemName: keyboardDictationHost.warmEarPresentationState.symbolName)
-                        .font(.system(size: 18, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                        .contentTransition(.symbolEffect(.replace))
+            if #available(iOS 26.0, *) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    warmEarToolbarButton
                 }
-                .foregroundStyle(quickDictationStatusColor)
-                .accessibilityLabel("Quick Dictation")
-                .accessibilityValue(keyboardDictationHost.warmEarPresentationState.title)
-                .accessibilityHint(keyboardDictationHost.warmEarPresentationState.detail)
-                .accessibilityIdentifier("openclam-warm-ear-button")
-            }
-
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    avatarInteractions.noteThreadInteraction()
-                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
-                        isAvatarRailFolded.toggle()
-                    }
-                } label: {
-                    Image(systemName: isAvatarRailFolded ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                        .contentTransition(.symbolEffect(.replace))
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    warmEarToolbarButton
                 }
-                .accessibilityLabel(isAvatarRailFolded ? "Show all tools" : "Fold all tools")
-                .accessibilityValue(isAvatarRailFolded ? "Folded" : "Expanded")
-                .accessibilityHint("Shows or hides the avatar tool rail")
-                .accessibilityIdentifier("openclam-avatar-rail-fold-button")
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
             }
         }
+    }
+
+    private var warmEarToolbarButton: some View {
+        Button {
+            dismissKeyboard()
+            if !warmEarEnabled, appAudioActivityIsActive {
+                liveTalkPTTNotice = "Finish the current microphone or speaker activity before preparing Quick Dictation."
+                return
+            }
+            warmEarEnabled.toggle()
+            OpenClamWarmEarControl.setEnabled(warmEarEnabled)
+            liveTalkPTTNotice = OpenClamWarmEarControl.availabilityExplanation
+        } label: {
+            Image(systemName: keyboardDictationHost.warmEarPresentationState.symbolName)
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .foregroundStyle(quickDictationStatusColor)
+        .accessibilityLabel("Quick Dictation")
+        .accessibilityValue(keyboardDictationHost.warmEarPresentationState.title)
+        .accessibilityHint(keyboardDictationHost.warmEarPresentationState.detail)
+        .accessibilityIdentifier("openclam-warm-ear-button")
+        .buttonStyle(.plain)
     }
 
     private var mediaObservedSurface: some View {
@@ -556,17 +549,29 @@ struct ConversationView: View {
             Text(liveTalk.errorMessage ?? "Live Talk stopped.")
         }
         .alert(
-            "OpenClaw file",
+            connectorArtifactFeedback?.title ?? "OpenClaw File",
             isPresented: Binding(
-                get: { connectorArtifactError != nil },
+                get: { connectorArtifactFeedback != nil },
                 set: { presented in
-                    if !presented { connectorArtifactError = nil }
+                    if !presented { connectorArtifactFeedback = nil }
                 }
             )
         ) {
-            Button("OK") { connectorArtifactError = nil }
+            if connectorArtifactFeedback?.offersSettings == true {
+                Button("Open Settings") {
+                    connectorArtifactFeedback = nil
+                    guard let settingsURL = URL(
+                        string: UIApplication.openSettingsURLString
+                    ) else { return }
+                    UIApplication.shared.open(settingsURL)
+                }
+            }
+            Button("OK", role: .cancel) { connectorArtifactFeedback = nil }
         } message: {
-            Text(connectorArtifactError ?? "The generated file is unavailable.")
+            Text(
+                connectorArtifactFeedback?.message
+                    ?? "The generated file is unavailable."
+            )
         }
     }
 
@@ -592,7 +597,8 @@ struct ConversationView: View {
                 )
                 .background(alignment: .topLeading) {
                     ConversationThreadInteractionObserver(
-                        onInteraction: avatarInteractions.noteThreadInteraction,
+                        onTapInteraction: avatarInteractions.noteThreadInteraction,
+                        onScrollInteraction: avatarInteractions.noteThreadScrollInteraction,
                         onManualScroll: { threadPositioning.noteManualScroll() }
                     )
                     .frame(width: 1, height: 1)
@@ -943,6 +949,9 @@ struct ConversationView: View {
                     : nil,
                 onOpenAttachment: { attachment in
                     presentConnectorArtifact(attachment, forSharing: false)
+                },
+                onSaveToPhotosAttachment: { attachment in
+                    saveConnectorArtifactToPhotos(attachment)
                 },
                 onSaveAttachment: { attachment in
                     saveConnectorArtifactToFiles(attachment)
@@ -1295,7 +1304,7 @@ struct ConversationView: View {
 
     private func workStepColor(_ step: AgentConnectorWorkStep) -> Color {
         switch step.state {
-        case .running: .indigo
+        case .running: OpenClamTheme.active
         case .completed: .green
         case .failed: .red
         case .waiting: .orange
@@ -1402,7 +1411,7 @@ struct ConversationView: View {
 
     private var pronunciationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            cardHeader("Local OCR & pronunciation", icon: "text.viewfinder", color: .purple)
+            cardHeader("Local OCR & pronunciation", icon: "text.viewfinder", color: OpenClamTheme.active)
 
             if let data = conversation.screenshotData,
                let image = LocalAttachmentPreviewFactory.makePreview(from: data) {
@@ -1474,7 +1483,7 @@ struct ConversationView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.indigo)
+                .tint(OpenClamTheme.accent)
                 .disabled(
                     conversation.screenshotAIShareText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || conversation.screenshotAIShareText.count > ConversationModel.screenshotShareCharacterLimit
@@ -1509,7 +1518,7 @@ struct ConversationView: View {
                         Label("Hear it", systemImage: "speaker.wave.2.fill")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.purple)
+                    .tint(OpenClamTheme.accent)
                     .disabled(!conversation.isTTSEnabled)
                     .accessibilityHint(conversation.isTTSEnabled ? "Plays the system voice" : "Turn on the speaker in the composer first")
                 }
@@ -1521,7 +1530,7 @@ struct ConversationView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.purple)
+                .tint(OpenClamTheme.accent)
                 .disabled(conversation.pronunciationInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
@@ -1529,7 +1538,7 @@ struct ConversationView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .assistantCard(stroke: .purple.opacity(0.18))
+        .assistantCard(stroke: OpenClamTheme.subtleStroke)
     }
 
     private var venueCard: some View {
@@ -1565,7 +1574,7 @@ struct ConversationView: View {
                         }
                         Spacer()
                         Image(systemName: conversation.selectedVenue?.id == venue.id ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(conversation.selectedVenue?.id == venue.id ? Color.indigo : Color.gray.opacity(0.55))
+                            .foregroundStyle(conversation.selectedVenue?.id == venue.id ? OpenClamTheme.active : Color.gray.opacity(0.55))
                     }
                     .contentShape(Rectangle())
                 }
@@ -1641,7 +1650,7 @@ struct ConversationView: View {
                         }
                         Spacer()
                         Image(systemName: conversation.selectedNearbyPlace?.id == place.id ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(conversation.selectedNearbyPlace?.id == place.id ? Color.indigo : Color.gray.opacity(0.55))
+                            .foregroundStyle(conversation.selectedNearbyPlace?.id == place.id ? OpenClamTheme.active : Color.gray.opacity(0.55))
                     }
                     .contentShape(Rectangle())
                 }
@@ -1729,7 +1738,7 @@ struct ConversationView: View {
 
     private var replySuggestionsCard: some View {
         VStack(alignment: .leading, spacing: 13) {
-            cardHeader("Reply suggestions", icon: "text.bubble.fill", color: .indigo)
+            cardHeader("Reply suggestions", icon: "text.bubble.fill", color: OpenClamTheme.active)
             Text("Nothing is pasted or sent automatically. Choose the exact suggestion, then tap Confirmed to copy it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1752,7 +1761,7 @@ struct ConversationView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
-                .background(.indigo.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                .background(OpenClamTheme.subtleFill, in: RoundedRectangle(cornerRadius: 12))
             }
 
             Button("Dismiss suggestions", role: .cancel) {
@@ -1760,12 +1769,12 @@ struct ConversationView: View {
             }
             .buttonStyle(.bordered)
         }
-        .assistantCard(stroke: .indigo.opacity(0.2))
+        .assistantCard(stroke: OpenClamTheme.subtleStroke)
     }
 
     private var researchCard: some View {
         VStack(alignment: .leading, spacing: 13) {
-            cardHeader("Current reviews & menu", icon: "sparkle.magnifyingglass", color: .blue)
+            cardHeader("Current reviews & menu", icon: "sparkle.magnifyingglass", color: OpenClamTheme.active)
             if let request = conversation.researchRequest {
                 Text(request.subject)
                     .font(.subheadline.weight(.semibold))
@@ -1798,7 +1807,7 @@ struct ConversationView: View {
                 }
             }
         }
-        .assistantCard(stroke: .blue.opacity(0.2))
+        .assistantCard(stroke: OpenClamTheme.subtleStroke)
     }
 
     private var messageDraftCard: some View {
@@ -1819,7 +1828,7 @@ struct ConversationView: View {
                         Label("Find in Contacts", systemImage: "person.crop.circle.badge.questionmark")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                    .tint(OpenClamTheme.accent)
 
                     Text("Contacts is not read until you tap. Matching names and phone numbers stay on this iPhone and are not sent back to the AI provider.")
                         .font(.caption)
@@ -1890,7 +1899,7 @@ struct ConversationView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.blue)
+                        .tint(OpenClamTheme.accent)
                         .disabled(conversation.messageCommand() == nil)
                         .accessibilityLabel("Confirmed. Open unsent message draft")
 
@@ -1915,7 +1924,7 @@ struct ConversationView: View {
                             Label("Confirmed", systemImage: "checkmark.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.blue)
+                        .tint(OpenClamTheme.accent)
                         .disabled(conversation.messageCommand() == nil)
                         .accessibilityLabel("Confirmed. Open unsent message draft")
                     }
@@ -1931,7 +1940,7 @@ struct ConversationView: View {
 
     private var emailDraftCard: some View {
         VStack(alignment: .leading, spacing: 13) {
-            cardHeader("Unsent email draft", icon: "envelope.badge", color: .blue)
+            cardHeader("Unsent email draft", icon: "envelope.badge", color: OpenClamTheme.active)
 
             if let draft = conversation.pendingEmail {
                 Text("To: \(draft.recipientDisplay)")
@@ -1947,7 +1956,7 @@ struct ConversationView: View {
                         Label("Find in Contacts", systemImage: "person.crop.circle.badge.questionmark")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                    .tint(OpenClamTheme.accent)
 
                     Text("Contacts is not read until you tap. Matching names and email addresses stay on this iPhone and are not sent back to the AI provider.")
                         .font(.caption)
@@ -2027,7 +2036,7 @@ struct ConversationView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.blue)
+                        .tint(OpenClamTheme.accent)
                         .disabled(conversation.emailCommand() == nil)
                         .accessibilityLabel("Confirmed. Open unsent email draft")
 
@@ -2052,7 +2061,7 @@ struct ConversationView: View {
                             Label("Confirmed", systemImage: "checkmark.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.blue)
+                        .tint(OpenClamTheme.accent)
                         .disabled(conversation.emailCommand() == nil)
                         .accessibilityLabel("Confirmed. Open unsent email draft")
                     }
@@ -2063,7 +2072,7 @@ struct ConversationView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .assistantCard(stroke: .blue.opacity(0.22))
+        .assistantCard(stroke: OpenClamTheme.emphasizedStroke)
     }
 
     private var proposedCommandCard: some View {
@@ -2098,7 +2107,7 @@ struct ConversationView: View {
 
     private func appHandoffCard(_ proposal: AppHandoffProposal) -> some View {
         VStack(alignment: .leading, spacing: 13) {
-            cardHeader("Open app alias", icon: "arrow.up.forward.app.fill", color: .indigo)
+            cardHeader("Open app alias", icon: "arrow.up.forward.app.fill", color: OpenClamTheme.active)
             if let alias = proposal.aliasDisplayName {
                 Text(alias)
                     .font(.headline)
@@ -2124,7 +2133,7 @@ struct ConversationView: View {
                 }
             }
         }
-        .assistantCard(stroke: .indigo.opacity(0.25))
+        .assistantCard(stroke: OpenClamTheme.emphasizedStroke)
     }
 
     private func confirmedAppHandoffButton(_ proposal: AppHandoffProposal) -> some View {
@@ -2141,7 +2150,7 @@ struct ConversationView: View {
                 .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : nil)
         }
         .buttonStyle(.borderedProminent)
-        .tint(.indigo)
+        .tint(OpenClamTheme.accent)
     }
 
     private var discardAppHandoffButton: some View {
@@ -2551,7 +2560,7 @@ struct ConversationView: View {
             HStack {
                 Label("Ready to attach", systemImage: "paperclip.circle.fill")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.indigo)
+                    .foregroundStyle(OpenClamTheme.active)
                 Spacer()
                 Text("\(stagedAttachments.count) / 4")
                     .font(.caption2.monospacedDigit())
@@ -2616,7 +2625,7 @@ struct ConversationView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(.indigo.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(OpenClamTheme.subtleFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .contain)
     }
 
@@ -2633,9 +2642,9 @@ struct ConversationView: View {
         } else {
             Image(systemName: attachment.kind.systemImage)
                 .font(.title2)
-                .foregroundStyle(.indigo)
+                .foregroundStyle(OpenClamTheme.active)
                 .frame(width: 46, height: 46)
-                .background(.indigo.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .background(OpenClamTheme.emphasizedFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .accessibilityHidden(true)
         }
     }
@@ -2795,7 +2804,7 @@ struct ConversationView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Siri question ready", systemImage: "quote.bubble.fill")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.indigo)
+                .foregroundStyle(OpenClamTheme.active)
             Text(prompt)
                 .font(.subheadline)
                 .lineLimit(3)
@@ -2813,11 +2822,11 @@ struct ConversationView: View {
                     conversation.clearPendingShortcutPrompt()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.indigo)
+                .tint(OpenClamTheme.accent)
             }
         }
         .padding(10)
-        .background(.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(OpenClamTheme.subtleFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .contain)
     }
 
@@ -2827,7 +2836,7 @@ struct ConversationView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Reviewed context ready", systemImage: "rectangle.and.text.magnifyingglass")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.indigo)
+                .foregroundStyle(OpenClamTheme.active)
 
             HStack(spacing: 12) {
                 if let text = submission.includedText {
@@ -2867,7 +2876,7 @@ struct ConversationView: View {
             }
         }
         .padding(10)
-        .background(.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(OpenClamTheme.subtleFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .contain)
     }
 
@@ -2878,7 +2887,7 @@ struct ConversationView: View {
             input = submission.instruction
         }
         .buttonStyle(.borderedProminent)
-        .tint(.indigo)
+        .tint(OpenClamTheme.accent)
         .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : nil)
     }
 
@@ -2904,7 +2913,7 @@ struct ConversationView: View {
         case .off, .arming, .paused:
             .secondary
         case .ready:
-            .blue
+            OpenClamTheme.active
         case .busy:
             .red
         case .failed:
@@ -3054,7 +3063,9 @@ struct ConversationView: View {
         guard attachment.connectorArtifact != nil else { return }
         Task { @MainActor in
             guard let url = await agentConnections.storedArtifactURL(for: attachment) else {
-                connectorArtifactError = "This verified OpenClaw file is no longer stored on this iPhone."
+                connectorArtifactFeedback = .error(
+                    "This verified OpenClaw file is no longer stored on this iPhone."
+                )
                 return
             }
             let presentation = ConnectorArtifactPresentation(
@@ -3069,13 +3080,50 @@ struct ConversationView: View {
         }
     }
 
+    private func saveConnectorArtifactToPhotos(
+        _ attachment: ConversationAttachmentDescriptor
+    ) {
+        guard attachment.connectorArtifact != nil,
+              attachment.kind == .image || attachment.kind == .video else { return }
+        Task { @MainActor in
+            guard let sourceURL = await agentConnections.storedArtifactURL(for: attachment) else {
+                connectorArtifactFeedback = .error(
+                    "This verified OpenClaw file is no longer stored on this iPhone."
+                )
+                return
+            }
+            do {
+                try await ConnectorArtifactPhotoLibrarySaver.save(
+                    sourceURL: sourceURL,
+                    kind: attachment.kind
+                )
+                connectorArtifactFeedback = .init(
+                    title: "Saved to Photos",
+                    message: "\(attachment.displayName) is now in your photo library."
+                )
+                AccessibilityNotification.Announcement(
+                    "Saved \(attachment.displayName) to Photos."
+                ).post()
+            } catch {
+                let photoError = error as? ConnectorArtifactPhotoLibrarySaveError
+                connectorArtifactFeedback = .init(
+                    title: "Couldn’t Save to Photos",
+                    message: error.localizedDescription,
+                    offersSettings: photoError?.offersSettings == true
+                )
+            }
+        }
+    }
+
     private func saveConnectorArtifactToFiles(
         _ attachment: ConversationAttachmentDescriptor
     ) {
         guard attachment.connectorArtifact != nil else { return }
         Task { @MainActor in
             guard let sourceURL = await agentConnections.storedArtifactURL(for: attachment) else {
-                connectorArtifactError = "This verified OpenClaw file is no longer stored on this iPhone."
+                connectorArtifactFeedback = .error(
+                    "This verified OpenClaw file is no longer stored on this iPhone."
+                )
                 return
             }
             clearConnectorArtifactExport()
@@ -3089,7 +3137,9 @@ struct ConversationView: View {
                     stagedURL: stagedURL
                 )
             } catch {
-                connectorArtifactError = "OpenClam could not prepare this verified file for saving. \(error.localizedDescription)"
+                connectorArtifactFeedback = .error(
+                    "OpenClam could not prepare this verified file for saving. \(error.localizedDescription)"
+                )
             }
         }
     }
@@ -3389,7 +3439,7 @@ struct ConversationView: View {
         presentedConnectorArtifact = nil
         sharedConnectorArtifact = nil
         clearConnectorArtifactExport()
-        connectorArtifactError = nil
+        connectorArtifactFeedback = nil
         persistedConnectorVisualPreviews = [:]
         modelSelectionError = nil
         suppressesSpeechError = true
@@ -3809,12 +3859,14 @@ private struct OpenClamCameraPicker: UIViewControllerRepresentable {
 /// message controls keep their native gesture arbitration.
 @MainActor
 private struct ConversationThreadInteractionObserver: UIViewRepresentable {
-    let onInteraction: () -> Void
+    let onTapInteraction: () -> Void
+    let onScrollInteraction: () -> Void
     let onManualScroll: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
-            onInteraction: onInteraction,
+            onTapInteraction: onTapInteraction,
+            onScrollInteraction: onScrollInteraction,
             onManualScroll: onManualScroll
         )
     }
@@ -3827,7 +3879,8 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ProbeView, context: Context) {
-        context.coordinator.onInteraction = onInteraction
+        context.coordinator.onTapInteraction = onTapInteraction
+        context.coordinator.onScrollInteraction = onScrollInteraction
         context.coordinator.onManualScroll = onManualScroll
         uiView.coordinator = context.coordinator
         uiView.scheduleAttachment()
@@ -3871,7 +3924,8 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var onInteraction: () -> Void
+        var onTapInteraction: () -> Void
+        var onScrollInteraction: () -> Void
         var onManualScroll: () -> Void
 
         private weak var scrollView: UIScrollView?
@@ -3879,10 +3933,12 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
         private var lastScrollSignal = -TimeInterval.infinity
 
         init(
-            onInteraction: @escaping () -> Void,
+            onTapInteraction: @escaping () -> Void,
+            onScrollInteraction: @escaping () -> Void,
             onManualScroll: @escaping () -> Void
         ) {
-            self.onInteraction = onInteraction
+            self.onTapInteraction = onTapInteraction
+            self.onScrollInteraction = onScrollInteraction
             self.onManualScroll = onManualScroll
         }
 
@@ -3937,13 +3993,13 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
             case .began:
                 onManualScroll()
                 lastScrollSignal = now
-                onInteraction()
+                onScrollInteraction()
             case .ended, .cancelled:
                 lastScrollSignal = now
-                onInteraction()
+                onScrollInteraction()
             case .changed where now - lastScrollSignal >= 0.15:
                 lastScrollSignal = now
-                onInteraction()
+                onScrollInteraction()
             default:
                 break
             }
@@ -3951,7 +4007,7 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
 
         @objc private func threadTapped(_ gesture: UITapGestureRecognizer) {
             guard gesture.state == .ended else { return }
-            onInteraction()
+            onTapInteraction()
         }
 
         func gestureRecognizer(
@@ -3972,6 +4028,139 @@ private extension View {
                     .stroke(stroke, lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.035), radius: 8, y: 3)
+    }
+}
+
+private struct ConnectorArtifactFeedback {
+    let title: String
+    let message: String
+    var offersSettings = false
+
+    static func error(_ message: String) -> Self {
+        .init(title: "OpenClaw File", message: message)
+    }
+}
+
+enum ConnectorArtifactPhotoAuthorizationDecision: Equatable {
+    case request
+    case save
+    case deny
+}
+
+enum ConnectorArtifactPhotoLibrarySaveError: LocalizedError {
+    case unsupportedAttachment
+    case attachmentUnavailable
+    case permissionDenied
+    case permissionRestricted
+    case photoLibraryFailure(Error?)
+
+    var offersSettings: Bool {
+        if case .permissionDenied = self { return true }
+        return false
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedAttachment:
+            "Only verified images and videos can be saved to Photos."
+        case .attachmentUnavailable:
+            "This verified OpenClaw media file is no longer available on this iPhone."
+        case .permissionDenied:
+            "Allow OpenClam to add photos in Settings, then try again."
+        case .permissionRestricted:
+            "This iPhone does not allow OpenClam to add items to Photos."
+        case .photoLibraryFailure(let underlyingError):
+            underlyingError?.localizedDescription
+                ?? "Photos could not save this media file. Please try again."
+        }
+    }
+}
+
+/// Saves only an already verified, app-local connector artifact. No network request or second
+/// download is performed, and `shouldMoveFile` stays false so Photos cannot remove the private
+/// artifact that still backs the conversation preview and Share action.
+enum ConnectorArtifactPhotoLibrarySaver {
+    static func authorizationDecision(
+        for status: PHAuthorizationStatus
+    ) -> ConnectorArtifactPhotoAuthorizationDecision {
+        switch status {
+        case .notDetermined:
+            .request
+        case .authorized, .limited:
+            .save
+        case .denied, .restricted:
+            .deny
+        @unknown default:
+            .deny
+        }
+    }
+
+    static func resourceType(
+        for kind: ConversationAttachmentDescriptor.Kind
+    ) -> PHAssetResourceType? {
+        switch kind {
+        case .image: .photo
+        case .video: .video
+        case .file, .unknown: nil
+        }
+    }
+
+    static func save(
+        sourceURL: URL,
+        kind: ConversationAttachmentDescriptor.Kind
+    ) async throws {
+        guard let resourceType = resourceType(for: kind) else {
+            throw ConnectorArtifactPhotoLibrarySaveError.unsupportedAttachment
+        }
+        guard let values = try? sourceURL.resourceValues(forKeys: [.isRegularFileKey]),
+              values.isRegularFile == true else {
+            throw ConnectorArtifactPhotoLibrarySaveError.attachmentUnavailable
+        }
+
+        var status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        if authorizationDecision(for: status) == .request {
+            status = await requestAddOnlyAuthorization()
+        }
+        switch status {
+        case .authorized, .limited:
+            break
+        case .restricted:
+            throw ConnectorArtifactPhotoLibrarySaveError.permissionRestricted
+        case .denied, .notDetermined:
+            throw ConnectorArtifactPhotoLibrarySaveError.permissionDenied
+        @unknown default:
+            throw ConnectorArtifactPhotoLibrarySaveError.permissionDenied
+        }
+
+        try await withCheckedThrowingContinuation { continuation in
+            PHPhotoLibrary.shared().performChanges {
+                let creationRequest = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.shouldMoveFile = false
+                creationRequest.addResource(
+                    with: resourceType,
+                    fileURL: sourceURL,
+                    options: options
+                )
+            } completionHandler: { saved, error in
+                if saved {
+                    continuation.resume()
+                } else {
+                    continuation.resume(
+                        throwing: ConnectorArtifactPhotoLibrarySaveError
+                            .photoLibraryFailure(error)
+                    )
+                }
+            }
+        }
+    }
+
+    private static func requestAddOnlyAuthorization() async -> PHAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                continuation.resume(returning: status)
+            }
+        }
     }
 }
 

@@ -1134,6 +1134,10 @@ struct OpenClamCatalogAvatarStage: View {
     let onTransformBegan: (() -> Void)?
     let onTransformChanged: ((_ magnification: CGFloat, _ translation: CGSize) -> Void)?
     let onTransformEnded: ((_ cancelled: Bool) -> Void)?
+    /// A discrete tap callback, kept separate from drag/pinch interaction so
+    /// an overlay such as the opacity panel can dismiss without disappearing
+    /// while its avatar is actively being adjusted.
+    let onTapInteraction: (() -> Void)?
     let onInteraction: () -> Void
     private let imageStore: OpenClamAvatarAssetStore
 
@@ -1152,6 +1156,7 @@ struct OpenClamCatalogAvatarStage: View {
         onTransformBegan: (() -> Void)? = nil,
         onTransformChanged: ((CGFloat, CGSize) -> Void)? = nil,
         onTransformEnded: ((Bool) -> Void)? = nil,
+        onTapInteraction: (() -> Void)? = nil,
         imageStore: OpenClamAvatarAssetStore? = nil,
         onInteraction: @escaping () -> Void = {}
     ) {
@@ -1169,6 +1174,7 @@ struct OpenClamCatalogAvatarStage: View {
         self.onTransformBegan = onTransformBegan
         self.onTransformChanged = onTransformChanged
         self.onTransformEnded = onTransformEnded
+        self.onTapInteraction = onTapInteraction
         self.imageStore = imageStore ?? .shared
         self.onInteraction = onInteraction
     }
@@ -1390,8 +1396,10 @@ struct OpenClamCatalogAvatarStage: View {
         stageSize: CGSize,
         crop: CGRect
     ) {
+        onTapInteraction?()
         guard allowsGazeTracking else {
             reactions.cancelGaze()
+            onInteraction()
             return
         }
         let didReactToFace = reactions.react(

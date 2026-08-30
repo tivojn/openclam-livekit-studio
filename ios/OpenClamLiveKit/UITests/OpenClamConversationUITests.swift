@@ -768,7 +768,7 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(chooseAvatar.exists)
         XCTAssertTrue(chooseAvatar.isEnabled)
         XCTAssertTrue(chooseAvatar.isHittable)
-        XCTAssertEqual(chooseAvatar.identifier, "rectangle.stack.fill")
+        XCTAssertEqual(chooseAvatar.identifier, "openclam-avatar-picker")
         let initialAvatarName = try XCTUnwrap(chooseAvatar.value as? String)
 
         chooseAvatar.tap()

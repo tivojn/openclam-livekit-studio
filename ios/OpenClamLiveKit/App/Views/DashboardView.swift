@@ -28,7 +28,7 @@ struct DashboardView: View {
             HStack(alignment: .top) {
                 Image(systemName: "lock.shield.fill")
                     .font(.title2)
-                    .foregroundStyle(.indigo)
+                    .foregroundStyle(OpenClamTheme.active)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Confirm-first command surface")
                         .font(.headline)
@@ -159,7 +159,7 @@ struct DashboardView: View {
                 ForEach(model.activity.prefix(8)) { item in
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: item.state.systemImage)
-                            .foregroundStyle(item.state == .failed ? .red : .indigo)
+                            .foregroundStyle(item.state == .failed ? Color.red : OpenClamTheme.active)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title).font(.subheadline.weight(.semibold))
                             Text(item.detail).font(.caption).foregroundStyle(.secondary)

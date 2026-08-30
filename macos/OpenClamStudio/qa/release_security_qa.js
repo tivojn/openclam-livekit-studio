@@ -197,6 +197,19 @@ for (const excluded of [
     `packaging must exclude JavaScript test artifact ${excluded}`);
 }
 
+const webResource = pkg.build.extraResources.find((entry) =>
+  entry.from === 'web' && entry.to === 'backend/web');
+assert.ok(webResource, 'packaging must stage the reviewed web runtime');
+assert.ok(webResource.filter.includes('assets/sf-symbols/*.png'),
+  'packaging must include the checked-in native SF Symbol masks');
+for (const required of [
+  'UI_SYMBOL_ASSETS = frozenset({',
+  '@app.get("/ui-symbols/{asset}.png")',
+  'if asset not in UI_SYMBOL_ASSETS:',
+  'media_type="image/png"',
+]) assert.ok(serverApp.includes(required),
+  `SF Symbol delivery must remain closed and typed: ${required}`);
+
 const packagedRuntimeQa = read('qa/packaged_runtime_qa.py');
 const stagedRuntimeQa = read('qa/staged_runtime_qa.py');
 const alphaRuntimeQa = read('qa/ffmpeg_alpha_runtime_qa.py');

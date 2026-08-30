@@ -2,6 +2,16 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+private enum ScreenContextShareTheme {
+    static let accent = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(white: 0.44, alpha: 1)
+                : UIColor(white: 0.125, alpha: 1)
+        }
+    )
+}
+
 final class ShareViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -272,5 +282,6 @@ private struct ScreenContextShareView: View {
                 Text(model.errorMessage ?? "The shared context could not be saved.")
             }
         }
+        .tint(ScreenContextShareTheme.accent)
     }
 }

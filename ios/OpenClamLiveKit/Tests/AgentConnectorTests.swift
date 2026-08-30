@@ -1,5 +1,6 @@
 import AVFoundation
 import CryptoKit
+import Photos
 import UIKit
 import XCTest
 @testable import OpenClamLiveKit
@@ -2971,6 +2972,53 @@ final class AgentConnectorTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(bounded.count, 160)
         XCTAssertEqual((bounded as NSString).pathExtension, "mp4")
+    }
+
+    func testConnectorArtifactPhotoSaveMapsOnlyVisualMediaResources() {
+        XCTAssertEqual(
+            ConnectorArtifactPhotoLibrarySaver.resourceType(for: .image),
+            .photo
+        )
+        XCTAssertEqual(
+            ConnectorArtifactPhotoLibrarySaver.resourceType(for: .video),
+            .video
+        )
+        XCTAssertNil(ConnectorArtifactPhotoLibrarySaver.resourceType(for: .file))
+        XCTAssertNil(ConnectorArtifactPhotoLibrarySaver.resourceType(for: .unknown))
+    }
+
+    func testConnectorArtifactPhotoSaveAuthorizationPolicyIsAddOnlyAndFailClosed() {
+        XCTAssertEqual(
+            ConnectorArtifactPhotoLibrarySaver.authorizationDecision(for: .notDetermined),
+            .request
+        )
+        XCTAssertEqual(
+            ConnectorArtifactPhotoLibrarySaver.authorizationDecision(for: .authorized),
+            .save
+        )
+        XCTAssertEqual(
+            ConnectorArtifactPhotoLibrarySaver.authorizationDecision(for: .limited),
+            .save
+        )
+        XCTAssertEqual(
+            ConnectorArtifactPhotoLibrarySaver.authorizationDecision(for: .denied),
+            .deny
+        )
+        XCTAssertEqual(
+            ConnectorArtifactPhotoLibrarySaver.authorizationDecision(for: .restricted),
+            .deny
+        )
+    }
+
+    func testConnectorArtifactPhotoSaveShipsAddOnlyUsageDisclosureAndValidSymbols() throws {
+        let disclosure = try XCTUnwrap(
+            Bundle.main.object(
+                forInfoDictionaryKey: "NSPhotoLibraryAddUsageDescription"
+            ) as? String
+        )
+        XCTAssertTrue(disclosure.localizedCaseInsensitiveContains("Save to Photos"))
+        XCTAssertNotNil(UIImage(systemName: "photo.badge.arrow.down"))
+        XCTAssertNotNil(UIImage(systemName: "folder.badge.plus"))
     }
 
     private func makeSingleFrameVideo(at url: URL) async throws {

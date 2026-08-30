@@ -20,7 +20,7 @@ const exactCodexTokens = [
   ['elevated', '#282828'],
   ['control', '#303030'],
   ['under', '#0d0d0d'],
-  ['focus', '#339cff'],
+  ['focus', '#737373'],
 ];
 
 assert.ok(
@@ -35,6 +35,9 @@ assert.match(desktop, /--codex-text-secondary:\s*rgba\(255, 255, 255, \.70\)/);
 assert.match(desktop, /--codex-text-tertiary:\s*rgba\(255, 255, 255, \.50\)/);
 assert.match(desktop, /--codex-border:\s*rgba\(255, 255, 255, \.08\)/);
 assert.match(desktop, /--codex-border-heavy:\s*rgba\(255, 255, 255, \.16\)/);
+assert.match(desktop, /--codex-selection:\s*rgba\(255, 255, 255, \.22\)/);
+assert.match(desktop, /::selection\s*\{\s*background:\s*var\(--codex-selection\)/);
+assert.match(desktop, /\.bubble a, \.openclaw-markdown-preview a\s*\{[\s\S]{0,120}color:\s*var\(--codex-text\)/);
 assert.match(desktop, /#composerShell\s*\{[\s\S]{0,220}border-radius:\s*24px/);
 assert.match(desktop, /#chatDock\s*\{\s*left:\s*var\(--pet-edge\);[\s\S]{0,900}background:\s*transparent/);
 assert.match(desktop, /#chatDock:has\(#conversation:not\(:empty\)\)/);
@@ -72,7 +75,7 @@ for (const [token, value] of [
   ['gray-0', '#fff'], ['gray-50', '#f9f9f9'], ['gray-75', '#f3f3f3'],
   ['gray-100', '#ededed'], ['gray-700', '#303030'], ['gray-750', '#282828'],
   ['gray-800', '#212121'], ['gray-900', '#181818'], ['gray-1000', '#0d0d0d'],
-  ['focus', '#339cff'],
+  ['focus', '#737373'],
 ]) {
   assert.match(settings, new RegExp(`--codex-${token}:${value.replace('#', '\\#')}`),
     `settings is missing Codex ${token}`);
@@ -89,16 +92,26 @@ assert.match(settings, /--bad-text:#b51f1b/);
 // Every auxiliary window uses the same Codex palette rather than retaining
 // an inherited pink, bronze, or serif theme.
 assert.match(menu, /--bg:rgba\(33,33,33,\.96\)/);
-assert.match(menu, /--focus:#339cff/);
+assert.match(menu, /--focus:#737373/);
+assert.match(menu, /--focus:#b8b8b8/);
 assert.doesNotMatch(menu, /data-design=atelier/);
 assert.match(appearance, /--panel:rgba\(33,33,33,\.96\)/);
-assert.match(appearance, /--accent:#339cff/);
+assert.match(appearance, /--accent:#303030/);
+assert.match(appearance, /--accent:#ededed/);
 assert.match(appearance, /localStorage\.getItem\('openclam-theme'\)/);
 assert.match(bubble, /background:rgba\(33,33,33,\.96\)/);
 assert.match(bubble, /border:1px solid rgba\(255,255,255,\.08\)/);
-assert.match(bubble, /#text a\{color:#99ceff/);
+assert.match(bubble, /#text a\{color:#ededed/);
 assert.doesNotMatch(bubble, /data-design=atelier/);
 assert.match(electron, /backgroundColor: '#181818'/);
+
+for (const [surfaceName, source] of [
+  ['desktop', desktop], ['settings', settings], ['menu', menu],
+  ['appearance', appearance], ['speech bubble', bubble],
+]) {
+  assert.doesNotMatch(source, /#(?:339cff|0a84ff|007aff|99ceff)\b|rgba?\(\s*51\s*,\s*156\s*,\s*255/i,
+    `${surfaceName} must not restore an ordinary blue UI accent`);
+}
 
 // The visual rewrite may never turn icon-only desktop controls into unnamed
 // AX nodes, or turn the settings sidebar into an unlabeled row of buttons.
@@ -163,7 +176,8 @@ const composite = (foreground, background, alpha) => {
 assert.ok(contrast('#ffffff', '#181818') >= 7, 'primary text must meet AAA contrast');
 assert.ok(contrast(composite('#ffffff', '#181818', .70), '#181818') >= 4.5,
   'secondary text must meet AA contrast');
-assert.ok(contrast('#339cff', '#181818') >= 3, 'focus ring must remain visible on graphite');
+assert.ok(contrast('#737373', '#ffffff') >= 3, 'light focus ring must remain visible on white');
+assert.ok(contrast('#b8b8b8', '#181818') >= 3, 'dark focus ring must remain visible on graphite');
 assert.ok(contrast('#0d0d0d', '#ffffff') >= 7, 'inverse primary controls must meet AAA contrast');
 assert.ok(contrast('#007a30', composite('#00a240', '#ffffff', .07)) >= 4.5,
   'light success text must meet AA contrast on its tinted status surface');

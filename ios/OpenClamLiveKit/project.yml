@@ -44,7 +44,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot
-        CURRENT_PROJECT_VERSION: 51
+        CURRENT_PROJECT_VERSION: 52
         MARKETING_VERSION: 1.0.2
         CODE_SIGN_ENTITLEMENTS: App/OpenClamLiveKit.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -67,6 +67,7 @@ targets:
         NSMicrophoneUsageDescription: OpenClam records during explicit tap-to-talk or Screen Voice requests, or while you have Quick Dictation turned on. Live Talk starts the microphone only after you tap the phone button, streams audio through LiveKit to your selected speech service while the app is in the foreground, and stops when you tap hang up or the app enters the background. Quick Dictation keeps a visible, foreground-started microphone readiness session active until you turn it off, but discards standby audio; Apple recognition stays with Apple, and a selected cloud speech provider receives bounded audio only after a keyboard voice request begins.
         NSSpeechRecognitionUsageDescription: OpenClam transcribes speech only during an explicit voice request. In Screen Voice, the recognized question is submitted automatically after you stop speaking; ordinary composer dictation remains editable before Send.
         NSPhotoLibraryUsageDescription: OpenClam imports only photos and videos you choose; attachments go to your configured AI service only after you tap Send.
+        NSPhotoLibraryAddUsageDescription: OpenClam adds only a generated image or video after you explicitly choose Save to Photos.
         NSCalendarsFullAccessUsageDescription: OpenClam searches your calendars when you ask, and changes or deletes only events you review and approve.
         NSCalendarsWriteOnlyAccessUsageDescription: OpenClam adds calendar events only after you review and approve them.
         NSRemindersFullAccessUsageDescription: OpenClam searches your reminders when you ask, and creates, changes, completes, or deletes only items you review and approve.
@@ -115,7 +116,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-context-share
         PRODUCT_NAME: OpenClamLiveKitShareExtension
-        CURRENT_PROJECT_VERSION: 51
+        CURRENT_PROJECT_VERSION: 52
         MARKETING_VERSION: 1.0.2
         INFOPLIST_FILE: ShareExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
@@ -132,7 +133,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget
         PRODUCT_NAME: OpenClamLiveKitScreenVoiceWidget
-        CURRENT_PROJECT_VERSION: 51
+        CURRENT_PROJECT_VERSION: 52
         MARKETING_VERSION: 1.0.2
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
@@ -157,7 +158,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.keyboard
         PRODUCT_NAME: OpenClamLiveKitKeyboard
-        CURRENT_PROJECT_VERSION: 51
+        CURRENT_PROJECT_VERSION: 52
         MARKETING_VERSION: 1.0.2
         INFOPLIST_FILE: KeyboardExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: KeyboardExtension/OpenClamKeyboard.entitlements

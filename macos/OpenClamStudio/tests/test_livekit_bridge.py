@@ -1146,6 +1146,35 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
         self.assertIn("audio/wav", sound.headers["content-type"])
         self.assertEqual(sound.headers["cache-control"], "no-store")
 
+    def test_ui_symbol_route_serves_only_reviewed_png_masks(self):
+        application = route_test_application()
+
+        with patch.object(application, "AUTH_TOKEN", "local-auth-token"), \
+             patch.object(
+                 application.P,
+                 "load_livekit_nonsecret",
+                 return_value=managed_config(),
+             ):
+            headers = {"X-OpenClam-Token": "local-auth-token"}
+            symbols = [
+                self.request(
+                    application, "GET", f"/ui-symbols/{asset}.png", headers=headers
+                )
+                for asset in application.UI_SYMBOL_ASSETS
+            ]
+            unknown = self.request(
+                application, "GET", "/ui-symbols/not-reviewed.png", headers=headers
+            )
+
+        self.assertEqual(len(symbols), 19)
+        for symbol in symbols:
+            self.assertEqual(symbol.status_code, 200)
+            self.assertEqual(symbol.headers["content-type"], "image/png")
+            self.assertEqual(symbol.headers["cache-control"], "no-store")
+            self.assertEqual(symbol.headers["x-content-type-options"], "nosniff")
+            self.assertTrue(symbol.content.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(unknown.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

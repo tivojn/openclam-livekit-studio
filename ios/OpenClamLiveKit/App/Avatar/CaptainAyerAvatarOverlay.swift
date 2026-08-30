@@ -93,7 +93,7 @@ enum OpenClamAvatarDisplayMode: String, CaseIterable, Sendable {
     var systemImage: String {
         switch self {
         case .standby: "figure.stand"
-        case .closeUp: "person.crop.circle"
+        case .closeUp: "person.crop.square"
         case .horizonWalk: "figure.walk"
         case .edgeIdle: "figure.stand.line.dotted.figure.stand"
         case .moves: "figure.dance"
@@ -635,8 +635,8 @@ enum CaptainAyerOverlayTuning {
     static let minimumScale = 0.60
     static let maximumScale = 4.5
     static let initialScale = 1.0
-    static let railFadeDelay: TimeInterval = 4.0
-    static let railIdleOpacity = 0.65
+    static let railFadeDelay: TimeInterval = 2.0
+    static let railIdleOpacity = 0.14
 
     static func clampedOpacity(_ value: Double) -> Double {
         min(maximumOpacity, max(minimumOpacity, value))
@@ -677,13 +677,6 @@ enum CaptainAyerInteractionLayer: String, CaseIterable, Sendable {
         switch self {
         case .avatar: "Two fingers resize or move; one-finger vertical swipe changes opacity"
         case .thread: "Swipe to scroll the chat; avatar gestures are off"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .avatar: "person.crop.rectangle.stack.fill"
-        case .thread: "text.bubble.fill"
         }
     }
 
@@ -960,7 +953,7 @@ private struct LiveTalkConnectionRailHalo: View {
                 : 0.5 - 0.5 * cos(progress * 2.0 * .pi)
 
             Circle()
-                .stroke(Color.accentColor.opacity(0.30 - 0.12 * wave), lineWidth: 1.5)
+                .stroke(OpenClamTheme.active.opacity(0.30 - 0.12 * wave), lineWidth: 1.5)
                 .frame(width: 52, height: 52)
                 .scaleEffect(0.98 + 0.04 * wave)
                 .opacity(isActive ? 1 : 0)
@@ -976,17 +969,31 @@ private struct LiveTalkConnectionRailHalo: View {
 @MainActor
 final class CaptainAyerOverlayInteractionRelay: ObservableObject {
     private var threadInteractionHandler: (() -> Void)?
+    private var threadScrollInteractionHandler: (() -> Void)?
+
+    func connect(
+        _ handler: @escaping () -> Void,
+        onScroll scrollHandler: @escaping () -> Void
+    ) {
+        threadInteractionHandler = handler
+        threadScrollInteractionHandler = scrollHandler
+    }
 
     func connect(_ handler: @escaping () -> Void) {
-        threadInteractionHandler = handler
+        connect(handler, onScroll: handler)
     }
 
     func disconnect() {
         threadInteractionHandler = nil
+        threadScrollInteractionHandler = nil
     }
 
     func noteThreadInteraction() {
         threadInteractionHandler?()
+    }
+
+    func noteThreadScrollInteraction() {
+        threadScrollInteractionHandler?()
     }
 }
 
@@ -1038,7 +1045,6 @@ struct CaptainAyerAvatarOverlay: View {
     private var storedAvatarHidden = false
     @AppStorage("captainAyer.overlay.interactionLayer")
     private var storedInteractionLayer = CaptainAyerInteractionLayer.avatar.rawValue
-
     @State private var opacity = CaptainAyerOverlayTuning.initialOpacity
     @State private var scale = CaptainAyerOverlayTuning.initialScale
     @State private var displayMode = OpenClamAvatarDisplayMode.closeUp
@@ -1057,7 +1063,11 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var motionCompletionTask: Task<Void, Never>?
 
     private var isCloseUp: Bool { displayMode == .closeUp }
-
+    private var shouldDimRailControls: Bool {
+        isRailDimmed
+            && !liveTalkPhase.isSessionActive
+            && !controller.isSpeaking
+    }
     var body: some View {
         GeometryReader { proxy in
             let overlayGlobalMinY = proxy.frame(in: .global).minY
@@ -1226,7 +1236,10 @@ struct CaptainAyerAvatarOverlay: View {
             interactionLayer = CaptainAyerInteractionLayer(
                 rawValue: storedInteractionLayer
             ) ?? .avatar
-            interactions.connect(noteThreadInteraction)
+            interactions.connect(
+                noteThreadInteraction,
+                onScroll: noteThreadScrollInteraction
+            )
             wakeRail()
             connectionFeedback.synchronize(with: liveTalkPhase)
             motionSession = OpenClamAvatarMotionSessionState()
@@ -1255,6 +1268,8 @@ struct CaptainAyerAvatarOverlay: View {
         .onChange(of: isRailFolded) { _, folded in
             if folded {
                 showsOpacityPanel = false
+            } else {
+                wakeRail()
             }
         }
         .onChange(of: controller.isSpeaking) { _, isSpeaking in
@@ -1352,6 +1367,7 @@ struct CaptainAyerAvatarOverlay: View {
                     canvasBounds: canvasBounds
                 )
             },
+            onTapInteraction: dismissOpacityPanel,
             onInteraction: noteAvatarInteraction
         )
         .frame(width: width, height: height)
@@ -1508,20 +1524,43 @@ struct CaptainAyerAvatarOverlay: View {
     private var toolRail: some View {
         VStack(spacing: 10) {
             if !isRailFolded {
-                liveTalkControl
-                avatarToolRail
+                VStack(spacing: 10) {
+                    liveTalkControl
+                        .opacity(
+                            liveTalkPhase.isSessionActive
+                                ? 1
+                                : (shouldDimRailControls
+                                    ? CaptainAyerOverlayTuning.railIdleOpacity
+                                    : 1)
+                        )
+                    avatarToolRail
+                        .opacity(
+                            shouldDimRailControls
+                                ? CaptainAyerOverlayTuning.railIdleOpacity
+                                : 1
+                        )
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
+                .animation(
+                    reduceMotion ? nil : .timingCurve(0.25, 1, 0.5, 1, duration: 0.5),
+                    value: isRailDimmed
+                )
+            } else {
+                Spacer(minLength: 0)
             }
+
+            railFoldControl
         }
         .frame(maxHeight: .infinity, alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("openclam-avatar-tool-rail")
-        .accessibilityValue(isRailDimmed ? "Idle" : "Visible")
+        .accessibilityValue(shouldDimRailControls ? "Idle" : "Visible")
     }
 
     private var avatarToolRail: some View {
         VStack(spacing: 10) {
                 railButton(
-                    systemImage: "rectangle.stack.fill",
+                    systemImage: "person.2",
                     label: "Choose avatar",
                     value: LiveTalkAvatarSwitchPolicy.allowsSwitch(during: liveTalkPhase)
                         ? avatar.displayName
@@ -1534,13 +1573,14 @@ struct CaptainAyerAvatarOverlay: View {
                     showsOpacityPanel = false
                     showsAvatarCarousel = true
                 }
+                .accessibilityIdentifier("openclam-avatar-picker")
 
                 avatarModeMenu
 
                 railButton(
                     systemImage: controller.isSpeaking
-                        ? "stop.fill"
-                        : (isTTSEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill"),
+                        ? "stop"
+                        : (isTTSEnabled ? "waveform" : "speaker.slash"),
                     label: controller.isSpeaking ? "Stop speaking" : "Play latest reply",
                     isActive: controller.isSpeaking,
                     isEnabled: !liveTalkPhase.isSessionActive
@@ -1552,10 +1592,11 @@ struct CaptainAyerAvatarOverlay: View {
                 interactionLayerButton
 
                 railButton(
-                    systemImage: "drop.fill",
+                    systemImage: "circle.lefthalf.filled",
                     label: showsOpacityPanel ? "Close opacity control" : "Open opacity control",
                     value: "\(Int(opacity * 100)) percent",
-                    isActive: showsOpacityPanel
+                    isActive: showsOpacityPanel,
+                    dismissesOpacityPanel: false
                 ) {
                     animate(.toggle) {
                         showsOpacityPanel.toggle()
@@ -1564,7 +1605,7 @@ struct CaptainAyerAvatarOverlay: View {
                 .accessibilityIdentifier("openclam-avatar-opacity-control")
 
                 railButton(
-                    systemImage: "face.smiling",
+                    systemImage: "face.dashed",
                     label: faceMirror.isEnabled
                         ? "Stop face mirroring"
                         : "Mirror your face",
@@ -1580,11 +1621,21 @@ struct CaptainAyerAvatarOverlay: View {
                     }
                 }
         }
-        .opacity(isRailDimmed ? CaptainAyerOverlayTuning.railIdleOpacity : 1)
-        .animation(
-            reduceMotion ? nil : .timingCurve(0.25, 1, 0.5, 1, duration: 0.5),
-            value: isRailDimmed
-        )
+    }
+
+    private var railFoldControl: some View {
+        railButton(
+            systemImage: isRailFolded ? "chevron.right" : "chevron.down",
+            label: isRailFolded ? "Show all tools" : "Fold all tools",
+            value: isRailFolded ? "Folded" : "Expanded",
+            isActive: true
+        ) {
+            animate(.toggle) {
+                isRailFolded.toggle()
+            }
+        }
+        .accessibilityHint("Shows or hides the avatar tool rail")
+        .accessibilityIdentifier("openclam-avatar-rail-fold-button")
     }
 
     private var avatarModeMenu: some View {
@@ -1600,7 +1651,7 @@ struct CaptainAyerAvatarOverlay: View {
             }
         } label: {
             railMenuLabel(
-                systemImage: "person.crop.artframe",
+                systemImage: "figure.stand",
                 isActive: displayMode != .standby
             )
         }
@@ -1608,6 +1659,10 @@ struct CaptainAyerAvatarOverlay: View {
         .accessibilityValue(displayMode.title)
         .accessibilityHint("Choose Standby, Close-up, Horizon Walk, Edge Idle, or Moves")
         .accessibilityIdentifier("openclam-avatar-mode-menu")
+        .simultaneousGesture(TapGesture().onEnded {
+            wakeRail()
+            dismissOpacityPanel()
+        })
     }
 
     private func avatarModeMenuButton(
@@ -1617,19 +1672,24 @@ struct CaptainAyerAvatarOverlay: View {
         let isActive = displayMode == mode
         return Button {
             wakeRail()
+            dismissOpacityPanel()
             selectAvatarMode(mode)
         } label: {
-            Label(
-                mode.title,
-                systemImage: isActive ? "checkmark" : mode.systemImage
-            )
+            HStack {
+                Label(mode.title, systemImage: mode.systemImage)
+                if isActive {
+                    Image(systemName: "checkmark")
+                }
+            }
         }
         .disabled(disabledReason != nil)
     }
 
     private var interactionLayerButton: some View {
         railButton(
-            systemImage: interactionLayer.systemImage,
+            systemImage: interactionLayer == .avatar
+                ? "person.crop.rectangle"
+                : "text.bubble",
             label: interactionLayer.toggled.title,
             value: interactionLayer.title,
             isActive: interactionLayer == .avatar
@@ -1652,30 +1712,20 @@ struct CaptainAyerAvatarOverlay: View {
         isActive: Bool
     ) -> some View {
         ZStack {
-            Circle()
-                .fill(
-                    isActive
-                        ? Color.primary.opacity(0.90)
-                        : Color(uiColor: .systemBackground).opacity(0.84)
-                )
-                .overlay {
-                    Circle().stroke(.primary.opacity(0.12), lineWidth: 1)
-                }
+            railControlSurface(isActive: isActive, isBare: false)
             Image(systemName: systemImage)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(
-                    isActive ? Color(uiColor: .systemBackground) : Color.primary
-                )
+                .font(railIconFont(isBare: false))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(railForeground(isActive: isActive, isEnabled: true))
         }
         .frame(width: 44, height: 44)
         .contentShape(Rectangle())
-        .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
     }
 
     private var liveTalkControl: some View {
         VStack(spacing: 2) {
             railButton(
-                systemImage: liveTalkPhase.isSessionActive ? "phone.down.fill" : "phone.fill",
+                systemImage: liveTalkPhase.isSessionActive ? "phone.down" : "phone",
                 label: liveTalkPhase.isSessionActive ? "Hang up Live Talk" : "Start Live Talk",
                 value: liveTalkPhase.statusTitle,
                 isActive: liveTalkPhase.isSessionActive
@@ -1710,14 +1760,17 @@ struct CaptainAyerAvatarOverlay: View {
 
     private var opacityPanel: some View {
         HStack(spacing: 12) {
-            Image(systemName: "drop.fill")
+            Image(systemName: "circle.lefthalf.filled")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             Slider(
                 value: Binding(
                     get: { opacity },
-                    set: { setOpacity($0, persists: true) }
+                    set: {
+                        wakeRail()
+                        setOpacity($0, persists: true)
+                    }
                 ),
                 in: CaptainAyerOverlayTuning.minimumOpacity
                     ... CaptainAyerOverlayTuning.maximumOpacity,
@@ -1754,45 +1807,57 @@ struct CaptainAyerAvatarOverlay: View {
         isActive: Bool = false,
         isBare: Bool = false,
         isEnabled: Bool = true,
+        dismissesOpacityPanel: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         Button {
             wakeRail()
+            if dismissesOpacityPanel {
+                dismissOpacityPanel()
+            }
             action()
         } label: {
             ZStack {
-                if !isBare {
-                    Circle()
-                        .fill(
-                            isActive
-                                ? Color.primary.opacity(0.90)
-                                : Color(uiColor: .systemBackground).opacity(0.84)
-                        )
-                        .overlay {
-                            Circle()
-                                .stroke(.primary.opacity(0.12), lineWidth: 1)
-                        }
-                }
+                railControlSurface(isActive: isActive, isBare: isBare)
 
                 Image(systemName: systemImage)
-                    .font(.system(size: isBare ? 22 : 18, weight: .semibold))
+                    .font(railIconFont(isBare: isBare))
+                    .symbolRenderingMode(.monochrome)
             }
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
-            .shadow(color: isBare ? .clear : .black.opacity(0.10), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
         .frame(width: 44, height: 44)
         .contentShape(Rectangle())
-        .foregroundStyle(
-            isActive && !isBare
-                ? Color(uiColor: .systemBackground)
-                : Color.primary
-        )
+        .foregroundStyle(railForeground(isActive: isActive, isEnabled: isEnabled))
         .accessibilityLabel(label)
         .accessibilityValue(value ?? "")
         .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.55)
+        .opacity(isEnabled ? 1 : 0.46)
+    }
+
+    @ViewBuilder
+    private func railControlSurface(
+        isActive: Bool,
+        isBare: Bool
+    ) -> some View {
+        if !isBare && isActive {
+            Circle()
+                .fill(Color.primary.opacity(0.10))
+        }
+    }
+
+    private func railIconFont(isBare: Bool) -> Font {
+        .system(size: isBare ? 21 : 18, weight: .regular)
+    }
+
+    private func railForeground(
+        isActive: Bool,
+        isEnabled: Bool
+    ) -> Color {
+        guard isEnabled else { return .secondary }
+        return isActive ? OpenClamTheme.active : OpenClamTheme.inactive
     }
 
     private var avatarSpeechAccessibilityValue: String {
@@ -1814,8 +1879,15 @@ struct CaptainAyerAvatarOverlay: View {
         railDimTask?.cancel()
         railDimTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(CaptainAyerOverlayTuning.railFadeDelay))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !isRailFolded else { return }
             isRailDimmed = true
+        }
+    }
+
+    private func dismissOpacityPanel() {
+        guard showsOpacityPanel else { return }
+        animate(.toggle) {
+            showsOpacityPanel = false
         }
     }
 
@@ -1830,6 +1902,11 @@ struct CaptainAyerAvatarOverlay: View {
     }
 
     private func noteThreadInteraction() {
+        dismissOpacityPanel()
+        noteThreadScrollInteraction()
+    }
+
+    private func noteThreadScrollInteraction() {
         if displayMode.afterUserActivity != displayMode {
             stopAvatarMotion()
         }

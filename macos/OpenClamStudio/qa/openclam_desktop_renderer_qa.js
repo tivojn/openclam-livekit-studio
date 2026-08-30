@@ -8,6 +8,11 @@ const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
 const inlineScripts = [...source.matchAll(/<script>\s*([\s\S]*?)\s*<\/script>/g)];
 const inline = inlineScripts.at(-1);
+const buttonMarkup = id => {
+  const match = source.match(new RegExp(`<button id="${id}"[\\s\\S]*?<\\/button>`));
+  assert.ok(match, `${id} must exist`);
+  return match[0];
+};
 
 assert.ok(inline, 'desktop renderer must contain one inline application script');
 assert.doesNotThrow(() => new Function(inline[1]), 'desktop renderer JavaScript must parse');
@@ -57,19 +62,48 @@ const displayModeMenu = source.match(
   /<div id="motionPicker"[^>]*aria-label="Avatar display mode"[^>]*>([\s\S]*?)<\/div>/,
 );
 assert.ok(displayModeMenu, 'the avatar rail must expose one display-mode menu');
-const displayModeItems = [...displayModeMenu[1].matchAll(
-  /<button id="([^"]+)"[^>]*role="menuitemradio"[^>]*>([^<]+)<\/button>/g,
-)].map(match => [match[1], match[2].trim()]);
-assert.deepEqual(displayModeItems, [
-  ['standbyButton', 'Standby'],
-  ['closeUpButton', 'Close-up'],
-  ['walkButton', 'Horizon Walk'],
-  ['edgeIdleButton', 'Edge Idle'],
-  ['movesButton', 'Moves'],
-], 'the display-mode menu must contain exactly the five owner-approved modes');
+const displayModeItems = [
+  ['standbyButton', 'Standby', 'standby', 'symbol-standby'],
+  ['closeUpButton', 'Close-up', 'close-up', 'symbol-close-up'],
+  ['walkButton', 'Horizon Walk', 'horizon-walk', 'symbol-horizon-walk'],
+  ['edgeIdleButton', 'Edge Idle', 'edge-idle', 'symbol-edge-idle'],
+  ['movesButton', 'Moves', 'moves', 'symbol-moves'],
+];
+for (const [id, label, symbol, symbolClass] of displayModeItems) {
+  const markup = buttonMarkup(id);
+  assert.match(markup, /role="menuitemradio"/, `${id} must keep radio semantics`);
+  assert.match(markup, new RegExp(`data-symbol="${symbol}"`), `${id} must expose its symbol name`);
+  assert.match(markup, new RegExp(`class="sf-symbol ${symbolClass}"`), `${id} must use the approved glyph`);
+  assert.match(markup, new RegExp(`<span class="rail-picker-label">${label}<\\/span>`), `${id} must keep its visible label`);
+  assert.match(markup, /class="sf-symbol symbol-checkmark rail-picker-check"/, `${id} must reserve a trailing active check`);
+}
+assert.equal((displayModeMenu[1].match(/role="menuitemradio"/g) || []).length, 5,
+  'the display-mode menu must contain exactly the five owner-approved modes');
 assert.equal((source.match(/id="motionMenuButton"/g) || []).length, 1);
-assert.match(source, /id="motionMenuButton"[^>]+aria-label="Choose avatar display mode"[\s\S]{0,180}<svg[^>]*>[\s\S]{0,80}<path /,
-  'one avatar-in-a-frame icon must own the complete display-mode menu');
+assert.match(buttonMarkup('motionMenuButton'), /class="sf-symbol symbol-standby"/,
+  'one minimal figure glyph must own the complete display-mode menu');
+for (const [id, symbolClass] of [
+  ['liveTalkButton', 'symbol-phone'],
+  ['avatarCarouselButton', 'symbol-avatar-picker'],
+  ['avatarModeButton', 'symbol-avatar-window'],
+  ['speakerButton', 'symbol-waveform'],
+  ['layerButton', 'symbol-thread-layer'],
+  ['opacityButton', 'symbol-opacity'],
+  ['mirrorButton', 'symbol-face-mirror'],
+  ['settingsButton', 'symbol-settings'],
+  ['railFoldButton', 'symbol-chevron-down'],
+]) {
+  assert.match(buttonMarkup(id), new RegExp(`class="sf-symbol ${symbolClass}`),
+    `${id} must use the approved minimal SF Symbol`);
+}
+assert.match(buttonMarkup('liveTalkButton'), /class="sf-symbol symbol-phone-down"/,
+  'connected Live Talk must swap to phone.down');
+assert.match(buttonMarkup('speakerButton'), /class="sf-symbol symbol-stop"/,
+  'active read-aloud must swap to stop');
+assert.match(buttonMarkup('speakerButton'), /class="sf-symbol symbol-speaker-slash"/,
+  'unavailable read-aloud must swap to speaker.slash');
+assert.match(buttonMarkup('layerButton'), /class="sf-symbol symbol-avatar-layer"/,
+  'the layer toggle must expose the avatar-top state');
 const activeDisplayModeSource = inline[1].match(
   /(const activeDisplayMode = \(\) => \{[\s\S]*?\n    \};)/,
 );
@@ -113,7 +147,7 @@ assert.match(source, /id="chatHistoryButton"[^>]+aria-controls="chatHistoryPanel
   'the central header must keep an accessible left split-pane toggle');
 assert.match(source, /html\.chat-mode #settingsButton \{ display: none; \}/,
   'Settings belongs in the left sidebar, not a duplicate rail gear');
-assert.match(source, /html\.chat-mode #rail\.rail-folded \.rail-fold svg \{ transform: rotate\(-90deg\); \}/,
+assert.match(source, /html\.chat-mode #rail\.rail-folded \.rail-fold \.sf-symbol \{ transform: rotate\(-90deg\); \}/,
   'the one visible folded-rail chevron must point right');
 assert.match(source, /html\.chat-mode #rail \{ top: 66px; right: calc\(var\(--workspace-info-track\) \+ 14px\); \}/,
   'the avatar rail must stay inside the central pane and clear an open details pane');

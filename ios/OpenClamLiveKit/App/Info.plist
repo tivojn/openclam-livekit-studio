@@ -51,6 +51,8 @@
 	<string>OpenClam records during explicit tap-to-talk or Screen Voice requests, or while you have Quick Dictation turned on. Live Talk starts the microphone only after you tap the phone button, streams audio through LiveKit to your selected speech service while the app is in the foreground, and stops when you tap hang up or the app enters the background. Quick Dictation keeps a visible, foreground-started microphone readiness session active until you turn it off, but discards standby audio; Apple recognition stays with Apple, and a selected cloud speech provider receives bounded audio only after a keyboard voice request begins.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>OpenClam imports only photos and videos you choose; attachments go to your configured AI service only after you tap Send.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>OpenClam adds only a generated image or video after you explicitly choose Save to Photos.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>OpenClam searches your reminders when you ask, and creates, changes, completes, or deletes only items you review and approve.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

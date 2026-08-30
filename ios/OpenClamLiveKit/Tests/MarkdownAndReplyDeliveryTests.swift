@@ -470,6 +470,11 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
         XCTAssertEqual(titles, ["Copy", "Ask AI"])
     }
 
+    @MainActor
+    func testSelectableMessageTextUsesNeutralInteractionTint() {
+        XCTAssertEqual(SelectableMessageText.interactionTintColor, UIColor.label)
+    }
+
     func testLocalImagePreviewIsPixelBounded() throws {
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1

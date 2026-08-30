@@ -44,6 +44,32 @@ from studio import rig
 
 WEB = os.path.join(ROOT, "web")
 
+# These are checked-in template masks generated from Apple's SF Symbols by
+# scripts/generate-sf-symbol-icons.swift.  Keep the public route closed to this
+# exact set: unlike /assets/*, UI symbols are application resources and must
+# never become a generic file server rooted in web/.
+UI_SYMBOL_ASSETS = frozenset({
+    "avatar-layer",
+    "avatar-picker",
+    "avatar-window",
+    "checkmark",
+    "chevron-down",
+    "close-up",
+    "edge-idle",
+    "face-mirror",
+    "horizon-walk",
+    "moves",
+    "opacity",
+    "phone",
+    "phone-down",
+    "settings",
+    "speaker-slash",
+    "standby",
+    "stop",
+    "thread-layer",
+    "waveform",
+})
+
 
 @asynccontextmanager
 async def lifespan(_application):
@@ -3649,6 +3675,21 @@ async def live_worklet():
         os.path.join(WEB, "live-worklet.js"),
         media_type="application/javascript",
         headers={"Cache-Control": "no-store"})
+
+
+@app.get("/ui-symbols/{asset}.png")
+async def ui_symbol(asset: str):
+    """Serve only the reviewed native symbol masks used by the app chrome."""
+    if asset not in UI_SYMBOL_ASSETS:
+        raise HTTPException(404, "UI symbol is not installed")
+    path = os.path.join(WEB, "assets", "sf-symbols", f"{asset}.png")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "UI symbol is not installed")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/livekit-client.js")

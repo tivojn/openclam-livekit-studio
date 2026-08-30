@@ -46,7 +46,7 @@ enum AlarmService {
         let attributes = AlarmAttributes<CompanionAlarmMetadata>(
             presentation: AlarmPresentation(alert: alert),
             metadata: CompanionAlarmMetadata(label: label),
-            tintColor: .indigo
+            tintColor: .gray
         )
         let configuration = AlarmManager.AlarmConfiguration<CompanionAlarmMetadata>.alarm(
             schedule: .fixed(date),

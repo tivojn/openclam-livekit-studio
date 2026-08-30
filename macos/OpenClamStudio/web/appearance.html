@@ -7,13 +7,15 @@
   <style>
     :root{color-scheme:light;--ink:#1a1c1f;--muted:rgba(26,28,31,.70);
       --line:rgba(26,28,31,.08);--line-strong:rgba(26,28,31,.12);
-      --panel:rgba(255,255,255,.96);--surface:#f9f9f9;--accent:#339cff;
+      --panel:rgba(255,255,255,.96);--surface:#f9f9f9;--accent:#303030;
       --track:#ededed;--shadow:0 12px 36px rgba(13,13,13,.16)}
     :root[data-theme=dark]{color-scheme:dark;--ink:#fff;--muted:rgba(255,255,255,.70);
       --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.16);
-      --panel:rgba(33,33,33,.96);--surface:#181818;--track:#414141;
+      --panel:rgba(33,33,33,.96);--surface:#181818;--accent:#ededed;--track:#414141;
       --shadow:0 12px 36px rgba(0,0,0,.34)}
     *{box-sizing:border-box}
+    ::selection{background:rgba(26,28,31,.16);color:inherit}
+    :root[data-theme=dark] ::selection{background:rgba(255,255,255,.22)}
     html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}
     body{padding:10px;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",
       "Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased;color:var(--ink)}

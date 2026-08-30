@@ -345,7 +345,7 @@ struct AvatarAgentSettingsView: View {
                     if avatar.id == configuration.activeAvatarID {
                         Text("ACTIVE")
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(.primary)
                     }
                     if avatarLibrary.isImported(id: avatar.id) {
                         Text(

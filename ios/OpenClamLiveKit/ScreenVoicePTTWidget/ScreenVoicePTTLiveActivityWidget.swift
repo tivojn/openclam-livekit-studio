@@ -31,7 +31,7 @@ struct ScreenVoicePTTLiveActivityWidget: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Image(systemName: "waveform")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(.primary)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     Text("OpenClam")
@@ -43,14 +43,14 @@ struct ScreenVoicePTTLiveActivityWidget: Widget {
                 }
             } compactLeading: {
                 Image(systemName: "waveform")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.primary)
             } compactTrailing: {
                 Image(systemName: context.state.phase.symbolName)
             } minimal: {
                 Image(systemName: context.state.phase.symbolName)
                     .foregroundStyle(context.state.phase.tint)
             }
-            .keylineTint(.green)
+            .keylineTint(.gray)
         }
     }
 }
@@ -87,7 +87,7 @@ private extension ScreenVoicePTTPhase {
         case .failed: .orange
         case .cancelled: .secondary
         case .completed: .green
-        default: .green
+        default: .primary
         }
     }
 }

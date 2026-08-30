@@ -119,6 +119,47 @@
     .round-button:hover { transform: translateY(-1px); color: #fff; border-color: var(--line-strong); background: rgba(29, 32, 39, .9); }
     .round-button:active { transform: scale(.95); }
     .round-button svg { width: 19px; height: 19px; fill: currentColor; }
+    .sf-symbol {
+      --symbol: none;
+      display: block;
+      width: 20px;
+      height: 20px;
+      flex: none;
+      background: currentColor;
+      -webkit-mask: var(--symbol) center / contain no-repeat;
+      mask: var(--symbol) center / contain no-repeat;
+    }
+    .symbol-avatar-picker { --symbol: url('/ui-symbols/avatar-picker.png'); }
+    .symbol-avatar-window { --symbol: url('/ui-symbols/avatar-window.png'); }
+    .symbol-standby { --symbol: url('/ui-symbols/standby.png'); }
+    .symbol-close-up { --symbol: url('/ui-symbols/close-up.png'); }
+    .symbol-horizon-walk { --symbol: url('/ui-symbols/horizon-walk.png'); }
+    .symbol-edge-idle { --symbol: url('/ui-symbols/edge-idle.png'); }
+    .symbol-moves { --symbol: url('/ui-symbols/moves.png'); }
+    .symbol-phone { --symbol: url('/ui-symbols/phone.png'); }
+    .symbol-phone-down { --symbol: url('/ui-symbols/phone-down.png'); }
+    .symbol-stop { --symbol: url('/ui-symbols/stop.png'); }
+    .symbol-waveform { --symbol: url('/ui-symbols/waveform.png'); }
+    .symbol-speaker-slash { --symbol: url('/ui-symbols/speaker-slash.png'); }
+    .symbol-avatar-layer { --symbol: url('/ui-symbols/avatar-layer.png'); }
+    .symbol-thread-layer { --symbol: url('/ui-symbols/thread-layer.png'); }
+    .symbol-opacity { --symbol: url('/ui-symbols/opacity.png'); }
+    .symbol-face-mirror { --symbol: url('/ui-symbols/face-mirror.png'); }
+    .symbol-settings { --symbol: url('/ui-symbols/settings.png'); }
+    .symbol-chevron-down { --symbol: url('/ui-symbols/chevron-down.png'); }
+    .symbol-checkmark { --symbol: url('/ui-symbols/checkmark.png'); }
+    #liveTalkButton .symbol-phone-down,
+    #speakerButton .symbol-stop,
+    #speakerButton .symbol-speaker-slash,
+    #layerButton .symbol-avatar-layer { display: none; }
+    #liveTalkButton[data-state="connected"] .symbol-phone,
+    #speakerButton[aria-pressed="true"] .symbol-waveform,
+    #speakerButton:disabled .symbol-waveform,
+    #layerButton[aria-pressed="true"] .symbol-thread-layer { display: none; }
+    #liveTalkButton[data-state="connected"] .symbol-phone-down,
+    #speakerButton[aria-pressed="true"] .symbol-stop,
+    #speakerButton:disabled .symbol-speaker-slash,
+    #layerButton[aria-pressed="true"] .symbol-avatar-layer { display: block; }
     .round-button[disabled] { opacity: .36; cursor: default; transform: none; }
 
     #liveTalkButton[data-state="connecting"] { color: var(--warning); border-color: rgba(244, 189, 98, .4); animation: callPulse 1.15s ease-in-out infinite; }
@@ -484,7 +525,8 @@
       --codex-border: rgba(32, 32, 32, .10);
       --codex-border-heavy: rgba(32, 32, 32, .17);
       --codex-border-light: rgba(32, 32, 32, .055);
-      --codex-focus: #339cff;
+      --codex-focus: #737373;
+      --codex-selection: rgba(32, 32, 32, .16);
       --codex-hover: rgba(32, 32, 32, .055);
       --codex-pressed: rgba(32, 32, 32, .10);
       --ink: var(--codex-text);
@@ -530,6 +572,8 @@
       --codex-border: rgba(255, 255, 255, .08);
       --codex-border-heavy: rgba(255, 255, 255, .16);
       --codex-border-light: rgba(255, 255, 255, .04);
+      --codex-focus: #b8b8b8;
+      --codex-selection: rgba(255, 255, 255, .22);
       --codex-hover: rgba(255, 255, 255, .08);
       --codex-pressed: rgba(255, 255, 255, .12);
       --shadow: 0 18px 60px rgba(0, 0, 0, .42);
@@ -539,6 +583,7 @@
     }
 
     body { background: var(--codex-surface); }
+    ::selection { background: var(--codex-selection); color: inherit; }
     html.is-electron, html.is-electron body { background: transparent; }
 
     #topline {
@@ -636,6 +681,10 @@
       font-weight: 420;
       line-height: 1.58;
       letter-spacing: -.006em;
+    }
+    .bubble a, .openclaw-markdown-preview a {
+      color: var(--codex-text);
+      text-decoration-color: var(--codex-text-tertiary);
     }
     .message.assistant .bubble {
       max-width: min(100%, 860px);
@@ -1034,7 +1083,7 @@
       z-index: 54;
       top: 112px;
       right: 62px;
-      width: 154px;
+      width: 196px;
       padding: 6px;
       border: 1px solid var(--codex-border);
       border-radius: 13px;
@@ -1047,6 +1096,10 @@
       width: 100%;
       min-height: 36px;
       padding: 0 10px;
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr) 14px;
+      align-items: center;
+      gap: 8px;
       border: 0;
       border-radius: 8px;
       background: transparent;
@@ -1054,6 +1107,10 @@
       text-align: left;
       cursor: pointer;
     }
+    .rail-picker button .sf-symbol { width: 18px; height: 18px; }
+    .rail-picker-label { min-width: 0; white-space: nowrap; }
+    .rail-picker-check { width: 13px !important; height: 13px !important; visibility: hidden; }
+    .rail-picker button[aria-checked="true"] .rail-picker-check { visibility: visible; }
     .rail-picker button:hover { background: var(--codex-hover); color: var(--codex-text); }
     .rail-picker button[aria-checked="true"] { background: var(--codex-pressed); color: var(--codex-text); }
     .rail-picker button:disabled {
@@ -1105,7 +1162,7 @@
     }
     html.chat-mode #rail .chat-only-control { display: grid; }
     html.chat-mode #rail.rail-folded > :not(.rail-fold) { display: none; }
-    html.chat-mode #rail.rail-folded .rail-fold svg { transform: rotate(-90deg); }
+    html.chat-mode #rail.rail-folded .rail-fold .sf-symbol { transform: rotate(-90deg); }
     html.chat-mode #rail.rail-folded .rail-fold { display: grid; }
     html.chat-mode #settingsButton { display: none; }
     html.chat-mode #chatDock,
@@ -1693,8 +1750,8 @@
       display: grid;
       place-items: center;
       border-radius: 50%;
-      background: #9eaa78;
-      color: white;
+      background: var(--codex-text-secondary);
+      color: var(--codex-under);
       font-size: 8px;
       font-weight: 700;
     }
@@ -1909,43 +1966,57 @@
 
   <nav id="rail" aria-label="Avatar controls">
     <button id="liveTalkButton" class="round-button" type="button" data-state="idle" aria-label="Start Live Talk" title="Start Live Talk">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.7 10.8a15.7 15.7 0 0 0 6.5 6.5l2.2-2.2c.3-.3.7-.4 1.1-.2 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.7 21 3 13.3 3 3.8c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.2 1.1l-2.2 2.1z"/></svg>
+      <span class="sf-symbol symbol-phone" aria-hidden="true"></span>
+      <span class="sf-symbol symbol-phone-down" aria-hidden="true"></span>
     </button>
     <button id="avatarCarouselButton" class="round-button" type="button" aria-label="Switch to next avatar" title="Switch to next avatar">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12a2 2 0 0 1 2 2v12h-2V5H5V3Zm-2 4h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Zm0 2v10h12V9H3Zm2 2h8v6H5v-6Z"/></svg>
+      <span class="sf-symbol symbol-avatar-picker" aria-hidden="true"></span>
     </button>
     <button id="avatarModeButton" class="round-button chat-only-control" type="button" aria-label="Switch to Avatar mode" title="Avatar mode">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h5v2H5v4H3V4a1 1 0 0 1 1-1Zm11 0h5a1 1 0 0 1 1 1v5h-2V5h-4V3ZM3 15h2v4h4v2H4a1 1 0 0 1-1-1v-5Zm16 0h2v5a1 1 0 0 1-1 1h-5v-2h4v-4ZM12 7a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm-5 10c.35-2.25 2.03-3.5 5-3.5s4.65 1.25 5 3.5H7Z"/></svg>
+      <span class="sf-symbol symbol-avatar-window" aria-hidden="true"></span>
     </button>
     <button id="motionMenuButton" class="round-button" type="button" aria-expanded="false" aria-controls="motionPicker" aria-label="Choose avatar display mode" title="Avatar display modes">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v14h16V5H4Zm8 2.1a3.1 3.1 0 1 1 0 6.2 3.1 3.1 0 0 1 0-6.2ZM6.8 17c.5-2 2.25-3 5.2-3s4.7 1 5.2 3H6.8Z"/></svg>
+      <span class="sf-symbol symbol-standby" aria-hidden="true"></span>
     </button>
     <button id="speakerButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Read latest reply aloud" title="Read latest reply aloud">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm11.5-.8a5 5 0 0 1 0 7.6l-1.2-1.6a3 3 0 0 0 0-4.4l1.2-1.6Zm2.4-3.1a9 9 0 0 1 0 13.8l-1.2-1.6a7 7 0 0 0 0-10.6l1.2-1.6Z"/></svg>
+      <span class="sf-symbol symbol-waveform" aria-hidden="true"></span>
+      <span class="sf-symbol symbol-stop" aria-hidden="true"></span>
+      <span class="sf-symbol symbol-speaker-slash" aria-hidden="true"></span>
     </button>
     <button id="layerButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Bring avatar layer forward" title="Bring avatar layer forward">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5-9 5-9-5 9-5Zm-7.1 9L12 15l7.1-4 1.9 1-9 5-9-5 1.9-1Zm0 5L12 20l7.1-4 1.9 1-9 5-9-5 1.9-1Z"/></svg>
+      <span class="sf-symbol symbol-thread-layer" aria-hidden="true"></span>
+      <span class="sf-symbol symbol-avatar-layer" aria-hidden="true"></span>
     </button>
     <button id="opacityButton" class="round-button chat-only-control" type="button" aria-expanded="false" aria-controls="opacityPanel" aria-label="Adjust avatar opacity" title="Adjust avatar opacity">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2S5.2 9.2 5.2 14.3a6.8 6.8 0 1 0 13.6 0C18.8 9.2 12 2.2 12 2.2Zm0 17.1a4.9 4.9 0 0 1-4.9-5c0-2.8 2.9-6.7 4.9-9.1v14.1Z"/></svg>
+      <span class="sf-symbol symbol-opacity" aria-hidden="true"></span>
     </button>
     <button id="mirrorButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Mirror avatar" title="Mirror avatar">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2v16H3V4Zm4 1h6.5a6.5 6.5 0 0 1 0 13H7v-2h6.5a4.5 4.5 0 0 0 0-9H7V5Zm3.8 4.2L7 12l3.8 2.8V13h4v-2h-4V9.2Z"/></svg>
+      <span class="sf-symbol symbol-face-mirror" aria-hidden="true"></span>
     </button>
     <button id="settingsButton" class="round-button" type="button" aria-label="Open Character Studio" title="Open Character Studio">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.5 7.5 0 0 0 .05-1 7.5 7.5 0 0 0-.05-1l2.1-1.64-2-3.46-2.53 1a7.7 7.7 0 0 0-1.72-1L14.86 3h-4l-.4 2.9a7.7 7.7 0 0 0-1.72 1l-2.53-1-2 3.46L6.3 11a7.5 7.5 0 0 0-.05 1 7.5 7.5 0 0 0 .05 1l-2.1 1.64 2 3.46 2.53-1a7.7 7.7 0 0 0 1.72 1l.4 2.9h4l.4-2.9a7.7 7.7 0 0 0 1.72-1l2.53 1 2-3.46L19.4 13zM12.85 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>
+      <span class="sf-symbol symbol-settings" aria-hidden="true"></span>
     </button>
     <button id="railFoldButton" class="round-button chat-only-control rail-fold" type="button" aria-expanded="true" aria-label="Fold controls" title="Fold controls">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5.6 8.6 6.4 6.4 6.4-6.4 1.4 1.4-7.8 7.8L4.2 10l1.4-1.4Z"/></svg>
+      <span class="sf-symbol symbol-chevron-down" aria-hidden="true"></span>
     </button>
   </nav>
 
   <div id="motionPicker" class="rail-picker" role="menu" aria-label="Avatar display mode" hidden>
-    <button id="standbyButton" type="button" role="menuitemradio" aria-checked="true">Standby</button>
-    <button id="closeUpButton" type="button" role="menuitemradio" aria-checked="false">Close-up</button>
-    <button id="walkButton" type="button" role="menuitemradio" aria-checked="false">Horizon Walk</button>
-    <button id="edgeIdleButton" type="button" role="menuitemradio" aria-checked="false">Edge Idle</button>
-    <button id="movesButton" type="button" role="menuitemradio" aria-checked="false">Moves</button>
+    <button id="standbyButton" type="button" role="menuitemradio" aria-checked="true" data-symbol="standby">
+      <span class="sf-symbol symbol-standby" aria-hidden="true"></span><span class="rail-picker-label">Standby</span><span class="sf-symbol symbol-checkmark rail-picker-check" aria-hidden="true"></span>
+    </button>
+    <button id="closeUpButton" type="button" role="menuitemradio" aria-checked="false" data-symbol="close-up">
+      <span class="sf-symbol symbol-close-up" aria-hidden="true"></span><span class="rail-picker-label">Close-up</span><span class="sf-symbol symbol-checkmark rail-picker-check" aria-hidden="true"></span>
+    </button>
+    <button id="walkButton" type="button" role="menuitemradio" aria-checked="false" data-symbol="horizon-walk">
+      <span class="sf-symbol symbol-horizon-walk" aria-hidden="true"></span><span class="rail-picker-label">Horizon Walk</span><span class="sf-symbol symbol-checkmark rail-picker-check" aria-hidden="true"></span>
+    </button>
+    <button id="edgeIdleButton" type="button" role="menuitemradio" aria-checked="false" data-symbol="edge-idle">
+      <span class="sf-symbol symbol-edge-idle" aria-hidden="true"></span><span class="rail-picker-label">Edge Idle</span><span class="sf-symbol symbol-checkmark rail-picker-check" aria-hidden="true"></span>
+    </button>
+    <button id="movesButton" type="button" role="menuitemradio" aria-checked="false" data-symbol="moves">
+      <span class="sf-symbol symbol-moves" aria-hidden="true"></span><span class="rail-picker-label">Moves</span><span class="sf-symbol symbol-checkmark rail-picker-check" aria-hidden="true"></span>
+    </button>
   </div>
   <div id="opacityPanel" class="rail-picker opacity-picker" hidden>
     <label for="avatarOpacityRange">Avatar opacity <output id="avatarOpacityValue">100%</output></label>
@@ -3133,9 +3204,11 @@
         const chatScopedFallback = kind === 'idle' && root.classList.contains('chat-mode');
         const available = authored || chatScopedFallback;
         spec.button.disabled = !available;
-        spec.button.textContent = loaded || chatScopedFallback ? spec.label
+        const label = loaded || chatScopedFallback ? spec.label
           : authored ? `${spec.label} · Retry`
             : `${spec.label} · Not built`;
+        const labelElement = spec.button.querySelector('.rail-picker-label');
+        if (labelElement) labelElement.textContent = label;
         spec.button.title = loaded ? `Preview ${spec.label}`
           : chatScopedFallback ? 'Lean at the lower-right edge of this chat window'
           : authored ? `${spec.label} is available; retry loading it`

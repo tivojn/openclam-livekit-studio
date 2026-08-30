@@ -293,7 +293,7 @@ struct OpenClamAvatarStoreView: View {
                 .foregroundStyle(.green)
         case .downloading:
             Label("Downloading", systemImage: "arrow.down.circle")
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.primary)
         case .verifying:
             Label("Checking integrity", systemImage: "checkmark.shield")
                 .foregroundStyle(.secondary)
@@ -305,7 +305,7 @@ struct OpenClamAvatarStoreView: View {
                 .foregroundStyle(.green)
         case .updateAvailable:
             Label("Update available", systemImage: "arrow.down.circle.fill")
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.primary)
         case let .failed(message):
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)

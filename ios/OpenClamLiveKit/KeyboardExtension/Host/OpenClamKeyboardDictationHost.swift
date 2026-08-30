@@ -1166,7 +1166,7 @@ struct OpenClamKeyboardDictationHostView: View {
         case .listening: .red
         case .completed: .green
         case .failed: .orange
-        case .preparing, .transcribing: .blue
+        case .preparing, .transcribing: .primary
         }
     }
 

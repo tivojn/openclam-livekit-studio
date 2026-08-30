@@ -10,9 +10,9 @@ enum CapabilitySupport: String, CaseIterable {
     var color: Color {
         switch self {
         case .native: .green
-        case .consent: .blue
+        case .consent: OpenClamTheme.active
         case .handoff: .orange
-        case .shortcut: .purple
+        case .shortcut: OpenClamTheme.active
         case .unavailable: .red
         }
     }

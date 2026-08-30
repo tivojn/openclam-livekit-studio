@@ -85,7 +85,7 @@ struct OpenClamAvatarCarousel: View {
     private var scrim: some View {
         Group {
             if colorScheme == .dark {
-                Color(red: 5 / 255, green: 7 / 255, blue: 10 / 255).opacity(0.82)
+                Color(white: 6 / 255).opacity(0.82)
             } else {
                 Color(uiColor: .systemBackground).opacity(0.88)
             }
@@ -318,15 +318,17 @@ struct OpenClamAvatarCarousel: View {
 
     private func cardColor(index: Int) -> Color {
         guard style == .sorbet else {
-            return Color(red: 22 / 255, green: 24 / 255, blue: 29 / 255)
+            return Color(white: 24 / 255)
         }
+        // The alternate deck keeps its playful physical arrangement, but its
+        // chrome remains achromatic so the avatar artwork supplies the color.
         let colors: [Color] = [
-            Color(red: 142 / 255, green: 207 / 255, blue: 212 / 255),
-            Color(red: 242 / 255, green: 167 / 255, blue: 179 / 255),
-            Color(red: 185 / 255, green: 167 / 255, blue: 232 / 255),
-            Color(red: 244 / 255, green: 192 / 255, blue: 127 / 255),
-            Color(red: 159 / 255, green: 216 / 255, blue: 164 / 255),
-            Color(red: 240 / 255, green: 224 / 255, blue: 138 / 255),
+            Color(white: 0.86),
+            Color(white: 0.76),
+            Color(white: 0.68),
+            Color(white: 0.82),
+            Color(white: 0.72),
+            Color(white: 0.90),
         ]
         return colors[index % colors.count]
     }

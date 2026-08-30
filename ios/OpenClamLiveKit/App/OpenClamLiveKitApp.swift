@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// The product palette is deliberately achromatic. Semantic colors remain at
+/// their call sites for real success, warning, and error states; ordinary
+/// selection, navigation, and progress UI uses these graphite tokens.
+enum OpenClamTheme {
+    static let accent = Color.accentColor
+    static let active = Color.primary
+    static let inactive = Color.secondary
+    static let subtleFill = Color.primary.opacity(0.06)
+    static let emphasizedFill = Color.primary.opacity(0.10)
+    static let subtleStroke = Color.primary.opacity(0.18)
+    static let emphasizedStroke = Color.primary.opacity(0.24)
+}
+
 @main
 struct OpenClamLiveKitApp: App {
     @StateObject private var model = AssistantModel()
@@ -13,6 +26,7 @@ struct OpenClamLiveKitApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .tint(OpenClamTheme.accent)
                 .environmentObject(model)
                 .environmentObject(conversation)
                 .environmentObject(aiConfiguration)

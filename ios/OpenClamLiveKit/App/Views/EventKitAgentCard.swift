@@ -694,7 +694,7 @@ struct EventKitAgentCard: View {
     private var cardStroke: Color {
         if session.pendingRequest?.operation.isDestructive == true { return .red.opacity(0.45) }
         if session.pendingRequest != nil { return .orange.opacity(0.45) }
-        return .indigo.opacity(0.2)
+        return OpenClamTheme.subtleStroke
     }
 
     private func pendingReview(_ pending: EventKitAgentPendingRequest) -> some View {
@@ -824,7 +824,7 @@ struct EventKitAgentCard: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
-        .tint(pending.operation.isDestructive ? .red : .indigo)
+        .tint(pending.operation.isDestructive ? Color.red : OpenClamTheme.accent)
         .accessibilityHint(
             pending.operation.isRead
                 ? "Approves this one local data read"
@@ -853,7 +853,7 @@ struct EventKitAgentCard: View {
                 title: "Local result",
                 detail: statusMessage,
                 systemImage: "checkmark.shield.fill",
-                color: .indigo
+                color: OpenClamTheme.active
             )
         }
     }
@@ -929,7 +929,7 @@ struct EventKitAgentCard: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .tint(session.calendarSelectionIsDestructive ? .red : .indigo)
+                .tint(session.calendarSelectionIsDestructive ? Color.red : OpenClamTheme.accent)
                 .accessibilityHint(
                     "Selects this private result and opens a second exact review; it does not change Calendar yet"
                 )
@@ -960,7 +960,7 @@ struct EventKitAgentCard: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .tint(session.reminderSelectionIsDestructive ? .red : .indigo)
+                .tint(session.reminderSelectionIsDestructive ? Color.red : OpenClamTheme.accent)
                 .accessibilityHint(
                     "Selects this private result and opens a second exact review; it does not change Reminders yet"
                 )

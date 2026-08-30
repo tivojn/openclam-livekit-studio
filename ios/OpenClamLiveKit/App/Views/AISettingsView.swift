@@ -503,7 +503,7 @@ struct AISettingsView: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol)
                 .font(.title3)
-                .foregroundStyle(.indigo)
+                .foregroundStyle(OpenClamTheme.active)
                 .frame(width: 28)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {

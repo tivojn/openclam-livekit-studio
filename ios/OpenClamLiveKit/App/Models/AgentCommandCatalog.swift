@@ -9,11 +9,11 @@ enum AgentCommandBoundary: String, CaseIterable, Sendable {
 
     var color: Color {
         switch self {
-        case .answer: .indigo
+        case .answer: OpenClamTheme.active
         case .localReview: .orange
-        case .editableDraft: .blue
+        case .editableDraft: OpenClamTheme.active
         case .localResult: .green
-        case .deviceShortcut: .purple
+        case .deviceShortcut: OpenClamTheme.active
         }
     }
 

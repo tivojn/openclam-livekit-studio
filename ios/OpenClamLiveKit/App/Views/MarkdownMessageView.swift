@@ -10,6 +10,7 @@ struct MarkdownMessageView: View {
     let localVisualPreviews: [UUID: UIImage]
     let onAskAISelection: ((String) -> Void)?
     let onOpenAttachment: ((ConversationAttachmentDescriptor) -> Void)?
+    let onSaveToPhotosAttachment: ((ConversationAttachmentDescriptor) -> Void)?
     let onSaveAttachment: ((ConversationAttachmentDescriptor) -> Void)?
     let onShareAttachment: ((ConversationAttachmentDescriptor) -> Void)?
 
@@ -18,6 +19,7 @@ struct MarkdownMessageView: View {
         localVisualPreviews: [UUID: UIImage] = [:],
         onAskAISelection: ((String) -> Void)? = nil,
         onOpenAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil,
+        onSaveToPhotosAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil,
         onSaveAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil,
         onShareAttachment: ((ConversationAttachmentDescriptor) -> Void)? = nil
     ) {
@@ -25,6 +27,7 @@ struct MarkdownMessageView: View {
         self.localVisualPreviews = localVisualPreviews
         self.onAskAISelection = onAskAISelection
         self.onOpenAttachment = onOpenAttachment
+        self.onSaveToPhotosAttachment = onSaveToPhotosAttachment
         self.onSaveAttachment = onSaveAttachment
         self.onShareAttachment = onShareAttachment
     }
@@ -149,14 +152,37 @@ struct MarkdownMessageView: View {
             }
 
             if attachment.connectorArtifact != nil,
-               onSaveAttachment != nil || onShareAttachment != nil {
+               onSaveToPhotosAttachment != nil
+                   || onSaveAttachment != nil
+                   || onShareAttachment != nil {
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
+                    if attachment.kind.isVisual,
+                       let onSaveToPhotosAttachment {
+                        Button {
+                            onSaveToPhotosAttachment(attachment)
+                        } label: {
+                            Image(systemName: "photo.badge.arrow.down")
+                                .frame(width: 30, height: 30)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .accessibilityLabel("Save \(attachment.displayName) to Photos")
+                        .accessibilityHint("Adds this verified media file to your photo library")
+                        .accessibilityIdentifier(
+                            "openclam-openclaw-photo-save-\(attachment.id.uuidString)"
+                        )
+                    }
                     if let onSaveAttachment {
                         Button {
                             onSaveAttachment(attachment)
                         } label: {
-                            Image(systemName: "square.and.arrow.down")
+                            Image(
+                                systemName: attachment.kind.isVisual
+                                    ? "folder.badge.plus"
+                                    : "square.and.arrow.down"
+                            )
                                 .frame(width: 30, height: 30)
                                 .contentShape(Rectangle())
                         }
@@ -341,6 +367,8 @@ struct MarkdownMessageView: View {
 /// add one local selection action. The selected substring is handed back to SwiftUI only after the
 /// user explicitly chooses Ask AI.
 struct SelectableMessageText: UIViewRepresentable {
+    static let interactionTintColor = UIColor.label
+
     let attributedText: AttributedString
     let textStyle: UIFont.TextStyle
     var weight: UIFont.Weight = .regular
@@ -367,7 +395,9 @@ struct SelectableMessageText: UIViewRepresentable {
         textView.textContainer.lineBreakMode = wrapsLines ? .byWordWrapping : .byClipping
         textView.textContainer.widthTracksTextView = wrapsLines
         textView.adjustsFontForContentSizeCategory = true
-        textView.tintColor = .link
+        // Keep selection handles, insertion affordances, and tappable links in
+        // the app's graphite palette instead of UIKit's default system blue.
+        textView.tintColor = Self.interactionTintColor
         textView.accessibilityIdentifier = "openclam-selectable-message-text"
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
