@@ -1166,7 +1166,7 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
                 application, "GET", "/ui-symbols/not-reviewed.png", headers=headers
             )
 
-        self.assertEqual(len(symbols), 19)
+        self.assertEqual(len(symbols), 20)
         for symbol in symbols:
             self.assertEqual(symbol.status_code, 200)
             self.assertEqual(symbol.headers["content-type"], "image/png")

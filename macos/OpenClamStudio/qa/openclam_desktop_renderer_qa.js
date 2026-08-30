@@ -43,7 +43,7 @@ assert.match(source, /const shell = window\.openclam/);
 assert.doesNotMatch(source, /location\.protocol\s*===/);
 assert.doesNotMatch(source, /navigator\.userAgent/);
 
-// One right-rail phone control owns the full call/hang-up lifecycle.
+// One right-rail waveform control owns the full call/hang-up lifecycle.
 assert.equal((source.match(/id="liveTalkButton"/g) || []).length, 1);
 assert.match(source, /data-state="idle" aria-label="Start Live Talk"/);
 assert.match(source, /setLiveButton\('connected'\)/);
@@ -83,10 +83,10 @@ assert.equal((source.match(/id="motionMenuButton"/g) || []).length, 1);
 assert.match(buttonMarkup('motionMenuButton'), /class="sf-symbol symbol-standby"/,
   'one minimal figure glyph must own the complete display-mode menu');
 for (const [id, symbolClass] of [
-  ['liveTalkButton', 'symbol-phone'],
+  ['liveTalkButton', 'symbol-waveform'],
   ['avatarCarouselButton', 'symbol-avatar-picker'],
   ['avatarModeButton', 'symbol-avatar-window'],
-  ['speakerButton', 'symbol-waveform'],
+  ['speakerButton', 'symbol-speaker'],
   ['layerButton', 'symbol-thread-layer'],
   ['opacityButton', 'symbol-opacity'],
   ['mirrorButton', 'symbol-face-mirror'],
@@ -96,12 +96,14 @@ for (const [id, symbolClass] of [
   assert.match(buttonMarkup(id), new RegExp(`class="sf-symbol ${symbolClass}`),
     `${id} must use the approved minimal SF Symbol`);
 }
-assert.match(buttonMarkup('liveTalkButton'), /class="sf-symbol symbol-phone-down"/,
-  'connected Live Talk must swap to phone.down');
+assert.match(buttonMarkup('liveTalkButton'), /class="sf-symbol symbol-stop"/,
+  'connected Live Talk must swap from waveform to stop');
 assert.match(buttonMarkup('speakerButton'), /class="sf-symbol symbol-stop"/,
   'active read-aloud must swap to stop');
 assert.match(buttonMarkup('speakerButton'), /class="sf-symbol symbol-speaker-slash"/,
   'unavailable read-aloud must swap to speaker.slash');
+assert.match(source, /Use the waveform control to start or end the current LiveKit conversation\./,
+  'the Details panel must describe the visible Live Talk waveform control');
 assert.match(buttonMarkup('layerButton'), /class="sf-symbol symbol-avatar-layer"/,
   'the layer toggle must expose the avatar-top state');
 const activeDisplayModeSource = inline[1].match(
@@ -395,6 +397,79 @@ assert.doesNotMatch(startLiveTalkSource[1], /openChat\(false\)/,
 assert.match(source, /const createWorkTimeline = \(\) =>/);
 assert.match(source, /event\.type === 'work'[\s\S]{0,100}updateWorkTimeline/);
 assert.match(source, /event\.type === 'attachment'[\s\S]{0,120}appendOpenClawAttachment/);
+assert.match(source,
+  /id="chatThreadHeading" role="status" aria-live="polite" aria-atomic="true"/,
+  'the task title must announce paired-agent activity without replacing history titles');
+assert.match(source,
+  /const renderChatThreadHeading = \(\) => \{[\s\S]{0,700}\? 'Typing\.\.\.'[\s\S]{0,100}`OpenClaw - \$\{agentName\}`/,
+  'OpenClaw task titles must use the exact active and idle labels');
+assert.match(openClawStreamingSource[1],
+  /turnControllerOrigin = options\.liveAgentBridge \? 'live-agent-bridge' : 'typed';[\s\S]{0,500}setOpenClawTurnHeading\(controller, true\);/,
+  'the controller must own Typing status before bridge work begins');
+assert.match(buttonMarkup('sendButton'), /data-action="send"/,
+  'the composer action must begin in send mode');
+assert.match(buttonMarkup('sendButton'), /class="send-stop-symbol"/,
+  'the composer must reserve an explicit Stop glyph');
+assert.match(source,
+  /sendButton\.dataset\.action = working \? 'stop' : 'send';/,
+  'Typing state must expose Stop through the existing composer action');
+const stopOpenClawSource = inline[1].match(
+  /(const requestOpenClawTurnStop = \(\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(stopOpenClawSource, 'the paired-agent Stop lifecycle must remain inspectable');
+assert.match(stopOpenClawSource[1],
+  /const controller = openClawTurnHeadingOwner;[\s\S]{0,180}turnController !== controller/,
+  'Stop must target the exact controller that owns Typing state');
+assert.match(stopOpenClawSource[1],
+  /openClawTurnStopRequested = true;[\s\S]{0,180}controller\.abort\(\);/,
+  'Stop must keep the working title until it aborts the active bridge request');
+assert.match(source,
+  /sendButton\.addEventListener\('click',[\s\S]{0,180}sendButton\.dataset\.action === 'stop'[\s\S]{0,100}requestOpenClawTurnStop\(\)/,
+  'the visible Stop action must dispatch to the paired controller cancellation path');
+assert.match(openClawStreamingSource[1],
+  /event\.type === 'work'[\s\S]{0,300}event\.type === 'text'[\s\S]{0,700}event\.type === 'complete'/,
+  'real work and assistant protocol events must update progressively before completion');
+assert.match(openClawStreamingSource[1],
+  /event\.type === 'complete'[\s\S]{0,180}completionReceived = true;[\s\S]{0,220}setOpenClawTurnHeading\(controller, false\);/,
+  'only the explicit terminal event may restore the idle OpenClaw title');
+assert.match(openClawStreamingSource[1],
+  /if \(!completionReceived\) \{\s*throw new Error\('OpenClaw connection closed before completion\.'\);/,
+  'bare stream EOF must never masquerade as a completed agent turn');
+assert.match(openClawStreamingSource[1],
+  /finally \{[\s\S]{0,160}setOpenClawTurnHeading\(controller, false\);[\s\S]{0,100}if \(turnController === controller\)/,
+  'terminal cleanup must be controller-owned so an older turn cannot clear a replacement title');
+assert.doesNotMatch(stopOpenClawSource[1], /setOpenClawTurnHeading\([^)]*false/,
+  'requesting Stop must not restore the idle title before cancellation is terminal');
+
+// A manual upward scroll suspends sticky follow. The global bottom-centre
+// affordance remains above avatar visuals in both layer modes, jumps to the
+// latest event, and resumes follow for subsequent text and work updates.
+assert.match(source,
+  /id="scrollToLatestButton"[^>]+aria-label="Go to latest message"[^>]+hidden/,
+  'the latest-message affordance must be accessible and initially hidden');
+assert.match(source,
+  /html\.chat-mode #scrollToLatestButton:not\(\[hidden\]\) \{[\s\S]{0,180}position: fixed;[\s\S]{0,80}z-index: 52;/,
+  'the latest-message affordance must stack globally above avatar visuals');
+assert.match(source,
+  /bottom: calc\(var\(--chat-workspace-bottom\) \+ 32px \+ var\(--composer-shell-height, 86px\)\);/,
+  'the affordance must remain clear of the composer');
+assert.doesNotMatch(source, /\.avatar-layer-top\s+#scrollToLatestButton/,
+  'avatar-on-top mode must never hide the latest-message affordance');
+assert.match(source,
+  /const followConversationLatest = \(\{ force = false \} = \{\}\) => \{[\s\S]{0,260}if \(!force && !conversationAutoFollow\)[\s\S]{0,180}conversation\.scrollTop = conversation\.scrollHeight/,
+  'streaming content may force-scroll only while sticky follow is active');
+assert.match(source,
+  /conversation\.addEventListener\('scroll',[\s\S]{0,220}conversationAutoFollow = !awayFromLatest;[\s\S]{0,180}scrollToLatestButton\.hidden = !root\.classList\.contains\('chat-mode'\) \|\| !awayFromLatest/,
+  'manual upward scrolling must disable sticky follow and reveal the affordance');
+assert.match(source,
+  /scrollToLatestButton\.addEventListener\('click',[\s\S]{0,120}followConversationLatest\(\{ force: true \}\)/,
+  'the latest-message affordance must jump to bottom and resume sticky follow');
+assert.match(openClawStreamingSource[1],
+  /event\.type === 'text'[\s\S]{0,700}followConversationLatest\(\);/,
+  'incremental OpenClaw text must honor sticky follow');
+assert.match(source,
+  /const updateWorkTimeline = \([^)]*\) => \{[\s\S]{0,3200}followConversationLatest\(\);/,
+  'incremental OpenClaw work steps must honor sticky follow');
 assert.match(source, /textContent = step\.title/,
   'work details must use text nodes rather than executable markup');
 assert.doesNotMatch(source, /innerHTML\s*=\s*step\./,
@@ -1000,7 +1075,7 @@ assert.match(source, /if \(!speechRequestIsCurrent\(owner\)\) return false;/,
 assert.match(source, /Hang up Live Talk before sending a regular chat message/);
 assert.match(source, /Hang up Live Talk before playing a separate read-aloud voice/);
 assert.match(source,
-  /sendButton\.disabled = \(!composer\.value\.trim\(\) && !pendingComposerAttachments\.length\)[\s\S]{0,100}Boolean\(turnController\) \|\| Boolean\(live\)/,
+  /sendButton\.disabled = sendButton\.dataset\.action === 'stop'[\s\S]{0,80}\? openClawTurnStopRequested[\s\S]{0,140}: \(!composer\.value\.trim\(\) && !pendingComposerAttachments\.length\)[\s\S]{0,100}Boolean\(turnController\) \|\| Boolean\(live\)/,
   'OpenClaw file-only messages must remain sendable while active turns and Live Talk stay exclusive');
 
 // The Mac composer supports both transports: OpenClaw files use authenticated
@@ -2565,10 +2640,10 @@ assert.doesNotMatch(source,
   /function stopLiveTalk\(reason\) \{[\s\S]{0,300}turnControllerOrigin === 'typed'[\s\S]{0,120}abort\(\)/,
   'hangup must never abort an ordinary typed OpenClaw turn');
 assert.match(source,
-  /finally \{\s*if \(turnController === controller\) \{\s*turnController = null;\s*turnControllerOrigin = null;/,
+  /finally \{[\s\S]{0,180}setOpenClawTurnHeading\(controller, false\);\s*if \(turnController === controller\) \{\s*turnController = null;\s*turnControllerOrigin = null;/,
   'an older aborted turn must not clear a replacement controller in finally');
 assert.match(source,
-  /else if \(turnController\) \{\s*turnController\.abort\(\);\s*removeWorking\(\);\s*setStatus\('Ready', 'good'\);/,
+  /else if \(turnController\) \{\s*if \(!requestOpenClawTurnStop\(\)\) turnController\.abort\(\);\s*removeWorking\(\);\s*if \(!openClawTurnHeadingOwner\) setStatus\('Ready', 'good'\);/,
   'Escape must leave controller ownership intact for finally to restore controls');
 assert.doesNotMatch(source,
   /else if \(turnController\) \{\s*turnController\.abort\(\);\s*turnController = null;/,

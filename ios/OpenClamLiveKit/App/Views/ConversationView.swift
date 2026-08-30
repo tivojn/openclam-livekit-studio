@@ -29,6 +29,24 @@ enum ConversationLiveTalkNavigationPolicy {
     }
 }
 
+enum ConversationNavigationTitlePresentation {
+    static func title(
+        threadTitle: String,
+        remoteAgentDisplayName: String?,
+        isRemoteTurnActive: Bool
+    ) -> String {
+        guard let remoteAgentDisplayName = remoteAgentDisplayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !remoteAgentDisplayName.isEmpty else {
+            return threadTitle
+        }
+
+        return isRemoteTurnActive
+            ? "Typing..."
+            : "OpenClaw - \(remoteAgentDisplayName)"
+    }
+}
+
 enum ConversationReviewRevealPolicy {
     static let pendingEmailAnchorID = "openclam-pending-email-review"
 
@@ -182,6 +200,7 @@ enum ConversationThreadScrollDirective: Equatable {
 struct ConversationThreadPositioningState: Equatable {
     private(set) var anchoredUserMessageID: UUID?
     private(set) var hasManualScrollSincePlacement = false
+    private(set) var isAwayFromLatest = false
 
     var shouldFollowLatest: Bool {
         anchoredUserMessageID == nil && !hasManualScrollSincePlacement
@@ -190,10 +209,26 @@ struct ConversationThreadPositioningState: Equatable {
     mutating func beginUserTurn(messageID: UUID) {
         anchoredUserMessageID = messageID
         hasManualScrollSincePlacement = false
+        isAwayFromLatest = false
     }
 
     mutating func noteManualScroll() {
         hasManualScrollSincePlacement = true
+    }
+
+    mutating func noteLatestVisibility(_ isLatestVisible: Bool) {
+        if isLatestVisible {
+            resumeFollowingLatest()
+        } else {
+            hasManualScrollSincePlacement = true
+            isAwayFromLatest = true
+        }
+    }
+
+    mutating func resumeFollowingLatest() {
+        anchoredUserMessageID = nil
+        hasManualScrollSincePlacement = false
+        isAwayFromLatest = false
     }
 
     /// A newly submitted user turn always owns placement, including when a
@@ -218,8 +253,7 @@ struct ConversationThreadPositioningState: Equatable {
     }
 
     mutating func resetForThreadChange() {
-        anchoredUserMessageID = nil
-        hasManualScrollSincePlacement = false
+        resumeFollowingLatest()
     }
 }
 
@@ -282,6 +316,7 @@ struct ConversationView: View {
     @State private var liveTalkPTTNotice: String?
     @State private var composerTopGlobal: CGFloat?
     @State private var composerHeight = ConversationComposerLayout.restingReservedHeight
+    @State private var goToLatestMessageRequest = 0
     @FocusState private var isComposerFocused: Bool
 
     let onShowSidebar: () -> Void
@@ -306,7 +341,7 @@ struct ConversationView: View {
                 // silhouette and actual rail controls. Its transparent geometry
                 // must never replace the conversation's native scroll surface.
         }
-        .navigationTitle(conversation.currentThreadTitle)
+        .navigationTitle(conversationNavigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .overlay(alignment: .bottom) {
             composer
@@ -599,7 +634,10 @@ struct ConversationView: View {
                     ConversationThreadInteractionObserver(
                         onTapInteraction: avatarInteractions.noteThreadInteraction,
                         onScrollInteraction: avatarInteractions.noteThreadScrollInteraction,
-                        onManualScroll: { threadPositioning.noteManualScroll() }
+                        onManualScroll: { threadPositioning.noteManualScroll() },
+                        onLatestVisibilityChanged: { isLatestVisible in
+                            threadPositioning.noteLatestVisibility(isLatestVisible)
+                        }
                     )
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
@@ -654,6 +692,16 @@ struct ConversationView: View {
                     scrollToLatest(using: proxy)
                 }
             }
+            .onChange(of: conversation.remoteAgentWorkSteps) { _, steps in
+                if !steps.isEmpty, threadPositioning.shouldFollowLatest {
+                    scrollToLatest(using: proxy)
+                }
+            }
+            .onChange(of: conversation.streamingAssistantReply) { _, reply in
+                if reply?.isEmpty == false, threadPositioning.shouldFollowLatest {
+                    scrollToLatest(using: proxy)
+                }
+            }
             .onChange(of: conversation.liveTalkStreamingMessages) { _, _ in
                 if threadPositioning.shouldFollowLatest {
                     scrollToLatest(using: proxy)
@@ -666,6 +714,9 @@ struct ConversationView: View {
         proxy: ScrollViewProxy
     ) -> some View {
         deliveryObservedThreadScroll(in: viewport, proxy: proxy)
+            .onChange(of: goToLatestMessageRequest) { _, _ in
+                scrollToLatest(using: proxy)
+            }
             .onChange(of: confirmedActionNotice) { _, notice in
                 if notice != nil { scrollToLatest(using: proxy) }
             }
@@ -2668,6 +2719,11 @@ struct ConversationView: View {
             liveTalkPhase: liveTalk.phase,
             composerTopGlobal: composerTopGlobal,
             isRailFolded: $isAvatarRailFolded,
+            showsLatestMessageButton: threadPositioning.isAwayFromLatest,
+            onGoToLatestMessage: {
+                threadPositioning.resumeFollowingLatest()
+                goToLatestMessageRequest &+= 1
+            },
             onPlayLatest: {
                 guard reserveAppAudioLane() else { return }
                 if !conversation.isTTSEnabled {
@@ -2715,6 +2771,18 @@ struct ConversationView: View {
         aiConfiguration.conversationRoute(
             for: conversation.historyController.selectedThreadID
         ).connectorBinding
+    }
+
+    private var conversationNavigationTitle: String {
+        ConversationNavigationTitlePresentation.title(
+            threadTitle: conversation.currentThreadTitle,
+            remoteAgentDisplayName: currentRemoteBinding?.displayName,
+            isRemoteTurnActive: isRemoteOpenClawTurnActive
+        )
+    }
+
+    private var isRemoteOpenClawTurnActive: Bool {
+        currentRemoteBinding != nil && conversation.isWorking
     }
 
     private var assistantReplyDeliverySnapshot: AssistantReplyDeliverySnapshot {
@@ -2923,6 +2991,7 @@ struct ConversationView: View {
 
     private var composerIcon: String {
         if speech.isTranscribing { return "ellipsis" }
+        if isRemoteOpenClawTurnActive { return "stop.fill" }
         if isRequestActive { return "stop.fill" }
         if speech.isListening { return "stop.fill" }
         if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "mic.fill" }
@@ -2935,6 +3004,7 @@ struct ConversationView: View {
 
     private var composerAccessibilityLabel: String {
         if speech.isTranscribing { return "Transcribing speech" }
+        if isRemoteOpenClawTurnActive { return "Stop OpenClaw task" }
         if isRequestActive { return "Stop current request" }
         if speech.isListening { return "Stop listening and send" }
         if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Start tap to talk" }
@@ -2959,7 +3029,13 @@ struct ConversationView: View {
         }
         if isRequestActive {
             speech.cancel()
-            cancelActiveRequest()
+            if isRemoteOpenClawTurnActive {
+                // Cancelling the owner task reaches ConversationModel's durable
+                // cancellation path for this exact saved OpenClaw turn.
+                cancelRemoteAgentActivity()
+            } else {
+                cancelActiveRequest()
+            }
         } else if speech.isListening {
             finishSpeechAndSend()
         } else if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -3862,12 +3938,14 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
     let onTapInteraction: () -> Void
     let onScrollInteraction: () -> Void
     let onManualScroll: () -> Void
+    let onLatestVisibilityChanged: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onTapInteraction: onTapInteraction,
             onScrollInteraction: onScrollInteraction,
-            onManualScroll: onManualScroll
+            onManualScroll: onManualScroll,
+            onLatestVisibilityChanged: onLatestVisibilityChanged
         )
     }
 
@@ -3882,6 +3960,7 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
         context.coordinator.onTapInteraction = onTapInteraction
         context.coordinator.onScrollInteraction = onScrollInteraction
         context.coordinator.onManualScroll = onManualScroll
+        context.coordinator.onLatestVisibilityChanged = onLatestVisibilityChanged
         uiView.coordinator = context.coordinator
         uiView.scheduleAttachment()
     }
@@ -3927,6 +4006,7 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
         var onTapInteraction: () -> Void
         var onScrollInteraction: () -> Void
         var onManualScroll: () -> Void
+        var onLatestVisibilityChanged: (Bool) -> Void
 
         private weak var scrollView: UIScrollView?
         private var tapGesture: UITapGestureRecognizer?
@@ -3935,11 +4015,13 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
         init(
             onTapInteraction: @escaping () -> Void,
             onScrollInteraction: @escaping () -> Void,
-            onManualScroll: @escaping () -> Void
+            onManualScroll: @escaping () -> Void,
+            onLatestVisibilityChanged: @escaping (Bool) -> Void
         ) {
             self.onTapInteraction = onTapInteraction
             self.onScrollInteraction = onScrollInteraction
             self.onManualScroll = onManualScroll
+            self.onLatestVisibilityChanged = onLatestVisibilityChanged
         }
 
         func attach(from probe: UIView) {
@@ -3996,13 +4078,28 @@ private struct ConversationThreadInteractionObserver: UIViewRepresentable {
                 onScrollInteraction()
             case .ended, .cancelled:
                 lastScrollSignal = now
+                publishLatestVisibility()
                 onScrollInteraction()
             case .changed where now - lastScrollSignal >= 0.15:
                 lastScrollSignal = now
+                publishLatestVisibility()
                 onScrollInteraction()
             default:
                 break
             }
+        }
+
+        private func publishLatestVisibility() {
+            guard let scrollView else { return }
+            let minimumOffsetY = -scrollView.adjustedContentInset.top
+            let maximumOffsetY = max(
+                minimumOffsetY,
+                scrollView.contentSize.height
+                    - scrollView.bounds.height
+                    + scrollView.adjustedContentInset.bottom
+            )
+            let distanceFromLatest = maximumOffsetY - scrollView.contentOffset.y
+            onLatestVisibilityChanged(distanceFromLatest <= 24)
         }
 
         @objc private func threadTapped(_ gesture: UITapGestureRecognizer) {

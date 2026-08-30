@@ -63,6 +63,7 @@ UI_SYMBOL_ASSETS = frozenset({
     "phone",
     "phone-down",
     "settings",
+    "speaker",
     "speaker-slash",
     "standby",
     "stop",

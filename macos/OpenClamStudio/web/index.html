@@ -140,6 +140,7 @@
     .symbol-phone-down { --symbol: url('/ui-symbols/phone-down.png'); }
     .symbol-stop { --symbol: url('/ui-symbols/stop.png'); }
     .symbol-waveform { --symbol: url('/ui-symbols/waveform.png'); }
+    .symbol-speaker { --symbol: url('/ui-symbols/speaker.png'); }
     .symbol-speaker-slash { --symbol: url('/ui-symbols/speaker-slash.png'); }
     .symbol-avatar-layer { --symbol: url('/ui-symbols/avatar-layer.png'); }
     .symbol-thread-layer { --symbol: url('/ui-symbols/thread-layer.png'); }
@@ -148,15 +149,15 @@
     .symbol-settings { --symbol: url('/ui-symbols/settings.png'); }
     .symbol-chevron-down { --symbol: url('/ui-symbols/chevron-down.png'); }
     .symbol-checkmark { --symbol: url('/ui-symbols/checkmark.png'); }
-    #liveTalkButton .symbol-phone-down,
+    #liveTalkButton .symbol-stop,
     #speakerButton .symbol-stop,
     #speakerButton .symbol-speaker-slash,
     #layerButton .symbol-avatar-layer { display: none; }
-    #liveTalkButton[data-state="connected"] .symbol-phone,
-    #speakerButton[aria-pressed="true"] .symbol-waveform,
-    #speakerButton:disabled .symbol-waveform,
+    #liveTalkButton[data-state="connected"] .symbol-waveform,
+    #speakerButton[aria-pressed="true"] .symbol-speaker,
+    #speakerButton:disabled .symbol-speaker,
     #layerButton[aria-pressed="true"] .symbol-thread-layer { display: none; }
-    #liveTalkButton[data-state="connected"] .symbol-phone-down,
+    #liveTalkButton[data-state="connected"] .symbol-stop,
     #speakerButton[aria-pressed="true"] .symbol-stop,
     #speakerButton:disabled .symbol-speaker-slash,
     #layerButton[aria-pressed="true"] .symbol-avatar-layer { display: block; }
@@ -357,6 +358,9 @@
     .composer-button svg { width: 19px; height: 19px; fill: currentColor; }
     #sendButton { background: var(--accent); color: #1e090b; }
     #sendButton[disabled] { opacity: .35; cursor: default; }
+    #sendButton .send-stop-symbol { display: none; }
+    #sendButton[data-action="stop"] .send-symbol { display: none; }
+    #sendButton[data-action="stop"] .send-stop-symbol { display: block; }
     #pttButton.recording { color: white; background: #bd2b3a; animation: callPulse .9s ease-in-out infinite; }
     #closeChatButton { background: transparent; }
 
@@ -1810,6 +1814,36 @@
       transform: translateX(-50%);
       box-shadow: 0 8px 26px rgba(0, 0, 0, .10);
     }
+    #scrollToLatestButton { display: none; }
+    html.chat-mode #scrollToLatestButton:not([hidden]) {
+      position: fixed;
+      z-index: 52;
+      left: calc(
+        var(--chat-workspace-left)
+        + (100vw - var(--chat-workspace-left) - var(--chat-workspace-right)) / 2
+      );
+      bottom: calc(var(--chat-workspace-bottom) + 32px + var(--composer-shell-height, 86px));
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid var(--codex-border-heavy);
+      border-radius: 999px;
+      transform: translateX(-50%);
+      background: color-mix(in srgb, var(--codex-elevated) 94%, transparent);
+      color: var(--codex-text-secondary);
+      box-shadow: 0 5px 18px rgba(0, 0, 0, .13);
+      -webkit-backdrop-filter: blur(10px);
+      backdrop-filter: blur(10px);
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    html.chat-mode #scrollToLatestButton:hover {
+      background: var(--codex-hover);
+      color: var(--codex-text);
+    }
+    html.chat-mode #scrollToLatestButton svg { width: 17px; height: 17px; fill: currentColor; }
     html.chat-mode #composer { min-height: 42px; max-height: 150px; padding: 8px 6px; font-size: 14px; }
     html.chat-mode #composerFooter { min-height: 34px; }
     html.chat-mode .composer-button { width: 34px; height: 34px; }
@@ -1966,8 +2000,8 @@
 
   <nav id="rail" aria-label="Avatar controls">
     <button id="liveTalkButton" class="round-button" type="button" data-state="idle" aria-label="Start Live Talk" title="Start Live Talk">
-      <span class="sf-symbol symbol-phone" aria-hidden="true"></span>
-      <span class="sf-symbol symbol-phone-down" aria-hidden="true"></span>
+      <span class="sf-symbol symbol-waveform" aria-hidden="true"></span>
+      <span class="sf-symbol symbol-stop" aria-hidden="true"></span>
     </button>
     <button id="avatarCarouselButton" class="round-button" type="button" aria-label="Switch to next avatar" title="Switch to next avatar">
       <span class="sf-symbol symbol-avatar-picker" aria-hidden="true"></span>
@@ -1979,7 +2013,7 @@
       <span class="sf-symbol symbol-standby" aria-hidden="true"></span>
     </button>
     <button id="speakerButton" class="round-button chat-only-control" type="button" aria-pressed="false" aria-label="Read latest reply aloud" title="Read latest reply aloud">
-      <span class="sf-symbol symbol-waveform" aria-hidden="true"></span>
+      <span class="sf-symbol symbol-speaker" aria-hidden="true"></span>
       <span class="sf-symbol symbol-stop" aria-hidden="true"></span>
       <span class="sf-symbol symbol-speaker-slash" aria-hidden="true"></span>
     </button>
@@ -2069,7 +2103,7 @@
         <button id="chatHistoryButton" class="chat-header-button" type="button" aria-expanded="false" aria-controls="chatHistoryPanel" aria-label="Open chat history" title="Chat history">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v14h5V5H4Zm7 0v14h9V5h-9ZM5.5 7h2v2h-2V7Zm0 4h2v2h-2v-2Z"/></svg>
         </button>
-        <div id="chatThreadHeading">New chat</div>
+        <div id="chatThreadHeading" role="status" aria-live="polite" aria-atomic="true">New chat</div>
         <div class="workspace-header-actions">
           <button id="chatHeaderNewButton" type="button" aria-label="Start a new chat" title="New chat">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5a1 1 0 0 1 2 0v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5Z"/></svg>
@@ -2117,8 +2151,9 @@
           <button id="closeChatButton" class="composer-button" type="button" aria-label="Close conversation" title="Close conversation">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5z"/></svg>
           </button>
-          <button id="sendButton" class="composer-button" type="button" aria-label="Send message" title="Send" disabled>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-7 8-1-8-1-3-7z"/></svg>
+          <button id="sendButton" class="composer-button" type="button" data-action="send" aria-label="Send message" title="Send" disabled>
+            <svg class="send-symbol" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-7 8-1-8-1-3-7z"/></svg>
+            <svg class="send-stop-symbol" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z"/></svg>
           </button>
         </div>
       </div>
@@ -2142,7 +2177,7 @@
         </section>
         <section>
           <h2>Live Talk</h2>
-          <p>Use the phone control to start or end the current LiveKit conversation.</p>
+          <p>Use the waveform control to start or end the current LiveKit conversation.</p>
         </section>
         <section>
           <h2>Appearance</h2>
@@ -2151,6 +2186,10 @@
       </div>
     </aside>
   </section>
+
+  <button id="scrollToLatestButton" type="button" aria-label="Go to latest message" title="Go to latest message" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.4 8.6 5.6 5.6 5.6-5.6L19 10l-7 7-7-7 1.4-1.4Z"/></svg>
+  </button>
 
   <dialog id="filePreviewDialog" aria-labelledby="filePreviewTitle">
     <div class="preview-toolbar">
@@ -2236,6 +2275,7 @@
     const workspaceInfoToggle = document.getElementById('workspaceInfoToggle');
     const workspaceInfoClose = document.getElementById('workspaceInfoClose');
     const conversation = document.getElementById('conversation');
+    const scrollToLatestButton = document.getElementById('scrollToLatestButton');
     const selectionActions = document.getElementById('selectionActions');
     const selectionCopy = document.getElementById('selectionCopy');
     const selectionAskAI = document.getElementById('selectionAskAI');
@@ -2348,6 +2388,9 @@
     let selectingFeedback = false;
     let turnController = null;
     let turnControllerOrigin = null;
+    let openClawTurnHeadingOwner = null;
+    let openClawTurnStopRequested = false;
+    let conversationAutoFollow = true;
     let thinkingNode = null;
     let openClawSessionID = '';
     let pendingComposerAttachments = [];
@@ -2732,6 +2775,30 @@
       statusLine.dataset.tone = tone;
     };
 
+    const conversationLatestGap = () => Math.max(
+      0, conversation.scrollHeight - conversation.clientHeight - conversation.scrollTop);
+
+    const syncScrollToLatestButton = () => {
+      const awayFromLatest = conversationLatestGap() > 48;
+      if (!awayFromLatest) conversationAutoFollow = true;
+      scrollToLatestButton.hidden = !root.classList.contains('chat-mode') || !awayFromLatest;
+    };
+
+    const followConversationLatest = ({ force = false } = {}) => {
+      if (!force && !conversationAutoFollow) {
+        syncScrollToLatestButton();
+        return;
+      }
+      conversationAutoFollow = true;
+      conversation.scrollTop = conversation.scrollHeight;
+      scrollToLatestButton.hidden = true;
+    };
+
+    const syncScrollToLatestOffset = () => {
+      const height = Math.ceil(composerShell.getBoundingClientRect().height);
+      if (height > 0) root.style.setProperty('--composer-shell-height', `${height}px`);
+    };
+
     const notify = (text, duration = 4200) => {
       clearTimeout(toastTimer);
       clearTimeout(threadNoticeTimer);
@@ -2745,7 +2812,7 @@
           conversation.appendChild(threadNoticeNode);
         }
         threadNoticeNode.textContent = message;
-        conversation.scrollTop = conversation.scrollHeight;
+        followConversationLatest();
         threadNoticeTimer = setTimeout(() => {
           if (threadNoticeNode) threadNoticeNode.remove();
           threadNoticeNode = null;
@@ -6115,6 +6182,57 @@
 
     const activeChatThread = () => chatThreads.find(thread => thread.id === activeThreadID)
       || chatThreads[0];
+    const openClawAgentNameForMode = mode => {
+      const value = String(mode || '');
+      if (!value.startsWith('openclaw:')) return '';
+      const agentID = value.slice('openclaw:'.length);
+      const option = [...agentModeSelect.options].find(candidate => candidate.value === value);
+      const configuredName = boundedText(option && option.dataset.agentDisplayName, 80).trim();
+      if (configuredName) return configuredName;
+      return agentID.split(/[-_]+/).filter(Boolean)
+        .map(part => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join(' ') || 'Main';
+    };
+    const renderChatThreadHeading = () => {
+      const thread = activeChatThread();
+      const mode = String(thread && thread.agentMode || agentModeSelect.value || 'local');
+      const agentName = openClawAgentNameForMode(mode);
+      const working = Boolean(agentName && openClawTurnHeadingOwner);
+      chatThreadHeading.textContent = working
+        ? 'Typing...'
+        : agentName ? `OpenClaw - ${agentName}` : thread && thread.title || 'New chat';
+      chatThreadHeading.dataset.agentState = working ? 'working' : agentName ? 'idle' : 'direct';
+      chatThreadHeading.setAttribute('aria-busy', String(working));
+      sendButton.dataset.action = working ? 'stop' : 'send';
+      sendButton.setAttribute('aria-label', working
+        ? openClawTurnStopRequested ? 'Stopping OpenClaw task' : 'Stop OpenClaw task'
+        : 'Send message');
+      sendButton.title = working
+        ? openClawTurnStopRequested ? 'Stopping…' : 'Stop'
+        : 'Send';
+      sendButton.disabled = working
+        ? openClawTurnStopRequested
+        : (!composer.value.trim() && !pendingComposerAttachments.length)
+          || Boolean(turnController) || Boolean(live);
+    };
+    const setOpenClawTurnHeading = (controller, active) => {
+      if (active) {
+        openClawTurnHeadingOwner = controller;
+        openClawTurnStopRequested = false;
+      } else if (openClawTurnHeadingOwner === controller) {
+        openClawTurnHeadingOwner = null;
+        openClawTurnStopRequested = false;
+      }
+      renderChatThreadHeading();
+    };
+    const requestOpenClawTurnStop = () => {
+      const controller = openClawTurnHeadingOwner;
+      if (!controller || turnController !== controller || controller.signal.aborted) return false;
+      openClawTurnStopRequested = true;
+      renderChatThreadHeading();
+      setStatus('Stopping OpenClaw…', 'busy');
+      controller.abort();
+      return true;
+    };
     const compareChatThreads = (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))
       || b.updatedAt - a.updatedAt;
     const closeHistoryThreadMenus = (except = null) => {
@@ -6219,7 +6337,7 @@
         localStorage.setItem(ACTIVE_CHAT_KEY, activeThreadID);
       } catch (_) { notify('Chat history storage is full. Older items were not saved.'); }
       const current = activeChatThread();
-      chatThreadHeading.textContent = current ? current.title : 'New chat';
+      renderChatThreadHeading();
       renderChatHistory();
     };
     const recordThreadItem = record => {
@@ -6300,7 +6418,7 @@
         appendAssistantActions(row, String(text), options.route);
       }
       conversation.appendChild(row);
-      conversation.scrollTop = conversation.scrollHeight;
+      followConversationLatest();
       if (options.persist !== false && String(text || '').trim()) {
         recordThreadItem({ kind: 'message', role, text: String(text),
           readable: options.readable !== false, route: options.route });
@@ -6345,7 +6463,7 @@
         conversation.appendChild(wrapper);
         if (options.persist !== false) recordThreadItem({ kind: 'media', card });
       }
-      conversation.scrollTop = conversation.scrollHeight;
+      followConversationLatest();
     };
 
     const ensureAudioGraph = () => {
@@ -6588,7 +6706,10 @@
           if (!agent || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(agent.agent_id || ''))) continue;
           const option = document.createElement('option');
           option.value = `openclaw:${agent.agent_id}`;
-          option.textContent = `OpenClaw · ${String(agent.display_name || agent.agent_id).slice(0, 80)}`;
+          option.dataset.agentDisplayName = String(
+            agent.display_name || agent.agent_id
+          ).slice(0, 80);
+          option.textContent = `OpenClaw · ${option.dataset.agentDisplayName}`;
           agentModeSelect.appendChild(option);
         }
         agentModeSelect.value = [...agentModeSelect.options].some(option => option.value === saved)
@@ -6596,6 +6717,7 @@
       } catch (_) {
         agentModeSelect.value = 'local';
       }
+      renderChatThreadHeading();
     }
 
     agentModeSelect.addEventListener('change', () => {
@@ -6605,6 +6727,7 @@
         thread.agentMode = agentModeSelect.value;
         saveChatThreads();
       }
+      renderChatThreadHeading();
       void refreshAttachmentRouteCapability();
       const agent = selectedOpenClawAgent();
       composer.placeholder = agent ? 'Message this OpenClaw agent…' : 'Ask anything…';
@@ -6645,7 +6768,7 @@
       list.className = 'work-list';
       root.append(summary, divider, list);
       conversation.appendChild(root);
-      conversation.scrollTop = conversation.scrollHeight;
+      followConversationLatest();
       const timer = setInterval(() => {
         title.textContent = `Working for ${formatWorkDuration((performance.now() - startedAt) / 1000)}`;
       }, 1000);
@@ -6740,7 +6863,7 @@
       item.detail.hidden = !hasDetail;
       if (!hasDetail) item.root.open = false;
       timeline.count.textContent = `${timeline.steps.size} step${timeline.steps.size === 1 ? '' : 's'} · live`;
-      conversation.scrollTop = conversation.scrollHeight;
+      followConversationLatest();
     };
 
     const safeFileType = attachment => String(
@@ -6920,7 +7043,7 @@
         card.appendChild(renderSafeMarkdown(await file.text()));
       }
       conversation.appendChild(card);
-      conversation.scrollTop = conversation.scrollHeight;
+      followConversationLatest();
       if (options.persist !== false) recordThreadItem({
         kind: 'attachment', attachment: {
           url,
@@ -7043,7 +7166,7 @@
       }
       card.append(previewButton, copy, actions);
       conversation.appendChild(card);
-      conversation.scrollTop = conversation.scrollHeight;
+      followConversationLatest();
       if (options.persist !== false) recordThreadItem(normalized);
     };
 
@@ -7094,8 +7217,8 @@
         restoringThread = false;
       }
       if (history.length > 24) history = history.slice(-24);
-      chatThreadHeading.textContent = thread.title || 'New chat';
-      conversation.scrollTop = conversation.scrollHeight;
+      renderChatThreadHeading();
+      followConversationLatest({ force: true });
     };
 
     switchChatThread = async id => {
@@ -7397,9 +7520,11 @@
       sendButton.disabled = true;
       pttButton.disabled = true;
       agentModeSelect.disabled = true;
+      setOpenClawTurnHeading(controller, true);
       setStatus('Connecting to OpenClaw…', 'busy');
       let finalText = '';
       let liveReply = null;
+      let completionReceived = false;
       const latestAssistantTextBeforeTurn = latestAssistantText;
       try {
         const response = await fetch('/api/openclaw/turn', {
@@ -7439,16 +7564,21 @@
               }
               liveReply.bubble.textContent = finalText;
               latestAssistantText = finalText;
-              conversation.scrollTop = conversation.scrollHeight;
+              followConversationLatest();
             } else if (event.type === 'attachment') {
               await appendOpenClawAttachment(event.attachment);
             } else if (event.type === 'complete') {
+              completionReceived = true;
               finalText = String(event.text || finalText).slice(0, 64000);
+              setOpenClawTurnHeading(controller, false);
             } else if (event.type === 'error') {
               throw new Error(String(event.message || 'OpenClaw could not complete this turn').slice(0, 180));
             }
           }
           if (chunk.done) break;
+        }
+        if (!completionReceived) {
+          throw new Error('OpenClaw connection closed before completion.');
         }
         const completedText = finalText || 'OpenClaw completed without a text reply.';
         resumeChatSpeakingPose();
@@ -7479,7 +7609,9 @@
           latestAssistantText = latestAssistantTextBeforeTurn;
         }
         finishWorkTimeline(work, 'failed');
-        if (error.name !== 'AbortError') {
+        if (error.name === 'AbortError') {
+          setStatus(live ? 'Live Talk · connected' : 'Ready', live ? 'live' : 'good');
+        } else {
           resumeChatSpeakingPose();
           addMessage('assistant', `OpenClaw is unavailable: ${String(error.message || error).slice(0, 150)}`, { readable: false });
           setStatus('Check OpenClaw', '');
@@ -7491,6 +7623,7 @@
         return { ok: false, text: '' };
       } finally {
         if (delegatedDeadlineTimer !== null) clearTimeout(delegatedDeadlineTimer);
+        setOpenClawTurnHeading(controller, false);
         if (turnController === controller) {
           turnController = null;
           turnControllerOrigin = null;
@@ -7568,7 +7701,7 @@
               liveReply.bubble.textContent = partial;
               latestAssistantText = partial;
               setStatus('Answering…', 'busy');
-              conversation.scrollTop = conversation.scrollHeight;
+              followConversationLatest();
             } else if (event.type === 'complete') {
               result = event;
             } else if (event.type === 'error') {
@@ -7651,16 +7784,20 @@
       pendingComposerAttachments = [];
       renderPendingAttachments();
       resizeComposer();
+      followConversationLatest({ force: true });
       submitTurn(value, { attachments });
     };
 
     const resizeComposer = () => {
       composer.style.height = '40px';
       composer.style.height = `${Math.min(112, Math.max(40, composer.scrollHeight))}px`;
-      sendButton.disabled = (!composer.value.trim() && !pendingComposerAttachments.length)
-        || Boolean(turnController) || Boolean(live);
+      sendButton.disabled = sendButton.dataset.action === 'stop'
+        ? openClawTurnStopRequested
+        : (!composer.value.trim() && !pendingComposerAttachments.length)
+          || Boolean(turnController) || Boolean(live);
       attachButton.disabled = Boolean(turnController) || Boolean(live)
         || pendingComposerAttachments.length >= 8;
+      syncScrollToLatestOffset();
       reportControlRects(true);
     };
 
@@ -9158,7 +9295,17 @@
     document.getElementById('emptyChat').addEventListener('click', () => openChat(true));
     document.getElementById('emptySettings').addEventListener('click', () => shell && shell.openSettings());
     closeChatButton.addEventListener('click', closeChat);
-    sendButton.addEventListener('click', submitComposer);
+    sendButton.addEventListener('click', () => {
+      if (sendButton.dataset.action === 'stop') {
+        requestOpenClawTurnStop();
+        return;
+      }
+      submitComposer();
+    });
+    scrollToLatestButton.addEventListener('click', () => {
+      followConversationLatest({ force: true });
+      conversation.focus({ preventScroll: true });
+    });
     attachButton.addEventListener('click', async event => {
       event.stopPropagation();
       if (attachmentMenu.hidden) await refreshAttachmentRouteCapability();
@@ -9211,6 +9358,9 @@
       showSelectionActions(candidate);
     });
     conversation.addEventListener('scroll', () => {
+      const awayFromLatest = conversationLatestGap() > 48;
+      conversationAutoFollow = !awayFromLatest;
+      scrollToLatestButton.hidden = !root.classList.contains('chat-mode') || !awayFromLatest;
       hideSelectionActions(false);
       markActivity();
     }, { passive: true });
@@ -9281,9 +9431,9 @@
         else if (document.querySelector('.email-review')) closeEmailReview();
         else if (live) stopLiveTalk('ended');
         else if (turnController) {
-          turnController.abort();
+          if (!requestOpenClawTurnStop()) turnController.abort();
           removeWorking();
-          setStatus('Ready', 'good');
+          if (!openClawTurnHeadingOwner) setStatus('Ready', 'good');
         }
         else closeChat();
         return;

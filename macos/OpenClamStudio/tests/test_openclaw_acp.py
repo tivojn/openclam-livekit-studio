@@ -97,6 +97,39 @@ class OpenClawACPTests(unittest.TestCase):
         self.assertEqual([step["state"] for step in steps], ["completed", "running"])
         self.assertEqual([step["step_id"] for step in steps], ["plan:0", "plan:1"])
 
+    def test_agent_text_chunks_remain_incremental_protocol_events(self):
+        first = openclaw_acp.project_update({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "Hello "},
+        }, "/srv/openclaw/ara", {})
+        second = openclaw_acp.project_update({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "there."},
+        }, "/srv/openclaw/ara", {})
+        self.assertEqual(first, ("text_chunk", "Hello "))
+        self.assertEqual(second, ("text_chunk", "there."))
+
+    def test_tool_updates_keep_one_step_identity_and_real_state(self):
+        tool_titles = {}
+        opened = openclaw_acp.project_update({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-42",
+            "kind": "search",
+            "status": "in_progress",
+        }, "/srv/openclaw/ara", tool_titles)
+        completed = openclaw_acp.project_update({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-42",
+            "kind": "search",
+            "status": "completed",
+        }, "/srv/openclaw/ara", tool_titles)
+        self.assertEqual(opened[0], "work")
+        self.assertEqual(completed[0], "work")
+        self.assertEqual(opened[1]["step_id"], "tool:call-42")
+        self.assertEqual(completed[1]["step_id"], "tool:call-42")
+        self.assertEqual(opened[1]["state"], "running")
+        self.assertEqual(completed[1]["state"], "completed")
+
     def test_artifact_handle_only_accepts_regular_workspace_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1016,6 +1016,8 @@ struct CaptainAyerAvatarOverlay: View {
     let liveTalkPhase: LiveTalkConnectionPhase
     let composerTopGlobal: CGFloat?
     @Binding var isRailFolded: Bool
+    let showsLatestMessageButton: Bool
+    let onGoToLatestMessage: () -> Void
     let onPlayLatest: () -> Void
     let onStop: () -> Void
     let onToggleLiveTalk: () -> Void
@@ -1085,6 +1087,9 @@ struct CaptainAyerAvatarOverlay: View {
                 topInset: stageTop
             )
             let topClearance = max(58, proxy.safeAreaInsets.top + 46)
+            let composerTopLocal = composerTopGlobal.map {
+                $0 - overlayGlobalMinY
+            } ?? (proxy.size.height - ConversationComposerLayout.restingReservedHeight)
             let bottomClearance = max(0, proxy.size.height - subjectBounds.maxY)
             let railHeight = max(
                 1,
@@ -1161,6 +1166,19 @@ struct CaptainAyerAvatarOverlay: View {
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
 
+                if showsLatestMessageButton {
+                    latestMessageButton
+                        .position(
+                            x: proxy.size.width / 2,
+                            y: min(
+                                proxy.size.height - 22,
+                                max(topClearance + 22, composerTopLocal - 28)
+                            )
+                        )
+                        .zIndex(20)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                }
+
                 if !showsAvatarCarousel {
                     toolRail
                         .frame(width: 64, height: railHeight)
@@ -1178,6 +1196,10 @@ struct CaptainAyerAvatarOverlay: View {
                 alignment: .topLeading
             )
             .clipped()
+            .animation(
+                reduceMotion ? nil : .easeOut(duration: 0.18),
+                value: showsLatestMessageButton
+            )
         }
         .onAppear {
             // Older builds persisted a separate Hide flag. Migrate that state
@@ -1325,6 +1347,25 @@ struct CaptainAyerAvatarOverlay: View {
                 }
             )
         }
+    }
+
+    private var latestMessageButton: some View {
+        Button(action: onGoToLatestMessage) {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 38)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .background(.regularMaterial, in: Circle())
+        .overlay {
+            Circle().stroke(Color.primary.opacity(0.14), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.09), radius: 8, y: 3)
+        .accessibilityLabel("Go to latest message")
+        .accessibilityHint("Returns to the newest response and follows live updates")
+        .accessibilityIdentifier("openclam-go-to-latest-message")
     }
 
     private func avatarStage(
@@ -1580,7 +1621,7 @@ struct CaptainAyerAvatarOverlay: View {
                 railButton(
                     systemImage: controller.isSpeaking
                         ? "stop"
-                        : (isTTSEnabled ? "waveform" : "speaker.slash"),
+                        : (isTTSEnabled ? "speaker.wave.2" : "speaker.slash"),
                     label: controller.isSpeaking ? "Stop speaking" : "Play latest reply",
                     isActive: controller.isSpeaking,
                     isEnabled: !liveTalkPhase.isSessionActive
@@ -1725,7 +1766,7 @@ struct CaptainAyerAvatarOverlay: View {
     private var liveTalkControl: some View {
         VStack(spacing: 2) {
             railButton(
-                systemImage: liveTalkPhase.isSessionActive ? "phone.down" : "phone",
+                systemImage: "waveform",
                 label: liveTalkPhase.isSessionActive ? "Hang up Live Talk" : "Start Live Talk",
                 value: liveTalkPhase.statusTitle,
                 isActive: liveTalkPhase.isSessionActive

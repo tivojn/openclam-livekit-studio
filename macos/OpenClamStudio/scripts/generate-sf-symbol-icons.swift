@@ -19,6 +19,7 @@ let symbols: [(asset: String, systemName: String)] = [
     ("phone-down", "phone.down"),
     ("stop", "stop"),
     ("waveform", "waveform"),
+    ("speaker", "speaker.wave.2"),
     ("speaker-slash", "speaker.slash"),
     ("avatar-layer", "person.crop.rectangle"),
     ("thread-layer", "text.bubble"),

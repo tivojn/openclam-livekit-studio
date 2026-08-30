@@ -4,6 +4,63 @@ import XCTest
 @testable import OpenClamLiveKit
 
 final class MarkdownAndReplyDeliveryTests: XCTestCase {
+    func testRemoteConversationTitleUsesBoundOpenClawAgentIdentityWhenIdle() {
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "hi",
+                remoteAgentDisplayName: "Main",
+                isRemoteTurnActive: false
+            ),
+            "OpenClaw - Main"
+        )
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "Old title",
+                remoteAgentDisplayName: "  Researcher  ",
+                isRemoteTurnActive: false
+            ),
+            "OpenClaw - Researcher"
+        )
+    }
+
+    func testRemoteConversationTitleTracksRealTurnActivity() {
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "hi",
+                remoteAgentDisplayName: "Main",
+                isRemoteTurnActive: true
+            ),
+            "Typing..."
+        )
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "hi",
+                remoteAgentDisplayName: "Main",
+                isRemoteTurnActive: false
+            ),
+            "OpenClaw - Main"
+        )
+    }
+
+    func testLocalConversationTitleRemainsTheThreadTitle() {
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "Weekend plans",
+                remoteAgentDisplayName: nil,
+                isRemoteTurnActive: true
+            ),
+            "Weekend plans"
+        )
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "New chat",
+                remoteAgentDisplayName: "  ",
+                isRemoteTurnActive: false
+            ),
+            "New chat"
+        )
+    }
+
     func testXAIListeningStatusMakesLiveAndBatchBehaviorExplicit() {
         XCTAssertEqual(
             ConversationSpeechStatusCopy.listening(
@@ -163,6 +220,28 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
         state.resetForThreadChange()
         XCTAssertNil(state.anchoredUserMessageID)
         XCTAssertTrue(state.shouldFollowLatest)
+    }
+
+    func testLatestMessageAffordanceRestoresStreamingAutoFollow() {
+        var state = ConversationThreadPositioningState()
+
+        state.noteManualScroll()
+        state.noteLatestVisibility(false)
+        XCTAssertTrue(state.isAwayFromLatest)
+        XCTAssertFalse(state.shouldFollowLatest)
+
+        state.resumeFollowingLatest()
+        XCTAssertFalse(state.isAwayFromLatest)
+        XCTAssertTrue(state.shouldFollowLatest)
+
+        state.noteManualScroll()
+        state.noteLatestVisibility(false)
+        state.noteLatestVisibility(true)
+        XCTAssertFalse(state.isAwayFromLatest)
+        XCTAssertTrue(
+            state.shouldFollowLatest,
+            "Manually returning to the bottom must resume following real streamed events."
+        )
     }
 
     func testAssistantReplyPreservesUserTurnAnchorWhenReadingPositionIsUntouched() {

@@ -271,6 +271,118 @@ final class AgentConnectorTests: XCTestCase {
         )
     }
 
+    func testConversationPublishesOpenClawWorkAndTextBeforeCompletion() async throws {
+        let suite = "AgentConnectorTests.progressive-conversation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let history = ConversationHistoryController(
+            store: .init(fileURL: directory.appendingPathComponent("history.json"))
+        )
+        let conversation = ConversationModel(
+            preferences: defaults,
+            historyController: history
+        )
+        let historyIsReady = await conversation.ensureHistoryReady()
+        XCTAssertTrue(historyIsReady)
+        let threadID = try XCTUnwrap(history.selectedThreadID)
+        let connectionID = UUID()
+        let account = AgentConnectorAccount(
+            accountID: "primary",
+            agentID: "main",
+            displayName: "Main"
+        )
+        let controlledConnector = ControlledStreamingAgentConnector()
+        let connections = AgentConnectionModel(
+            defaults: defaults,
+            storageKey: "connector.\(UUID().uuidString)",
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            pairingService: StubPairingService(response: .init(
+                connectionID: connectionID,
+                gatewayLabel: "My OpenClaw",
+                accounts: [account],
+                clientToken: String(repeating: "t", count: 48)
+            )),
+            connector: controlledConnector,
+            tokenVault: InMemoryAgentConnectorTokenVault(),
+            outboxVault: InMemoryAgentConnectorOutboxVault()
+        )
+        let paired = try await connections.redeemPairingCode("OC-ABCD-EFGH-JKMN")
+        let configuration = AIConfigurationModel(
+            defaults: defaults,
+            storageKey: "settings.\(UUID().uuidString)",
+            providerVault: InMemoryProviderCredentialVault()
+        )
+        configuration.registerThread(
+            threadID,
+            for: configuration.activeAvatarID,
+            route: .remote(paired.binding(for: account))
+        )
+
+        let submission = Task { @MainActor in
+            await conversation.submit(
+                "Build the report",
+                aiConfiguration: configuration,
+                agentConnections: connections
+            )
+        }
+        for _ in 0 ..< 100 where !controlledConnector.hasSubscriber {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(controlledConnector.hasSubscriber)
+
+        let runningStep = AgentConnectorWorkStep(
+            revision: 1,
+            stepID: "tool:report",
+            category: .tool,
+            state: .running,
+            title: "Building report",
+            detail: "Drafting the first section",
+            tool: "report",
+            command: nil,
+            path: nil,
+            output: nil
+        )
+        controlledConnector.yield(.accepted)
+        controlledConnector.yield(.work(runningStep))
+        controlledConnector.yield(.cumulativeText("First streamed paragraph"))
+
+        for _ in 0 ..< 100
+        where conversation.streamingAssistantReply != "First streamed paragraph" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(conversation.isWorking)
+        XCTAssertEqual(conversation.streamingAssistantReply, "First streamed paragraph")
+        XCTAssertEqual(conversation.remoteAgentWorkSteps, [runningStep])
+        XCTAssertFalse(
+            conversation.messages.contains {
+                $0.role == .assistant && $0.text == "Final response"
+            },
+            "A bridge delta must be visible before the durable completion arrives."
+        )
+
+        controlledConnector.yield(.completed("Final response"))
+        controlledConnector.finish()
+        await submission.value
+
+        XCTAssertFalse(conversation.isWorking)
+        XCTAssertNil(conversation.streamingAssistantReply)
+        XCTAssertTrue(conversation.remoteAgentWorkSteps.isEmpty)
+        XCTAssertEqual(
+            conversation.messages.last(where: { $0.role == .assistant })?.text,
+            "Final response"
+        )
+        XCTAssertEqual(
+            conversation.messages.last(where: { $0.role == .assistant })?.workSteps,
+            [runningStep]
+        )
+    }
+
     func testPairedLiveTalkAgentTurnTraversesConnectorAndKeepsOneVisibleResult() async throws {
         let suite = "AgentConnectorTests.live-talk.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -3552,6 +3664,42 @@ private struct StubAgentConnector: AgentConnector {
             continuation.yield(.completed("Hello"))
             continuation.finish()
         }
+    }
+}
+
+private final class ControlledStreamingAgentConnector:
+    AgentConnector,
+    @unchecked Sendable {
+    private typealias StreamContinuation =
+        AsyncThrowingStream<AgentConnectorStreamEvent, Error>.Continuation
+
+    private let lock = NSLock()
+    private var continuation: StreamContinuation?
+
+    var hasSubscriber: Bool {
+        lock.withLock { continuation != nil }
+    }
+
+    func streamTurn(
+        _ request: AgentConnectorTurnRequest,
+        clientToken: String
+    ) -> AsyncThrowingStream<AgentConnectorStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            lock.withLock { self.continuation = continuation }
+            continuation.yield(.submissionSaved)
+        }
+    }
+
+    func yield(_ event: AgentConnectorStreamEvent) {
+        lock.withLock { continuation }?.yield(event)
+    }
+
+    func finish() {
+        let continuation: StreamContinuation? = lock.withLock {
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.finish()
     }
 }
 
