@@ -282,6 +282,18 @@ for (const id of [
 includes('async function copySettingsText(value)');
 includes("typeof SHELL.copySettingsText === 'function'");
 includes('if (!await copySettingsText(code))');
+includes("function showOpenClawCopyFeedback(state = 'idle')");
+includes("showOpenClawCopyFeedback('copying')");
+includes("showOpenClawCopyFeedback('copied')");
+includes("button.textContent = '✓ Copied'");
+includes("button.classList.add('is-copied')");
+includes('setTimeout(() => showOpenClawCopyFeedback(), 1800)');
+includes('button.btn.openclaw-copy.is-copied:hover');
+includes("function showOpenClawUpdateFeedback(state = 'idle')");
+includes("showOpenClawUpdateFeedback('updating')");
+includes("showOpenClawUpdateFeedback('updated')");
+includes("button.textContent = '✓ Updated'");
+includes('button.btn.openclaw-update.is-updated:hover');
 excludes(/openclaw-pairing-copy[\s\S]{0,400}navigator\.clipboard\.writeText\(code\)/,
   'The packaged pairing button must use the Electron clipboard bridge');
 includes("api('/api/openclaw/pairing'");

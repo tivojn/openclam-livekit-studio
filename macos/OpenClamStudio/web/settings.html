@@ -204,6 +204,25 @@ button.xai-mode{width:100%;padding:0;border:0;background:none;color:inherit;font
   border-radius:8px;background:var(--ok-bg)}
 .openclaw-code code{font:700 19px ui-monospace,SFMono-Regular,Menlo,monospace;
   letter-spacing:.08em;color:var(--ink);overflow-wrap:anywhere}
+.openclaw-copy{min-width:106px;transition:background .12s,border-color .12s,color .12s,
+  box-shadow .12s,transform .08s}
+.openclaw-copy:active{transform:scale(.97)}
+.openclaw-copy.is-copying{background:var(--bg-sub);color:var(--dim)}
+button.btn.openclaw-copy.is-copied,button.btn.openclaw-copy.is-copied:hover{
+  border-color:var(--ok);background:var(--ok);color:#fff;
+  box-shadow:0 0 0 3px var(--ok-bg)}
+button.btn.openclaw-copy.is-failed,button.btn.openclaw-copy.is-failed:hover{
+  border-color:var(--bad-line);background:var(--bad-bg);
+  color:var(--bad-text);box-shadow:0 0 0 3px var(--bad-bg)}
+.openclaw-update{min-width:112px;transition:background .12s,border-color .12s,color .12s,
+  box-shadow .12s}
+.openclaw-update.is-updating:disabled{opacity:1;background:var(--bg-sub);color:var(--dim)}
+button.btn.openclaw-update.is-updated,button.btn.openclaw-update.is-updated:hover{
+  border-color:var(--ok);background:var(--ok);color:#fff;
+  box-shadow:0 0 0 3px var(--ok-bg)}
+button.btn.openclaw-update.is-failed,button.btn.openclaw-update.is-failed:hover{
+  border-color:var(--bad-line);background:var(--bad-bg);
+  color:var(--bad-text);box-shadow:0 0 0 3px var(--bad-bg)}
 .openclaw-code-meta{grid-column:1/-1;color:var(--dim);font-size:11.5px}
 .openclaw-pairing-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px}
 .openclaw-setup{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:9px;margin-top:14px}
@@ -1029,12 +1048,12 @@ document.documentElement.dataset.design='quiet';</script>
     </div>
     <div class="openclaw-pairing-actions">
       <button class="btn pri" id="openclaw-pairing-create" type="button" disabled>Create iPhone code</button>
-      <button class="btn sm" id="openclaw-update-channel" type="button" hidden>Update channel</button>
+      <button class="btn sm openclaw-update" id="openclaw-update-channel" type="button" hidden>Update channel</button>
       <button class="btn sm" id="openclaw-pairing-refresh" type="button">Refresh status</button>
     </div>
     <div class="openclaw-code" id="openclaw-pairing-code-card" hidden>
       <code id="openclaw-pairing-code" aria-label="OpenClam iPhone pairing code"></code>
-      <button class="btn" id="openclaw-pairing-copy" type="button">Copy code</button>
+      <button class="btn openclaw-copy" id="openclaw-pairing-copy" type="button">Copy code</button>
       <div class="openclaw-code-meta" id="openclaw-pairing-countdown" role="status" aria-live="polite"></div>
     </div>
     <p class="openclaw-pairing-state" id="openclaw-pairing-state" role="status" aria-live="polite"></p>
@@ -1519,6 +1538,8 @@ const api = async (p, o) => (await fetch(p, o)).json();
 let OPENCLAW_PAIRING_EXPIRES_AT = 0;
 let OPENCLAW_PAIRING_TIMER = 0;
 let OPENCLAW_REPAIR_REQUIRED = false;
+let OPENCLAW_COPY_FEEDBACK_TIMER = 0;
+let OPENCLAW_UPDATE_FEEDBACK_TIMER = 0;
 
 async function copySettingsText(value) {
   const text = String(value || '').trim();
@@ -1533,6 +1554,67 @@ async function copySettingsText(value) {
   return true;
 }
 
+function showOpenClawCopyFeedback(state = 'idle') {
+  const button = $('#openclaw-pairing-copy');
+  if (!button) return;
+  clearTimeout(OPENCLAW_COPY_FEEDBACK_TIMER);
+  OPENCLAW_COPY_FEEDBACK_TIMER = 0;
+  button.classList.remove('is-copying', 'is-copied', 'is-failed');
+  button.dataset.copyBusy = state === 'copying' ? 'true' : 'false';
+  if (state === 'copying') {
+    button.classList.add('is-copying');
+    button.textContent = 'Copying…';
+    button.setAttribute('aria-label', 'Copying pairing code');
+    return;
+  }
+  if (state === 'copied') {
+    button.classList.add('is-copied');
+    button.textContent = '✓ Copied';
+    button.setAttribute('aria-label', 'Pairing code copied');
+    OPENCLAW_COPY_FEEDBACK_TIMER = setTimeout(() => showOpenClawCopyFeedback(), 1800);
+    return;
+  }
+  if (state === 'failed') {
+    button.classList.add('is-failed');
+    button.textContent = 'Copy failed';
+    button.setAttribute('aria-label', 'Pairing code copy failed');
+    OPENCLAW_COPY_FEEDBACK_TIMER = setTimeout(() => showOpenClawCopyFeedback(), 2600);
+    return;
+  }
+  button.textContent = 'Copy code';
+  button.setAttribute('aria-label', 'Copy iPhone pairing code');
+}
+
+function showOpenClawUpdateFeedback(state = 'idle') {
+  const button = $('#openclaw-update-channel');
+  if (!button) return;
+  clearTimeout(OPENCLAW_UPDATE_FEEDBACK_TIMER);
+  OPENCLAW_UPDATE_FEEDBACK_TIMER = 0;
+  button.classList.remove('is-updating', 'is-updated', 'is-failed');
+  if (state === 'updating') {
+    button.classList.add('is-updating');
+    button.textContent = 'Updating…';
+    button.setAttribute('aria-label', 'Updating the OpenClam channel');
+    return;
+  }
+  if (state === 'updated') {
+    button.classList.add('is-updated');
+    button.textContent = '✓ Updated';
+    button.setAttribute('aria-label', 'OpenClam channel updated');
+    OPENCLAW_UPDATE_FEEDBACK_TIMER = setTimeout(() => showOpenClawUpdateFeedback(), 1800);
+    return;
+  }
+  if (state === 'failed') {
+    button.classList.add('is-failed');
+    button.textContent = 'Update failed';
+    button.setAttribute('aria-label', 'OpenClam channel update failed');
+    OPENCLAW_UPDATE_FEEDBACK_TIMER = setTimeout(() => showOpenClawUpdateFeedback(), 2600);
+    return;
+  }
+  button.textContent = 'Update channel';
+  button.setAttribute('aria-label', 'Update the OpenClam channel');
+}
+
 function refreshOpenClawPairingCodeState() {
   const field = $('#openclaw-pairing-countdown');
   const card = $('#openclaw-pairing-code-card');
@@ -1541,6 +1623,7 @@ function refreshOpenClawPairingCodeState() {
   if (!remaining) {
     card.hidden = true;
     field.textContent = '';
+    showOpenClawCopyFeedback();
     $('#openclaw-pairing-state').textContent = 'This code is no longer active. Create another here.';
     clearTimeout(OPENCLAW_PAIRING_TIMER);
     OPENCLAW_PAIRING_TIMER = 0;
@@ -1605,6 +1688,7 @@ function requireOpenClawRepair(message) {
 
 function showOpenClawPairingResult(result) {
   if (!result || !result.code) return;
+  showOpenClawCopyFeedback();
   $('#openclaw-pairing-code').textContent = result.code;
   $('#openclaw-pairing-code-card').hidden = false;
   OPENCLAW_PAIRING_EXPIRES_AT = Number(result.expires_at) || 0;
@@ -1630,6 +1714,7 @@ async function installOpenClawChannel() {
   }
   button.disabled = true;
   update.disabled = true;
+  if (updating) showOpenClawUpdateFeedback('updating');
   state.className = 'openclaw-pairing-state';
   state.textContent = repairing
     ? 'Reconnecting only the OpenClam channel…'
@@ -1644,6 +1729,7 @@ async function installOpenClawChannel() {
     });
     field.value = '';
     if (!result || result.detail || !result.configured) {
+      if (updating) showOpenClawUpdateFeedback('failed');
       state.classList.add('bad');
       state.textContent = (result && result.detail) || 'OpenClam could not configure OpenClaw.';
       return;
@@ -1651,12 +1737,14 @@ async function installOpenClawChannel() {
     OPENCLAW_REPAIR_REQUIRED = false;
     showOpenClawPairingResult(result);
     await loadOpenClawPairingStatus();
+    if (updating) showOpenClawUpdateFeedback('updated');
     state.textContent = result.repaired
       ? 'OpenClaw reconnected. Finish pairing on iPhone with the code below.'
       : (result.updated
         ? 'OpenClam channel updated. Your agents and other channels were unchanged.'
         : 'OpenClam channel installed and connected. Use the code below on iPhone.');
   } catch {
+    if (updating) showOpenClawUpdateFeedback('failed');
     field.value = '';
     state.classList.add('bad');
     state.textContent = 'OpenClam could not configure OpenClaw. Check the setup key and try again.';
@@ -1724,13 +1812,22 @@ $('#openclaw-install').onclick = () => void installOpenClawChannel();
 $('#openclaw-update-channel').onclick = () => void installOpenClawChannel();
 $('#openclaw-pairing-refresh').onclick = () => void loadOpenClawPairingStatus();
 $('#openclaw-pairing-copy').onclick = async () => {
+  const button = $('#openclaw-pairing-copy');
+  if (button.dataset.copyBusy === 'true') return;
   const code = $('#openclaw-pairing-code').textContent.trim();
   if (!code) return;
+  showOpenClawCopyFeedback('copying');
   try {
     if (!await copySettingsText(code)) throw new Error('clipboard unavailable');
-    $('#openclaw-pairing-state').textContent = 'Pairing code copied.';
+    showOpenClawCopyFeedback('copied');
+    const state = $('#openclaw-pairing-state');
+    state.className = 'openclaw-pairing-state';
+    state.textContent = 'Pairing code copied.';
   } catch {
-    $('#openclaw-pairing-state').textContent = 'Copy failed. Select the code and copy it manually.';
+    showOpenClawCopyFeedback('failed');
+    const state = $('#openclaw-pairing-state');
+    state.className = 'openclaw-pairing-state bad';
+    state.textContent = 'Copy failed. Select the code and copy it manually.';
   }
 };
 
