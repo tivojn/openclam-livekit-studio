@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const pkg = JSON.parse(read('package.json'));
 const release = read('scripts/release-macos.sh');
+const notaryPreflightClassifier = read('scripts/classify-notary-preflight.py');
 const openClawStager = read('scripts/stage-openclaw-plugin.sh');
 const ffmpegStager = read('scripts/stage-electron-ffmpeg.sh');
 const opencvStager = read('scripts/stage-electron-opencv.sh');
@@ -438,6 +439,82 @@ for (const required of [
 ]) {
   assert.ok(release.includes(required), `missing mandatory release gate: ${required}`);
 }
+
+// A local unnotarized-bootstrap diagnostic may permit submission, never
+// distribution. Behavioral Python tests exercise these actual shell functions
+// with fake tools; these guards additionally pin every production call site.
+const releaseFunction = (name) => {
+  const match = release.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, 'm'));
+  assert.ok(match, `Release function is missing: ${name}`);
+  return match[0];
+};
+const syspolicyGate = releaseFunction('verify_syspolicy');
+for (const required of [
+  'local policy="${4:-strict}"',
+  '[[ "$mode" == notary-submission && "$target" == "$APP_PATH"',
+  '&& "$label" == app-notary-submission',
+  '&& "$APP_NOTARIZED" -eq 0 && "$APP_STAPLED" -eq 0',
+  '[[ -s "$report" ]]',
+  '[[ "$policy" == initial-preflight ]]',
+  'verify_signature_identity "$target" "$evidence_label"',
+  '--assessment-exit "$result"',
+  '--spctl-exit "$spctl_result"',
+  '--app-path "$target" --executable "$PRODUCT_NAME" --app-id "$APP_ID"',
+  '--identity "$SIGN_IDENTITY" --team-id "$TEAM_ID"',
+  'unresolved_pre_submission_notary_error)',
+  'NOT a passed release gate',
+  'preserve_release_diagnostics || fail',
+]) assert.ok(syspolicyGate.includes(required), `Pre-submission boundary is missing ${required}`);
+assert.ok(syspolicyGate.indexOf('[[ "$policy" == initial-preflight ]]')
+  < syspolicyGate.indexOf('"$AUDIT_PYTHON" "$PREFLIGHT_CLASSIFIER"'),
+  'Nonzero strict assessments must fail before any classifier invocation');
+assert.deepEqual(
+  release.split('\n').filter((line) => /^verify_syspolicy .* initial-preflight$/.test(line)),
+  ['verify_syspolicy notary-submission "$APP_PATH" \'app-notary-submission\' initial-preflight'],
+  'Only the initial, unsubmitted app may use the diagnostic exception');
+const distributableApp = releaseFunction('verify_distributable_app');
+assert.deepEqual(
+  distributableApp.split('\n').filter((line) => /^  verify_syspolicy /.test(line)),
+  [
+    '  verify_syspolicy notary-submission "$app_path" "$label-notary-submission"',
+    '  verify_syspolicy distribution "$app_path" "$label-distribution"',
+  ], 'Both post-staple assessments must use the strict default without an override');
+for (const required of [
+  'verify_signature_identity "$app_path" "$label"',
+  'stapler validate -v "$app_path"',
+  '|| fail "Gatekeeper rejected $label"',
+]) assert.ok(distributableApp.includes(required), `Distribution gate is missing ${required}`);
+assert.ok(release.indexOf('APP_NOTARIZED=1') < release.indexOf('APP_STAPLED=1'));
+assert.ok(release.indexOf('APP_STAPLED=1')
+  < release.indexOf('verify_distributable_app "$APP_PATH" \'app-after-staple\''));
+assert.ok(release.indexOf('verify_distributable_app "$APP_PATH" \'app-after-staple\'')
+  < release.indexOf('"$BUILDER" --mac dmg'));
+for (const required of [
+  'require(mode == "notary-submission"',
+  'require(assessment_exit == 70',
+  'signature_exit == 0 and metadata_exit == 0',
+  '"runtime" in flags.group(2).split(",")',
+  '"AMFI preflight did not pass exactly once"',
+  'require(len(findings) == 1',
+  'finding["Full Error"] == GENERIC_NOTARY_ERROR',
+  'parse_ns_error(finding["NSError.userInfo"]) == {',
+  'require(spctl_exit == 3 and spctl.splitlines() == [',
+  '"source=Unnotarized Developer ID"',
+  '"notarization_accepted": False',
+  '"gatekeeper_accepted": False',
+  'data = stream.read(limit + 1)',
+]) assert.ok(notaryPreflightClassifier.includes(required), `Classifier is missing ${required}`);
+const diagnosticCopy = releaseFunction('preserve_release_diagnostics');
+assert.ok(diagnosticCopy.includes('openclam-release-diagnostics.XXXXXX'));
+assert.ok(diagnosticCopy.includes('[[ -f "$report" && ! -L "$report" ]]'));
+assert.match(diagnosticCopy,
+  /"\$WORK_DIR\/notary-app\.json" "\$WORK_DIR\/notary-dmg\.json"; do/);
+assert.doesNotMatch(diagnosticCopy, /"\$WORK_DIR"\/notary-\*|"\$WORK_DIR\/notary-profile\.json"/,
+  'Retained diagnostics must not include profile history or arbitrary notary files');
+assert.ok(releaseFunction('cleanup').includes('if ! preserve_release_diagnostics; then'));
+assert.ok(read('tests/test_notary_preflight.py').includes('class ReleasePreflightShellTests'),
+  'Release must retain provider-free behavioral shell-flow regressions');
+
 for (const required of [
   '--enable-ffprobe',
   '--enable-muxer=mov,mp4,null,pcm_s16le,wav',

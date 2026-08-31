@@ -16,8 +16,10 @@ TEAM_ID='X7R8N6MMSU'
 NOTARY_PROFILE='OpenClamStudioNotary'
 BUILDER="$PROJECT_ROOT/node_modules/.bin/electron-builder"
 AUDIT_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+PREFLIGHT_CLASSIFIER="$PROJECT_ROOT/scripts/classify-notary-preflight.py"
 UVX_BIN="$(command -v uvx || true)"
 WORK_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/openclam-release.XXXXXX")"
+DIAGNOSTICS_DIR=''
 MOUNT_DIR="$WORK_DIR/mounted-dmg"
 MOUNTED=0
 REUSE_STAGED_RUNTIME=0
@@ -68,11 +70,42 @@ for argument in "$@"; do
   esac
 done
 
+preserve_release_diagnostics() {
+  local report
+  local copied=0
+  # Deliberately exclude notary-profile.json, environment/authentication data,
+  # and the artifact ZIP. Only public signing/assessment evidence is retained.
+  for report in \
+    "$WORK_DIR"/syspolicy-*.txt "$WORK_DIR"/codesign-*.txt \
+    "$WORK_DIR"/spctl-*.txt "$WORK_DIR"/preflight-*.json \
+    "$WORK_DIR/notary-app.json" "$WORK_DIR/notary-dmg.json"; do
+    [[ -f "$report" && ! -L "$report" ]] || continue
+    if [[ -z "$DIAGNOSTICS_DIR" ]]; then
+      DIAGNOSTICS_DIR="$(/usr/bin/mktemp -d \
+        "${TMPDIR:-/tmp}/openclam-release-diagnostics.XXXXXX")" || return 1
+    fi
+    /bin/cp -- "$report" "$DIAGNOSTICS_DIR/$(/usr/bin/basename "$report")" || return 1
+    copied=1
+  done
+  if [[ "$copied" -eq 1 ]]; then
+    echo "Release diagnostics preserved: $DIAGNOSTICS_DIR" >&2
+  fi
+}
+
 cleanup() {
+  local exit_status=$?
   if [[ "$MOUNTED" -eq 1 ]]; then
     /usr/bin/hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || true
   fi
+  if [[ "$exit_status" -ne 0 || -n "$DIAGNOSTICS_DIR" ]]; then
+    if ! preserve_release_diagnostics; then
+      # Do not destroy the only evidence if copying it fails.
+      echo "Could not copy release diagnostics; private work directory retained: $WORK_DIR" >&2
+      return 1
+    fi
+  fi
   /bin/rm -rf -- "$WORK_DIR"
+  return "$exit_status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -243,8 +276,11 @@ verify_signature_identity() {
   local target="$1"
   local label="$2"
   local report="$WORK_DIR/codesign-${label}.txt"
-  /usr/bin/codesign --verify --deep --strict --verbose=2 "$target"
-  /usr/bin/codesign -d --verbose=4 "$target" 2>"$report"
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$target" \
+    >"$WORK_DIR/codesign-verify-${label}.txt" 2>&1 \
+    || fail "$label failed deep/strict signature verification"
+  /usr/bin/codesign -d --verbose=4 "$target" 2>"$report" \
+    || fail "$label signing identity could not be inspected"
   local details
   details="$(<"$report")"
   case "$details" in
@@ -266,42 +302,66 @@ verify_syspolicy() {
   local mode="$1"
   local target="$2"
   local label="$3"
+  local policy="${4:-strict}"
   local report="$WORK_DIR/syspolicy-${label}.txt"
   local result=0
 
+  case "$policy" in
+    strict) ;;
+    initial-preflight)
+      [[ "$mode" == notary-submission && "$target" == "$APP_PATH" \
+        && "$label" == app-notary-submission \
+        && "$APP_NOTARIZED" -eq 0 && "$APP_STAPLED" -eq 0 ]] \
+        || fail 'pre-submission diagnostic policy used outside the initial app preflight'
+      ;;
+    *) fail 'unknown syspolicy assessment policy' ;;
+  esac
+
   /usr/bin/syspolicy_check "$mode" "$target" --verbose >"$report" 2>&1 \
     || result=$?
+  [[ -s "$report" ]] || fail "syspolicy_check $mode returned an empty report"
   if [[ "$result" -eq 0 ]]; then
     return 0
   fi
 
-  # macOS 26 exits 70 when the only structured findings are warnings about
-  # native Python extension modules below Contents/Resources.  Those warnings
-  # must not masquerade as either a clean preflight or a release acceptance:
-  # allow only an all-Warning report here, then still require actual Apple
-  # notarization, stapling, and Gatekeeper assessment below.
-  if ! "$AUDIT_PYTHON" - "$report" "$mode" <<'PY'
-import pathlib
-import re
-import sys
+  # All post-stapling assessments, including the app mounted from the DMG,
+  # require exit 0. No warning or bootstrap exception is available there.
+  [[ "$policy" == initial-preflight ]] \
+    || fail "syspolicy_check $mode rejected $label (exit $result)"
 
-report = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-severities = re.findall(r"^\s*Severity:\s*([^\s]+)\s*$", report, flags=re.MULTILINE)
-if not severities:
-    raise SystemExit(f"syspolicy_check {sys.argv[2]} failed without structured findings")
-unexpected = sorted({value for value in severities if value != "Warning"})
-if unexpected:
-    raise SystemExit(
-        f"syspolicy_check {sys.argv[2]} reported non-warning severities: {unexpected}"
-    )
-print(
-    f"syspolicy_check {sys.argv[2]} returned warning-only findings "
-    f"({len(severities)}); Apple acceptance remains mandatory"
-)
-PY
-  then
+  # Independently recheck the exact candidate before classifying this local
+  # diagnostic. A generic main-executable Notary Error is NOT a signing pass
+  # or Gatekeeper acceptance. It can only permit submission to Apple, whose
+  # Accepted response and every strict downstream gate remain mandatory.
+  local evidence_label="${label}-bootstrap-evidence"
+  verify_signature_identity "$target" "$evidence_label"
+  local spctl_report="$WORK_DIR/spctl-${evidence_label}.txt"
+  local spctl_result=0
+  /usr/sbin/spctl --assess --type execute --verbose=4 "$target" \
+    >"$spctl_report" 2>&1 || spctl_result=$?
+  local decision_report="$WORK_DIR/preflight-${label}.json"
+  if ! "$AUDIT_PYTHON" "$PREFLIGHT_CLASSIFIER" \
+    --report "$report" --mode "$mode" --assessment-exit "$result" \
+    --identity-report "$WORK_DIR/codesign-${evidence_label}.txt" \
+    --signature-exit 0 --metadata-exit 0 \
+    --spctl-report "$spctl_report" --spctl-exit "$spctl_result" \
+    --app-path "$target" --executable "$PRODUCT_NAME" --app-id "$APP_ID" \
+    --identity "$SIGN_IDENTITY" --team-id "$TEAM_ID" >"$decision_report"; then
     fail "syspolicy_check $mode rejected $label"
   fi
+  local disposition
+  disposition="$(/usr/bin/plutil -extract disposition raw -o - "$decision_report")" \
+    || fail 'pre-submission classifier did not return a disposition'
+  case "$disposition" in
+    unresolved_pre_submission_notary_error)
+      echo 'Unresolved local Notary Error: permitting Apple submission only; NOT a passed release gate.'
+      ;;
+    warning_only_pre_submission)
+      echo 'Warning-only local preflight; Apple acceptance and strict post-stapling checks remain mandatory.'
+      ;;
+    *) fail 'pre-submission classifier returned an unknown disposition' ;;
+  esac
+  preserve_release_diagnostics || fail 'could not preserve pre-submission diagnostic evidence'
 }
 
 verify_bundle_metadata() {
@@ -361,8 +421,12 @@ verify_distributable_app() {
   verify_bundle_metadata "$app_path" "$PACKAGE_VERSION" "$label"
   verify_signature_identity "$app_path" "$label"
   /usr/bin/xcrun stapler validate -v "$app_path"
-  /usr/sbin/spctl --assess --type execute --verbose=4 "$app_path"
-  # syspolicy_check distribution is routed through the warning-only validator.
+  /usr/sbin/spctl --assess --type execute --verbose=4 "$app_path" \
+    >"$WORK_DIR/spctl-${label}.txt" 2>&1 \
+    || fail "Gatekeeper rejected $label"
+  # Both syspolicy_check notary-submission and syspolicy_check distribution
+  # must now exit 0, without the initial-preflight exception.
+  verify_syspolicy notary-submission "$app_path" "$label-notary-submission"
   verify_syspolicy distribution "$app_path" "$label-distribution"
 }
 
@@ -645,8 +709,8 @@ PACKAGED_LICENSES_VERIFIED=1
 PACKAGED_RUNTIME_VERIFIED=1
 
 verify_signature_identity "$APP_PATH" 'app-before-notarization'
-# syspolicy_check notary-submission is routed through the warning-only validator.
-verify_syspolicy notary-submission "$APP_PATH" 'app-notary-submission'
+# Only this first app assessment can classify the identified bootstrap case.
+verify_syspolicy notary-submission "$APP_PATH" 'app-notary-submission' initial-preflight
 APP_SIGNED=1
 
 APP_ZIP="$WORK_DIR/OpenClam-Studio-app.zip"
