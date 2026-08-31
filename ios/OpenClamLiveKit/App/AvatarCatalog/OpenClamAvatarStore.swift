@@ -89,12 +89,12 @@ enum OpenClamAvatarStoreCatalogError: LocalizedError, Equatable {
     }
 }
 
-/// The endpoint stays nil until the matching catalog and hash-pinned release
-/// assets are publicly reachable. Publication and client enablement are two
-/// separate release steps so a shipped build can never point at a placeholder.
+/// Only enable a catalog after its hash-pinned release assets have passed
+/// anonymous download verification. Publication and client enablement remain
+/// separate release steps so a shipped build never points at a placeholder.
 enum OpenClamAvatarStoreReleasePolicy {
     static let productionCatalogURL = URL(
-        string: "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.5/shared/avatar-store-v1/catalog/v1/catalog.json"
+        string: "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/catalog.json"
     )!
     static let catalogURL: URL? = productionCatalogURL
     static let unavailableMessage =
@@ -109,9 +109,8 @@ struct OpenClamAvatarStoreRemoteAccess: Sendable {
     static let release = Self(catalogURL: OpenClamAvatarStoreReleasePolicy.catalogURL)
 
 #if DEBUG
-    /// Unit tests exercise the dormant generic store engine against synthetic
-    /// endpoints and an injected transfer client. Release UI always uses
-    /// `release`, whose endpoint is nil.
+    /// Unit tests exercise the generic store engine against synthetic endpoints
+    /// and an injected transfer client. Release UI always uses `release`.
     static func testing(catalogURL: URL) -> Self {
         Self(catalogURL: catalogURL)
     }
@@ -129,7 +128,7 @@ enum OpenClamAvatarStoreURLPolicy {
     static func allowsCatalogURL(_ url: URL) -> Bool {
         guard hasSafeHTTPSComponents(url),
               url.host?.lowercased() == "raw.githubusercontent.com",
-              url.path == "/\(owner)/\(repository)/avatar-store-v1.0.5/shared/avatar-store-v1/catalog/v1/catalog.json" else {
+              url.path == "/\(owner)/\(repository)/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/catalog.json" else {
             return false
         }
         return true
