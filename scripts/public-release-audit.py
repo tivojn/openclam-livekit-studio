@@ -715,9 +715,13 @@ HIGH_ENTROPY_SKIP_NAMES = {
 # Python exporter.  Pin the complete reviewed source file rather than weakening
 # the token scanner or exempting the path: any fixture or surrounding-code
 # change must receive a new explicit review before the public audit passes.
+# The two reviewed revisions contain the byte-identical synthetic fixture;
+# retain the older pin for reachable history as well as the current tests.
 REVIEWED_HIGH_ENTROPY_TEXT_HASHES = {
-    Path("ios/OpenClamLiveKit/Tests/OpenClamAvatarPackageTests.swift"):
+    Path("ios/OpenClamLiveKit/Tests/OpenClamAvatarPackageTests.swift"): frozenset({
         "2cf53f32d71c5ac5928dd871711e0663aaa132bbdab72d8e67d0c7d5005a6108",
+        "0e94993bbb8cea1bbba6d0f726fdeebf13717f16c168bc5d3785fda002e12c9d",
+    }),
 }
 
 ALLOWED_SOURCE_BUILD_FILES = {
@@ -1025,9 +1029,9 @@ def denied_directory_reason(relative: Path) -> str | None:
 def high_entropy_finding(relative: Path, raw: bytes) -> bool:
     if relative.name in HIGH_ENTROPY_SKIP_NAMES:
         return False
-    reviewed_hash = REVIEWED_HIGH_ENTROPY_TEXT_HASHES.get(relative)
-    if reviewed_hash is not None \
-            and hashlib.sha256(raw).hexdigest() == reviewed_hash:
+    reviewed_hashes = REVIEWED_HIGH_ENTROPY_TEXT_HASHES.get(relative)
+    if reviewed_hashes is not None \
+            and hashlib.sha256(raw).hexdigest() in reviewed_hashes:
         return False
     for match in HIGH_ENTROPY_RE.finditer(raw):
         token = match.group(0)
