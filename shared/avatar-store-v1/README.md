@@ -49,6 +49,22 @@ The public `ios-light` profile name is retained for contract compatibility; thes
 five packages contain the full expression engine assets, not the old reduced rig.
 Captain Ayer and Cleo keep their previous catalog rows and immutable downloads.
 
+The immutable `avatar-store-v1.0.8` catalog advances Sarah and Celine to version 2,
+Luffy · 2D to version 3, and Luffy · 3D to version 6. Sarah retains her approved
+image and motion bytes and adds bounded lip-contour metadata for the matching
+iOS compositor. Both Luffy mouth banks are reprocessed from retained raw
+plates without regenerating their approved neutral heads, hats, body geometry,
+gaze, blinks, or animations. Celine changes only alpha ownership in seventeen
+closed-mouth expression cells; every RGB pixel and all other artwork remain
+unchanged. Ara, Captain Ayer, and Cleo retain their exact preceding catalog
+rows. Sarah's Mac authoring backup and all unchanged
+thumbnails remain at their previously published immutable URLs.
+
+The v1.0.8 catalog must not be enabled by an older iOS decoder: the updated
+compositor and metadata validator ship together. Native package import/reload
+and visual mouth-frame checks qualify the changed archives before client
+enablement. Earlier published catalogs and archives are not overwritten.
+
 The `avatar-store-v1.0.6` source tag remains an unpublished candidate: its release
 assets were not uploaded or enabled in iOS. A final visual check found that the
 3D Luffy blink plate covered some fringe and cheek-scar artwork. Version 1.0.7
