@@ -1529,7 +1529,7 @@ final class ConversationModel: ObservableObject {
             id: pending.turnID,
             phase: .cancelling,
             title: "Cancelling the saved OpenClaw turn",
-            detail: "Waiting for OpenClaw to safely record the cancellation.",
+            detail: "Waiting for OpenClaw's final outcome. A result that completed first will be kept.",
             showsProgress: true,
             allowsRetry: false,
             allowsCancel: false
@@ -1667,6 +1667,16 @@ final class ConversationModel: ObservableObject {
                             ? "Open this Work card for details."
                             : "Work · \(remoteAgentWorkSteps.count) steps",
                         showsProgress: step.state == .running,
+                        allowsRetry: false,
+                        allowsCancel: true
+                    )
+                case let .attachmentTransfer(metadata):
+                    remoteAgentActivity = .init(
+                        id: turnID,
+                        phase: .downloading,
+                        title: "Receiving file…",
+                        detail: metadata.fileName,
+                        showsProgress: true,
                         allowsRetry: false,
                         allowsCancel: true
                     )
@@ -1883,6 +1893,15 @@ final class ConversationModel: ObservableObject {
         var resolvedError = originalError
         var cancellationWasPersisted = false
         if originalError is CancellationError {
+            remoteAgentActivity = .init(
+                id: turnID,
+                phase: .cancelling,
+                title: "Cancelling the OpenClaw turn",
+                detail: "Waiting for OpenClaw's final outcome. A result that completed first will be kept.",
+                showsProgress: true,
+                allowsRetry: false,
+                allowsCancel: false
+            )
             let cancellationTask = Task { @MainActor in
                 try await agentConnections.cancelPendingTurn(
                     connectionID: connectionID,

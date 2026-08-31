@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   findOpenClamClient: vi.fn(),
   loadOpenClamMedia: vi.fn(),
   deliverMediaToActiveConversation: vi.fn(),
+  deliverTextToActiveConversation: vi.fn(),
 }));
 
 vi.mock("../src/gateway.js", () => ({
@@ -34,11 +35,15 @@ const config = {
   },
 } as any;
 
-describe("OpenClam outbound media", () => {
+describe("OpenClam outbound messages", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.findOpenClamClient.mockReturnValue({
       deliverMediaToActiveConversation: mocks.deliverMediaToActiveConversation,
+      deliverTextToActiveConversation: mocks.deliverTextToActiveConversation,
+    });
+    mocks.deliverTextToActiveConversation.mockResolvedValue({
+      messageId: "55555555-5555-4555-8555-555555555555", conversationId,
     });
     mocks.loadOpenClamMedia.mockResolvedValue({
       fileName: "movie.mp4",
@@ -111,6 +116,63 @@ describe("OpenClam outbound media", () => {
       messageId: "33333333-3333-4333-8333-333333333333",
       conversationId,
     });
+  });
+
+  it("routes text through the real active-turn sender and returns its persisted event ID", async () => {
+    const onPlatformSendDispatch = vi.fn(async () => {});
+    const result = await openClamOutbound.sendText!({
+      cfg: config, to: target, text: "The video is ready", accountId: "main",
+      replyToId: "current-turn", deliveryQueueId: "host-intent-1", onPlatformSendDispatch,
+    });
+    expect(openClamOutbound.deliveryMode).toBe("direct");
+    expect(mocks.deliverTextToActiveConversation).toHaveBeenCalledExactlyOnceWith({
+      accountId: "main", conversationId, text: "The video is ready",
+      replyToId: "current-turn", deliveryId: "host-intent-1", onPlatformSendDispatch,
+    });
+    expect(result).toEqual({
+      channel: "openclam", messageId: "55555555-5555-4555-8555-555555555555", conversationId,
+    });
+    expect(mocks.loadOpenClamMedia).not.toHaveBeenCalled();
+    expect(onPlatformSendDispatch).not.toHaveBeenCalled(); // The bridge invokes it at dispatch.
+  });
+
+  it("does not fabricate successful text delivery when the receipt is uncertain", async () => {
+    mocks.deliverTextToActiveConversation.mockRejectedValue(
+      new Error("openclam_text_delivery_unconfirmed"),
+    );
+    await expect(openClamOutbound.sendText!({
+      cfg: config, to: target, text: "Update", accountId: "main",
+    })).rejects.toThrow("openclam_text_delivery_unconfirmed");
+  });
+
+  it("rejects text sends outside the paired enabled account or without a live client", async () => {
+    for (const [to, cfg, error] of [
+      ["random-user", config, "invalid_openclam_target"],
+      [`44444444-4444-4444-8444-444444444444:${conversationId}`, config,
+        "openclam_target_not_paired"],
+      [target, { channels: { openclam: { ...config.channels.openclam, enabled: false } } },
+        "openclam_target_not_paired"],
+    ] as const) {
+      await expect(openClamOutbound.sendText!({
+        cfg, to, text: "Update", accountId: "main",
+      })).rejects.toThrow(error);
+    }
+    mocks.findOpenClamClient.mockReturnValue(undefined);
+    await expect(openClamOutbound.sendText!({
+      cfg: config, to: target, text: "Update", accountId: "main",
+    })).rejects.toThrow("openclam_connection_inactive");
+    expect(mocks.deliverTextToActiveConversation).not.toHaveBeenCalled();
+  });
+
+  it("does not silently redirect a thread or bypass approved media loading through text", async () => {
+    await expect(openClamOutbound.sendText!({
+      cfg: config, to: target, text: "Update", threadId: "another-thread",
+    })).rejects.toThrow("openclam_threads_unsupported");
+    await expect(openClamOutbound.sendText!({
+      cfg: config, to: target, text: "Update", mediaUrl: "/private/secret.pdf",
+    })).rejects.toThrow("openclam_media_requires_sender");
+    expect(mocks.deliverTextToActiveConversation).not.toHaveBeenCalled();
+    expect(mocks.loadOpenClamMedia).not.toHaveBeenCalled();
   });
 
   it("fails closed for malformed, unpaired, or inactive destinations", async () => {

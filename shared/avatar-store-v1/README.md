@@ -42,6 +42,20 @@ with the approved upright, centred head registration and a seamless stylized
 jaw-to-neck handoff. It preserves the straw hat, full-expression face assets,
 and all three reviewed motion roles. Earlier catalog tags remain unchanged.
 
+The immutable `avatar-store-v1.0.6` catalog updates Ara (3), Luffy · 2D (2),
+and Luffy · 3D (4), and adds Sarah (1) and Celine (1). All five have full-expression
+iOS v4 packages with Walk, Edge Idle, and Moves, plus full Mac authoring backups.
+The public `ios-light` profile name is retained for contract compatibility; these
+five packages contain the full expression engine assets, not the old reduced rig.
+Captain Ayer and Cleo keep their previous catalog rows and immutable downloads.
+
+The two Luffy updates preserve the previously published, approved head/body
+geometry. Migration requires the prior package's catalog-pinned SHA-256, exact
+identity, validated asset ledger and motion media, and decoded-pixel equality of
+the body, head mask and neutral head with the current project. Only matching
+geometry may be reused; the normal new-build upright/registration gate remains
+unchanged. This avoids regenerating the approved face merely to update gaze.
+
 ## Generic staging layout
 
 `build_release.py` has no production URL, identity, publisher, version, or

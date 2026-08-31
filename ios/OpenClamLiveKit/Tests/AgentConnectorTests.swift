@@ -366,6 +366,21 @@ final class AgentConnectorTests: XCTestCase {
             "A bridge delta must be visible before the durable completion arrives."
         )
 
+        let metadata = makeAttachmentMetadata(
+            connectionID: connectionID,
+            turnID: UUID(),
+            expiresAt: 60_000
+        )
+        controlledConnector.yield(.attachmentTransfer(metadata))
+        for _ in 0 ..< 100 where conversation.remoteAgentActivity?.phase != .downloading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(conversation.isWorking, "A file transfer is not a completed turn.")
+        XCTAssertEqual(conversation.remoteAgentActivity?.title, "Receiving file…")
+        XCTAssertEqual(conversation.remoteAgentActivity?.detail, metadata.fileName)
+        XCTAssertEqual(conversation.remoteAgentActivity?.allowsCancel, true)
+        XCTAssertEqual(conversation.streamingAssistantReply, "First streamed paragraph")
+
         controlledConnector.yield(.completed("Final response"))
         controlledConnector.finish()
         await submission.value
@@ -547,7 +562,7 @@ final class AgentConnectorTests: XCTestCase {
         let outbox = InMemoryAgentConnectorOutboxVault()
         let sockets = ScriptedSocketConnector(scripts: [
             [.waitForCancellation],
-            [.persistenceReceiptForLastCancel],
+            [.persistenceReceiptForLastCancel, .workerCancelledTerminalForLastCancel(seq: 1)],
         ])
         let connector = OpenClawAgentConnector(
             origin: try AgentConnectorOrigin("https://bridge.example.com"),
@@ -1818,7 +1833,7 @@ final class AgentConnectorTests: XCTestCase {
         )
     }
 
-    func testCancellationReconnectsAndReplaysExactCancelUntilPersisted() async throws {
+    func testCancellationReconnectsAndReplaysExactCancelUntilWorkerTerminal() async throws {
         let suite = "AgentConnectorTests.cancel-replay.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -1829,7 +1844,7 @@ final class AgentConnectorTests: XCTestCase {
         let sockets = ScriptedSocketConnector(scripts: [
             [.waitForCancellation],
             [.disconnect],
-            [.persistenceReceiptForLastCancel],
+            [.persistenceReceiptForLastCancel, .workerCancelledTerminalForLastCancel(seq: 1)],
         ])
         let connector = OpenClawAgentConnector(
             origin: try AgentConnectorOrigin("https://bridge.example.com"),
@@ -1867,7 +1882,11 @@ final class AgentConnectorTests: XCTestCase {
         _ = await consumer.result
         try await connector.cancelTurn(request, clientToken: token)
 
-        XCTAssertNil(try outbox.load(connectionID: connectionID, turnID: turnID))
+        XCTAssertEqual(
+            try outbox.load(connectionID: connectionID, turnID: turnID)?.terminal,
+            .failed(code: "cancelled", message: "The turn was cancelled."),
+            "The actual worker terminal must remain durable until conversation history commits it."
+        )
         let cancelTexts = sockets.sentTexts.filter { text in
             guard let data = text.data(using: .utf8),
                   let frame = try? JSONDecoder().decode(
@@ -1938,6 +1957,7 @@ final class AgentConnectorTests: XCTestCase {
 
         let relaunchedSockets = ScriptedSocketConnector(scripts: [[
             .persistenceReceiptForLastCancel,
+            .workerCancelledTerminalForLastCancel(seq: 1),
         ]])
         let relaunchedConnector = OpenClawAgentConnector(
             origin: try AgentConnectorOrigin("https://bridge.example.com"),
@@ -1956,10 +1976,16 @@ final class AgentConnectorTests: XCTestCase {
             ) {}
             XCTFail("A recovered cancellation must finish as cancelled")
         } catch {
-            XCTAssertTrue(error is CancellationError)
+            XCTAssertEqual(
+                error as? AgentConnectorError,
+                .remote(code: "cancelled", message: "The turn was cancelled.")
+            )
         }
 
-        XCTAssertNil(try outbox.load(connectionID: connectionID, turnID: turnID))
+        XCTAssertEqual(
+            try outbox.load(connectionID: connectionID, turnID: turnID)?.terminal,
+            .failed(code: "cancelled", message: "The turn was cancelled.")
+        )
         let replayedCancel = try XCTUnwrap(
             relaunchedSockets.sentTexts.first(where: { text in
                 guard let data = text.data(using: .utf8),
@@ -2515,6 +2541,7 @@ final class AgentConnectorTests: XCTestCase {
         }
         XCTAssertEqual(firstEvents, [
             .submissionSaved, .accepted,
+            .attachmentTransfer(metadata),
             .attachment(try artifacts.storedAttachment(for: metadata)),
         ])
         let operations = recorder.operations
@@ -2576,6 +2603,7 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertEqual(pending.terminal, .completed("Created 1 file."))
         XCTAssertEqual(fixture.artifacts.downloadCount, 1)
         XCTAssertTrue(fixture.artifacts.deletedReferences.isEmpty)
+        XCTAssertEqual(fixture.sockets.closedSocketCount, 1)
     }
 
     func testCancellationRaceDeletesAttachmentWhenTerminalErrorWins() async throws {
@@ -2594,6 +2622,172 @@ final class AgentConnectorTests: XCTestCase {
         )
         XCTAssertEqual(fixture.artifacts.downloadCount, 1)
         XCTAssertEqual(fixture.artifacts.deletedReferences.count, 1)
+    }
+
+    func testCancellationReceiptWaitsForTrueWorkerCancelledTerminal() async throws {
+        let fixture = try makeCancellationAttachmentFixture(terminalKind: .cancelled)
+        try await fixture.connector.cancelTurn(fixture.request, clientToken: fixture.token)
+        let pending = try XCTUnwrap(fixture.outbox.load(
+            connectionID: fixture.request.connectionID,
+            turnID: fixture.request.turnID
+        ))
+        XCTAssertNotNil(pending.cancelFrame)
+        XCTAssertEqual(
+            pending.terminal,
+            .failed(code: "cancelled", message: "The turn was cancelled.")
+        )
+        XCTAssertNil(pending.attachments)
+        XCTAssertEqual(fixture.artifacts.downloadCount, 1)
+        XCTAssertEqual(fixture.artifacts.deletedReferences.count, 1)
+        XCTAssertEqual(fixture.sockets.closedSocketCount, 1)
+    }
+
+    func testCancellationReceiptAndDisconnectPreserveFileUntilCompletionAfterRelaunch() async throws {
+        let fixture = try makeCancellationAttachmentFixture(
+            terminalKind: .completed,
+            disconnectAfterAttachment: true
+        )
+        do {
+            try await fixture.connector.cancelTurn(fixture.request, clientToken: fixture.token)
+            XCTFail("The relay receipt alone must not finish cancellation.")
+        } catch {
+            XCTAssertEqual(error as? AgentConnectorError, .connectionUnavailable)
+        }
+        let pending = try XCTUnwrap(fixture.outbox.load(
+            connectionID: fixture.request.connectionID,
+            turnID: fixture.request.turnID
+        ))
+        let cancel = try XCTUnwrap(pending.cancelFrame)
+        XCTAssertNil(pending.terminal)
+        XCTAssertEqual(pending.attachments?.count, 1)
+        XCTAssertTrue(fixture.artifacts.deletedReferences.isEmpty)
+
+        let sockets = ScriptedSocketConnector(scripts: [[
+            .persistenceReceiptForLastCancel, .text(fixture.terminalFrame),
+        ]])
+        let relaunched = OpenClawAgentConnector(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            cursorStore: fixture.cursor,
+            outboxVault: fixture.outbox,
+            socketConnector: sockets,
+            artifactService: fixture.artifacts,
+            reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
+            nowMilliseconds: { 1_000 }
+        )
+        var events: [AgentConnectorStreamEvent] = []
+        for try await event in relaunched.streamTurn(fixture.request, clientToken: fixture.token) {
+            events.append(event)
+        }
+        XCTAssertEqual(events, [
+            .submissionSaved,
+            .attachment(try XCTUnwrap(pending.attachments?.first)),
+            .completed("Created 1 file."),
+        ])
+        XCTAssertEqual(sockets.sentTexts.first, cancel.text)
+        XCTAssertEqual(sockets.closedSocketCount, 1)
+        XCTAssertEqual(fixture.artifacts.downloadCount, 1)
+        XCTAssertTrue(fixture.artifacts.deletedReferences.isEmpty)
+        XCTAssertEqual(
+            try fixture.outbox.load(
+                connectionID: fixture.request.connectionID,
+                turnID: fixture.request.turnID
+            )?.terminal,
+            .completed("Created 1 file.")
+        )
+    }
+
+    func testDelayedAttachmentShowsTransferBeforeVerifiedSaveAndAcknowledgement() async throws {
+        let gate = ConnectorDownloadGate()
+        let fixture = try makeCancellationAttachmentFixture(
+            terminalKind: .completed,
+            savedCancellation: true,
+            downloadGate: gate
+        )
+        var events: [AgentConnectorStreamEvent] = []
+        let consumer = Task { @MainActor in
+            for try await event in fixture.connector.streamTurn(
+                fixture.request,
+                clientToken: fixture.token
+            ) {
+                events.append(event)
+            }
+        }
+        for _ in 0 ..< 100 {
+            if events.contains(.attachmentTransfer(fixture.metadata)),
+               fixture.artifacts.downloadCount == 1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(events, [.submissionSaved, .attachmentTransfer(fixture.metadata)])
+        let waiting = try XCTUnwrap(fixture.outbox.load(
+            connectionID: fixture.request.connectionID,
+            turnID: fixture.request.turnID
+        ))
+        XCTAssertNil(waiting.attachments)
+        XCTAssertNil(waiting.terminal)
+        XCTAssertFalse(
+            fixture.sockets.sentFrames.contains { $0.kind == "ack" },
+            "The relay must retain the blob until download, verification and local persistence finish."
+        )
+
+        await gate.release()
+        try await consumer.value
+        let stored = try fixture.artifacts.storedAttachment(for: fixture.metadata)
+        XCTAssertEqual(events, [
+            .submissionSaved, .attachmentTransfer(fixture.metadata),
+            .attachment(stored), .completed("Created 1 file."),
+        ])
+        XCTAssertEqual(
+            fixture.sockets.sentFrames.filter { $0.kind == "ack" }.compactMap(\.payload.ackSeq),
+            [1, 2]
+        )
+        XCTAssertEqual(
+            try fixture.outbox.load(
+                connectionID: fixture.request.connectionID,
+                turnID: fixture.request.turnID
+            )?.attachments,
+            [stored]
+        )
+    }
+
+    func testCancelledAttachmentDownloadNeverAcknowledgesOrLosesPendingTurn() async throws {
+        let gate = ConnectorDownloadGate()
+        let fixture = try makeCancellationAttachmentFixture(
+            terminalKind: .completed,
+            savedCancellation: true,
+            downloadGate: gate
+        )
+        var events: [AgentConnectorStreamEvent] = []
+        let consumer = Task { @MainActor in
+            for try await event in fixture.connector.streamTurn(
+                fixture.request,
+                clientToken: fixture.token
+            ) {
+                events.append(event)
+            }
+        }
+        for _ in 0 ..< 100 where fixture.artifacts.downloadCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(fixture.artifacts.downloadCount, 1)
+        consumer.cancel()
+        _ = await consumer.result
+        for _ in 0 ..< 100 {
+            if await gate.wasCancelled { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let downloadWasCancelled = await gate.wasCancelled
+        XCTAssertTrue(downloadWasCancelled)
+        let pending = try XCTUnwrap(fixture.outbox.load(
+            connectionID: fixture.request.connectionID,
+            turnID: fixture.request.turnID
+        ))
+        XCTAssertNotNil(pending.cancelFrame)
+        XCTAssertNil(pending.terminal)
+        XCTAssertNil(pending.attachments)
+        XCTAssertFalse(fixture.sockets.sentFrames.contains { $0.kind == "ack" })
+        XCTAssertFalse(events.contains(.completed("Created 1 file.")))
+        XCTAssertTrue(fixture.artifacts.deletedReferences.isEmpty)
+        await gate.release()
     }
 
     func testPreOutboxHistoryFailureRetainsDraftAndLeavesNoUserBubble() async throws {
@@ -2988,6 +3182,33 @@ final class AgentConnectorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.artifactsRoot.path))
     }
 
+    func testArtifactDownloadPreservesTransportCancellation() async throws {
+        let artifactsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: artifactsRoot) }
+        let service = OpenClawAgentConnectorArtifactService(
+            origin: try AgentConnectorOrigin("https://bridge.example.com"),
+            transport: CancelledArtifactTransport(),
+            store: AgentConnectorArtifactStore(rootURL: artifactsRoot),
+            nowMilliseconds: { 1_000 }
+        )
+        let metadata = makeAttachmentMetadata(
+            connectionID: UUID(),
+            turnID: UUID(),
+            expiresAt: 61_000
+        )
+        do {
+            _ = try await service.downloadAndStore(
+                metadata,
+                clientToken: String(repeating: "t", count: 48)
+            )
+            XCTFail("An interrupted GET must remain cancellation, not a retryable network failure.")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifactsRoot.path))
+    }
+
     func testPersistedGeneratedImageGetsBoundedRelaunchThumbnail() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -3185,6 +3406,7 @@ final class AgentConnectorTests: XCTestCase {
     private enum CancellationAttachmentTerminalKind {
         case completed
         case failed
+        case cancelled
     }
 
     private struct CancellationAttachmentFixture {
@@ -3193,10 +3415,17 @@ final class AgentConnectorTests: XCTestCase {
         let token: String
         let outbox: InMemoryAgentConnectorOutboxVault
         let artifacts: RecordingArtifactService
+        let cursor: AgentConnectorCursorStore
+        let sockets: ScriptedSocketConnector
+        let terminalFrame: String
+        let metadata: AgentConnectorAttachmentMetadata
     }
 
     private func makeCancellationAttachmentFixture(
-        terminalKind: CancellationAttachmentTerminalKind
+        terminalKind: CancellationAttachmentTerminalKind,
+        disconnectAfterAttachment: Bool = false,
+        savedCancellation: Bool = false,
+        downloadGate: ConnectorDownloadGate? = nil
     ) throws -> CancellationAttachmentFixture {
         let now: Int64 = 1_000
         let connectionID = UUID()
@@ -3214,6 +3443,21 @@ final class AgentConnectorTests: XCTestCase {
             createdAt: now
         )
         pending.turnAccepted = true
+        if savedCancellation {
+            let messageID = UUID()
+            pending.cancelFrame = .init(
+                sequence: 2,
+                messageID: messageID,
+                text: try encodedFrame(
+                    kind: "turn.cancel",
+                    seq: 2,
+                    connectionID: connectionID,
+                    conversationID: conversationID,
+                    messageID: messageID,
+                    payload: .init(turnID: turnID.uuidString.lowercased())
+                )
+            )
+        }
         let outbox = InMemoryAgentConnectorOutboxVault()
         try outbox.save(pending)
         let suite = "AgentConnectorTests.cancel-attachment.\(UUID())"
@@ -3223,6 +3467,9 @@ final class AgentConnectorTests: XCTestCase {
             storagePrefix: "cursor.\(UUID())"
         )
         XCTAssertEqual(cursor.nextOutbound(connectionID: connectionID), 1)
+        if savedCancellation {
+            XCTAssertEqual(cursor.nextOutbound(connectionID: connectionID), 2)
+        }
         let attachment = try makeAttachmentFrame(
             seq: 1,
             conversationID: conversationID,
@@ -3254,15 +3501,31 @@ final class AgentConnectorTests: XCTestCase {
                     retryable: false
                 )
             )
+        case .cancelled:
+            terminal = try encodedFrame(
+                kind: "turn.error",
+                seq: 2,
+                connectionID: connectionID,
+                conversationID: conversationID,
+                payload: .init(
+                    turnID: turnID.uuidString.lowercased(),
+                    code: "cancelled",
+                    message: "The turn was cancelled.",
+                    retryable: false
+                )
+            )
         }
-        let artifacts = RecordingArtifactService()
+        let artifacts = RecordingArtifactService(downloadGate: downloadGate)
+        let sockets = ScriptedSocketConnector(scripts: [[
+            .persistenceReceiptForLastCancel,
+            .text(attachment),
+            disconnectAfterAttachment ? .disconnect : .text(terminal),
+        ]])
         let connector = OpenClawAgentConnector(
             origin: try AgentConnectorOrigin("https://bridge.example.com"),
             cursorStore: cursor,
             outboxVault: outbox,
-            socketConnector: ScriptedSocketConnector(scripts: [[
-                .text(attachment), .text(terminal),
-            ]]),
+            socketConnector: sockets,
             artifactService: artifacts,
             reconnectPolicy: .init(maximumReconnectAttempts: 0, baseDelayMilliseconds: 0),
             nowMilliseconds: { now }
@@ -3272,7 +3535,11 @@ final class AgentConnectorTests: XCTestCase {
             request: pending.request,
             token: String(repeating: "t", count: 48),
             outbox: outbox,
-            artifacts: artifacts
+            artifacts: artifacts,
+            cursor: cursor,
+            sockets: sockets,
+            terminalFrame: terminal,
+            metadata: metadata
         )
     }
 
@@ -3529,6 +3796,47 @@ private struct FixedArtifactTransport: AgentConnectorArtifactTransporting {
     }
 }
 
+private struct CancelledArtifactTransport: AgentConnectorArtifactTransporting {
+    func download(_ request: URLRequest) async throws -> AgentConnectorArtifactTransfer {
+        throw CancellationError()
+    }
+}
+
+private actor ConnectorDownloadGate {
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var released = false
+    private(set) var wasCancelled = false
+
+    func wait() async throws {
+        try Task.checkCancellation()
+        if released { return }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (pending: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    wasCancelled = true
+                    pending.resume(throwing: CancellationError())
+                } else {
+                    continuation = pending
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    private func cancel() {
+        wasCancelled = true
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
+    }
+}
+
 private final class ConnectorHistoryFailureGate: @unchecked Sendable {
     private let lock = NSLock()
     private var storedOperation: ConversationHistoryStore.IOOperation?
@@ -3591,11 +3899,16 @@ private final class RecordingArtifactService:
     @unchecked Sendable {
     private let lock = NSLock()
     private let recorder: ConnectorTestRecorder?
+    private let downloadGate: ConnectorDownloadGate?
     private var downloads = 0
     private var deleted: [ConversationConnectorArtifactReference] = []
 
-    init(recorder: ConnectorTestRecorder? = nil) {
+    init(
+        recorder: ConnectorTestRecorder? = nil,
+        downloadGate: ConnectorDownloadGate? = nil
+    ) {
         self.recorder = recorder
+        self.downloadGate = downloadGate
     }
 
     var downloadCount: Int { lock.withLock { downloads } }
@@ -3621,6 +3934,8 @@ private final class RecordingArtifactService:
         _ = try AgentConnectorTokenValidator.normalized(clientToken)
         lock.withLock { downloads += 1 }
         recorder?.record("download")
+        try await downloadGate?.wait()
+        try Task.checkCancellation()
         return try storedAttachment(for: metadata)
     }
 
@@ -3786,6 +4101,7 @@ private enum ScriptedSocketStep {
     case disconnect
     case persistenceReceiptForLastSubmit
     case persistenceReceiptForLastCancel
+    case workerCancelledTerminalForLastCancel(seq: Int)
     case waitForCancellation
 }
 
@@ -3835,6 +4151,7 @@ private final class ScriptedSocketConnector: AgentConnectorSocketConnecting, @un
     }
 
     var connectionCount: Int { lock.withLock { sockets.count } }
+    var closedSocketCount: Int { lock.withLock { sockets.filter(\.closed).count } }
     var requests: [URLRequest] { lock.withLock { capturedRequests } }
     var sentTexts: [String] { lock.withLock { sockets.flatMap(\.sentTexts) } }
     var sentFrames: [AgentConnectorWireFrame] {
@@ -3879,6 +4196,7 @@ private final class ScriptedSocket: AgentConnectorSocket, @unchecked Sendable {
     }
 
     var sentTexts: [String] { lock.withLock { sent } }
+    var closed: Bool { lock.withLock { isClosed } }
 
     func send(text: String) async throws {
         try lock.withLock {
@@ -3911,6 +4229,25 @@ private final class ScriptedSocket: AgentConnectorSocket, @unchecked Sendable {
             return try persistenceReceipt(for: "turn.submit")
         case .persistenceReceiptForLastCancel:
             return try persistenceReceipt(for: "turn.cancel")
+        case let .workerCancelledTerminalForLastCancel(seq):
+            let cancel = try lastSentFrame(for: "turn.cancel")
+            let terminal = AgentConnectorWireFrame(
+                v: 1,
+                kind: "turn.error",
+                connectionID: cancel.connectionID,
+                conversationID: cancel.conversationID,
+                messageID: UUID().uuidString.lowercased(),
+                seq: seq,
+                replyTo: nil,
+                sentAt: cancel.sentAt,
+                payload: .init(
+                    turnID: cancel.payload.turnID,
+                    code: "cancelled",
+                    message: "The turn was cancelled.",
+                    retryable: false
+                )
+            )
+            return String(decoding: try JSONEncoder().encode(terminal), as: UTF8.self)
         case .waitForCancellation:
             try await Task.sleep(for: .seconds(30))
             throw AgentConnectorError.connectionUnavailable
@@ -3918,6 +4255,20 @@ private final class ScriptedSocket: AgentConnectorSocket, @unchecked Sendable {
     }
 
     private func persistenceReceipt(for kind: String) throws -> String {
+        let frame = try lastSentFrame(for: kind)
+        let receipt: [String: Any] = [
+            "v": 1,
+            "kind": "relay.persisted",
+            "connectionId": frame.connectionID,
+            "payload": [
+                "senderSeq": frame.seq,
+                "messageId": frame.messageID,
+            ],
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: receipt), as: UTF8.self)
+    }
+
+    private func lastSentFrame(for kind: String) throws -> AgentConnectorWireFrame {
         let frameText = try lock.withLock {
                 guard let frameText = sent.reversed().first(where: { text in
                     guard let data = text.data(using: .utf8),
@@ -3938,20 +4289,7 @@ private final class ScriptedSocket: AgentConnectorSocket, @unchecked Sendable {
                   ) else {
                 throw AgentConnectorError.invalidFrame
             }
-            let receipt: [String: Any] = [
-                "v": 1,
-                "kind": "relay.persisted",
-                "connectionId": frame.connectionID,
-                "payload": [
-                    "senderSeq": frame.seq,
-                    "messageId": frame.messageID,
-                ],
-            ]
-            let receiptData = try JSONSerialization.data(withJSONObject: receipt)
-            guard let receiptText = String(data: receiptData, encoding: .utf8) else {
-                throw AgentConnectorError.invalidFrame
-            }
-            return receiptText
+            return frame
     }
 
     func close() {

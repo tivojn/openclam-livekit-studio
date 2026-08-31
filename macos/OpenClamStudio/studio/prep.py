@@ -191,7 +191,30 @@ def _contained_reference_square(img):
     return canvas, x0, y0, size
 
 
-def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
+_SOURCE_MEDIUM_OVERRIDES = frozenset({
+    "photograph", "illustration", "3d render",
+})
+
+
+def _source_medium_override(value):
+    """Validate one owner-selected intake lane without accepting aliases.
+
+    Provider/body labels have historically accumulated aliases such as
+    ``soft-3d`` and ``cartoon``.  The intake control is deliberately smaller:
+    its three visible choices map to three stable manifest values, so a typo or
+    future UI value cannot silently lower the photographic quality gates.
+    """
+    if value is None or not str(value).strip():
+        return None
+    medium = str(value).strip().lower()
+    if medium not in _SOURCE_MEDIUM_OVERRIDES:
+        raise ValueError(
+            "source medium must be photograph, illustration, or 3d render")
+    return medium
+
+
+def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False,
+                   source_medium=None):
     img = read_image_bgr(src_path)
     if img is None:
         raise ValueError(f"could not read image: {src_path}")
@@ -202,6 +225,18 @@ def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
         lm, M = face.detect(img)
     if lm is None:
         raise ValueError("no face detected in the uploaded image")
+
+    # The local classifier remains valuable evidence, but an explicit owner
+    # choice is authoritative.  Apply it before crop policy is selected so a
+    # 2-D cartoon gets the same complete-head preservation even when its soft
+    # shading happened to look photographic to the heuristic.
+    selected_medium = _source_medium_override(source_medium)
+    if selected_medium:
+        detection = dict(detection or {})
+        detected_medium = detection.get("source_medium", "unknown")
+        detection["detected_source_medium"] = detected_medium
+        detection["source_medium"] = selected_medium
+        detection["source_medium_source"] = "user"
 
     crop_fallback = bool(detection and
                          detection.get("detection_mode") == "crop-fallback")
@@ -275,6 +310,10 @@ def build_keyframe(src_path, out_path, diag_dir=None, allow_stylized=False):
     if detection:
         m["detection_mode"] = detection.get("detection_mode", "strict")
         m["source_medium"] = detection.get("source_medium", "unknown")
+        if detection.get("detected_source_medium") is not None:
+            m["detected_source_medium"] = detection["detected_source_medium"]
+        if detection.get("source_medium_source"):
+            m["source_medium_source"] = detection["source_medium_source"]
         m["medium_score"] = detection.get("medium_score")
         if detection.get("medium_features"):
             m["medium_features"] = detection["medium_features"]

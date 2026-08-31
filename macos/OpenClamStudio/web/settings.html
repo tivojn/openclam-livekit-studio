@@ -283,6 +283,25 @@ button.btn.openclaw-update.is-failed,button.btn.openclaw-update.is-failed:hover{
 .newface-side{flex:1 1 260px;display:flex;flex-direction:column;gap:12px;
   justify-content:center}
 .newface-acts{display:flex;gap:8px;flex-wrap:wrap}
+.medium-field{margin:0;padding:0;border:0;min-width:0}
+.medium-field legend{padding:0;margin:0 0 7px;color:var(--dim);font-size:12px;
+  font-weight:600}
+.medium-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.medium-choice{position:relative;display:flex;min-width:0;margin:0;cursor:pointer}
+.medium-choice input{position:absolute;inline-size:1px;block-size:1px;opacity:0;
+  pointer-events:none}
+.medium-choice span{display:flex;flex:1;min-width:0;min-height:56px;
+  flex-direction:column;justify-content:center;padding:9px 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--panel-sub);transition:.15s}
+.medium-choice b{font-size:12.5px;font-weight:600;color:var(--ink)}
+.medium-choice small{margin-top:2px;font-size:10.5px;line-height:1.25;color:var(--faint)}
+.medium-choice:hover span{border-color:var(--line-strong);background:var(--hover)}
+.medium-choice:has(input:checked) span{border-color:var(--ink);background:var(--press);
+  box-shadow:inset 0 0 0 1px var(--ink)}
+.medium-choice:has(input:focus-visible) span{outline:2px solid var(--accent);
+  outline-offset:2px}
+.medium-help{margin:6px 0 0;color:var(--faint);font-size:10.5px;line-height:1.35}
+@media(max-width:560px){.medium-options{grid-template-columns:1fr}}
 .drop:hover{border-color:var(--faint)}
 .drop.over{border-color:var(--accent);background:var(--accent-bg);color:var(--ink)}
 .jobbox{display:none;margin-top:12px;padding:10px 11px;border:1px solid var(--line);
@@ -983,14 +1002,24 @@ document.documentElement.dataset.design='quiet';</script>
       </div>
       <div class="newface-side">
         <div class="f"><label for="newname">Name</label><input id="newname" placeholder="New avatar"></div>
+        <fieldset class="medium-field" id="new-source-medium" aria-describedby="source-medium-help">
+          <legend>Source style · choose the image you uploaded</legend>
+          <div class="medium-options">
+            <label class="medium-choice"><input type="radio" name="new-source-medium" value="3d render" required><span><b>3D cartoon</b><small>CG or game-style render</small></span></label>
+            <label class="medium-choice"><input type="radio" name="new-source-medium" value="illustration"><span><b>2D cartoon</b><small>Drawing, anime, or flat art</small></span></label>
+            <label class="medium-choice"><input type="radio" name="new-source-medium" value="photograph"><span><b>Photorealistic</b><small>Camera photo or lifelike portrait</small></span></label>
+          </div>
+          <p class="medium-help" id="source-medium-help">Your choice is authoritative. Automatic detection remains diagnostic and cannot silently switch the build lane.</p>
+        </fieldset>
         <div class="newface-acts">
           <button class="btn pri hidden" id="createAvatar" type="button" title="Add the chosen portrait with this name">Add portrait</button>
           <button class="btn" id="importAvtr" type="button" title="Import a complete avatar (.avtr) — face, body, walk, and edge idle arrive ready to use">Import .avtr…</button>
         </div>
         <div class="note" style="margin:0">
-          Photos and illustrated or cartoon faces are supported. Start with a
-          large, front-facing face with clear eyes, nose, and mouth. OpenClam
-          preserves the source art style, then creates a neutral,
+          Photos, 2D cartoons, and 3D cartoon renders are supported. Choose the
+          matching source style above, then start with a large, front-facing
+          face with clear eyes, nose, and mouth. OpenClam preserves that style
+          and creates a neutral,
           animation-ready head before the long build. The pose report below
           tells you if it will hold up before you spend the build.
         </div>
@@ -3427,10 +3456,28 @@ function avatarProgress(a) {
 
 function avatarSourceMedium(a) {
   const source = a.source_metrics || a.metrics || {};
-  const value = String(source.source_medium ||
+  const value = String(a.source_medium_override || source.source_medium ||
     ((a.head || {}).source_medium) || source.source_mode ||
     ((a.head || {}).source_mode) || '').toLowerCase();
   return value.startsWith('stylized') ? 'illustration' : value;
+}
+
+function normaliseSourceMedium(value) {
+  value = String(value || '').trim().toLowerCase();
+  if (value === '3d render' || value === '3d-render' || value === 'soft-3d') return '3d render';
+  if (value === 'illustration' || value === 'illustrated' || value === 'anime' ||
+      value === 'game art' || value === 'game-art' || value === 'cartoon' ||
+      value.startsWith('stylized')) return 'illustration';
+  if (value === 'photograph' || value === 'photo') return 'photograph';
+  return 'photograph';
+}
+
+function sourceMediumLabel(value) {
+  return {
+    '3d render': '3D cartoon',
+    illustration: '2D cartoon',
+    photograph: 'Photorealistic'
+  }[normaliseSourceMedium(value)];
 }
 
 function card(a) {
@@ -3442,6 +3489,7 @@ function card(a) {
   const progress = avatarProgress(a), percent = Math.round(progress.value * 100);
   return `<div class="av ${on ? 'active' : ''}" data-slug="${esc(a.slug)}"
     data-busy="${busy ? '1' : '0'}" data-job-kind="${esc((a.job && a.job.kind) || 'build')}"
+    data-source-medium="${esc(normaliseSourceMedium(avatarSourceMedium(a)))}"
     data-remove-headwear="${Boolean((a.head || {}).remove_headwear) ? '1' : '0'}">
     <div class="thumb" style="background-image:url('${thumb}'),url('/files/${a.slug}/source.png')">
       <span class="badge pill ${on ? 'act' : duo ? 'act' : busy ? 'warn' : pill}">${esc(busy
@@ -3451,9 +3499,11 @@ function card(a) {
     <div class="body">
       <h3><span class="av-name">${esc(a.name || a.slug)}</span><button class="av-rename" data-act="rename" type="button" title="Rename this avatar" aria-label="Rename this avatar">✎</button></h3>
       ${metrics(a)}
-      ${avatarSourceMedium(a) === 'illustration'
-        ? '<p class="note" style="color:var(--ok-text)">Cartoon face recognized · the build will preserve its art style and create a trackable animation head.</p>'
-        : ''}
+      ${a.source_medium_override
+        ? `<p class="note" style="color:var(--ok-text)">${esc(sourceMediumLabel(a.source_medium_override))} · selected by you and used for the complete build.</p>`
+        : avatarSourceMedium(a) === 'illustration' || avatarSourceMedium(a) === '3d render'
+          ? `<p class="note" style="color:var(--ok-text)">${esc(sourceMediumLabel(avatarSourceMedium(a)))} detected · the build will preserve its art style and create a trackable animation head.</p>`
+          : ''}
       ${a.error ? `<p class="note" style="color:var(--bad-text)">${esc(a.error)}</p>` : ''}
       <div class="acts">
         ${st === 'ready'
@@ -3696,7 +3746,9 @@ async function act(what, slug, btn) {
     const avatarCard = btn.closest('.av');
     const currentRemoveHeadwear = avatarCard &&
       avatarCard.dataset.removeHeadwear === '1';
-    buildPreferences = await askKeep(name || slug, currentRemoveHeadwear);
+    const currentSourceMedium = avatarCard && avatarCard.dataset.sourceMedium;
+    buildPreferences = await askKeep(
+      name || slug, currentRemoveHeadwear, currentSourceMedium);
     if (buildPreferences === null) return;          // cancelled
   }
   btn.disabled = true;
@@ -3799,8 +3851,9 @@ async function editPersona(slug, who) {
 
 /* One question before a long build: what must survive it. Empty is the
    normal answer, so Enter alone gets on with the job. */
-function askKeep(who, currentRemoveHeadwear=false) {
+function askKeep(who, currentRemoveHeadwear=false, currentSourceMedium='photograph') {
   return new Promise(resolve => {
+    const sourceMedium = normaliseSourceMedium(currentSourceMedium);
     const scrim = document.createElement('div');
     scrim.className = 'keep-scrim';
     scrim.setAttribute('role', 'dialog');
@@ -3816,6 +3869,15 @@ function askKeep(who, currentRemoveHeadwear=false) {
       <p class="keep-warn">Naming something here re-renders the face as
          well as the body, since accessories like a bandana live on the
          head plate.</p>
+      <fieldset class="medium-field" aria-describedby="keep-medium-help">
+        <legend>Source style · controls face, body, cutout, and animation processing</legend>
+        <div class="medium-options">
+          <label class="medium-choice"><input type="radio" name="keep-source-medium" value="3d render" ${sourceMedium === '3d render' ? 'checked' : ''}><span><b>3D cartoon</b><small>CG or game-style render</small></span></label>
+          <label class="medium-choice"><input type="radio" name="keep-source-medium" value="illustration" ${sourceMedium === 'illustration' ? 'checked' : ''}><span><b>2D cartoon</b><small>Drawing, anime, or flat art</small></span></label>
+          <label class="medium-choice"><input type="radio" name="keep-source-medium" value="photograph" ${sourceMedium === 'photograph' ? 'checked' : ''}><span><b>Photorealistic</b><small>Camera photo or lifelike portrait</small></span></label>
+        </div>
+        <p class="medium-help" id="keep-medium-help">This explicit choice overrides automatic detection for this avatar.</p>
+      </fieldset>
       <textarea id="keep-note" rows="3" placeholder="Add extra comments, e.g. keep the character's original clothing, the bandana, the earrings"></textarea>
       <label class="keep-toggle">
         <input id="remove-headwear" type="checkbox" ${currentRemoveHeadwear ? 'checked' : ''}>
@@ -3830,6 +3892,8 @@ function askKeep(who, currentRemoveHeadwear=false) {
     document.body.append(scrim);
     const field = scrim.querySelector('#keep-note');
     const removeHeadwear = scrim.querySelector('#remove-headwear');
+    const selectedMedium = () => scrim.querySelector(
+      'input[name="keep-source-medium"]:checked').value;
     let settled = false;
     const done = value => {
       if (settled) return;
@@ -3841,14 +3905,19 @@ function askKeep(who, currentRemoveHeadwear=false) {
     activateManagedModal(scrim, field, () => done(null));
     field.addEventListener('keydown', event => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-        done({notes: field.value.trim(), remove_headwear: removeHeadwear.checked});
+        done({
+          notes: field.value.trim(),
+          remove_headwear: removeHeadwear.checked,
+          source_medium: selectedMedium()
+        });
       }
     });
     scrim.addEventListener('click', event => {
       const act = event.target.dataset && event.target.dataset.keep;
       if (act === 'go') done({
         notes: field.value.trim(),
-        remove_headwear: removeHeadwear.checked
+        remove_headwear: removeHeadwear.checked,
+        source_medium: selectedMedium()
       });
       else if (act === 'cancel' || event.target === scrim) done(null);
     });
@@ -6116,6 +6185,10 @@ file.onchange = () => stageUpload(file.files[0]);
    typed before picking skips the step; the name stays editable on the card
    afterwards either way. */
 let PENDING_UPLOAD = null;
+function selectedNewSourceMedium() {
+  const selected = document.querySelector('input[name="new-source-medium"]:checked');
+  return selected ? selected.value : '';
+}
 function suggestAvatarName(f) {
   const base = f.name.replace(/\.[^.]+$/, '').replace(/[-_.]+/g, ' ')
     .replace(/\s+/g, ' ').trim().slice(0, 40);
@@ -6127,12 +6200,16 @@ function setPendingUpload(f) {
 }
 function stageUpload(f) {
   if (!f) return;
-  if ($('#newname').value.trim()) { upload(f); return; }
+  if ($('#newname').value.trim() && selectedNewSourceMedium()) { upload(f); return; }
   setPendingUpload(f);
-  $('#newname').value = suggestAvatarName(f);
-  $('#newname').focus();
-  $('#newname').select();
-  note('Name the avatar — the file name is only a suggestion — then press Enter.');
+  if (!$('#newname').value.trim()) {
+    $('#newname').value = suggestAvatarName(f);
+    $('#newname').focus();
+    $('#newname').select();
+  } else {
+    document.querySelector('input[name="new-source-medium"]').focus();
+  }
+  note('Name the avatar and choose its source style, then press Add portrait.');
 }
 $('#newname').addEventListener('keydown', e => {
   if (!PENDING_UPLOAD) return;
@@ -6147,15 +6224,27 @@ $('#createAvatar').onclick = () => { if (PENDING_UPLOAD) upload(PENDING_UPLOAD);
 
 async function upload(f) {
   if (!f) return;
+  const sourceMedium = selectedNewSourceMedium();
+  if (!sourceMedium) {
+    setPendingUpload(f);
+    $('#new-source-medium').scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    document.querySelector('input[name="new-source-medium"]').focus();
+    note('Choose 3D cartoon, 2D cartoon, or Photorealistic before adding the portrait.');
+    return;
+  }
   setPendingUpload(null);
   note('Reading the face…');
   const fd = new FormData();
   fd.append('photo', f);
   fd.append('name', $('#newname').value || f.name.replace(/\.[^.]+$/, ''));
+  fd.append('source_medium', sourceMedium);
   const r = await api('/api/avatar/upload', { method: 'POST', body: fd });
   if (r.detail) { note('Rejected: ' + r.detail); return; }
   note('Added. Check the pose numbers, then build.');
   $('#newname').value = '';
+  document.querySelectorAll('input[name="new-source-medium"]').forEach(input => {
+    input.checked = false;
+  });
   file.value = '';
   loadAvatars();
 }

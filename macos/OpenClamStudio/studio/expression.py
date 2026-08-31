@@ -11,11 +11,10 @@ profoundly wrong.
 Neither needs a generated image.  Both are small, local deformations of tissue
 that is already in the keyframe:
 
-  gaze - the iris is a rigid disc sliding across a featureless white sclera.
-         Warp it: displacement is constant inside the iris and decays to zero
-         before the lid margins, so the iris translates rigidly, the sclera
-         compresses on one side and stretches on the other (invisible - it has
-         no texture to betray it), and the lids do not move at all.
+  gaze - photographic and soft-3D eyes have separate measured iris policies;
+         each translates its intact iris/pupil paint under stationary eyelids.
+         Flat artwork uses its observed iris silhouette, without fitting a
+         human circle. Unsupported explicit cartoon eyes stay neutral.
 
   brow  - a slab of skin that slides vertically, dragging the lid skin below it
          and fading out into the forehead above.  Raises are arch-weighted;
@@ -27,11 +26,11 @@ They bake to small RGBA sprite strips, like the eyelids in blink.py.  Runtime
 interpolates adjacent tissue states instead of snapping between them.  A
 viseme-indexed smile strip moves each photographed mouth as one piece, keeping
 the tongue, teeth and lips coherent while smile/laughter lifts both corners
-without widening the mouth. Draw order is base -> smile -> forehead -> brow -> cheek -> gaze
--> under-eye -> lid.
+without widening the mouth. Corrected cartoon gaze owns the wet eye after the
+under-eye tissue and before the lid; the approved photographic order is unchanged.
 """
 import numpy as np, cv2
-from . import face
+from . import authored_gaze, button3d_gaze, face, rigid_gaze, soft3d_gaze
 from .blink import EYE, BROW, SIDES, UPPER, LOWER, _line, _box
 
 IRIS = {"r": 468, "l": 473}                       # refined-landmark iris centres
@@ -630,12 +629,17 @@ def _eyebag_weight(shape, lm, side, s):
 # ---- build -----------------------------------------------------------------
 
 def build(key, lm=None, dxs=None, dys=None, brow_dys=None, ups=None,
-          avoid=None, log=print):
+          avoid=None, log=print, source_medium="unknown"):
     """-> dict(gaze={dxs,dys,<side>:...}, brow={dys,...}, cheek={ups,...})
 
     `avoid` is an optional float mask of pixels the viseme frames repaint; the
     cheek layer is forced to zero there.  Pass the measured one when you have
     the viseme bank to hand - it is exact, where a dilated lip hull is a guess.
+    Each rigid gaze baker is opted into only by its explicit source medium.
+    Soft-3D first requires measurable authored limbus contrast/shape, then may
+    use its separate native button-eye policy. Flat artwork requires an
+    observed enclosed iris/sclera. Unsupported explicit cartoon eyes stay
+    safely neutral; unknown media retain their legacy route.
     """
     if lm is None:
         lm, _ = face.detect(key)
@@ -666,14 +670,107 @@ def build(key, lm=None, dxs=None, dys=None, brow_dys=None, ups=None,
                forehead=dict(dys=bdys, sqs=list(BROW_SQ)),
                cheek=dict(ups=cups),
                eyebag=dict(ups=list(EYEBAG_UP)))
+    medium = str(source_medium).strip().lower()
+    photograph = medium == "photograph"
+    if photograph:
+        out["gaze"]["mode"] = rigid_gaze.MODE
+    soft3d = {}
+    button3d = {}
+    soft3d_selected = medium == "3d render"
+    if soft3d_selected:
+        try:
+            for side in SIDES:
+                ball = _eyeball_mask(key.shape, lm, side, s)
+                box = _box(ball, int(7 * s), key.shape)
+                soft3d[side] = soft3d_gaze.prepare(key, lm, side, box)
+        except soft3d_gaze.UnsupportedSoft3DIris as shaded_error:
+            # A native black button has a different rim/shading policy from a
+            # coloured 3D limbus. Prepare BOTH eyes again with that explicit
+            # 3D policy; never mix one shaded eye with one button/flat-art eye.
+            soft3d = {}
+            try:
+                for side in SIDES:
+                    ball = _eyeball_mask(key.shape, lm, side, s)
+                    box = _box(ball, int(7 * s), key.shape)
+                    button3d[side] = button3d_gaze.prepare(key, lm, side, box)
+            except button3d_gaze.UnsupportedButtonIris as button_error:
+                # A typed rejection of either eye discards the whole partial
+                # pair. No cartoon eye falls back to photo or radial warping.
+                button3d = {}
+                reason = f"shaded iris: {shaded_error}; native button: {button_error}"
+                out["gaze"]["mode"] = soft3d_gaze.NEUTRAL_MODE
+                out["gaze"]["geometry"] = {"fallback_reason": reason}
+                log(f"  soft-3D gaze stays neutral: {reason}")
+            if button3d:
+                out["gaze"]["mode"] = button3d_gaze.MODE
+                out["gaze"]["geometry"] = {side: prepared.metadata()
+                                           for side, prepared in button3d.items()}
+                log(f"  soft-3D gaze uses native button geometry: {shaded_error}")
+        if soft3d:
+            out["gaze"]["mode"] = soft3d_gaze.MODE
+            out["gaze"]["geometry"] = {side: prepared.metadata()
+                                       for side, prepared in soft3d.items()}
+    authored = {}
+    # "anime" is a legacy explicit flat-art label. Ambiguous labels such as
+    # "game art" are not guessed into a new rendering policy.
+    authored_selected = medium in ("illustration", "anime")
+    if authored_selected:
+        try:
+            for side in SIDES:
+                ball = _eyeball_mask(key.shape, lm, side, s)
+                box = _box(ball, int(7 * s), key.shape)
+                authored[side] = authored_gaze.prepare(key, lm, side, box)
+        except authored_gaze.UnsupportedAuthoredIris as error:
+            # A partial detection must not turn just one eye into an animated
+            # human-shaped eye or fall back to the known-deforming radial warp.
+            authored = {}
+            out["gaze"]["mode"] = authored_gaze.NEUTRAL_MODE
+            out["gaze"]["geometry"] = {"fallback_reason": str(error)}
+            log(f"  illustrated gaze stays neutral: {error}")
+        if authored:
+            out["gaze"]["mode"] = authored_gaze.MODE
+            out["gaze"]["geometry"] = {side: prepared.metadata()
+                                       for side, prepared in authored.items()}
     for side in SIDES:
         c, r = _iris(lm, side)
         ball = _eyeball_mask(key.shape, lm, side, s)
         box = _box(ball, int(7 * s), key.shape)
+        if photograph:
+            prepared = rigid_gaze.prepare(key, lm, side, box)
+            patches = [rigid_gaze.state(prepared, dx, dy)
+                       for dy in dys for dx in dxs]
+        elif soft3d:
+            prepared = soft3d[side]
+            box = prepared.box
+            patches = [soft3d_gaze.state(prepared, dx, dy)
+                       for dy in dys for dx in dxs]
+        elif button3d:
+            prepared = button3d[side]
+            # Use the observed button/rim envelope, not human lid estimates
+            # that can bisect a large authored 3D eye.
+            box = prepared.box
+            patches = [button3d_gaze.state(prepared, dx, dy)
+                       for dy in dys for dx in dxs]
+        elif soft3d_selected:
+            x, y, width, height = box
+            neutral = np.dstack([key[y:y + height, x:x + width],
+                                 np.zeros((height, width), np.uint8)])
+            patches = [neutral.copy() for _dy in dys for _dx in dxs]
+        elif authored:
+            prepared = authored[side]
+            # Human eyelid landmarks can bisect a large illustrated eye. Its
+            # actual moving-art envelope, not that old box, owns these tiles.
+            box = prepared.box
+            patches = [authored_gaze.state(prepared, dx, dy)
+                       for dy in dys for dx in dxs]
+        elif authored_selected:
+            neutral = authored_gaze.neutral(key, box)
+            patches = [neutral.copy() for _dy in dys for _dx in dxs]
+        else:
+            patches = [gaze_state(key, lm, side, dx, dy, s, box, ball)
+                       for dy in dys for dx in dxs]
         out["gaze"][side] = dict(
-            box=[int(v) for v in box],
-            patches=[gaze_state(key, lm, side, dx, dy, s, box, ball)
-                     for dy in dys for dx in dxs])       # row-major: dy outer
+            box=[int(v) for v in box], patches=patches)   # row-major: dy outer
         log(f"  gaze {side}: iris r={r:.1f}px, {len(dxs)}x{len(dys)} states, "
             f"patch {box[2]}x{box[3]}")
 

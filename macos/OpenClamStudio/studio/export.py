@@ -11,20 +11,20 @@ could only ever be a hard cut to fully-shut and a hard cut back - the lid never
 existed in between, which no amount of timing can rescue.  Now the lid has 8
 positions per eye and the two eyes can be driven independently.
 """
-import os, json, shutil, subprocess
+import os, json, shutil, subprocess, tempfile
 import numpy as np, cv2
-from . import face, blink, expression, cutout, limbs, rig, build as reg
+from . import face, blink, expression, cutout, limbs, rig, motion, mouth_skin, build as reg
 
 
 # The renderer version is not only an asset schema: it also tells the desktop
 # which calibrated runtime controls can be consumed safely.  Keep a runtime
 # bundle with preserved face strips current when its Pet layers are refreshed
 # without source visemes.
-RUNTIME_VERSION = 22
+RUNTIME_VERSION = 23
 # Must match ``body.STYLIZED_HEAD_HANDOFF_VERSION``.  Keeping this gate in the
 # publisher prevents malformed or future authoring metadata from opting an old
 # runtime into alpha semantics the current renderer has not reviewed.
-STYLIZED_HEAD_HANDOFF_VERSION = 2
+STYLIZED_HEAD_HANDOFF_VERSION = 4
 
 # runtime viseme name -> studio shape name
 NAME_MAP = {"sil": "closed", "PP": "PP", "FF": "FF", "TH": "TH", "DD": "DD",
@@ -153,6 +153,61 @@ def _remove_stylized_blink_assets(destination):
             pass
 
 
+def _stylized_sclera_hull(binary, minimum_area, expected_width,
+                           expected_height, overlap=None):
+    """Return the complete outer sclera drawn around a large cartoon iris.
+
+    A large illustrated iris can touch both eyelids and split the visible
+    white paint into two disconnected crescents.  Selecting the nearest or
+    largest connected component therefore replaces only half of the authored
+    eye and leaves an inset open eye behind the closed lid.  Join every
+    significant white component inside the already bounded eye guard and fill
+    their convex outer hull.  Specular highlights are harmless interior
+    evidence; background or face highlights are excluded by the guard at
+    intake and by ``overlap`` when this helper is used in a publication crop.
+    """
+    if (not isinstance(binary, np.ndarray) or binary.ndim != 2
+            or expected_width <= 0 or expected_height <= 0):
+        return None
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (binary > 0).astype(np.uint8)
+    )
+    candidates = []
+    for index in range(1, count):
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        if area < minimum_area:
+            continue
+        component = labels == index
+        if overlap is not None:
+            intersection = int(np.count_nonzero(component & overlap))
+            if intersection < max(8, int(round(area * 0.55))):
+                continue
+        candidates.append(index)
+    if not candidates:
+        return None
+
+    points = []
+    for index in candidates:
+        component = (labels == index).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(
+            component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        points.extend(contour for contour in contours if len(contour) >= 3)
+    if not points:
+        return None
+    hull = cv2.convexHull(np.concatenate(points, axis=0))
+    x, y, width, height = cv2.boundingRect(hull)
+    # Fail closed rather than publishing the old one-crescent patch.  Normal
+    # stylized eyes and the retained Luffys easily clear these bounds; the
+    # broken Celine half-eye measured only 31% of the calibrated eye width.
+    if (width < expected_width * 0.52
+            or height < expected_height * 0.42):
+        return None
+    solid = np.zeros_like(binary, dtype=np.uint8)
+    cv2.drawContours(solid, [hull], -1, 255, -1)
+    return solid
+
+
 def _stylized_eye_alpha(neutral, geometry):
     """Return a feathered alpha around a drawn sclera, not a human mesh oval."""
     try:
@@ -187,24 +242,14 @@ def _stylized_eye_alpha(neutral, geometry):
         white, cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (opening, opening)))
 
-    count, labels, stats, centres = cv2.connectedComponentsWithStats(white)
-    minimum_area = max(24, width * height * 0.05)
-    candidates = [index for index in range(1, count)
-                  if float(stats[index, cv2.CC_STAT_AREA]) >= minimum_area]
-    if not candidates:
+    solid = _stylized_sclera_hull(
+        white,
+        max(18, int(round(width * height * 0.012))),
+        width,
+        height,
+    )
+    if solid is None:
         return None
-    cx, cy = centre
-    selected = min(candidates, key=lambda index: (
-        ((centres[index, 0] - cx) / max(width, 1)) ** 2
-        + ((centres[index, 1] - cy) / max(height, 1)) ** 2
-        - float(stats[index, cv2.CC_STAT_AREA]) / (width * height) * 0.15))
-    solid = (labels == selected).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(
-        solid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-    solid.fill(0)
-    cv2.drawContours(solid, [max(contours, key=cv2.contourArea)], -1, 255, -1)
     # The semantic plate must replace the entire drawn sclera and its outer
     # ink, but it must not consume nearby stylized hair or eyebrow tips.  The
     # old 25%-of-eye kernel expanded as far as 31 px and pulled those dark
@@ -238,8 +283,18 @@ def _stylized_eye_alpha(neutral, geometry):
     # blink whose closed-lid curve sits lower than MediaPipe's open-eye mesh.
     # This is common for oversized cartoon eyes; the previous twelve-pixel
     # crop clipped that curve and made the valid full-eye plate fail QA.
-    margin_x = 12
-    margin_top = 12
+    # Oversized illustrated eyes often carry long outer lash fans well beyond
+    # the white sclera.  Keep those authored open-eye strokes inside the
+    # semantic publication crop so the closed frame can replace them too.
+    span_width = columns.max() - columns.min() + 1
+    margin_x = max(24, int(round(span_width * 0.32)))
+    # Include the complete open upper-lash silhouette.  On large 2-D eyes the
+    # authored lash tips can sit 30--40 px above the white sclera.  Cropping at
+    # twelve pixels made those open lashes impossible to erase, so the closed
+    # frame showed two eyelids.  This remains a bounded, eye-relative margin;
+    # the eyebrow and hair gates below still reject unrelated source art.
+    span_height = rows.max() - rows.min() + 1
+    margin_top = max(20, int(round(span_height * 0.40)))
     margin_bottom = max(20, int(round((rows.max() - rows.min() + 1) * 0.32)))
     local_x0 = max(0, int(columns.min()) - margin_x)
     local_y0 = max(0, int(rows.min()) - margin_top)
@@ -265,7 +320,84 @@ def _stylized_sclera_fraction(image, box, alpha):
     return float(np.count_nonzero(white & core)) / count
 
 
-def _stylized_lid_topology(patch, alpha):
+def _soft3d_compact_eye_masks(neutral, landmarks):
+    """Recover natural-sized 3-D eyes from a padded human strip box.
+
+    The strip contains travel/feather space, not just the authored sclera.
+    Using its size as the expected eye size rejects narrow white crescents
+    behind glasses and can instead collect white background beside the head.
+    This fallback uses the registered canonical eye contours as bounded
+    search hints, but still requires actual sclera evidence on *both* sides
+    of each iris.  It never creates an eye from landmarks alone.
+    """
+    if (not isinstance(landmarks, np.ndarray) or landmarks.ndim != 2
+            or landmarks.shape[1] != 2
+            or len(landmarks) <= max(max(blink.EYE[side]) for side in blink.SIDES)
+            or not np.isfinite(landmarks).all()):
+        return None
+    masks = {}
+    widths = []
+    for side in blink.SIDES:
+        points = landmarks[blink.EYE[side]]
+        minimum, maximum = points.min(0), points.max(0)
+        width, height = maximum - minimum
+        centre = (minimum + maximum) * 0.5
+        if (width < 16 or height < 8 or not 0.18 <= height / width <= 0.75):
+            return None
+        geometry = {"box": [float(minimum[0]),
+                             float(centre[1] - height * 0.65),
+                             float(width), float(height)]}
+        mask = _stylized_eye_alpha(neutral, geometry)
+        if mask is None:
+            return None
+        box, alpha = mask
+        x, y, patch_width, patch_height = box
+        hsv = cv2.cvtColor(
+            neutral[y:y + patch_height, x:x + patch_width], cv2.COLOR_BGR2HSV)
+        white = ((hsv[:, :, 1] < 85) & (hsv[:, :, 2] > 135)
+                 & (alpha > 96))
+        rows, columns = np.nonzero(white)
+        if (len(rows) < max(32, width * height * 0.04)
+                or columns.min() + x > centre[0] - width * 0.20
+                or columns.max() + x < centre[0] + width * 0.20
+                or rows.max() - rows.min() + 1 < height * 0.40):
+            return None
+        masks[side] = mask
+        widths.append(float(width))
+    if min(widths) / max(widths) < 0.65:
+        return None
+    return masks
+
+
+def _compact_static_eye_art(neutral_patch, closed_patch, sclera_guard):
+    """Keep shared neutral-black glasses/hair, never brown open-eye shadow."""
+    canonical_max = neutral_patch.max(2).astype(np.int16)
+    canonical_min = neutral_patch.min(2).astype(np.int16)
+    canonical_ink = (
+        (canonical_max < 55)
+        & (canonical_max - canonical_min < 18)
+    ).astype(np.uint8)
+    _, ink_labels = cv2.connectedComponents(canonical_ink)
+    boundary_labels = np.unique(np.concatenate((
+        ink_labels[0], ink_labels[-1], ink_labels[:, 0], ink_labels[:, -1])))
+    boundary_labels = boundary_labels[boundary_labels > 0]
+    source_max = closed_patch.max(2).astype(np.int16)
+    source_min = closed_patch.min(2).astype(np.int16)
+    retained_ink = cv2.dilate(
+        ((source_max < 55) & (source_max - source_min < 18)).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+    stable_art = (
+        np.isin(ink_labels, boundary_labels)
+        & retained_ink
+        & (sclera_guard == 0)
+    ).astype(np.uint8) * 255
+    stable_art = cv2.dilate(
+        stable_art, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    stable_art[sclera_guard > 0] = 0
+    return stable_art
+
+
+def _stylized_lid_topology(patch, alpha, *, compact_eye=False):
     """Return one clean authored closed-lid component, or ``None``.
 
     Registration and topology are deliberately separate.  A locally aligned
@@ -307,7 +439,11 @@ def _stylized_lid_topology(patch, alpha):
     gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     # Keep the cutoff below mid-tone illustrated skin. Raising this to a
     # photographic threshold turns a flat-shaded face into one component.
-    dark = ((gray < 100) & analysis_guard).astype(np.uint8) * 255
+    # Natural-sized soft-3-D eyes have dark *skin shadows* under their frames.
+    # Those are not eyelash ink. Keep this narrower threshold exclusive to
+    # the bilateral, canonical-contour fallback above.
+    dark = ((gray < (50 if compact_eye else 100))
+            & analysis_guard).astype(np.uint8) * 255
     dark = cv2.morphologyEx(
         dark, cv2.MORPH_CLOSE,
         cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3)))
@@ -318,9 +454,53 @@ def _stylized_lid_topology(patch, alpha):
         component_height = int(stats[index, cv2.CC_STAT_HEIGHT])
         centre_y = float(centres[index, 1])
         aspect = component_width / max(component_height, 1)
-        if (component_width >= core_width * 0.42
-                and component_height <= core_height * 0.38
-                and aspect >= 2.35
+        relative_y = (centre_y - core_y0) / max(core_height, 1)
+        slim_lid = (
+            component_width >= core_width * 0.42
+            and component_height <= core_height * 0.38
+            and aspect >= 2.35
+        )
+        # A clean 2-D closed eye can be a broad curved lash silhouette rather
+        # than one thin stroke.  Celine's authored upper lashes span the full
+        # original sclera and naturally make the connected component taller
+        # than the photographic/slim-lid threshold.  Accept that second shape
+        # only when it covers almost the complete eye width and remains in the
+        # lower closure band.  The later foreign-art, canonical-sclera,
+        # skin-fill, and feather gates still run unchanged, while photographs
+        # never enter this stylized-only path at all.
+        full_width_lash = (
+            component_width >= core_width * 0.88
+            and component_height <= core_height * 0.52
+            and aspect >= 1.40
+            and 0.64 <= relative_y <= 1.08
+        )
+        # On a compact eye, authored eyelashes can be taller than half the
+        # small eye opening even though they are a clean, full-width curve.
+        # Bound this by eye *width* and require a sparse ink silhouette, so a
+        # solid dark block/hair patch cannot qualify by being horizontally
+        # wide. Large illustrated eyes retain their existing strict gate.
+        compact_lash = (
+            compact_eye
+            and core_height <= core_width * 0.68
+            and core_width * 0.88 <= component_width <= core_width * 1.24
+            and component_height <= core_width * 0.38
+            and aspect >= 2.40
+            and 0.55 <= relative_y <= 1.20
+            and int(stats[index, cv2.CC_STAT_AREA])
+            / max(1, component_width * component_height) <= 0.58
+        )
+        compact_shape_safe = (
+            not compact_eye or (
+                core_width * 0.80 <= component_width <= core_width * 1.24
+                and (
+                    component_height <= max(3, core_height * 0.20)
+                    or int(stats[index, cv2.CC_STAT_AREA])
+                    / max(1, component_width * component_height) <= 0.58
+                )
+            )
+        )
+        if ((slim_lid or full_width_lash or compact_lash)
+                and compact_shape_safe
                 and centre_y >= core_y0 + core_height * 0.45
                 and centre_y <= core_y0 + core_height * 1.20):
             lid_candidates.append(index)
@@ -339,6 +519,88 @@ def _stylized_lid_topology(patch, alpha):
         "stats": stats,
         "centres": centres,
         "lid_index": lid_index,
+    }
+
+
+def _stylized_flat_skin_registration(neutral_patch, source_patch, alpha,
+                                      topology):
+    """Measure registration on quiet skin outside a reviewed cartoon eye.
+
+    An authored open eye and its closed replacement are *supposed* to differ
+    sharply at the sclera and lashes.  Treating those intentional edges as a
+    skin seam rejected Celine's otherwise exact generated blink and forced a
+    visibly flat synthetic fill.  Judge only low-gradient skin outside the
+    complete canonical-eye/provider-lid union.  This helper is reachable only
+    from the stylized source path; photographic publication never calls it.
+    """
+    if (neutral_patch is None or source_patch is None
+            or neutral_patch.shape != source_patch.shape
+            or neutral_patch.ndim != 3
+            or not isinstance(alpha, np.ndarray)
+            or alpha.shape != neutral_patch.shape[:2]
+            or not isinstance(topology, dict)):
+        return None
+    lid_mask = (
+        topology["labels"] == topology["lid_index"]
+    ).astype(np.uint8) * 255
+    eye_mask = cv2.max(
+        (alpha > 96).astype(np.uint8) * 255,
+        cv2.dilate(
+            lid_mask,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        ),
+    )
+    outer_ring = cv2.dilate(
+        eye_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+    ) > 0
+    inner_ring = cv2.dilate(
+        eye_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    ) > 0
+    boundary_ring = outer_ring & ~inner_ring
+    neutral_gray = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2GRAY)
+    source_gray = cv2.cvtColor(source_patch, cv2.COLOR_BGR2GRAY)
+    neutral_hsv = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2HSV)
+    source_hsv = cv2.cvtColor(source_patch, cv2.COLOR_BGR2HSV)
+    neutral_grad = np.maximum(
+        np.abs(cv2.Sobel(neutral_gray, cv2.CV_32F, 1, 0, ksize=3)),
+        np.abs(cv2.Sobel(neutral_gray, cv2.CV_32F, 0, 1, ksize=3)),
+    )
+    source_grad = np.maximum(
+        np.abs(cv2.Sobel(source_gray, cv2.CV_32F, 1, 0, ksize=3)),
+        np.abs(cv2.Sobel(source_gray, cv2.CV_32F, 0, 1, ksize=3)),
+    )
+    flat_skin = (
+        boundary_ring
+        & (neutral_gray > 95)
+        & (source_gray > 95)
+        & (neutral_hsv[:, :, 1] > 24)
+        & (source_hsv[:, :, 1] > 24)
+        & (neutral_grad < 12)
+        & (source_grad < 12)
+    )
+    minimum = max(48, int(round(np.sqrt(np.count_nonzero(eye_mask)))))
+    if int(np.count_nonzero(flat_skin)) < minimum:
+        return None
+    correction = np.median(
+        neutral_patch[flat_skin].astype(np.float32)
+        - source_patch[flat_skin].astype(np.float32),
+        axis=0,
+    )
+    corrected = np.clip(
+        source_patch.astype(np.float32) + correction[None, None, :],
+        0, 255,
+    ).astype(np.uint8)
+    delta = np.abs(
+        corrected.astype(np.int16) - neutral_patch.astype(np.int16)
+    ).max(2)
+    return {
+        "flat_skin": flat_skin,
+        "correction": correction,
+        "corrected": corrected,
+        "p95": float(np.percentile(delta[flat_skin], 95)),
+        "median": float(np.median(delta[flat_skin])),
     }
 
 
@@ -477,7 +739,8 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
             avatar_home, "raw", f"v_blink.{extension}"))
     ), None)
     if raw_path is None:
-        log("  stylized blink source missing; keeping calibrated eyelid strip")
+        log("  WARNING: stylized blink source missing; eyes will stay static. "
+            "Rebuild the blink source to enable full-eye blinking.")
         return None
 
     source = cv2.imread(raw_path, cv2.IMREAD_COLOR)
@@ -518,7 +781,18 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
     eye_masks = {}
     for side in blink.SIDES:
         geometry = eyes.get(side) if isinstance(eyes.get(side), dict) else {}
-        mask = _stylized_eye_alpha(neutral, geometry)
+        eye_masks[side] = _stylized_eye_alpha(neutral, geometry)
+    compact_eyes = False
+    if (any(mask is None for mask in eye_masks.values())
+            and str(source_medium).strip().lower()
+            in {"3d render", "3d-render", "soft-3d"}):
+        compact_masks = _soft3d_compact_eye_masks(neutral, key_landmarks)
+        if compact_masks is not None:
+            eye_masks = compact_masks
+            compact_eyes = True
+            log("  stylized blink source: using bilateral compact-eye contours")
+    for side in blink.SIDES:
+        mask = eye_masks[side]
         if mask is None:
             log(f"  stylized blink source rejected: {side} sclera was not isolated")
             return None
@@ -547,13 +821,14 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
     for side in blink.SIDES:
         box, alpha = eye_masks[side]
         x0, y0, patch_width, patch_height = box
-        # Prefer a local eye+brow fit: a provider can turn a stylized head while
-        # preserving a valid closed eye.  Oversized cartoon eyes can, however,
-        # make that local MediaPipe fit collapse a real full-width lid into a
-        # small inner blink.  If and only if local alignment produces no clean
-        # lid topology, retry with the already stability-gated global alignment
-        # above.  The selected plate still passes the identical foreign-art,
-        # canonical-sclera, skin-fill and seam gates below.
+        # Prefer the authored frame on its original canvas when it already
+        # shares the canonical skin registration.  Resampling a correctly
+        # aligned oversized cartoon eye through a noisy local MediaPipe affine
+        # made Celine's complete lash thicker, lower, and visibly detached.
+        # Local and globally aligned candidates remain bounded fallbacks for a
+        # genuinely shifted provider frame.  Every candidate must retain clean
+        # topology, contain no visible sclera, and match quiet flat skin around
+        # the whole eye before its RGB may be published.
         indices = np.asarray(blink.EYE[side] + blink.BROW[side], np.int32)
         local_transform, _ = cv2.estimateAffinePartial2D(
             source_landmarks[indices], key_landmarks[indices],
@@ -566,22 +841,81 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                     source, local_transform, (width, height),
                     flags=cv2.INTER_LANCZOS4,
                     borderMode=cv2.BORDER_REPLICATE)
-        patch = (local[y0:y0 + patch_height, x0:x0 + patch_width].copy()
-                 if local is not None else None)
-        selected_alignment = local
-        topology = _stylized_lid_topology(patch, alpha)
-        if topology is None:
-            # ``aligned`` already passed global determinant/residual, face,
-            # aperture and sclera-disappearance gates.  It is therefore a
-            # bounded fallback candidate, not a permissive second detector.
-            patch = aligned[y0:y0 + patch_height,
-                            x0:x0 + patch_width].copy()
-            selected_alignment = aligned
-            topology = _stylized_lid_topology(patch, alpha)
-            if topology is None:
+        neutral_candidate_patch = neutral[
+            y0:y0 + patch_height, x0:x0 + patch_width
+        ]
+        candidates = [("source-canvas", source)]
+        if local is not None:
+            candidates.append(("local", local))
+        candidates.append(("global", aligned))
+        selected = None
+        topology_fallback = None
+        for candidate_name, candidate_image in candidates:
+            candidate_patch = candidate_image[
+                y0:y0 + patch_height, x0:x0 + patch_width
+            ].copy()
+            candidate_topology = _stylized_lid_topology(
+                candidate_patch, alpha, compact_eye=compact_eyes
+            )
+            if candidate_topology is None:
+                continue
+            if topology_fallback is None:
+                topology_fallback = (
+                    candidate_name,
+                    candidate_image,
+                    candidate_patch,
+                    candidate_topology,
+                )
+            registration_alpha = alpha
+            if compact_eyes:
+                # Judge skin outside the *closed upper lid's travel*, not
+                # through the old open-eye shadow. The same seam threshold
+                # still applies; a wider anatomical boundary provides enough
+                # genuine quiet skin behind spectacles to measure it.
+                diameter = max(17, min(51, int(round(
+                    candidate_topology["core_width"] * 0.44)))) | 1
+                registration_alpha = cv2.dilate(
+                    alpha,
+                    cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE, (diameter, diameter)))
+            registration = _stylized_flat_skin_registration(
+                neutral_candidate_patch,
+                candidate_patch,
+                registration_alpha,
+                candidate_topology,
+            )
+            candidate_sclera = _stylized_sclera_fraction(
+                candidate_image, box, alpha
+            )
+            if (registration is not None
+                    and registration["p95"] <= 18.0
+                    and candidate_sclera <= 0.045):
+                selected = (
+                    candidate_name,
+                    candidate_image,
+                    candidate_patch,
+                    candidate_topology,
+                    registration,
+                )
+                break
+        if selected is None:
+            if topology_fallback is None:
                 log(f"  stylized blink source rejected: {side} lid stroke is not clean")
                 return None
-            log(f"  stylized blink source: {side} using stable global lid alignment")
+            (candidate_name, selected_alignment, patch,
+             topology) = topology_fallback
+            provider_registration = None
+            log(
+                f"  stylized blink source: {side} using canonical skin "
+                f"with {candidate_name} lid"
+            )
+        else:
+            (candidate_name, selected_alignment, patch, topology,
+             provider_registration) = selected
+            log(
+                f"  stylized blink source: {side} using "
+                f"{candidate_name} authored eye"
+            )
         core = topology["core"]
         core_x0 = topology["core_x0"]
         core_y0 = topology["core_y0"]
@@ -671,49 +1005,16 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
             cv2.MORPH_OPEN,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
         )
-        white_count, white_labels, white_stats, white_centres = (
-            cv2.connectedComponentsWithStats(neutral_white)
+        eye_fill = _stylized_sclera_hull(
+            neutral_white,
+            max(12, int(round(core_width * core_height * 0.008))),
+            core_width,
+            core_height,
+            overlap=core,
         )
-        white_candidates = [
-            index for index in range(1, white_count)
-            if int(white_stats[index, cv2.CC_STAT_AREA])
-            >= max(24, int(core_width * core_height * 0.10))
-        ]
-        if not white_candidates:
+        if eye_fill is None:
             log(f"  stylized blink source rejected: {side} canonical sclera was lost")
             return None
-        # Prefer the component centred in the authored eye.  A crop near the
-        # edge of a pale head can also contain the light studio background,
-        # which is often larger but is not the sclera.
-        target_x = core_x0 + core_width * 0.5
-        target_y = core_y0 + core_height * 0.5
-        white_index = min(
-            white_candidates,
-            key=lambda index: (
-                ((float(white_centres[index, 0]) - target_x)
-                 / max(core_width, 1)) ** 2
-                + ((float(white_centres[index, 1]) - target_y)
-                   / max(core_height, 1)) ** 2
-                - float(white_stats[index, cv2.CC_STAT_AREA])
-                  / max(core_width * core_height, 1) * 0.08
-            ),
-        )
-        white_component = (
-            (white_labels == white_index).astype(np.uint8) * 255
-        )
-        white_contours, _ = cv2.findContours(
-            white_component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        if not white_contours:
-            return None
-        eye_fill = np.zeros_like(alpha, dtype=np.uint8)
-        cv2.drawContours(
-            eye_fill,
-            [max(white_contours, key=cv2.contourArea)],
-            -1,
-            255,
-            -1,
-        )
         sclera_core_fill = eye_fill.copy()
         # Remove the complete thick illustrated outline, then protect every
         # unrelated canonical dark stroke outside a tighter sclera guard.  The
@@ -732,11 +1033,67 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                 (transition_kernel, transition_kernel),
             ),
         )
+        # The open upper lash is exterior to the white sclera and therefore
+        # absent from its convex hull. Replace the *actual dark authored art*
+        # touching that eye, not a broad synthetic oval. The bounded guard
+        # reaches the lash tips while remaining far below the eyebrow; a small
+        # fixture with no upper lash therefore gains no opaque crop edge.
+        lash_width = max(25, min(71, int(round(core_width * 0.45)))) | 1
+        lash_height = max(25, min(91, int(round(core_height * 0.75)))) | 1
+        lash_guard = cv2.dilate(
+            sclera_core_fill,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (lash_width, lash_height)
+            ),
+        )
+        canonical_gray = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2GRAY)
+        lash_band = np.zeros_like(lash_guard, dtype=bool)
+        lash_y0 = max(0, int(round(core_y0 - core_height * 0.45)))
+        lash_y1 = min(
+            patch_height,
+            int(round(core_y0 + core_height * 1.20)),
+        )
+        lash_band[
+            lash_y0:lash_y1,
+            max(0, int(round(core_x0 - core_width * 0.45))):min(
+                patch_width,
+                int(round(core_x0 + core_width * 1.45)),
+            ),
+        ] = True
+        open_eye_ink = (
+            (canonical_gray < 100) & (lash_guard > 0) & lash_band
+        ).astype(np.uint8) * 255
+        open_eye_ink = cv2.dilate(
+            open_eye_ink,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+        )
+        eye_fill = cv2.max(eye_fill, open_eye_ink)
+        # The semantic eye detector already owns the complete canonical eye,
+        # including pale illustrated crease/outline pixels that are not dark
+        # enough for ``open_eye_ink``.  Publish that reviewed interior fully
+        # opaque as well; otherwise Celine retained a dotted orange arc above
+        # each closed lash even though her white sclera was gone.
+        canonical_eye_fill = (alpha > 96).astype(np.uint8) * 255
+        eye_fill = cv2.max(eye_fill, canonical_eye_fill)
         lid_mask = (labels == lid_index).astype(np.uint8) * 255
         lid_region = cv2.dilate(
             lid_mask,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
         )
+        # The provider's authored closed lash can sit outside the canonical
+        # open sclera (especially on very large illustrated eyes).  Include
+        # that complete silhouette before measuring the skin boundary and
+        # before publishing alpha.  The previous boundary ring crossed the
+        # valid closed lash, so a handful of deliberately dark pixels pushed
+        # the 95th percentile over the limit and forced the harmonic fallback.
+        # That fallback removed the small inset eye, but produced a flat peach
+        # oval and clipped lash tips.  This mask remains eye-local and is made
+        # only from the already topology/foreign-art-gated lid component.
+        provider_lid_fill = cv2.dilate(
+            lid_mask,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        eye_fill = cv2.max(eye_fill, provider_lid_fill)
         lid_centre_y = float(centres[lid_index, 1])
         relative_lid_y = (lid_centre_y - core_y0) / max(core_height, 1)
         shift_y = 0
@@ -745,56 +1102,174 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                 core_y0 + core_height * 0.74 - lid_centre_y
             ))
 
-        # Use provider pixels only for the reviewed lid stroke.  Reconstruct
-        # the surrounding skin from the canonical face's own boundary: even a
-        # colour-matched provider crop retains different lighting/texture and
-        # reads as a circular patch at close-up scale.  The harmonic solution
-        # is continuous with this exact avatar on the complete eye boundary.
-        cleaned = _harmonic_stylized_skin(
-            neutral_patch,
-            eye_fill > 0,
-        )
+        # Prefer the provider's complete closed eye when its surrounding skin
+        # is already registered to this exact canonical face.  That retains
+        # the natural eyelid gradient and the complete authored lash instead
+        # of synthesizing a visibly flat peach oval.  This lane is strict: the
+        # source must contain no remaining sclera and its colour-corrected skin
+        # boundary must match the canonical ring.  A provider with changed
+        # lighting or geometry falls back to the harmonic canonical fill.
+        eye_mask = eye_fill > 0
+        provider_eye = False
+        cleaned = None
+        if provider_registration is not None:
+            correction = provider_registration["correction"]
+            corrected_source = np.clip(
+                patch.astype(np.float32) + correction[None, None, :],
+                0, 255,
+            ).astype(np.uint8)
+            corrected_hsv = cv2.cvtColor(
+                corrected_source, cv2.COLOR_BGR2HSV
+            )
+            source_white = (
+                (corrected_hsv[:, :, 1] < 72)
+                & (corrected_hsv[:, :, 2] > 155)
+                & (sclera_core_fill > 0)
+            )
+            source_white_fraction = (
+                float(np.count_nonzero(source_white))
+                / max(1, int(np.count_nonzero(sclera_core_fill)))
+            )
+            if source_white_fraction <= 0.045:
+                # The registered authored frame is also the strongest
+                # evidence of which canonical eye art must disappear.  Pale
+                # upper-lid creases and antialiased outer lashes are not dark
+                # enough for the ink threshold above, yet leaving them behind
+                # produced a dotted second open eye around Celine's otherwise
+                # correct closed lash.  Add only changed pixels in a bounded
+                # eye-local guard; brows, fringe, nose, and all unregistered
+                # fallback paths remain untouched.
+                provider_delta = np.abs(
+                    corrected_source.astype(np.int16)
+                    - neutral_patch.astype(np.int16)
+                ).max(2)
+                provider_guard = cv2.dilate(
+                    sclera_core_fill,
+                    # Outer cartoon lashes can extend almost half an eye
+                    # width beyond the white sclera.  Keep the vertical guard
+                    # tighter than the brow gap while reaching those tips.
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (111, 81)),
+                ) > 0
+                provider_change = (
+                    (provider_delta > 4)
+                    & provider_guard
+                    & lash_band
+                ).astype(np.uint8) * 255
+                provider_change = cv2.dilate(
+                    provider_change,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                )
+                eye_fill = cv2.max(eye_fill, provider_change)
+                eye_mask = eye_fill > 0
+                cleaned = corrected_source
+                provider_eye = True
+
         if cleaned is None:
-            log(f"  stylized blink source rejected: {side} skin fill was unstable")
-            return None
+            if compact_eyes:
+                # A natural 3-D lid needs its authored lighting gradient.
+                # A flat harmonic skin fill can technically hide the sclera
+                # while looking like a pasted oval behind spectacles. Do not
+                # silently publish that degraded fallback for a fresh face.
+                log(f"  stylized blink source rejected: {side} closed-eye skin is not registered")
+                return None
+            cleaned = _harmonic_stylized_skin(
+                neutral_patch,
+                eye_mask,
+            )
+            if cleaned is None:
+                log(f"  stylized blink source rejected: {side} skin fill was unstable")
+                return None
         # A broad colour transition makes the generated/canonical skin join
         # imperceptible, but it may overlap a nearby authored fringe or brow.
         # Restore those canonical dark strokes outside the actual sclera/outline
         # guard; the pupil and open-eye outline remain inside the guard and are
         # intentionally replaced.
-        canonical_dark = (
+        canonical_dark_candidates = (
             (cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2GRAY) < 100)
             & (eye_fill > 0)
+            & ~lash_band
             & ~(
                 cv2.dilate(
                     sclera_core_fill,
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)),
                 ) > 0
             )
-        ).astype(np.uint8) * 255
-        canonical_dark = cv2.dilate(
-            canonical_dark,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        ).astype(np.uint8)
+        # Restore only a fringe or other canonical art which is genuinely
+        # connected to this bounded crop's exterior.  The old blanket restore
+        # also brought back the open upper eyelash after the full sclera was
+        # filled, leaving a peach oval trapped between an open lash and the
+        # new closed lid.  An authored open-eye outline is an interior
+        # component and must disappear; a hair strand entering the crop from
+        # outside remains protected.
+        dark_count, dark_labels = cv2.connectedComponents(
+            canonical_dark_candidates
         )
-        cleaned[canonical_dark > 0] = neutral_patch[canonical_dark > 0]
-        translation = np.array([[1., 0., 0.], [0., 1., shift_y]])
-        shifted_source = cv2.warpAffine(
-            patch,
-            translation,
-            (patch_width, patch_height),
-            flags=cv2.INTER_LANCZOS4,
-            borderMode=cv2.BORDER_REPLICATE,
-        )
-        shifted_lid = cv2.warpAffine(
-            lid_region,
-            translation,
-            (patch_width, patch_height),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
-        )
-        restore = (shifted_lid > 0) & (sclera_art_guard > 0)
-        cleaned[restore] = shifted_source[restore]
+        border_labels = np.unique(np.concatenate((
+            dark_labels[0], dark_labels[-1],
+            dark_labels[:, 0], dark_labels[:, -1],
+        )))
+        border_labels = border_labels[border_labels > 0]
+        if dark_count > 1 and border_labels.size:
+            canonical_dark = np.isin(
+                dark_labels, border_labels
+            ).astype(np.uint8) * 255
+            canonical_dark = cv2.dilate(
+                canonical_dark,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+            )
+        else:
+            canonical_dark = np.zeros_like(eye_fill)
+        if not compact_eyes:
+            cleaned[canonical_dark > 0] = neutral_patch[canonical_dark > 0]
+        if not provider_eye:
+            translation = np.array([[1., 0., 0.], [0., 1., shift_y]])
+            shifted_source = cv2.warpAffine(
+                patch,
+                translation,
+                (patch_width, patch_height),
+                flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+            shifted_lid = cv2.warpAffine(
+                lid_region,
+                translation,
+                (patch_width, patch_height),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            restore = (shifted_lid > 0) & (eye_fill > 0)
+            cleaned[restore] = shifted_source[restore]
+        if compact_eyes:
+            # A glasses frame/hair contour entering this crop is not eyelid
+            # art. Preserve its canonical RGB, including antialiasing, when
+            # the registered closed source independently retains that dark
+            # structure. The actual sclera/iris stays replaceable; borrowing
+            # a smaller closed lid may never leave an open pupil underneath.
+            # Brown upper-eye shadow is often darker than a glasses frame in
+            # grayscale. It must not count as static frame ink: otherwise the
+            # canonical open lashes survive as a second dark arc. Require a
+            # neutral-black structure independently present in both frames.
+            stable_art = _compact_static_eye_art(
+                neutral_patch, patch, sclera_art_guard)
+            cleaned[stable_art > 0] = neutral_patch[stable_art > 0]
+            eye_fill[stable_art > 0] = 0
+            # A natural 3-D eyelid has a lighting gradient, unlike flat ink.
+            # Retain that authored skin but meet the canonical skin smoothly
+            # inside the surrounding collar. The full sclera and open lash
+            # remain fully replaced (no iris dissolve or nested eye).
+            required = cv2.max(sclera_art_guard, open_eye_ink)
+            required[stable_art > 0] = 0
+            colour_weight = cv2.distanceTransform(
+                (eye_fill > 0).astype(np.uint8), cv2.DIST_L2, 5)
+            colour_weight = np.minimum(colour_weight / 8.0, 1.0)
+            colour_weight[required > 0] = 1.0
+            colour_weight = colour_weight[:, :, None]
+            cleaned = np.clip(
+                cleaned.astype(np.float32) * colour_weight
+                + neutral_patch.astype(np.float32) * (1.0 - colour_weight),
+                0, 255).astype(np.uint8)
         patch = cleaned
 
         # Publish alpha from the exact full sclera rather than the earlier
@@ -818,6 +1293,8 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
             patch.astype(np.float32) * interior
             + neutral_patch.astype(np.float32) * (1.0 - interior),
             0, 255).astype(np.uint8)
+        exterior_feather = (semantic_alpha > 0) & (eye_fill == 0)
+        patch[exterior_feather] = neutral_patch[exterior_feather]
         feather = (semantic_alpha > 2) & (semantic_alpha < 24)
         if np.any(feather):
             seam_delta = np.abs(
@@ -840,6 +1317,73 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
         }
     log("  stylized semantic-eye blink plates published")
     return result
+
+
+STYLIZED_BLINK_READINESS_ERROR = (
+    "Blink not ready: the closed-eye source could not be safely matched to "
+    "both complete eyes. Regenerate the blink image with both eyes fully "
+    "closed, preserving the face and glasses, then rebuild the avatar."
+)
+
+
+class StylizedBlinkNotReady(ValueError):
+    """A fresh cartoon face cannot claim readiness with static/malformed eyes."""
+
+
+def preflight_stylized_blink(avatar_home, source_medium, *, neutral=None,
+                             eyes=None, log=print):
+    """Validate a fresh cartoon blink without changing its authored assets.
+
+    The build worker can call this before its ready-manifest commit.  Export
+    can pass already-built eye geometry and reuse the returned ``metadata``
+    and PNG ``assets`` bytes, avoiding a second publication pass.  All scratch
+    output lives in a temporary directory. Photographs/unknown media return
+    immediately without calling the stylized detector or changing their lane.
+    """
+    if not _is_stylized_source_medium(source_medium):
+        return None
+    if neutral is None:
+        neutral = cv2.imread(os.path.join(avatar_home, "keyframe.png"))
+    if neutral is None:
+        raise StylizedBlinkNotReady(STYLIZED_BLINK_READINESS_ERROR)
+    if eyes is None:
+        shut = cv2.imread(os.path.join(avatar_home, "visemes", "v_blink.jpg"))
+        if shut is None:
+            raise StylizedBlinkNotReady(STYLIZED_BLINK_READINESS_ERROR)
+        try:
+            # Eye boxes do not depend on the number of travel states. Only
+            # one state is needed for this local, pre-commit validation.
+            eyes = blink.build(
+                neutral, shut, n=1, log=log, allow_stylized=True)["eyes"]
+        except (ValueError, KeyError) as error:
+            raise StylizedBlinkNotReady(
+                STYLIZED_BLINK_READINESS_ERROR) from error
+    with tempfile.TemporaryDirectory(prefix="openclam-blink-review-") as stage:
+        metadata = _publish_stylized_blink_source(
+            neutral, avatar_home, eyes, stage, source_medium, log=log)
+        if (not isinstance(metadata, dict)
+                or metadata.get("mode") != "semantic-eye-switch"):
+            raise StylizedBlinkNotReady(STYLIZED_BLINK_READINESS_ERROR)
+        assets = {}
+        for side in blink.SIDES:
+            item = metadata.get(side)
+            box = item.get("box") if isinstance(item, dict) else None
+            filename = f"stylized-blink-{side}.png"
+            if (not isinstance(box, (list, tuple)) or len(box) != 4
+                    or any(type(value) is not int for value in box)
+                    or min(box[:2]) < 0 or min(box[2:]) <= 0
+                    or box[0] + box[2] > neutral.shape[1]
+                    or box[1] + box[3] > neutral.shape[0]
+                    or item.get("src") != f"assets/{filename}"):
+                raise StylizedBlinkNotReady(STYLIZED_BLINK_READINESS_ERROR)
+            path = os.path.join(stage, filename)
+            plate = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            if (plate is None or plate.shape != (box[3], box[2], 4)
+                    or not np.any(plate[:, :, 3] > 96)):
+                raise StylizedBlinkNotReady(STYLIZED_BLINK_READINESS_ERROR)
+            with open(path, "rb") as handle:
+                assets[filename] = handle.read()
+        return {"metadata": metadata, "assets": assets}
 
 
 def _validate_current_face_layers(runtime, destination):
@@ -937,8 +1481,9 @@ def _runtime_body_metadata(source):
         quality = runtime.get("head_clear_quality")
         recorded = quality.get("face_transform") \
             if isinstance(quality, dict) else None
-        # Old v2 authoring receipts did not record this value, so they remain
-        # importable.  Every newly authored mask does.  Once present it is a
+        # Older authoring receipts did not record this value, so they remain
+        # importable on their legacy rendering path. Every newly authored mask
+        # does. Once present it is a
         # coherence seal: changing face registration without regenerating the
         # body-space eraser must fail before a stale mask reaches either
         # desktop runtime or an iPhone package.
@@ -1132,6 +1677,8 @@ def _publish_motion(directory, destination, log):
         return None
     with open(manifest_path) as handle:
         source = json.load(handle)
+    selected_medium = motion.explicit_source_medium(directory)
+    expected_medium = selected_medium or motion.body_source_medium(directory)
     runtime = {"v": source.get("v", 1)}
     published = False
     for name in os.listdir(destination):
@@ -1140,6 +1687,13 @@ def _publish_motion(directory, destination, log):
     for kind in ("walk", "idle", "move"):
         clip = dict(source.get(kind) or {})
         if not clip.get("sheets"):
+            continue
+        if not motion.motion_clip_compatible(
+                clip, expected_medium,
+                require_receipt=selected_medium is not None):
+            log(
+                f"  skipped {kind} motion: it predates or differs from the "
+                f"owner-selected {expected_medium} source medium")
             continue
         # The same take ships in every decode the fleet needs: HEVC-alpha mov
         # for WebKit on real devices and the PNG atlas as the universal
@@ -1235,8 +1789,9 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
                 pass
     motion_meta = _publish_motion(directory, destination, log)
     # Face sprites are preserved on this no-viseme road.  Never declare the
-    # bundle current until the legacy bank proves it has every layer that v22
-    # actually drives, especially the forehead and independent under-eye strips.
+    # bundle current until the legacy bank proves it has every face layer that
+    # the current renderer drives, especially the forehead and independent
+    # under-eye strips.
     if _runtime_version(runtime.get("v")) < RUNTIME_VERSION:
         _validate_current_face_layers(runtime, destination)
     neutral_reference = ((((runtime.get("frames") or {}).get("sil") or {})
@@ -1273,6 +1828,16 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
                             if isinstance(previous_mouth, dict) else None)
         if stylized_mouth is not None and isinstance(previous_offsets, dict):
             stylized_mouth["viseme_x_offsets"] = previous_offsets
+        # Pet refresh leaves every viseme/emotion image untouched. Reuse their
+        # measured lip contours only if the exact decoded neutral is unchanged
+        # as well (the JPEG, not the pre-encoding keyframe). A changed key needs
+        # fresh measurements; stale lip geometry must not colour-match lips.
+        previous_skin = (previous_mouth.get("skin_match")
+                         if isinstance(previous_mouth, dict) else None)
+        if (stylized_mouth is not None and source_medium == "3d render"
+                and mouth_skin.matches_key(previous_skin,
+                                           cv2.imread(neutral_path))):
+            stylized_mouth["skin_match"] = previous_skin
     stylized_blink = _publish_stylized_blink_source(
         neutral, directory, runtime.get("eyes"), destination,
         source_medium, log=log)
@@ -1306,7 +1871,7 @@ def publish_pet_assets(slug, runtime_dir=None, log=print):
 
 
 def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
-           source_dir=None, manifest_data=None):
+           source_dir=None, manifest_data=None, require_stylized_blink=False):
     d = source_dir or reg.adir(slug)
     # Persistent, avatar-level assets (the body plates and motion takes)
     # live in the avatar's HOME dir. A calibration recompose exports from
@@ -1330,6 +1895,12 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
     lids = blink.build(
         key, shut, n=states, log=log,
         allow_stylized=allow_stylized)
+    # Explicit fresh builds must prove a complete cartoon blink BEFORE any
+    # destination files are cleared. Legacy/Pet refresh remains recoverable
+    # and never inherits this hard gate merely by opening an old avatar.
+    reviewed_blink = (preflight_stylized_blink(
+        home, source_medium, neutral=key, eyes=lids.get("eyes"), log=log)
+        if require_stylized_blink else None)
 
     # Measure exactly which pixels the viseme bank repaints, and forbid the
     # cheek layer from touching them.  A dilated lip hull is a guess; this is
@@ -1350,7 +1921,8 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         klm, _ = face.detect(key)
     if klm is None:
         raise ValueError("no face landmarks on keyframe")
-    expr = expression.build(key, klm, avoid=avoid, log=log)
+    expr = expression.build(
+        key, klm, avoid=avoid, log=log, source_medium=source_medium)
 
     os.makedirs(dest, exist_ok=True)
     for f in os.listdir(dest):
@@ -1450,10 +2022,40 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
                       if _is_stylized_source_medium(source_medium) else None)
     if stylized_mouth is not None:
         stylized_mouth["viseme_x_offsets"] = smile["viseme_x_offsets"]
-    stylized_blink = _publish_stylized_blink_source(
-        neutral, home, eyes, dest, source_medium, log=log)
+        if source_medium == "3d render":
+            # Measure what the client will actually decode, including JPEG
+            # rounding. The generated emotion cells are lossless PNGs, so their
+            # in-memory BGRA patches are already identical to the published bank.
+            published_bank = [
+                (name, cv2.imread(os.path.join(dest, f"{name}_open.jpg")))
+                for name in names
+            ]
+            published_neutral = next(
+                (image for name, image in published_bank if name == "sil"), None)
+            skin_match = mouth_skin.build(
+                published_neutral, published_bank, smile, emotion_mouth,
+                source_medium, log=log, mouth_box=stylized_mouth["box"])
+            if skin_match is not None:
+                stylized_mouth["skin_match"] = skin_match
+    if reviewed_blink is not None:
+        stylized_blink = reviewed_blink["metadata"]
+        for filename, payload in reviewed_blink["assets"].items():
+            with open(os.path.join(dest, filename), "wb") as handle:
+                handle.write(payload)
+    else:
+        stylized_blink = _publish_stylized_blink_source(
+            neutral, home, eyes, dest, source_medium, log=log)
+        if _is_stylized_source_medium(source_medium) and stylized_blink is None:
+            log("  WARNING: blink not ready; this legacy avatar keeps static "
+                "canonical eyes. Regenerate the blink image and rebuild.")
     gaze = _strip(expr["gaze"], "gaze",
                   dict(dxs=expr["gaze"]["dxs"], dys=expr["gaze"]["dys"]))
+    if expr["gaze"].get("mode"):
+        gaze["mode"] = expr["gaze"]["mode"]
+    if isinstance(expr["gaze"].get("geometry"), dict):
+        # Keep the measured per-eye shape/travel receipt with these exact
+        # atlases. This is diagnostic metadata, not a runtime deformation.
+        gaze["geometry"] = expr["gaze"]["geometry"]
     brow = _strip(expr["brow"], "brow", dict(dys=expr["brow"]["dys"],
                                              sqs=expr["brow"].get("sqs", [0.0])))
     forehead = _strip(
@@ -1495,5 +2097,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("slug", nargs="?")
     ap.add_argument("--dest", default=os.path.expanduser("~/OpenClamStudio/web/assets"))
+    ap.add_argument(
+        "--require-stylized-blink", action="store_true",
+        help="reject fresh cartoon publication unless both full-eye blinks pass")
     a = ap.parse_args()
-    export(a.slug or reg.get_active(), a.dest)
+    export(a.slug or reg.get_active(), a.dest,
+           require_stylized_blink=a.require_stylized_blink)

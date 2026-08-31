@@ -66,6 +66,7 @@ _IMAGE_DOWNLOAD_TIMEOUT = 120
 _MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024
 _MAX_IMAGE_OUTPUT_BYTES = 64 * 1024 * 1024
 _MAX_IMAGE_PROMPT_CHARS = 32_000
+_MAX_PROVIDER_ERROR_BYTES = 64 * 1024
 # Imagine 2.0 rejects oversized prompts before generation.  Full-body briefs
 # are assembled from user/model text plus deterministic identity and rig rules,
 # so enforce the observed 8 KiB compatibility ceiling locally and count bytes,
@@ -74,6 +75,10 @@ _IMAGE_PROMPT_BYTE_LIMITS = {
     ("xai", "grok-imagine-image-2.0"): 8 * 1024,
 }
 _MAX_VIDEO_PROMPT_CHARS = 32_000
+# xAI rejects an oversized Imagine Video prompt as a bare HTTP 400 before it
+# creates a request id.  Motion briefs include deterministic identity and
+# plate contracts, so enforce the service-compatible UTF-8 budget locally.
+_XAI_VIDEO_PROMPT_MAX_BYTES = 4_096
 _MAX_VIDEO_INPUT_BYTES = 50 * 1024 * 1024
 _MAX_VIDEO_OUTPUT_BYTES = 512 * 1024 * 1024
 _OPENAI_IMAGE_QUALITIES = frozenset({"auto", "low", "medium", "high"})
@@ -203,8 +208,9 @@ def _safe_error(value, secret=""):
     if secret:
         text = text.replace(secret, "[redacted]")
     text = re.sub(
-        r"(?i)(authorization|api[_ -]?key|access[_ -]?token)\s*[:=]\s*"
-        r"(?:bearer\s+)?[^\s,;}]+", r"\1=[redacted]", text)
+        r"(?i)(authorization|api[_ -]?key|(?:access|refresh|id)[_ -]?token|token)"
+        r"\s*[\"']?\s*[:=]\s*[\"']?\s*(?:bearer\s+)?[^\s,;}\"']+",
+        r"\1=[redacted]", text)
     text = re.sub(r"(?i)([?&]key=)[^&\s]+", r"\1[redacted]", text)
     text = re.sub(
         r"\b(?:sk|gsk)[-_][A-Za-z0-9_-]{8,}\b|"
@@ -265,14 +271,37 @@ async def _bounded_media_request(client, method, url, *, provider,
     stream = getattr(client, "stream", None)
     if callable(stream):
         async with stream(method, url, **kwargs) as upstream:
+            status = int(upstream.status_code)
+            if status < 200 or status >= 400:
+                # A streamed Response has no .text until its body is read.
+                # Raising first silently discarded every provider diagnostic,
+                # including xAI's explanation of a rejected video request.
+                # Read only a small bounded error body, never response headers.
+                # Discard oversized diagnostics entirely: a truncated secret
+                # could otherwise evade exact-value redaction.
+                limit = (min(max_bytes, _MAX_PROVIDER_ERROR_BYTES)
+                         if max_bytes else _MAX_PROVIDER_ERROR_BYTES)
+                length = str(upstream.headers.get("content-length") or "")
+                oversized = RuntimeError(
+                    f"{provider.replace('_', ' ').title()}: the provider returned "
+                    f"an oversized error response (HTTP {status})")
+                if length.isdigit() and int(length) > limit:
+                    raise oversized
+                error_data = bytearray()
+                async for chunk in upstream.aiter_bytes():
+                    if len(chunk) > limit - len(error_data):
+                        raise oversized
+                    error_data.extend(chunk)
+                raise _http_failure(
+                    provider, httpx.Response(status, content=bytes(error_data)), secret)
             _require_no_redirect(provider, upstream, secret, max_bytes)
             data = bytearray()
             async for chunk in upstream.aiter_bytes():
-                data.extend(chunk)
-                if len(data) > max_bytes:
+                if len(chunk) > max_bytes - len(data):
                     raise RuntimeError(
                         f"{provider.replace('_', ' ').title()}: the provider "
                         "returned an oversized response")
+                data.extend(chunk)
             # ``aiter_bytes`` has already decoded Content-Encoding. Carrying
             # the upstream gzip/deflate header into a new Response makes
             # httpx decode the JSON a second time. Length/transfer headers
@@ -1201,6 +1230,14 @@ def _video_prompt(prompt):
     return value
 
 
+def _xai_video_prompt(prompt):
+    value = _video_prompt(prompt)
+    if len(value.encode("utf-8")) > _XAI_VIDEO_PROMPT_MAX_BYTES:
+        raise RuntimeError(
+            "xAI video prompts must be at most 4,096 UTF-8 bytes")
+    return value
+
+
 def _read_video_input(path):
     target = os.path.abspath(os.fspath(path))
     try:
@@ -1314,19 +1351,27 @@ async def _execute_xai_video_job(endpoint, request, config, output_dir=None,
         raise RuntimeError("xAI authentication resolved an unapproved endpoint")
     async with httpx.AsyncClient(
             timeout=900, follow_redirects=False, trust_env=False) as client:
-        response = await _bounded_media_request(
-            client, "POST", f"{base}/videos/{endpoint}",
-            provider="xai", secret=secret, max_bytes=4 * 1024 * 1024,
-            headers=headers, json=request)
+        try:
+            response = await _bounded_media_request(
+                client, "POST", f"{base}/videos/{endpoint}",
+                provider="xai", secret=secret, max_bytes=4 * 1024 * 1024,
+                headers=headers, json=request)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"xAI video submission failed: {_safe_error(exc, secret)}") from exc
         _require_no_redirect("xai", response, secret, 4 * 1024 * 1024)
         job = response.json().get("request_id") or response.json().get("id")
         job = str(job or "")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", job):
             raise RuntimeError("xAI accepted the video job but returned no safe request id")
-        body = await _poll(
-            client, "GET", f"{base}/videos/{job}", headers,
-            lambda value: value.get("status") not in {"pending", "processing"},
-            provider="xai", secret=secret)
+        try:
+            body = await _poll(
+                client, "GET", f"{base}/videos/{job}", headers,
+                lambda value: value.get("status") not in {"pending", "processing"},
+                provider="xai", secret=secret)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"xAI video polling failed: {_safe_error(exc, secret)}") from exc
     if body.get("status") != "done":
         raise RuntimeError(f"xAI video generation {body.get('status') or 'failed'}")
     url = str((body.get("video") or {}).get("url") or "")
@@ -1343,7 +1388,7 @@ async def _xai_video(prompt, config, image=None, aspect_ratio=None,
     _require_xai_video_model("image_to_video" if image else "text", model)
     request = {
         "model": model,
-        "prompt": _video_prompt(prompt),
+        "prompt": _xai_video_prompt(prompt),
         "duration": max(1, min(int(duration or config.get("seconds") or 6), 15)),
         "resolution": str(resolution or config.get("resolution") or "720p"),
     }
@@ -1363,7 +1408,7 @@ async def generate_video_edit(prompt, video, config, output_dir=None,
     _require_xai_video_model("edit", model)
     request = {
         "model": model,
-        "prompt": _video_prompt(prompt),
+        "prompt": _xai_video_prompt(prompt),
         "video": {"url": _video_data_uri(video)},
     }
     return await _execute_xai_video_job(

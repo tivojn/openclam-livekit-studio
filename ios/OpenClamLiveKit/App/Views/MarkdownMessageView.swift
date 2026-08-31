@@ -159,15 +159,9 @@ struct MarkdownMessageView: View {
                     Spacer(minLength: 0)
                     if attachment.kind.isVisual,
                        let onSaveToPhotosAttachment {
-                        Button {
+                        AttachmentPhotoSaveButton {
                             onSaveToPhotosAttachment(attachment)
-                        } label: {
-                            Image(systemName: "photo.badge.arrow.down")
-                                .frame(width: 30, height: 30)
-                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
                         .accessibilityLabel("Save \(attachment.displayName) to Photos")
                         .accessibilityHint("Adds this verified media file to your photo library")
                         .accessibilityIdentifier(
@@ -359,6 +353,26 @@ struct MarkdownMessageView: View {
         case 3: .headline
         default: .subheadline
         }
+    }
+}
+
+/// Own both sides of the primary action's contrast pair. The containing chat
+/// message sets `.foregroundStyle(.primary)` for its text; without a local
+/// glyph style that black text color also wins inside a dark prominent button.
+struct AttachmentPhotoSaveButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "photo.badge.arrow.down")
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(Color("AccentColor"))
     }
 }
 

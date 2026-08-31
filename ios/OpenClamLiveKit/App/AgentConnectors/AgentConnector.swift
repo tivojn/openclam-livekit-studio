@@ -954,7 +954,7 @@ private actor OpenClawTurnSession {
         )
     }
 
-    func run(yield: @Sendable (AgentConnectorStreamEvent) -> Void) async throws {
+    func run(yield: @escaping @Sendable (AgentConnectorStreamEvent) -> Void) async throws {
         guard request.text.count <= 32_000,
               !request.text.isEmpty,
               request.accountID.count <= 64,
@@ -970,31 +970,20 @@ private actor OpenClawTurnSession {
         if durableTurn.isExpired(at: nowMilliseconds()) {
             throw AgentConnectorError.recoveryExpired
         }
-        for attachment in durableTurn.attachments ?? [] {
+        if durableTurn.terminal == nil, durableTurn.cancelFrame != nil {
+            // A saved cancel request is not a cancelled outcome. Completion may
+            // already be on its way (including files) when the user taps Stop.
+            try await flushCancellation(yield: yield)
+        }
+        guard let restoredTurn = pendingTurn else {
+            throw AgentConnectorError.invalidFrame
+        }
+        for attachment in restoredTurn.attachments ?? [] {
             yield(.attachment(attachment))
         }
-        if let terminal = durableTurn.terminal {
-            isTerminal = true
-            switch terminal.kind {
-            case .completed:
-                guard let text = terminal.text else {
-                    throw AgentConnectorError.invalidFrame
-                }
-                yield(.completed(text))
-                return
-            case .failed:
-                let code = terminal.code ?? "remote_error"
-                let message = terminal.message
-                    ?? "OpenClaw could not complete this message."
-                if code == "conversation_busy" {
-                    throw AgentConnectorError.conversationBusy
-                }
-                throw AgentConnectorError.remote(code: code, message: message)
-            }
-        }
-        if durableTurn.cancelFrame != nil {
-            try await flushCancellation()
-            throw CancellationError()
+        if let terminal = restoredTurn.terminal {
+            try finishFromPersistedTerminal(terminal, yield: yield)
+            return
         }
 
         if let activity = durableTurn.activity {
@@ -1216,7 +1205,10 @@ private actor OpenClawTurnSession {
                     // The relay may delete its blob as soon as this frame is ACKed. Full GET,
                     // exact verification, Complete/no-backup storage, and durable turn binding
                     // therefore all happen before the acknowledgement is sent.
-                    let stored = try await downloadAndPersistAttachment(from: frame)
+                    let stored = try await downloadAndPersistAttachment(
+                        from: frame,
+                        yield: yield
+                    )
                     try await acknowledge(frame)
                     yield(.attachment(stored))
                 case "assistant.delta":
@@ -1308,6 +1300,7 @@ private actor OpenClawTurnSession {
     }
 
     func cancelPersistently() async throws {
+        _ = try AgentConnectorTokenValidator.normalized(clientToken)
         let durableTurn = try loadOrCreatePendingTurn()
         pendingTurn = durableTurn
         if durableTurn.isExpired(at: nowMilliseconds()) {
@@ -1317,10 +1310,32 @@ private actor OpenClawTurnSession {
             isTerminal = true
             return
         }
-        isTerminal = true
         socket?.close()
         socket = nil
         try await flushCancellation()
+    }
+
+    private func finishFromPersistedTerminal(
+        _ terminal: AgentConnectorPersistedTerminal,
+        yield: @Sendable (AgentConnectorStreamEvent) -> Void
+    ) throws {
+        _ = try terminal.validated()
+        isTerminal = true
+        switch terminal.kind {
+        case .completed:
+            guard let text = terminal.text else {
+                throw AgentConnectorError.invalidFrame
+            }
+            yield(.completed(text))
+        case .failed:
+            let code = terminal.code ?? "remote_error"
+            let message = terminal.message
+                ?? "OpenClaw could not complete this message."
+            if code == "conversation_busy" {
+                throw AgentConnectorError.conversationBusy
+            }
+            throw AgentConnectorError.remote(code: code, message: message)
+        }
     }
 
     private func loadOrCreatePendingTurn() throws -> AgentConnectorPendingTurn {
@@ -1435,7 +1450,8 @@ private actor OpenClawTurnSession {
     }
 
     private func downloadAndPersistAttachment(
-        from frame: AgentConnectorWireFrame
+        from frame: AgentConnectorWireFrame,
+        yield: (@Sendable (AgentConnectorStreamEvent) -> Void)? = nil
     ) async throws -> AgentConnectorStoredAttachment {
         guard frame.kind == "assistant.attachment",
               let rawAttachmentID = frame.payload.attachmentID,
@@ -1461,10 +1477,14 @@ private actor OpenClawTurnSession {
         guard metadata.downloadPath == downloadPath else {
             throw AgentConnectorError.invalidFrame
         }
+        // Local delivery state, not a fabricated worker revision or a finished
+        // result. The next wire frame stays unacknowledged until this file is safe.
+        yield?(.attachmentTransfer(metadata))
         let stored = try await artifactService.downloadAndStore(
             metadata,
             clientToken: clientToken
         )
+        try Task.checkCancellation()
         try persistAttachment(stored)
         return stored
     }
@@ -1505,7 +1525,9 @@ private actor OpenClawTurnSession {
         pendingTurn = turn
     }
 
-    private func flushCancellation() async throws {
+    private func flushCancellation(
+        yield: (@Sendable (AgentConnectorStreamEvent) -> Void)? = nil
+    ) async throws {
         guard var turn = pendingTurn else {
             throw AgentConnectorError.invalidFrame
         }
@@ -1528,19 +1550,28 @@ private actor OpenClawTurnSession {
             pendingTurn = turn
         }
 
+        defer {
+            socket?.close()
+            socket = nil
+        }
         var attempt = 0
         while true {
             do {
+                try Task.checkCancellation()
                 socket?.close()
                 socket = try openSocket()
                 try await sendEncoded(cancelFrame)
+                var cancellationWasReceived = false
                 while true {
+                    try Task.checkCancellation()
                     guard let socket else {
                         throw AgentConnectorError.connectionUnavailable
                     }
                     let text = try await receiveText(
                         from: socket,
-                        timeoutMilliseconds: 2_000
+                        // The short timeout is for the relay receipt, not for
+                        // the worker to finish cancelling or deliver a winning result.
+                        timeoutMilliseconds: cancellationWasReceived ? 20_000 : 2_000
                     )
                     guard let data = text.data(using: .utf8),
                           data.count <= OpenClawAgentConnector.maximumFrameBytes else {
@@ -1572,18 +1603,10 @@ private actor OpenClawTurnSession {
                             outboundFrame: cancelFrame
                         )
                         if disposition == .matching {
-                            await artifactService.deleteArtifacts(
-                                (pendingTurn?.attachments ?? [])
-                                    .map(\.metadata.conversationReference)
-                            )
-                            try outboxVault.delete(
-                                connectionID: request.connectionID,
-                                turnID: request.turnID
-                            )
-                            pendingTurn = nil
-                            socket.close()
-                            self.socket = nil
-                            return
+                            // Only transport persistence: the worker can still
+                            // complete successfully after this receipt. Keep the
+                            // exact outbox turn and verified files until its terminal.
+                            cancellationWasReceived = true
                         }
                         continue
                     }
@@ -1614,7 +1637,7 @@ private actor OpenClawTurnSession {
                         continue
                     }
                     if frame.kind == "assistant.attachment" {
-                        _ = try await downloadAndPersistAttachment(from: frame)
+                        _ = try await downloadAndPersistAttachment(from: frame, yield: yield)
                         try await acknowledge(frame)
                         continue
                     }
@@ -1648,6 +1671,11 @@ private actor OpenClawTurnSession {
                 throw CancellationError()
             } catch let connectorError as AgentConnectorError
                 where connectorError == .connectionUnavailable {
+                // The durable terminal is authoritative even if sending its ACK
+                // failed. History recovery will commit it; replay remains idempotent.
+                if pendingTurn?.terminal != nil {
+                    return
+                }
                 guard attempt < reconnectPolicy.maximumReconnectAttempts else {
                     socket?.close()
                     socket = nil
@@ -1666,17 +1694,29 @@ private actor OpenClawTurnSession {
         from socket: any AgentConnectorSocket,
         timeoutMilliseconds: Int
     ) async throws -> String {
-        try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask { try await socket.receiveText() }
-            group.addTask {
-                try await Task.sleep(for: .milliseconds(timeoutMilliseconds))
-                throw AgentConnectorError.connectionUnavailable
+        do {
+            return try await withTaskCancellationHandler {
+                try await withThrowingTaskGroup(of: String.self) { group in
+                    defer { group.cancelAll() }
+                    group.addTask { try await socket.receiveText() }
+                    group.addTask {
+                        try await Task.sleep(for: .milliseconds(timeoutMilliseconds))
+                        // A WebSocket receive may not finish on task cancellation
+                        // alone. Close the transport before waiting for the group.
+                        socket.close()
+                        throw AgentConnectorError.connectionUnavailable
+                    }
+                    guard let first = try await group.next() else {
+                        throw AgentConnectorError.connectionUnavailable
+                    }
+                    return first
+                }
+            } onCancel: {
+                socket.close()
             }
-            guard let first = try await group.next() else {
-                throw AgentConnectorError.connectionUnavailable
-            }
-            group.cancelAll()
-            return first
+        } catch {
+            try Task.checkCancellation()
+            throw (error as? AgentConnectorError) ?? .connectionUnavailable
         }
     }
 

@@ -978,6 +978,66 @@ final class OpenClamConversationUITests: XCTestCase {
         capture("ara-motion-ptt-empty-guidance")
     }
 
+    func testThreadUsesRailSafeWidthAndEveryStarterPromptCanScrollIntoView() throws {
+        startFreshChat()
+        putThreadLayerInFront()
+
+        let text = app.textViews.matching(
+            identifier: "openclam-selectable-message-text"
+        ).firstMatch
+        let liveTalk = app.buttons["openclam-live-talk-rail-button"]
+        let fold = app.buttons["openclam-avatar-rail-fold-button"]
+        let suggestions = app.scrollViews["openclam-starter-suggestions"]
+        XCTAssertTrue(text.waitForExistence(timeout: 3))
+        XCTAssertTrue(liveTalk.waitForExistence(timeout: 3))
+        XCTAssertTrue(suggestions.waitForExistence(timeout: 3))
+        XCTAssertEqual(liveTalk.frame.width, 44, accuracy: 0.5,
+                       "An idle connection halo must not enlarge the rail control's bounds.")
+        XCTAssertEqual(liveTalk.frame.height, 44, accuracy: 0.5)
+        let expandedTextWidth = text.frame.width
+        XCTAssertGreaterThanOrEqual(liveTalk.frame.minX - text.frame.maxX, 8)
+        XCTAssertLessThanOrEqual(
+            liveTalk.frame.minX - text.frame.maxX,
+            16,
+            "Assistant text should use the safe lane, without a second empty rail spacer."
+        )
+        XCTAssertLessThanOrEqual(suggestions.frame.maxX, liveTalk.frame.minX - 8)
+        capture("thread-expanded-rail-safe-width")
+
+        fold.tap()
+        XCTAssertTrue(waitForLabel("Show all tools", on: fold, timeout: 3))
+        let widerText = expectation(
+            for: NSPredicate { _, _ in text.frame.width >= expandedTextWidth + 44 },
+            evaluatedWith: nil
+        )
+        wait(for: [widerText], timeout: 3)
+        XCTAssertEqual(text.frame.width - expandedTextWidth, 46, accuracy: 2)
+        XCTAssertGreaterThanOrEqual(text.frame.maxX, app.frame.maxX - 20)
+        capture("thread-folded-rail-normal-width")
+
+        // Exercise the real nested horizontal scroll view in thread-front
+        // mode. Do not select a prompt or invoke any network/provider action.
+        let promptIDs = ["nearby", "email", "calendar", "ask-anything"]
+        var fullyVisible = Set<String>()
+        let textYBeforeHorizontalScroll = text.frame.minY
+        for _ in 0..<5 {
+            for id in promptIDs {
+                let chip = app.buttons["openclam-starter-prompt-\(id)"]
+                if chip.exists, chip.isHittable,
+                   chip.frame.minX >= suggestions.frame.minX - 1,
+                   chip.frame.maxX <= suggestions.frame.maxX + 1 {
+                    fullyVisible.insert(id)
+                }
+            }
+            if fullyVisible.count == promptIDs.count { break }
+            suggestions.swipeLeft()
+        }
+        XCTAssertEqual(fullyVisible, Set(promptIDs))
+        XCTAssertEqual(text.frame.minY, textYBeforeHorizontalScroll, accuracy: 2)
+        XCTAssertTrue(app.buttons["openclam-attachment-menu"].exists)
+        capture("all-starter-prompts-horizontally-reachable")
+    }
+
     func testLiveTalkUsesOnePersistentPhoneControlOnTheAvatarRail() throws {
         startFreshChat()
         unfoldAvatarRail()

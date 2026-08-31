@@ -609,6 +609,9 @@ enum AgentConnectorStreamEvent: Equatable, Sendable {
     case activity(AgentConnectorActivityUpdate)
     case activityCleared(revision: Int)
     case work(AgentConnectorWorkStep)
+    /// Local progress only. Receiving a descriptor does not mean its bytes are
+    /// available yet; no attachment/terminal ACK is allowed before verified storage.
+    case attachmentTransfer(AgentConnectorAttachmentMetadata)
     case attachment(AgentConnectorStoredAttachment)
     case cumulativeText(String)
     case completed(String)

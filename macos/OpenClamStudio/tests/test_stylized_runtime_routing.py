@@ -245,7 +245,7 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
                 handle.write(
                     '{"image":"body.png","head_mask":"head-mask.png",'
                     '"head_composite":"replace",'
-                    '"head_handoff_version":2,'
+                    f'"head_handoff_version":{export.STYLIZED_HEAD_HANDOFF_VERSION},'
                     '"head_clear_mask":"head-clear-mask.png"}')
             manifest = {
                 "status": "ready",
@@ -265,7 +265,9 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
             self.assertEqual(
                 "assets/head-clear-mask.png",
                 published["body"]["head_clear_mask"])
-            self.assertEqual(2, published["body"]["head_handoff_version"])
+            self.assertEqual(
+                export.STYLIZED_HEAD_HANDOFF_VERSION,
+                published["body"]["head_handoff_version"])
             self.assertTrue(os.path.isfile(
                 os.path.join(runtime_dir, "head-clear-mask.png")))
 
@@ -288,7 +290,7 @@ class RuntimeDetectorRoutingTests(unittest.TestCase):
 
         # Reject bool/string aliases and every unreviewed version.  Runtime
         # must never infer the new feather semantics from a legacy clear mask.
-        for marker in (True, "2", 1, 3):
+        for marker in (True, "4", 1, 2, 3, 5):
             candidate = export._runtime_body_metadata({
                 **base, "head_handoff_version": marker,
             })
@@ -468,6 +470,8 @@ class BuildRoutingTests(unittest.TestCase):
                                           return_value=(report, {})) as compose_all, \
                         mock.patch.object(build.measure, "audit",
                                           return_value=([], [])) as audit, \
+                        mock.patch.object(export, "preflight_stylized_blink",
+                                          return_value=None) as blink_preflight, \
                         mock.patch.object(build.render, "preview") as preview, \
                         mock.patch.object(build.render,
                                           "contact_sheet") as contact_sheet:
@@ -475,6 +479,11 @@ class BuildRoutingTests(unittest.TestCase):
                         "routing-avatar", log=lambda _message: None)
 
                 self.assertEqual(result["status"], "ready")
+                # This fixture tests propagation with dummy image/viseme
+                # writers. Actual readiness/rollback is tested with a real
+                # failing preflight in test_face_rebuild_transaction.
+                self.assertEqual(blink_preflight.call_args.args[1],
+                                 medium if expected else "photograph")
                 self.assertEqual(
                     prepare_key.call_args.kwargs["allow_stylized"], expected)
                 self.assertEqual(
@@ -558,6 +567,54 @@ class BuildRoutingTests(unittest.TestCase):
 
 
 class StylizedRendererAssetTests(unittest.TestCase):
+    def test_stylized_eye_alpha_joins_both_sclera_crescents(self):
+        image = np.full((180, 240, 3), (70, 112, 178), np.uint8)
+        centre = (120, 88)
+        cv2.ellipse(image, centre, (70, 48), 0, 0, 360,
+                    (248, 248, 248), -1)
+        # The oversized iris touches both eyelids, deliberately splitting the
+        # white sclera into two disconnected crescents.  The former nearest-
+        # component extractor published only one of them.
+        cv2.ellipse(image, centre, (43, 54), 0, 0, 360,
+                    (20, 28, 42), -1)
+
+        result = export._stylized_eye_alpha(
+            image, {"box": [50, 40, 140, 96]}
+        )
+
+        self.assertIsNotNone(result)
+        box, alpha = result
+        self.assertGreaterEqual(box[2], 140 * .80)
+        self.assertGreaterEqual(box[3], 96 * .70)
+        # Both outer edges of the authored eye must be inside the semantic
+        # replacement, not merely one crescent or the central iris highlight.
+        for global_x in (55, 185):
+            local_x = global_x - box[0]
+            local_y = centre[1] - box[1]
+            self.assertGreater(int(alpha[local_y, local_x]), 96)
+
+    def test_stylized_lid_topology_accepts_full_width_curved_lash(self):
+        patch = np.full((165, 98, 3), (70, 100, 150), np.uint8)
+        alpha = np.zeros((165, 98), np.uint8)
+        cv2.ellipse(alpha, (49, 84), (33, 55), 0, 0, 360, 255, -1)
+        points = np.asarray([
+            [13, 90], [24, 112], [49, 132], [74, 112], [85, 90]
+        ], np.int32)
+        cv2.polylines(
+            patch, [points], False, (18, 18, 18), 9, cv2.LINE_AA
+        )
+
+        topology = export._stylized_lid_topology(patch, alpha)
+
+        self.assertIsNotNone(topology)
+        stats = topology["stats"][topology["lid_index"]]
+        self.assertGreaterEqual(
+            int(stats[cv2.CC_STAT_WIDTH]), topology["core_width"] * 0.88
+        )
+        self.assertGreater(
+            int(stats[cv2.CC_STAT_HEIGHT]), topology["core_height"] * 0.38
+        )
+
     def test_photo_blink_export_never_enters_stylized_detector(self):
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(
@@ -621,6 +678,20 @@ class StylizedRendererAssetTests(unittest.TestCase):
                     (245, 245, 245), -1)
         cv2.circle(key, (25, 26), 3, (10, 10, 10), -1)
         cv2.circle(key, (69, 26), 3, (10, 10, 10), -1)
+        # Pale upper-lid creases sit outside the white sclera and are too
+        # bright for the dark-ink detector.  They still belong to the open
+        # eye and must disappear with it rather than becoming a dotted second
+        # lid around the authored blink.
+        open_crease = np.zeros(key.shape[:2], np.uint8)
+        for centre in ((25, 26), (69, 26)):
+            cv2.ellipse(
+                key, centre, (15, 13), 0, 205, 335,
+                (98, 124, 170), 2, cv2.LINE_AA
+            )
+            cv2.ellipse(
+                open_crease, centre, (15, 13), 0, 205, 335,
+                255, 2, cv2.LINE_AA
+            )
         # A provider-authored closed cartoon eye has no white sclera.  Keep
         # the canonical skin colour and draw only one clean lower-lid stroke;
         # unlike a dark rectangle, this exercises the semantic topology gate.
@@ -646,6 +717,11 @@ class StylizedRendererAssetTests(unittest.TestCase):
                         export.cv2, "estimateAffinePartial2D",
                         return_value=(np.array([[1., 0., 0.],
                                                 [0., 1., 0.]]), None)), \
+                    mock.patch.object(
+                        export, "_harmonic_stylized_skin",
+                        side_effect=AssertionError(
+                            "a coherent authored blink must not be flattened"
+                        )), \
                     mock.patch.object(
                         export.blink, "_aperture",
                         # The two real retained Luffys measure .815 and .655
@@ -705,6 +781,12 @@ class StylizedRendererAssetTests(unittest.TestCase):
                     int(np.count_nonzero(remaining_sclera)),
                     "a closed cartoon eye must not retain a smaller white eye",
                 )
+                crease = open_crease[y:y + height, x:x + width] > 96
+                self.assertGreater(int(np.count_nonzero(crease)), 8)
+                self.assertGreaterEqual(
+                    int(np.min(plate[:, :, 3][crease])), 250,
+                    "pale canonical open-lid creases must be fully replaced",
+                )
                 feather = (plate[:, :, 3] > 2) & (plate[:, :, 3] < 24)
                 if np.any(feather):
                     self.assertLessEqual(int(np.max(np.abs(
@@ -721,12 +803,15 @@ class StylizedRendererAssetTests(unittest.TestCase):
                         (245, 245, 245), -1)
             cv2.circle(key, centre, 3, (10, 10, 10), -1)
         shut = np.full_like(key, (70, 100, 150))
-        cv2.line(shut, (15, 31), (35, 31), (20, 20, 20), 3,
+        # The provider frame is eight pixels high on its original canvas, so
+        # source-canvas topology fails.  The already stability-bounded global
+        # affine restores the authored lid to the canonical y=31 position.
+        cv2.line(shut, (15, 23), (35, 23), (20, 20, 20), 3,
                  cv2.LINE_AA)
-        cv2.line(shut, (59, 31), (79, 31), (20, 20, 20), 3,
+        cv2.line(shut, (59, 23), (79, 23), (20, 20, 20), 3,
                  cv2.LINE_AA)
         landmarks = _landmarks(96)
-        identity = np.array([[1., 0., 0.], [0., 1., 0.]])
+        global_alignment = np.array([[1., 0., 0.], [0., 1., 8.]])
         # This deliberately moves the authored lid above the bounded local
         # crop.  Publication may recover only from the already stability-gated
         # global affine, not by weakening the lid topology threshold.
@@ -741,7 +826,7 @@ class StylizedRendererAssetTests(unittest.TestCase):
                     export.face, "detect_for_intake",
                     return_value=(landmarks, np.eye(4), {})), \
                     mock.patch.object(export.cv2, "estimateAffine2D",
-                                      return_value=(identity, None)), \
+                                      return_value=(global_alignment, None)), \
                     mock.patch.object(
                         export.cv2, "estimateAffinePartial2D",
                         return_value=(clipped_local, None)), \
@@ -755,7 +840,7 @@ class StylizedRendererAssetTests(unittest.TestCase):
 
             self.assertEqual("semantic-eye-switch", result["mode"])
             self.assertEqual(2, sum(
-                "using stable global lid alignment" in message
+                "using global authored eye" in message
                 for message in logs
             ))
             for side in blink.SIDES:
@@ -973,8 +1058,10 @@ class StylizedRendererAssetTests(unittest.TestCase):
         self.assertIn("const stylizedEmotionMouthSample", source)
         self.assertIn("const stylizedEmotionMouthPlacement", source)
         self.assertIn("drawStylizedEmotionMouthSample(", source)
-        self.assertIn("prepareStylizedMouthMask(width, height)", source)
-        self.assertIn("stripBlendContext.globalCompositeOperation = 'destination-in'", source)
+        self.assertIn("prepareStylizedMouthMask(roundedWidth, roundedHeight)", source)
+        self.assertIn("const stylizedMouthOwnershipAlpha", source)
+        self.assertIn("if (stylizedRuntime && !stylizedMouthDrawn)", source)
+        self.assertIn("placement.sourceWidth, placement.sourceHeight", source)
         self.assertIn("weight: (1 - blend) * (1 - strength.mix)", source)
         self.assertIn("Photorealistic runtimes retain the reviewed full-frame crossfade", source)
         self.assertIn("manifest.stylized_blink.mode === 'semantic-eye-switch'", source)
@@ -1028,7 +1115,7 @@ class StylizedRendererAssetTests(unittest.TestCase):
         self.assertIsNotNone(emotion_sample)
         script = f"""
           'use strict';
-          const STYLIZED_HEAD_HANDOFF_VERSION = 2;
+          const STYLIZED_HEAD_HANDOFF_VERSION = 4;
           const expressionSmoothStep = value => {{
             const amount = Math.max(0, Math.min(1, Number(value) || 0));
             return amount * amount * (3 - 2 * amount);
@@ -1084,6 +1171,14 @@ class StylizedRendererAssetTests(unittest.TestCase):
               authoredHeadHandoffReady({{
                 head_composite: 'replace', head_clear_mask: 'clear.png',
                 head_handoff_version: 3
+              }}, {{}}, {{}}),
+              authoredHeadHandoffReady({{
+                head_composite: 'replace', head_clear_mask: 'clear.png',
+                head_handoff_version: 4
+              }}, {{}}, {{}}),
+              authoredHeadHandoffReady({{
+                head_composite: 'replace', head_clear_mask: 'clear.png',
+                head_handoff_version: 5
               }}, {{}}, {{}})
             ],
             legacyHandoff: [
@@ -1130,7 +1225,7 @@ class StylizedRendererAssetTests(unittest.TestCase):
         self.assertEqual(
             [255, 255, 255, 17, 255, 255, 255, 128],
             observed["preservedMask"]["pixels"])
-        self.assertEqual([False, True, False], observed["handoff"])
+        self.assertEqual([False, False, False, True, False], observed["handoff"])
         self.assertEqual([True, False], observed["legacyHandoff"])
         self.assertEqual([
             {"state": 2, "row": 4, "weight": 1},

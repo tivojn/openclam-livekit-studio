@@ -169,6 +169,28 @@ class SettingsMarkupTest(unittest.TestCase):
         self.assertIn('@app.post("/api/avatar/rename")', app)
         self.assertIn("class RenameRequest(BaseModel)", app)
 
+    def test_upload_requires_an_explicit_source_style_and_carries_it_to_build(self):
+        # A realistic 3D render can resemble a photograph closely enough to
+        # fool local visual heuristics. The owner chooses the authoritative
+        # processing lane before intake; the same mutually exclusive choice
+        # is available at build/rebuild and travels with both long-build APIs.
+        for value, label in (
+                ("3d render", "3D cartoon"),
+                ("illustration", "2D cartoon"),
+                ("photograph", "Photorealistic")):
+            self.assertIn(f'value="{value}"', self.settings)
+            self.assertIn(f'<b>{label}</b>', self.settings)
+        self.assertEqual(len(re.findall(
+            r'<input[^>]+name="new-source-medium"', self.settings)), 3)
+        self.assertEqual(len(re.findall(
+            r'<input[^>]+name="keep-source-medium"', self.settings)), 3)
+        self.assertIn("function selectedNewSourceMedium()", self.settings)
+        self.assertIn("fd.append('source_medium', sourceMedium)", self.settings)
+        self.assertIn("source_medium: selectedMedium()", self.settings)
+        self.assertIn('data-source-medium=', self.settings)
+        self.assertIn('selected by you and used for the complete build',
+                      self.settings)
+
     def test_preview_opens_the_modal_player(self):
         self.assertIn('data-act="preview"', self.settings)
         self.assertIn("function openPreview(", self.settings)

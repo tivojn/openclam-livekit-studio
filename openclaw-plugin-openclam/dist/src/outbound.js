@@ -19,6 +19,36 @@ function resolveTarget(params) {
 export const openClamOutbound = {
     deliveryMode: "direct",
     resolveTarget,
+    sendText: async (ctx) => {
+        const target = parseOpenClamTarget(ctx.to);
+        if (!target)
+            throw new Error("invalid_openclam_target");
+        const account = resolveOpenClamAccount(ctx.cfg, ctx.accountId);
+        if (!account.enabled ||
+            !account.configured ||
+            account.connectionId.toLowerCase() !== target.connectionId) {
+            throw new Error("openclam_target_not_paired");
+        }
+        // This direct channel has one reply per active conversation, not arbitrary
+        // remote threads. Media must still use the host-approved media loader below.
+        if (ctx.threadId != null && String(ctx.threadId).trim()) {
+            throw new Error("openclam_threads_unsupported");
+        }
+        if (ctx.mediaUrl?.trim())
+            throw new Error("openclam_media_requires_sender");
+        const client = findOpenClamClient(target.connectionId);
+        if (!client)
+            throw new Error("openclam_connection_inactive");
+        const delivered = await client.deliverTextToActiveConversation({
+            accountId: account.accountId,
+            conversationId: target.conversationId,
+            text: ctx.text,
+            replyToId: ctx.replyToId,
+            deliveryId: ctx.deliveryQueueId,
+            onPlatformSendDispatch: ctx.onPlatformSendDispatch,
+        });
+        return { channel: "openclam", ...delivered };
+    },
     sendMedia: async (ctx) => {
         const target = parseOpenClamTarget(ctx.to);
         if (!target)

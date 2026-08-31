@@ -103,7 +103,7 @@ let petDrag = null;
 let petControlRects = [];
 let buddyControlRects = [];
 let petPointerTimer = null;
-const pointerLastSent = { pet: null, buddy: null };
+const pointerLastSent = { pet: null, buddy: null, chat: null };
 let petPointerInteractive = null;
 let petPointerDebugAt = 0;
 let petRoamTimer = null;
@@ -1003,9 +1003,8 @@ function stopPetPointerTracking() {
 
 function startPetPointerTracking() {
   stopPetPointerTracking();
-  // One timer feeds every pet window (the main avatar and, when present, the
-  // second on-desk avatar): each gets cursor coordinates in its own local
-  // space and manages its own hit-testing/click-through flag.
+  // One timer feeds both on-desk avatars and the separate Chat/Talk window.
+  // Chat receives attention only: it must never inherit pet click-through.
   petPointerTimer = setInterval(() => {
     const point = screen.getCursorScreenPoint();
     for (const target of [
@@ -1013,10 +1012,14 @@ function startPetPointerTracking() {
         rects: () => petControlRects, dragging: () => petDrag },
       { key: 'buddy', window: () => buddyWindow, setHit: setBuddyHit,
         rects: () => buddyControlRects, dragging: () => buddyDrag },
+      { key: 'chat', window: () => chatWindow, attentionOnly: true },
     ]) {
       const window = target.window();
       if (!window || window.isDestroyed() || !window.isVisible()) continue;
-      const bounds = window.getBounds();
+      // Framed Chat/Talk has a titlebar outside the renderer's client space.
+      // Matching pointermove.clientX/Y prevents a vertical jump between local
+      // movement and desktop IPC samples.
+      const bounds = target.attentionOnly ? window.getContentBounds() : window.getBounds();
       const inside = point.x >= bounds.x && point.x < bounds.x + bounds.width
         && point.y >= bounds.y && point.y < bounds.y + bounds.height;
       // Coordinates are sent even outside the window (they go negative or
@@ -1040,6 +1043,7 @@ function startPetPointerTracking() {
         || Date.now() - previous.at > 250;
       if (sendNow) pointerLastSent[target.key] = { ...localPoint, at: Date.now() };
       if (sendNow) post(window, 'openclam:pet-pointer', localPoint);
+      if (target.attentionOnly) continue;
       // A drag in flight owns the window. The cursor legitimately outruns
       // the moving bounds, and forcing click-through in that gap lost the
       // mouseup that would have ended the drag - the renderer's pointer

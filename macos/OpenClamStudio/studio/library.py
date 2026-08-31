@@ -21,6 +21,7 @@ import shutil
 import tempfile
 
 MOTION_KINDS = ("walk", "idle", "move")
+MOTION_SOURCE_MEDIUM_AUDIT_VERSION = 1
 SET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,80}$")
 # Keys in motion.json owned by one clip kind rather than shared by the bundle.
 _CLIP_KEYS = {
@@ -62,6 +63,40 @@ def _write_json(path, payload):
     with open(temporary, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=1)
     os.replace(temporary, path)
+
+
+def _explicit_source_medium(avatar_dir):
+    manifest = _read_json(os.path.join(avatar_dir, "manifest.json")) or {}
+    value = str(manifest.get("source_medium_override") or "").strip().lower()
+    return value if value in {"photograph", "illustration", "3d render"} else None
+
+
+def _motion_medium_compatible(avatar_dir, clip):
+    selected = _explicit_source_medium(avatar_dir)
+    if selected is None:
+        return True
+    clip = clip or {}
+    stored = str(clip.get("source_medium") or "").strip().lower()
+    quality = clip.get("source_medium_quality")
+    base_compatible = (
+        stored == selected
+        and isinstance(quality, dict)
+        and quality.get("v") == MOTION_SOURCE_MEDIUM_AUDIT_VERSION
+        and quality.get("strict") is True
+        and quality.get("valid") is True
+        and str(quality.get("expected") or "").strip().lower() == selected
+    )
+    if not base_compatible:
+        return False
+    if selected != "illustration":
+        return True
+    matching_samples = quality.get("matching_samples")
+    return (
+        quality.get("available") is True
+        and isinstance(matching_samples, int)
+        and not isinstance(matching_samples, bool)
+        and matching_samples > 0
+    )
 
 
 def _read_index(avatar_dir):
@@ -167,6 +202,106 @@ def body_source_sha(avatar_dir, kind):
         if os.path.isfile(path):
             return _sha256(path)
     return None
+
+
+def _motion_body_reference_compatible(avatar_dir, kind, reference):
+    """Match every authored body reference, not just the legacy primary plate.
+
+    Standard Walk uses the front as its primary wardrobe reference and the
+    side as supporting geometry. Both must still match. Older single-plate
+    receipts retain their kind-specific source (including source.png fallback).
+    Receipt names are checked before opening files: never turn an unsafe or
+    unrelated path into an apparently valid body reference with basename().
+    """
+    if kind not in MOTION_KINDS or not isinstance(reference, dict):
+        return False
+    body_dir = os.path.join(avatar_dir, "body")
+    metadata = _read_json(os.path.join(body_dir, "body.json"))
+    if not isinstance(metadata, dict) or not metadata or os.path.islink(body_dir):
+        return False
+    views = metadata.get("views") or {}
+    motion_reference = metadata.get("motion_reference") or {}
+    if not isinstance(views, dict) or not isinstance(motion_reference, dict):
+        return False
+
+    def safe_name(name):
+        return (isinstance(name, str) and bool(name)
+                and name not in (".", "..")
+                and not any(character in name for character in ("/", "\\", "\0", ":")))
+
+    sources = {}
+    for view in ("front", "side", "back"):
+        record = views.get(view) or {}
+        if not isinstance(record, dict):
+            return False
+        name = record.get("source") or f"source-{view}.png"
+        if not safe_name(name):
+            return False
+        sources[view] = name
+    canonical_names = set(sources.values())
+    real_body_dir = os.path.realpath(body_dir)
+
+    def source_path(name):
+        if not safe_name(name):
+            return None
+        path = os.path.join(body_dir, name)
+        if (os.path.islink(path) or not os.path.isfile(path)
+                or os.path.dirname(os.path.realpath(path)) != real_body_dir):
+            return None
+        return path
+
+    def matches(record, allowed_names):
+        if not isinstance(record, dict):
+            return False
+        name, digest = record.get("file"), record.get("sha256")
+        if (not safe_name(name) or name not in allowed_names
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None):
+            return False
+        path = source_path(name)
+        if not path:
+            return False
+        try:
+            return _sha256(path) == digest.lower()
+        except OSError:
+            return False
+
+    supporting = reference.get("supporting", [])
+    if not isinstance(supporting, list):
+        return False
+    composite_walk = reference.get("view") == "front+right-side"
+    if composite_walk:
+        if (kind != "walk" or not supporting
+                or not matches(reference, {sources["front"]})):
+            return False
+    else:
+        view = "side" if kind == "walk" else "front"
+        name = motion_reference.get(f"{kind}_source") or sources[view]
+        if reference.get("view") == "front-legacy":
+            name = sources["front"]
+        if not safe_name(name) or name not in canonical_names | {"source.png"}:
+            return False
+        # Fall back only when an old body's expected source is absent, never
+        # when it is an unsafe symlink or another existing non-file.
+        if not os.path.lexists(os.path.join(body_dir, name)):
+            name = "source.png"
+        primary = reference
+        if "file" not in reference:
+            if supporting:
+                return False
+            primary = dict(reference, file=name)  # legacy digest-only receipt
+        if not matches(primary, {name}):
+            return False
+
+    seen = {reference.get("file")}
+    for record in supporting:
+        if (not isinstance(record, dict) or "supporting" in record
+                or not safe_name(record.get("file"))
+                or record["file"] in seen
+                or not matches(record, canonical_names)):
+            return False
+        seen.add(record["file"])
+    return not composite_walk or sources["side"] in seen - {sources["front"]}
 
 
 # ---------------------------------------------------------------- motion sets
@@ -276,13 +411,11 @@ def list_motion_sets(avatar_dir, kind):
     canonical = _read_json(
         os.path.join(avatar_dir, "motion", "motion.json")) or {}
     has_canonical_clip = isinstance(canonical.get(kind), dict)
-    current_body_sha = body_source_sha(avatar_dir, kind)
     sets = []
     for record in _motion_set_records(avatar_dir, kind):
         set_dir = os.path.join(_motion_set_root(avatar_dir, kind), record["id"])
         poster = f"{kind}-poster.png"
         clip = record.get("clip") or {}
-        reference_sha = (record.get("body_reference") or {}).get("sha256")
         style = record.get("walk_style") or {}
         pose = record.get("idle_pose") or {}
         move = record.get("move_style") or {}
@@ -305,8 +438,9 @@ def list_motion_sets(avatar_dir, kind):
                 if os.path.isfile(os.path.join(set_dir, poster)) else None),
             "active": has_canonical_clip and record["id"] == active_id,
             "compatible": bool(
-                current_body_sha and reference_sha and
-                current_body_sha == reference_sha),
+                _motion_body_reference_compatible(
+                    avatar_dir, kind, record.get("body_reference")) and
+                _motion_medium_compatible(avatar_dir, clip)),
         })
     sets.sort(key=lambda item: item["created"], reverse=True)
     return sets
@@ -345,6 +479,13 @@ def activate_motion(avatar_dir, kind, set_id):
     record = _read_json(os.path.join(set_dir, "set.json"))
     if not isinstance(record, dict) or record.get("kind") != kind:
         raise ValueError(f"unknown {kind} set: {set_id}")
+    if (not _motion_body_reference_compatible(
+                avatar_dir, kind, record.get("body_reference"))
+            or not _motion_medium_compatible(
+                avatar_dir, record.get("clip") or {})):
+        raise ValueError(
+            f"{kind} set {set_id} is incompatible with the current body "
+            "or owner-selected source medium")
 
     motion_dir = os.path.join(avatar_dir, "motion")
     metadata = _read_json(os.path.join(motion_dir, "motion.json"))
@@ -455,10 +596,9 @@ def reconcile_motion_with_body(avatar_dir):
     for kind in MOTION_KINDS:
         if not metadata or not metadata.get(kind):
             continue
-        wanted = body_source_sha(avatar_dir, kind)
-        recorded = ((metadata.get("body_references") or {}).get(kind)
-                    or {}).get("sha256")
-        if not wanted or not recorded or wanted != recorded:
+        references = metadata.get("body_references") or {}
+        reference = references.get(kind) if isinstance(references, dict) else None
+        if not _motion_body_reference_compatible(avatar_dir, kind, reference):
             metadata = strip_canonical_motion(avatar_dir, kind)
             _set_active(avatar_dir, kind, None)
     for kind in MOTION_KINDS:

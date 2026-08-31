@@ -936,30 +936,37 @@ private struct LiveTalkConnectionRailHalo: View {
     let isActive: Bool
     let reduceMotion: Bool
 
+    @ViewBuilder
     var body: some View {
-        TimelineView(
-            .animation(
-                minimumInterval: 1.0 / 30.0,
-                paused: !LiveTalkConnectionFeedbackPolicy.showsAnimatedRailFeedback(
-                    during: isActive ? .starting : .idle,
-                    reduceMotion: reduceMotion
+        // An opacity-zero overlay still enlarges the button's accessibility
+        // frame. Do not publish a halo at all while Live Talk is idle.
+        if isActive {
+            TimelineView(
+                .animation(
+                    minimumInterval: 1.0 / 30.0,
+                    paused: !LiveTalkConnectionFeedbackPolicy.showsAnimatedRailFeedback(
+                        during: .starting,
+                        reduceMotion: reduceMotion
+                    )
                 )
-            )
-        ) { timeline in
-            let progress = timeline.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: 1.8) / 1.8
-            let wave = reduceMotion
-                ? 0.0
-                : 0.5 - 0.5 * cos(progress * 2.0 * .pi)
+            ) { timeline in
+                let progress = timeline.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 1.8) / 1.8
+                let wave = reduceMotion
+                    ? 0.0
+                    : 0.5 - 0.5 * cos(progress * 2.0 * .pi)
 
-            Circle()
-                .stroke(OpenClamTheme.active.opacity(0.30 - 0.12 * wave), lineWidth: 1.5)
-                .frame(width: 52, height: 52)
-                .scaleEffect(0.98 + 0.04 * wave)
-                .opacity(isActive ? 1 : 0)
+                // Draw inward and never scale beyond the 44-point control:
+                // the pulse must not intrude into the adjacent message lane.
+                Circle()
+                    .strokeBorder(OpenClamTheme.active.opacity(0.30 - 0.12 * wave), lineWidth: 1.5)
+                    .frame(width: 44, height: 44)
+                    .scaleEffect(0.94 + 0.06 * wave)
+            }
+            .frame(width: 44, height: 44)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 

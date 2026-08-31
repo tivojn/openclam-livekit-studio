@@ -24,6 +24,7 @@ import tempfile
 import unicodedata
 import uuid
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping
 
@@ -34,7 +35,7 @@ FORMAT = "openclam-avatar"
 VERSION = 2
 IOS_MOTION_VERSION = 3
 IOS_EXPRESSION_VERSION = 4
-STYLIZED_HEAD_HANDOFF_VERSION = 2
+STYLIZED_HEAD_HANDOFF_VERSION = 4
 MAC_VARIANT = "macos-full"
 IOS_VARIANT = "ios-light"
 MANIFEST = "manifest.json"
@@ -79,6 +80,11 @@ IOS_SMILE_STRENGTHS = (0.0, 0.18, 0.34, 0.68, 1.0)
 IOS_EMOTION_MOUTH_STRENGTHS = (0.0, 0.34, 0.68, 1.0)
 IOS_CHEEK_OFFSETS = (0.0, 0.8, 1.6, 2.45, 3.3)
 IOS_UNDER_EYE_OFFSETS = (0.0, 0.5, 1.0, 1.6, 2.3)
+_IOS_OWNED_CARTOON_GAZE_MODES = frozenset({
+    "soft-3d-rigid-iris-v1",
+    "authored-2d-rigid-iris-v1",
+    "soft-3d-authored-iris-v1",
+})
 IOS_LEGACY_ROLE_FILENAMES = {
     "thumbnail": "thumbnail.jpg",
     "body": "body.png",
@@ -268,6 +274,13 @@ def _authoring_files(root: Path) -> list[tuple[Path, str]]:
             details = source.lstat()
             if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
                 raise AvatarPackageError(f"unsafe authoring file: {relative.as_posix()}")
+            # The face builder leaves this empty flock inode in place across
+            # restarts. It is process coordination, not authoring content.
+            # Keep the live inode untouched and exempt only this exact root
+            # file after the regular-file/hard-link checks above. Unknown
+            # hidden files, nested lookalikes, and nonempty locks stay strict.
+            if relative.parts == (".face-build.lock",) and details.st_size == 0:
+                continue
             archive_path = AUTHORING_PREFIX + relative.as_posix()
             if not _safe_zip_path(archive_path, AUTHORING_PREFIX) \
                     or not MAC_PATH_PATTERN.fullmatch(archive_path):
@@ -596,11 +609,173 @@ def _image_has_alpha(path: Path) -> bool:
             f"avatar image is invalid: {path.name}") from error
 
 
+@dataclass(frozen=True)
+class _ApprovedIOSGeometryReference:
+    """An explicitly pinned, fully validated prior v4 package, never a flag.
+
+    Only the release migration path creates this reference. It permits reuse
+    of unchanged approved geometry, not acceptance of a newly tilted build or
+    a fabricated newer handoff marker. The candidate's actual exported pixels
+    and affine are compared again before its archive can be written.
+    """
+    sha256: str
+    manifest: dict
+    images: dict[str, tuple[tuple[int, int], bytes]]
+
+
+def _read_approved_ios_geometry_reference(
+    path: str | os.PathLike,
+    expected_sha256: str,
+    *,
+    identifier: str,
+    display_name: str,
+    source_medium: str,
+) -> _ApprovedIOSGeometryReference:
+    """Validate the whole immutable reference, including every HEVC clip.
+
+    This opt-in migration validator deliberately accepts only full-expression
+    v4. Ordinary exports do not read a reference or acquire a new dependency.
+    The Store builder additionally binds this digest to its reviewed catalog.
+    """
+    if not isinstance(expected_sha256, str) \
+            or not HASH_PATTERN.fullmatch(expected_sha256):
+        raise AvatarPackageError("approved geometry reference SHA-256 is invalid")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as handle:
+            details = os.fstat(handle.fileno())
+            if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 \
+                    or not 1 <= details.st_size <= MAX_IOS_ARCHIVE_BYTES:
+                raise AvatarPackageError("approved geometry reference file is invalid")
+            payload = handle.read(MAX_IOS_ARCHIVE_BYTES + 1)
+    except OSError as error:
+        raise AvatarPackageError("approved geometry reference is missing or unsafe") from error
+    if len(payload) != details.st_size \
+            or hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise AvatarPackageError("approved geometry reference SHA-256 does not match")
+
+    try:
+        import jsonschema
+
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            if not 1 <= len(infos) <= 64 or len(names) != len(set(names)) \
+                    or MANIFEST not in names \
+                    or any(not _safe_zip_path(name) for name in names) \
+                    or any(not _regular_zip_entry(info) for info in infos) \
+                    or sum(info.file_size for info in infos) > MAX_IOS_EXPANDED_BYTES \
+                    or any(not 1 <= info.file_size <= (
+                        MAX_MANIFEST_BYTES if info.filename == MANIFEST
+                        else MAX_IOS_ASSET_BYTES) for info in infos):
+                raise AvatarPackageError("approved geometry reference ZIP contract is invalid")
+            manifest = json.loads(archive.read(MANIFEST))
+            schema_path = Path(__file__).resolve().parents[1] / "contracts" \
+                / "avatar-package-v2" / "ios-full-expression-v4.schema.json"
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            jsonschema.Draft202012Validator(schema).validate(manifest)
+            if (manifest["id"], manifest["displayName"]) != (identifier, display_name):
+                raise AvatarPackageError("approved geometry reference identity does not match")
+            # Older approved v4 packs may predate the source-medium field.
+            # Never accept a contradictory explicit category from a new pack.
+            if manifest.get("sourceMedium") is not None \
+                    and _normalise_source_medium(manifest["sourceMedium"]) != source_medium:
+                raise AvatarPackageError("approved geometry reference source medium does not match")
+            assets = manifest["assets"]
+            motions = manifest.get("motions") or {}
+            rows = [*assets.values(), *motions.values()]
+            declared = [row["path"] for row in rows]
+            if len(declared) != len(set(declared)) \
+                    or set(names) != {MANIFEST, *declared}:
+                raise AvatarPackageError("approved geometry reference asset ledger is invalid")
+            _validate_ios_rig_assets(
+                manifest["rig"], assets, visemes=IOS_VISEMES,
+                expression=manifest["expression"],
+            )
+            geometry_images = {}
+            for role, row in assets.items():
+                data = archive.read(row["path"])
+                if len(data) != row["byteCount"] \
+                        or hashlib.sha256(data).hexdigest() != row["sha256"]:
+                    raise AvatarPackageError(
+                        f"approved geometry reference asset integrity failed: {role}")
+                with Image.open(io.BytesIO(data)) as image:
+                    image.verify()
+                with Image.open(io.BytesIO(data)) as image:
+                    media_type = {"PNG": "image/png", "JPEG": "image/jpeg"}.get(image.format)
+                    if (image.width, image.height, media_type) != (
+                            row["width"], row["height"], row["mediaType"]):
+                        raise AvatarPackageError(
+                            f"approved geometry reference image ledger is invalid: {role}")
+                    image.load()
+                    if role in ("body", "head-mask", "viseme-sil"):
+                        if role != "viseme-sil" and "A" not in image.getbands():
+                            raise AvatarPackageError(
+                                f"approved geometry reference alpha is missing: {role}")
+                        rgba = image.convert("RGBA")
+                        geometry_images[role] = (rgba.size, rgba.tobytes())
+            with tempfile.TemporaryDirectory(prefix="openclam-approved-motion-") as temporary:
+                for role, row in motions.items():
+                    data = archive.read(row["path"])
+                    if len(data) != row["byteCount"] \
+                            or hashlib.sha256(data).hexdigest() != row["sha256"]:
+                        raise AvatarPackageError(
+                            f"approved geometry reference motion integrity failed: {role}")
+                    clip = Path(temporary) / f"{role}.mov"
+                    clip.write_bytes(data)
+                    os.chmod(clip, 0o600)
+                    if not _quicktime_header(clip):
+                        raise AvatarPackageError("approved geometry reference motion is not QuickTime")
+                    inspected = _probe_motion_details(clip)
+                    if inspected.get("streamCount") != 1 \
+                            or inspected.get("videoTracks") != 1 \
+                            or inspected.get("audioTracks") != 0 \
+                            or "mov" not in inspected.get("formatNames", []) \
+                            or inspected.get("codecName") != "hevc" \
+                            or inspected.get("codecTag") != "hvc1" \
+                            or inspected.get("hasAlpha") is not True \
+                            or inspected.get("width") != row["width"] \
+                            or inspected.get("height") != row["height"] \
+                            or abs(int(inspected.get("durationMilliseconds") or 0)
+                                   - row["durationMilliseconds"]) > MAX_IOS_MOTION_DURATION_DRIFT_MS:
+                        raise AvatarPackageError(
+                            f"approved geometry reference motion contract is invalid: {role}")
+            return _ApprovedIOSGeometryReference(
+                expected_sha256, manifest, geometry_images)
+    except AvatarPackageError:
+        raise
+    except Exception as error:
+        raise AvatarPackageError("approved geometry reference package is invalid") from error
+
+
+def _verify_approved_ios_geometry(
+    reference: _ApprovedIOSGeometryReference,
+    rig: Mapping[str, object],
+    assets_root: Path,
+    assets: Mapping[str, dict],
+) -> None:
+    """Seal the actual candidate output; encoding differences are immaterial."""
+    for key in ("bodySize", "faceTransform", "faceBoundsInBody"):
+        if rig[key] != reference.manifest["rig"][key]:
+            raise AvatarPackageError(
+                f"approved geometry reference does not match current {key}")
+    for role in ("body", "head-mask", "viseme-sil"):
+        path = assets_root / PurePosixPath(assets[role]["path"]).name
+        with Image.open(path) as image:
+            image.load()
+            rgba = image.convert("RGBA")
+            if (rgba.size, rgba.tobytes()) != reference.images[role]:
+                raise AvatarPackageError(
+                    f"approved geometry reference does not match current {role} pixels")
+
+
 def _ios_body_source(
     authoring: Path,
     runtime: Path,
     body: Mapping[str, object],
     source_medium: str | None = None,
+    *,
+    approved_geometry: _ApprovedIOSGeometryReference | None = None,
 ) -> Path:
     """Choose a release-safe standing plate for the iPhone package.
 
@@ -622,7 +797,10 @@ def _ios_body_source(
             != "replace"):
         return raw_runtime
 
-    if (type(body.get("head_handoff_version")) is not int
+    if approved_geometry is not None \
+            and not isinstance(approved_geometry, _ApprovedIOSGeometryReference):
+        raise AvatarPackageError("approved geometry reference is invalid")
+    if approved_geometry is None and (type(body.get("head_handoff_version")) is not int
             or body.get("head_handoff_version")
             != STYLIZED_HEAD_HANDOFF_VERSION):
         raise AvatarPackageError(
@@ -638,7 +816,7 @@ def _ios_body_source(
             != "replace" or authored_medium == "photograph"):
         raise AvatarPackageError(
             "stylized iPhone body replacement metadata is incomplete")
-    if (type(authored.get("head_handoff_version")) is not int
+    if approved_geometry is None and (type(authored.get("head_handoff_version")) is not int
             or authored.get("head_handoff_version")
             != STYLIZED_HEAD_HANDOFF_VERSION):
         raise AvatarPackageError(
@@ -656,10 +834,10 @@ def _ios_body_source(
         quality = candidate.get("head_clear_quality")
         recorded = quality.get("face_transform") \
             if isinstance(quality, dict) else None
-        # Legacy v2 receipts predate the coherence seal and remain readable.
-        # Newly authored masks always carry it, so a later hand-edit of the
-        # registration cannot silently package an eraser generated at another
-        # head position.
+        # Older receipts predate the coherence seal and remain readable on the
+        # legacy path. Newly authored masks always carry it, so a later
+        # hand-edit of the registration cannot silently package an eraser
+        # generated at another head position.
         if recorded is not None:
             try:
                 recorded_values = [
@@ -800,6 +978,103 @@ def _image_details(path: Path) -> tuple[int, int, str]:
 
 def _copy_gaze_atlas(source: Path, destination: Path, box: Mapping[str, object]) -> None:
     _copy_vertical_strip_as_grid(source, destination, box, columns=25, rows=11)
+
+
+def _gaze_ownership_pixel_box(box: Mapping[str, object]) -> tuple[int, int, int, int]:
+    """Only exact canonical pixels may remove alpha from another sprite."""
+    values = [box.get(key) for key in ("x", "y", "width", "height")]
+    if any(isinstance(value, bool) or not isinstance(value, (int, float))
+           or not math.isfinite(value) or int(value) != value for value in values):
+        raise AvatarPackageError("cartoon gaze ownership needs integer sprite geometry")
+    x, y, width, height = (int(value) for value in values)
+    if min(x, y) < 0 or min(width, height) < 1 \
+            or x + width > 1024 or y + height > 1024:
+        raise AvatarPackageError("cartoon gaze ownership sprite is outside the face")
+    return x, y, width, height
+
+
+def _ios_cartoon_gaze_ownership(
+    runtime: Path,
+    runtime_manifest: Mapping[str, object],
+    source_medium: str,
+) -> Image.Image | None:
+    """Reserve only the wet-eye pixels owned by newly corrected cartoon gaze.
+
+    Existing iPhone builds draw the under-eye bank after gaze. Baking that
+    bank's ownership exclusion into the export preserves the fixed v2-v4 wire
+    schema and works even at neutral, whose gaze tile is fully transparent.
+    No geometry expansion or guessed eye ellipse is used: each reserved pixel
+    has nonzero alpha in at least one of the actual 275 gaze states. Photograph,
+    unknown, and legacy modes keep their original export route byte-for-byte.
+    """
+    if source_medium == "photograph" \
+            or source_medium not in {"illustration", "anime", "game art", "3d render"}:
+        return None
+    gaze = runtime_manifest.get("gaze")
+    if not isinstance(gaze, dict) \
+            or not isinstance(gaze.get("mode"), str) \
+            or gaze.get("mode") not in _IOS_OWNED_CARTOON_GAZE_MODES:
+        return None
+    if len(gaze.get("dxs") or []) != 25 or len(gaze.get("dys") or []) != 11:
+        raise AvatarPackageError("cartoon gaze ownership state bank is invalid")
+    owned = Image.new("L", (1024, 1024), 0)
+    for side in ("l", "r"):
+        _sprite(gaze.get(side), 25, 11, "gridAtlas")
+        raw_box = dict(zip(("x", "y", "width", "height"), gaze[side]["box"]))
+        x, y, width, height = _gaze_ownership_pixel_box(raw_box)
+        source = _runtime_asset(runtime, gaze[side].get("src"))
+        try:
+            with Image.open(source) as image:
+                if image.size != (width, height * 275) \
+                        or width * height * 275 > MAX_IOS_PIXELS:
+                    raise AvatarPackageError("cartoon gaze ownership strip dimensions are invalid")
+                alpha = image.convert("RGBA").getchannel("A")
+                union = Image.new("L", (width, height), 0)
+                for index in range(275):
+                    union = ImageChops.lighter(
+                        union, alpha.crop((0, index * height, width, (index + 1) * height))
+                    )
+        except AvatarPackageError:
+            raise
+        except Exception as error:
+            raise AvatarPackageError("cartoon gaze ownership image is invalid") from error
+        union = union.point(lambda value: 255 if value else 0)
+        current = owned.crop((x, y, x + width, y + height))
+        owned.paste(ImageChops.lighter(current, union), (x, y))
+    return owned
+
+
+def _copy_under_eye_with_gaze_ownership(
+    source: Path,
+    destination: Path,
+    geometry: Mapping[str, object],
+    owned: Image.Image,
+) -> None:
+    """Change only exported under-eye alpha; preserve every source RGB pixel."""
+    x, y, width, height = _gaze_ownership_pixel_box(geometry["box"])
+    count = int(geometry["columns"]) * int(geometry["rows"])
+    if geometry.get("storage") != "verticalStrip" or not 1 <= count <= 275 \
+            or width * height * count > MAX_IOS_PIXELS \
+            or height * count > MAX_IOS_DIMENSION:
+        raise AvatarPackageError("cartoon under-eye ownership geometry is invalid")
+    mask = owned.crop((x, y, x + width, y + height))
+    try:
+        with Image.open(source) as image:
+            if image.size != (width, height * count):
+                raise AvatarPackageError("cartoon under-eye strip dimensions are invalid")
+            clean = image.convert("RGBA")
+            alpha = clean.getchannel("A")
+            for index in range(count):
+                cell = alpha.crop((0, index * height, width, (index + 1) * height))
+                cell.paste(0, (0, 0), mask)
+                alpha.paste(cell, (0, index * height))
+            clean.putalpha(alpha)
+            clean.info.clear()
+            clean.save(destination, format="PNG", optimize=True, compress_level=9)
+    except AvatarPackageError:
+        raise
+    except Exception as error:
+        raise AvatarPackageError("cartoon under-eye ownership image is invalid") from error
 
 
 def _copy_vertical_strip_as_grid(
@@ -1466,6 +1741,8 @@ def export_ios_light(
     destination: str | os.PathLike,
     *,
     require_full_expression: bool = False,
+    approved_geometry_package: str | os.PathLike | None = None,
+    approved_geometry_sha256: str | None = None,
 ) -> dict:
     """Export an iOS runtime, using full v22 expression parity when available."""
     identifier = _safe_identifier(identifier)
@@ -1477,6 +1754,19 @@ def export_ios_light(
     body = runtime_manifest.get("body")
     if not isinstance(body, dict):
         raise AvatarPackageError("build a full body before exporting for iPhone")
+    approved_geometry = None
+    if (approved_geometry_package is None) != (approved_geometry_sha256 is None):
+        raise AvatarPackageError("approved geometry migration requires both package and SHA-256")
+    if approved_geometry_package is not None:
+        if source_medium not in ("illustration", "anime", "3d render") \
+                or str(body.get("head_composite") or "").strip().lower() != "replace":
+            raise AvatarPackageError("approved geometry migration requires an explicit cartoon replacement rig")
+        approved_geometry = _read_approved_ios_geometry_reference(
+            approved_geometry_package, approved_geometry_sha256,
+            identifier=identifier, display_name=display_name,
+            source_medium=source_medium,
+        )
+        require_full_expression = True
     transform = body.get("face_transform")
     bounds = (body.get("alignment") or {}).get("face_bounds") \
         if isinstance(body.get("alignment"), dict) else None
@@ -1532,7 +1822,7 @@ def export_ios_light(
     m00, m01, tx, m10, m11, ty = matrix_values
     if source_medium != "photograph":
         canonical_rotation = math.degrees(math.atan2(m10, m00))
-        if abs(canonical_rotation) > 0.5:
+        if abs(canonical_rotation) > 0.5 and approved_geometry is None:
             raise AvatarPackageError(
                 "stylized iPhone face registration is not upright; "
                 "rebuild the full body before exporting"
@@ -1560,7 +1850,8 @@ def export_ios_light(
         assets_root = Path(temporary) / "assets"
         assets_root.mkdir()
         body_source = _ios_body_source(
-            authoring, runtime, body, source_medium
+            authoring, runtime, body, source_medium,
+            approved_geometry=approved_geometry,
         )
         sources: dict[str, Path] = {
             "thumbnail": authoring / "keyframe.png",
@@ -1623,6 +1914,10 @@ def export_ios_light(
             })
 
         assets: dict[str, dict] = {}
+        gaze_ownership = (
+            _ios_cartoon_gaze_ownership(runtime, runtime_manifest, source_medium)
+            if expression is not None else None
+        )
         for role, filename in role_filenames.items():
             destination_asset = assets_root / filename
             if role == "thumbnail":
@@ -1650,6 +1945,12 @@ def export_ios_light(
                 _copy_gaze_atlas(sources[role], destination_asset, left_gaze["box"])
             elif role == "gaze-right-atlas":
                 _copy_gaze_atlas(sources[role], destination_asset, right_gaze["box"])
+            elif role in {"under-eye-left", "under-eye-right"} \
+                    and gaze_ownership is not None:
+                key = "leftUnderEye" if role == "under-eye-left" else "rightUnderEye"
+                _copy_under_eye_with_gaze_ownership(
+                    sources[role], destination_asset, expression[key], gaze_ownership
+                )
             elif role == "smile-atlas":
                 _copy_vertical_strip_as_grid(
                     sources[role],
@@ -1678,6 +1979,9 @@ def export_ios_light(
         _validate_ios_rig_assets(
             rig, assets, visemes=visemes, expression=expression
         )
+        if approved_geometry is not None:
+            _verify_approved_ios_geometry(
+                approved_geometry, rig, assets_root, assets)
 
         motions: dict[str, dict] = {}
         runtime_motion = runtime_manifest.get("motion")

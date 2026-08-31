@@ -42,6 +42,46 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
         )
     }
 
+    func testRemoteConversationTitleDistinguishesTransferAndCancellationFromTyping() {
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "hi",
+                remoteAgentDisplayName: "Main",
+                isRemoteTurnActive: true,
+                remoteActivityPhase: .downloading
+            ),
+            "Receiving file…"
+        )
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "hi",
+                remoteAgentDisplayName: "Main",
+                isRemoteTurnActive: true,
+                remoteActivityPhase: .cancelling
+            ),
+            "Cancelling…"
+        )
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "hi",
+                remoteAgentDisplayName: "Main",
+                isRemoteTurnActive: false,
+                remoteActivityPhase: .downloading
+            ),
+            "OpenClaw - Main",
+            "A completed turn must not retain an old file-transfer title."
+        )
+        XCTAssertEqual(
+            ConversationNavigationTitlePresentation.title(
+                threadTitle: "Local chat",
+                remoteAgentDisplayName: nil,
+                isRemoteTurnActive: true,
+                remoteActivityPhase: .downloading
+            ),
+            "Local chat"
+        )
+    }
+
     func testLocalConversationTitleRemainsTheThreadTitle() {
         XCTAssertEqual(
             ConversationNavigationTitlePresentation.title(
@@ -339,7 +379,8 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
             ConversationThreadLayout.userBubbleWidth(
                 viewportWidth: 320,
                 naturalTextWidth: 20,
-                hasAttachments: false
+                hasAttachments: false,
+                isRailFolded: false
             ),
             64,
             accuracy: 0.001
@@ -348,16 +389,18 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
             ConversationThreadLayout.userBubbleWidth(
                 viewportWidth: 320,
                 naturalTextWidth: 1_000,
-                hasAttachments: false
+                hasAttachments: false,
+                isRailFolded: false
             ),
-            193.8,
+            205.7,
             accuracy: 0.001
         )
         XCTAssertEqual(
             ConversationThreadLayout.userBubbleWidth(
                 viewportWidth: 1_024,
                 naturalTextWidth: 1_000,
-                hasAttachments: true
+                hasAttachments: true,
+                isRailFolded: false
             ),
             ConversationThreadLayout.userBubbleMaximumWidth,
             accuracy: 0.001
@@ -367,20 +410,21 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
     func testMessageLaneClearsTheExpandedAvatarRail() {
         let viewportWidth: CGFloat = 390
         let messageTrailingEdge = viewportWidth
-            - ConversationThreadLayout.trailingMessageInset
+            - ConversationThreadLayout.trailingMessageInset(isRailFolded: false)
         let railLeadingEdge = viewportWidth
-            - ConversationThreadLayout.avatarRailWidth
+            - ConversationThreadLayout.avatarRailOccupiedWidth
 
         XCTAssertEqual(
             ConversationThreadLayout.messageLaneWidth(
-                viewportWidth: viewportWidth
+                viewportWidth: viewportWidth,
+                isRailFolded: false
             ),
-            298,
+            312,
             accuracy: 0.001
         )
         XCTAssertEqual(
-            ConversationThreadLayout.additionalMessageRowTrailingPadding,
-            60,
+            ConversationThreadLayout.additionalContentTrailingPadding(isRailFolded: false),
+            46,
             accuracy: 0.001
         )
         XCTAssertEqual(
@@ -388,6 +432,64 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
             ConversationThreadLayout.avatarRailTextClearance,
             accuracy: 0.001,
             "The saved message text must end before the expanded avatar rail begins."
+        )
+    }
+
+    func testFoldedAvatarRailRestoresSymmetricThreadMargins() {
+        for viewportWidth: CGFloat in [320, 390, 430, 768, 1_024] {
+            let expandedWidth = ConversationThreadLayout.messageLaneWidth(
+                viewportWidth: viewportWidth,
+                isRailFolded: false
+            )
+            let foldedWidth = ConversationThreadLayout.messageLaneWidth(
+                viewportWidth: viewportWidth,
+                isRailFolded: true
+            )
+            XCTAssertEqual(
+                foldedWidth,
+                viewportWidth - 2 * ConversationThreadLayout.horizontalContentInset,
+                accuracy: 0.001
+            )
+            XCTAssertEqual(foldedWidth - expandedWidth, 46, accuracy: 0.001)
+            XCTAssertEqual(
+                ConversationThreadLayout.additionalContentTrailingPadding(isRailFolded: true),
+                0
+            )
+        }
+    }
+
+    func testUserBubblesUseTheCurrentRailLaneWithoutClipping() {
+        for viewportWidth: CGFloat in [0, 64, 320, 390, 768, 1_024] {
+            for isRailFolded in [false, true] {
+                let availableWidth = ConversationThreadLayout.messageLaneWidth(
+                    viewportWidth: viewportWidth,
+                    isRailFolded: isRailFolded
+                )
+                for hasAttachments in [false, true] {
+                    let bubbleWidth = ConversationThreadLayout.userBubbleWidth(
+                        viewportWidth: viewportWidth,
+                        naturalTextWidth: 2_000,
+                        hasAttachments: hasAttachments,
+                        isRailFolded: isRailFolded
+                    )
+                    XCTAssertGreaterThanOrEqual(bubbleWidth, 0)
+                    XCTAssertLessThanOrEqual(bubbleWidth, availableWidth)
+                    XCTAssertLessThanOrEqual(
+                        bubbleWidth,
+                        ConversationThreadLayout.userBubbleMaximumWidth
+                    )
+                }
+            }
+        }
+        XCTAssertEqual(
+            ConversationThreadLayout.userBubbleWidth(
+                viewportWidth: 320,
+                naturalTextWidth: 1_000,
+                hasAttachments: false,
+                isRailFolded: true
+            ),
+            244.8,
+            accuracy: 0.001
         )
     }
 
@@ -552,6 +654,97 @@ final class MarkdownAndReplyDeliveryTests: XCTestCase {
     @MainActor
     func testSelectableMessageTextUsesNeutralInteractionTint() {
         XCTAssertEqual(SelectableMessageText.interactionTintColor, UIColor.label)
+    }
+
+    @MainActor
+    func testPhotoSaveGlyphStaysWhiteOnGraphiteUnderInheritedMessageStyle() throws {
+        for scheme in [ColorScheme.light, .dark] {
+            // This is the production button, under the same foreground style
+            // applied by ConversationView.messageBubbleContent.
+            let image = try renderPhotoSaveContrastProbe(
+                AttachmentPhotoSaveButton(action: {}),
+                scheme: scheme
+            )
+            let pixels = try photoSaveGlyphPixels(image)
+            let whitePixels = pixels.filter { $0.allSatisfy { $0 >= 235 } }.count
+            let graphitePixels = pixels.filter { $0.allSatisfy { $0 <= 150 } }.count
+
+            XCTAssertGreaterThan(whitePixels, 20, "\(scheme): missing white Save to Photos glyph")
+            XCTAssertGreaterThan(graphitePixels, 60, "\(scheme): missing dark primary background")
+            XCTAssertTrue(
+                pixels.allSatisfy { ($0.max() ?? 0) - ($0.min() ?? 0) <= 2 },
+                "\(scheme): keep the action achromatic, not a blue accent"
+            )
+
+            let attachment = XCTAttachment(image: UIImage(cgImage: image))
+            attachment.name = "Save to Photos – \(scheme) – production button"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
+    @MainActor
+    func testPhotoSaveContrastProbeReproducesOldInheritedBlackGlyph() throws {
+        // The former label had no own foreground color. Keep this negative
+        // control so a blank/background-only snapshot cannot pass the test.
+        let oldButton = Button(action: {}) {
+            Image(systemName: "photo.badge.arrow.down")
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(Color("AccentColor"))
+        let image = try renderPhotoSaveContrastProbe(oldButton, scheme: .light)
+        let pixels = try photoSaveGlyphPixels(image)
+
+        XCTAssertEqual(
+            pixels.filter { $0.allSatisfy { $0 >= 235 } }.count,
+            0,
+            "The old light-theme button must reproduce the missing white glyph."
+        )
+    }
+
+    @MainActor
+    private func renderPhotoSaveContrastProbe<Content: View>(
+        _ content: Content,
+        scheme: ColorScheme
+    ) throws -> CGImage {
+        let probe = content
+            .foregroundStyle(.primary)
+            .frame(width: 96, height: 64)
+            .background(scheme == .dark ? Color.black : Color.white)
+            .environment(\.colorScheme, scheme)
+        let renderer = ImageRenderer(content: probe)
+        renderer.scale = 2
+        return try XCTUnwrap(renderer.cgImage)
+    }
+
+    private func photoSaveGlyphPixels(_ image: CGImage) throws -> [[UInt8]] {
+        let width = image.width
+        let height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try XCTUnwrap(CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                    | CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        // The central 24×24 points lie fully inside the 30×30 label and the
+        // pill, avoiding white page pixels outside the rounded button edges.
+        return ((height / 2 - 24)..<(height / 2 + 24)).flatMap { y in
+            ((width / 2 - 24)..<(width / 2 + 24)).map { x in
+                let offset = (y * width + x) * 4
+                return Array(bytes[offset..<(offset + 3)])
+            }
+        }
     }
 
     func testLocalImagePreviewIsPixelBounded() throws {

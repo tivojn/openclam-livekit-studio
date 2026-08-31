@@ -532,9 +532,17 @@ def _export_archives(
     include_macos_full: bool,
     require_full_expression: bool,
     required_motions: frozenset[str] | None,
+    approved_geometry_package: Path | None = None,
+    approved_geometry_sha256: str | None = None,
 ) -> dict:
     ios_filename, mac_filename, _ = artifact_filenames(identifier)
     ios_path = releases / ios_filename
+    migration = {}
+    if approved_geometry_package is not None:
+        migration = {
+            "approved_geometry_package": approved_geometry_package,
+            "approved_geometry_sha256": approved_geometry_sha256,
+        }
     ios_manifest = avtr.export_ios_light(
         identifier,
         display_name,
@@ -542,6 +550,7 @@ def _export_archives(
         source / "runtime",
         ios_path,
         require_full_expression=require_full_expression,
+        **migration,
     )
     normalize_archive(ios_path, zipfile.ZIP_DEFLATED)
     validated_ios = _validate_ios_archive(
@@ -593,6 +602,8 @@ def build_release(
     include_macos_full: bool = False,
     require_full_expression: bool = False,
     verify_reproducible: bool = False,
+    approved_geometry_package: Path | None = None,
+    approved_geometry_sha256: str | None = None,
 ) -> dict:
     source = source_root.expanduser().resolve(strict=True)
     if not source.is_dir() or source.is_symlink():
@@ -602,6 +613,14 @@ def build_release(
         raise StoreBuildError("output path already exists")
     if source == output or source in output.parents or output in source.parents:
         raise StoreBuildError("output and avatar source must be separate")
+    if (approved_geometry_package is None) != (approved_geometry_sha256 is None):
+        raise StoreBuildError("approved geometry migration requires both package and SHA-256")
+    if approved_geometry_package is not None:
+        if base_catalog_path is None or release_tag is None \
+                or not STORE_TAG_RE.fullmatch(release_tag):
+            raise StoreBuildError("approved geometry migration requires a reviewed base catalog and versioned Store tag")
+        require_full_expression = True
+        verify_reproducible = True
     if not IDENTIFIER_RE.fullmatch(identifier):
         raise StoreBuildError("invalid avatar identifier")
     display_name = _safe_text(display_name, "avatar display name")
@@ -663,6 +682,30 @@ def build_release(
     base_catalog = (
         _read_base_catalog(base_catalog_path) if base_catalog_path is not None else None
     )
+    geometry_migration = None
+    if approved_geometry_package is not None:
+        prior = next((row for row in base_catalog["entries"]
+                      if row["id"] == identifier), None)
+        pin = (prior.get("variants") or {}).get(avtr.IOS_VARIANT) if prior else None
+        if not isinstance(pin, dict) or pin.get("sha256") != approved_geometry_sha256 \
+                or prior.get("name") != display_name \
+                or pin.get("format") != avtr.FORMAT \
+                or pin.get("profile") != avtr.IOS_VARIANT \
+                or version <= prior.get("version", 0):
+            raise StoreBuildError("approved geometry reference must match the existing Store identity and pinned SHA-256")
+        try:
+            if approved_geometry_package.stat().st_size != pin["bytes"]:
+                raise StoreBuildError("approved geometry reference bytes differ from the Store pin")
+        except OSError as error:
+            raise StoreBuildError("approved geometry reference package is missing") from error
+        geometry_migration = {
+            "referenceSHA256": approved_geometry_sha256,
+            "referenceBytes": pin["bytes"],
+            "referenceStoreVersion": prior["version"],
+            "referenceURL": pin["url"],
+            "geometryVerified": True,
+            "recomposed": False,
+        }
     output.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".openclam-store-", dir=output.parent))
     try:
@@ -680,6 +723,8 @@ def build_release(
             include_macos_full=include_macos_full,
             require_full_expression=require_full_expression,
             required_motions=required_motions,
+            approved_geometry_package=approved_geometry_package,
+            approved_geometry_sha256=approved_geometry_sha256,
         )
         ios_path = built["iosPath"]
         mac_path = built["macPath"]
@@ -700,6 +745,8 @@ def build_release(
                     include_macos_full=include_macos_full,
                     require_full_expression=require_full_expression,
                     required_motions=required_motions,
+                    approved_geometry_package=approved_geometry_package,
+                    approved_geometry_sha256=approved_geometry_sha256,
                 )
                 if not _archives_match(ios_path, repeated["iosPath"]):
                     raise StoreBuildError("iPhone AVTR export is not byte reproducible")
@@ -796,6 +843,7 @@ def build_release(
         "macManifest": mac_manifest,
         "catalog": catalog,
         "verifiedReproducible": verify_reproducible,
+        "approvedGeometryMigration": geometry_migration,
     }
 
 
@@ -817,6 +865,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-macos-full", action="store_true")
     parser.add_argument("--require-full-expression", action="store_true")
     parser.add_argument("--verify-reproducible", action="store_true")
+    parser.add_argument("--approved-geometry-package", type=Path,
+                        help="Explicit migration only: previously approved iOS AVTR pinned by the base catalog")
+    parser.add_argument("--approved-geometry-sha256",
+                        help="Expected SHA-256 of the approved geometry reference; does not relax normal exports")
     return parser.parse_args()
 
 
@@ -839,6 +891,8 @@ def main() -> int:
         include_macos_full=arguments.include_macos_full,
         require_full_expression=arguments.require_full_expression,
         verify_reproducible=arguments.verify_reproducible,
+        approved_geometry_package=arguments.approved_geometry_package,
+        approved_geometry_sha256=arguments.approved_geometry_sha256,
     )
     selected_entry = next(
         entry for entry in result["catalog"]["entries"]
@@ -849,6 +903,7 @@ def main() -> int:
         "output": result["output"],
         "entry": selected_entry,
         "verifiedReproducible": result["verifiedReproducible"],
+        "approvedGeometryMigration": result["approvedGeometryMigration"],
     }, ensure_ascii=False, indent=2))
     return 0
 

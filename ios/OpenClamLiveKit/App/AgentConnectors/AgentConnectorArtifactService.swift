@@ -118,12 +118,16 @@ actor OpenClawAgentConnectorArtifactService: AgentConnectorArtifactServicing {
         let transfer: AgentConnectorArtifactTransfer
         do {
             transfer = try await transport.download(request)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as AgentConnectorError {
             throw error
         } catch {
+            try Task.checkCancellation()
             throw AgentConnectorError.connectionUnavailable
         }
         defer { try? FileManager.default.removeItem(at: transfer.temporaryURL) }
+        try Task.checkCancellation()
 
         guard transfer.responseURL == expectedURL else {
             throw AgentConnectorError.redirected

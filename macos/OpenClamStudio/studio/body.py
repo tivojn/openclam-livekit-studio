@@ -38,12 +38,16 @@ _MIN_GENERATED_FACE_HEIGHT_PX = 100
 _MIN_GENERATED_FACE_WIDTH_RATIO = 0.075
 _MIN_GENERATED_FACE_HEIGHT_RATIO = 0.065
 _MIN_GENERATED_FACE_AXIS_FRACTION = 0.90
-# Body schema v3 predates the short jaw handoff.  Runtime consumers must not
-# infer the new alpha semantics merely from ``head_clear_mask`` because legacy
-# v3 stylized bodies already shipped that asset with a much longer portrait
-# neck tail.  This explicit marker is written only when this author authors the
-# corresponding short under-jaw feather.
-STYLIZED_HEAD_HANDOFF_VERSION = 2
+# Handoff v2 shipped before the medium-aware curved jaw boundary: in
+# particular, a soft-3-D source could retain too much of its rendered neck and
+# expose a second chin at runtime.  Never infer the corrected geometry merely
+# from ``head_clear_mask`` because existing v2 bodies already carry that asset.
+# V3 added the medium-aware jaw but still used different canvas-dependent
+# lateral fields for the portrait and body. V4 authors both in face geometry.
+# Every newly authored stylized body gets this explicit current marker.
+STYLIZED_HEAD_HANDOFF_VERSION = 4
+SOFT_3D_NECK_REGISTRATION_VERSION = 1
+SOFT_3D_JAW_BAND_REPAIR_VERSION = 1
 DEFAULT_BODY_PROMPT = (
     "Create a photorealistic couture-level full-body wardrobe with tailored "
     "authority, professional editorial polish, and zero fast-fashion noise. Read only "
@@ -233,6 +237,42 @@ def _stored_source_medium(avatar_dir):
 def _allow_stylized_source(avatar_dir):
     """Enable permissive local geometry only from stored intake evidence."""
     return _stored_source_medium(avatar_dir) != "photograph"
+
+
+def _source_override_options(avatar_dir, options):
+    """Apply only an explicit owner category to full-body authoring options.
+
+    Automatic classification keeps the historical, independently selectable
+    treatment behavior.  A manual choice is different: it exists specifically
+    to prevent a heuristic mistake from sending body prompts, alpha QA, neck
+    alignment, motion, and packaging down conflicting lanes.
+    """
+    try:
+        with open(os.path.join(avatar_dir, "manifest.json"),
+                  encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return dict(options or {})
+    raw = (manifest.get("source_medium_override")
+           if isinstance(manifest, dict) else None)
+    medium = str(raw or "").strip().lower()
+    if medium not in {"photograph", "illustration", "3d render"}:
+        return dict(options or {})
+    result = dict(options or {})
+    result["medium"] = medium
+    compatible = {
+        "photograph": {"photorealistic", "editorial"},
+        "illustration": {"illustrated", "anime"},
+        "3d render": {"soft-3d"},
+    }
+    defaults = {
+        "photograph": "photorealistic",
+        "illustration": "illustrated",
+        "3d render": "soft-3d",
+    }
+    if result.get("style") not in compatible[medium]:
+        result["style"] = defaults[medium]
+    return result
 
 
 def image_provider_selection():
@@ -943,6 +983,23 @@ def _archive_rejected_body_proportion(
             shutil.rmtree(stage, ignore_errors=True)
 
 
+def _render_body_cutout(source, destination, view, *, allow_stylized, log=print):
+    """Translate an ambiguous cartoon plate into a targeted view rejection.
+
+    This diagnostic never erases authored white details. Only classified
+    cartoon body plates opt in; photographic sources use the exact original
+    Vision call and pixel path, and portrait/identity extraction is unchanged.
+    """
+    kwargs = {"log": log, "tight": True, "allow_stylized": allow_stylized}
+    if allow_stylized:
+        kwargs["reject_enclosed_plate"] = True
+    try:
+        return cutout.render(source, destination, **kwargs)
+    except cutout.AmbiguousStylizedPlateError as error:
+        raise GeneratedBodyAlphaError(
+            f"generated {view} body failed alpha QA: {error}") from error
+
+
 def _preflight_front_source(avatar_dir, source, options, log=print):
     """Reject an unsafe/head-heavy front before paying for side and back.
 
@@ -960,8 +1017,8 @@ def _preflight_front_source(avatar_dir, source, options, log=print):
     try:
         allow_stylized = _allow_stylized_source(avatar_dir)
         cutout_path = os.path.join(stage, "front.png")
-        if not cutout.render(
-                source, cutout_path, log=log, tight=True,
+        if not _render_body_cutout(
+                source, cutout_path, "front", log=log,
                 allow_stylized=allow_stylized):
             raise RuntimeError("local person cutout failed for the front view")
         body_rgba = cv2.imread(cutout_path, cv2.IMREAD_UNCHANGED)
@@ -1049,8 +1106,8 @@ def _preflight_alpha_source(
     try:
         allow_stylized = _allow_stylized_source(avatar_dir)
         cutout_path = os.path.join(stage, f"{view}.png")
-        if not cutout.render(
-                source, cutout_path, log=log, tight=True,
+        if not _render_body_cutout(
+                source, cutout_path, view, log=log,
                 allow_stylized=allow_stylized):
             raise RuntimeError(f"local person cutout failed for the {view} view")
         body_rgba = cv2.imread(cutout_path, cv2.IMREAD_UNCHANGED)
@@ -1225,61 +1282,179 @@ def _head_mask(cutout_image, landmarks, destination):
     cv2.imwrite(destination, rgba)
 
 
-def _stylized_head_mask(cutout_image, landmarks, destination):
+def _stylized_jaw_handoff(shape, projected_oval, feather_px=None):
+    """Return one curved, one-sided head-to-body handoff field.
+
+    ``FACE_OVAL`` is an ordered closed contour.  Its lower convex chain is the
+    jaw seen in the coordinate space supplied by the caller (portrait space
+    while authoring the overlay, body space while authoring the clear mask).
+    The returned support is solid on the head side of that chain, then falls to
+    zero over a Euclidean signed-distance feather on the neck side.  Both
+    stylized assets use this helper so a second, row-based chin cutoff cannot
+    create a collar-shaped edge.
+    """
+    height, width = [int(value) for value in shape[:2]]
+    oval = np.asarray(projected_oval, dtype=np.float32).reshape(-1, 2)
+    if (height <= 0 or width <= 0 or len(oval) < 3
+            or not np.all(np.isfinite(oval))):
+        raise RuntimeError("the stylized jaw handoff geometry is invalid")
+
+    hull = cv2.convexHull(oval).reshape(-1, 2)
+    if len(hull) < 3:
+        raise RuntimeError("the stylized jaw handoff geometry is degenerate")
+    left_index = int(np.argmin(hull[:, 0]))
+    right_index = int(np.argmax(hull[:, 0]))
+
+    def hull_path(step):
+        points = [hull[left_index]]
+        index = left_index
+        while index != right_index:
+            index = (index + step) % len(hull)
+            points.append(hull[index])
+            if len(points) > len(hull) + 1:
+                raise RuntimeError("the stylized jaw contour is invalid")
+        points = np.asarray(points, dtype=np.float32)
+        if points[0, 0] > points[-1, 0]:
+            points = points[::-1]
+        order = np.argsort(points[:, 0], kind="stable")
+        points = points[order]
+        unique_x = []
+        lower_y = []
+        for x_value in np.unique(points[:, 0]):
+            ys = points[points[:, 0] == x_value, 1]
+            unique_x.append(float(x_value))
+            lower_y.append(float(np.max(ys)))
+        return np.asarray(unique_x), np.asarray(lower_y)
+
+    paths = [hull_path(1), hull_path(-1)]
+    left = float(np.min(oval[:, 0]))
+    right = float(np.max(oval[:, 0]))
+    if right - left < 2.0:
+        raise RuntimeError("the stylized jaw handoff is too narrow")
+    sample_x = np.linspace(left, right, 129, dtype=np.float32)
+    scores = [
+        float(np.mean(np.interp(sample_x, path_x, path_y)))
+        for path_x, path_y in paths
+    ]
+    jaw_x, jaw_y = paths[int(np.argmax(scores))]
+
+    xs = np.arange(width, dtype=np.float32)
+    boundary = np.interp(xs, jaw_x, jaw_y).astype(np.float32)
+    # Continue the jaw beyond its hinges without letting that continuation
+    # descend indefinitely across a full-body plate.  A one-way diagonal is
+    # acceptable in a tightly cropped portrait, but in body space it eventually
+    # classifies shoulders (and then torso) as part of the head.  Make a shallow
+    # outward turn just past each ear, then rise toward the oval's crown row
+    # within an anatomy-relative lateral extent.  Never use an image edge for
+    # that extent: the head overlay is authored in portrait space, whereas its
+    # eraser is authored on the wider full-body canvas.  Edge-relative fields
+    # disagree after projection and cut a transparent notch through loose hair
+    # (Celine's viewer-left forelock).  A face-width extent gives both callers
+    # the same geometry and still keeps distant shoulders outside the head.
+    jaw_rise = max(
+        1.0,
+        float(np.max(jaw_y) - 0.5 * (jaw_y[0] + jaw_y[-1])),
+    )
+    face_width = max(1.0, right - left)
+    outer_drop = float(min(jaw_rise * 0.25, face_width * 0.12))
+    turn_distance = float(max(1.0, face_width * 0.18))
+    return_distance = float(max(turn_distance + 1.0, face_width * 0.72))
+    crown_row = float(np.min(oval[:, 1]))
+
+    def shoulder_safe_continuation(distance, hinge_y):
+        distance = np.asarray(distance, dtype=np.float32)
+        near = hinge_y + outer_drop * distance / turn_distance
+        far_progress = np.clip(
+            (distance - turn_distance) / (return_distance - turn_distance),
+            0.0, 1.0)
+        far = (hinge_y + outer_drop) + (
+            crown_row - (hinge_y + outer_drop)) * far_progress
+        return np.where(distance <= turn_distance, near, far)
+
+    left_columns = xs < jaw_x[0]
+    right_columns = xs > jaw_x[-1]
+    left_distance = jaw_x[0] - xs[left_columns]
+    right_distance = xs[right_columns] - jaw_x[-1]
+    boundary[left_columns] = shoulder_safe_continuation(
+        left_distance, jaw_y[0])
+    boundary[right_columns] = shoulder_safe_continuation(
+        right_distance, jaw_y[-1])
+
+    head_side = (
+        np.arange(height, dtype=np.float32)[:, None]
+        <= boundary[None, :]
+    )
+    inside = cv2.distanceTransform(
+        head_side.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    outside = cv2.distanceTransform(
+        (~head_side).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    signed_distance = inside - outside
+    if feather_px is None:
+        feather_px = float(np.clip((right - left) * 0.12, 10.0, 16.0))
+    feather_px = float(np.clip(feather_px, 1.0, max(height, width)))
+    progress = np.clip(
+        (signed_distance + feather_px) / feather_px, 0.0, 1.0)
+    support = progress * progress * (3.0 - 2.0 * progress)
+    return support.astype(np.float32), head_side, {
+        "feather_px": feather_px,
+        "boundary_min_y": float(np.min(boundary)),
+        "boundary_max_y": float(np.max(boundary)),
+    }
+
+
+def _stylized_handoff_feather(projected_face_width, source_medium=None):
+    """Choose the authored jaw feather without conflating cartoon media.
+
+    A flat illustration benefits from the established, wider overlap: it keeps
+    a black ink jaw continuous over the generated neck even when the two
+    silhouettes differ by a few pixels.  A soft-3-D portrait is different.  Its
+    source matte commonly contains a rendered neck below the anatomical jaw;
+    carrying the same wide overlap onto the body produces a second shaded chin
+    contour.  Keep that central overlap short while retaining the complete
+    lateral hair/hat silhouette above the same curved jaw boundary.
+
+    The value is expressed in *projected body pixels*.  Callers authoring a
+    portrait-space mask convert it back through the face affine so both masks
+    describe the same visible-width handoff.
+    """
+    width = max(1.0, float(projected_face_width))
+    medium = _normalise_source_medium(source_medium)
+    if medium == "3d render":
+        return float(np.clip(width * 0.06, 6.0, 12.0)), "soft-3d-jaw-v1"
+    return float(np.clip(width * 0.12, 10.0, 16.0)), "illustration-jaw-v2"
+
+
+def _stylized_head_mask(
+        cutout_image, landmarks, destination, transform=None,
+        source_medium=None):
     """Author a complete, identity-owned cartoon head silhouette.
 
     Above the jaw, the validated local matte owns the whole canonical head:
-    hat/hair, ears, cheeks, and chin.  Below the jaw it narrows to the neck and
-    then fades, preventing a bust or source clothing from replacing the approved
-    full-body wardrobe.  An opaque-square fallback is routed through the legacy
-    oval author instead of ever becoming a square runtime layer.
+    hat/hair, ears, cheeks, and chin.  A curved jaw-distance feather hands the
+    neck to the body without carrying a bust or source clothing onto the
+    approved full-body wardrobe.  An opaque-square fallback is routed through
+    the legacy oval author instead of ever becoming a square runtime layer.
     """
     if not _stylized_identity_cutout_is_safe(cutout_image, landmarks):
         _head_mask(cutout_image, landmarks, destination)
         return "face-oval-fallback"
     alpha = cutout_image[:, :, 3].astype(np.float32) / 255.0
     oval = np.asarray(landmarks, dtype=np.float32)[face.FACE_OVAL]
-    top = float(np.min(oval[:, 1]))
-    chin = float(np.max(oval[:, 1]))
-    left = float(np.min(oval[:, 0]))
-    right = float(np.max(oval[:, 0]))
-    center = (left + right) * 0.5
-    face_width = max(1.0, right - left)
-    face_height = max(1.0, chin - top)
-    ys = np.arange(alpha.shape[0], dtype=np.float32)
-
-    # The generated plate already owns a calibrated neck and collar.  Hand the
-    # centre throat back *at the jaw shadow*, where a material/tone transition
-    # is anatomically expected.  The previous 0.16-face-height tail carried a
-    # differently shaded strip of portrait neck onto the body and ended in a
-    # very visible collar-like seam at close-up scale.  A narrow antialiasing
-    # feather keeps the complete chin while leaving the body neck continuous
-    # with its own shoulders and chest.
-    jaw_feather = max(4.0, face_height * 0.05)
-    fade_start = min(float(alpha.shape[0]), chin)
-    fade_end = min(float(alpha.shape[0]), chin + jaw_feather)
-    fade = np.ones_like(ys)
-    if fade_end > fade_start:
-        progress = np.clip(
-            (ys - fade_start) / (fade_end - fade_start), 0.0, 1.0)
-        smooth = progress * progress * (3.0 - 2.0 * progress)
-        fade = 1.0 - smooth
-
-    # Only the tiny jaw handoff is narrowed; hat, hair, ears, cheeks, and the
-    # complete visible jaw remain exactly as supplied by the canonical art.
-    neck_progress = np.clip(
-        (ys - chin) / max(1.0, fade_end - chin), 0.0, 1.0)
-    half_width = face_width * (0.36 - 0.10 * neck_progress)
-    feather = max(10.0, face_width * 0.055)
-    xs = np.arange(alpha.shape[1], dtype=np.float32)[None, :]
-    narrow = np.clip(
-        (half_width[:, None] + feather - np.abs(xs - center)) / feather,
-        0.0, 1.0)
-    engage = np.clip(
-        (ys - fade_start) / max(1.0, fade_end - fade_start), 0.0, 1.0)
-    engage = engage * engage * (3.0 - 2.0 * engage)
-    neck_gate = 1.0 - engage[:, None] * (1.0 - narrow)
-    mask = np.clip(alpha * fade[:, None] * neck_gate, 0.0, 1.0)
+    face_width = max(1.0, float(np.ptp(oval[:, 0])))
+    feather_px, _handoff_profile = _stylized_handoff_feather(
+        face_width, source_medium)
+    if transform is not None:
+        affine = np.asarray(transform, dtype=np.float64)
+        projected = cv2.transform(
+            oval[None, :, :], affine.astype(np.float32))[0]
+        projected_width = max(1.0, float(np.ptp(projected[:, 0])))
+        projected_feather, _handoff_profile = _stylized_handoff_feather(
+            projected_width, source_medium)
+        scale = float(np.sqrt(abs(np.linalg.det(affine[:, :2]))))
+        feather_px = projected_feather / max(scale, 1e-6)
+    support, _head_side, _handoff = _stylized_jaw_handoff(
+        alpha.shape, oval, feather_px=feather_px)
+    mask = np.clip(alpha * support, 0.0, 1.0)
     rgba = np.full((*mask.shape, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = np.round(mask * 255).astype(np.uint8)
     if not cv2.imwrite(destination, rgba):
@@ -1287,16 +1462,373 @@ def _stylized_head_mask(cutout_image, landmarks, destination):
     return "full-silhouette"
 
 
+def _neck_row_edge(image, row, left, right):
+    """Measure a strong RGB contour with a bounded subpixel peak fit."""
+    pixels = image[row, :, :3].astype(np.float32)
+    pixels = cv2.GaussianBlur(pixels[None, :, :], (5, 1), .8)[0]
+    gradient = pixels[1:] - pixels[:-1]
+    strength = np.linalg.norm(gradient, axis=1) / np.sqrt(3.0)
+    index = left + int(np.argmax(strength[left:right]))
+    position = float(index)
+    if 0 < index < len(strength) - 1:
+        a, b, c = strength[index - 1:index + 2]
+        denominator = a - 2.0 * b + c
+        if denominator < -1e-4:
+            position += float(np.clip(
+                .5 * (a - c) / denominator, -.5, .5))
+    return position, float(strength[index]), gradient[index]
+
+
+def _register_soft_3d_neck_seam(
+        body_image, keyframe, head_mask, transform, key_landmarks,
+        *, source_medium=None):
+    """Register a proven *interior* donor-neck edge to the identity head.
+
+    A soft-3D portrait and its generated body can have slightly different neck
+    contours. Fading one edge out while the other fades in makes a visible
+    lateral step, even with an upright head and a single chin. Do not move the
+    approved face, extend its shaded chin, or blur both contours together.
+    Instead, align only the small donor RGB neighbourhood where corresponding
+    neck/hair edges are visible inside the authored jaw handoff.
+
+    This is deliberately not a skin-colour or silhouette heuristic. At least
+    three consecutive, strong, same-direction RGB edge matches must agree on
+    a bounded offset. Only wholly opaque interior pixels may be resampled;
+    the alpha silhouette, source portrait and masks stay byte-identical. The
+    correction fades back to the original donor below the short jaw seam.
+    Ambiguous, large or exterior mismatches are left unchanged, not erased.
+    Both the photographic and ink-illustration paths are exact no-ops.
+    """
+    receipt = {
+        "version": SOFT_3D_NECK_REGISTRATION_VERSION,
+        "source_medium": _normalise_source_medium(source_medium),
+        "applied": False,
+        "changed_rgb_pixels": 0,
+        "alpha_unchanged": True,
+        "edges": [],
+    }
+    if receipt["source_medium"] != "3d render":
+        receipt["reason"] = "not-soft-3d"
+        return body_image, receipt
+    affine = np.asarray(transform, dtype=np.float64)
+    if (body_image is None or body_image.ndim != 3
+            or body_image.shape[2] != 4 or body_image.dtype != np.uint8
+            or keyframe is None or keyframe.ndim != 3
+            or keyframe.shape[2] < 3 or head_mask is None
+            or head_mask.ndim != 2
+            or head_mask.shape != keyframe.shape[:2]
+            or affine.shape != (2, 3) or not np.all(np.isfinite(affine))):
+        raise RuntimeError("soft-3D neck registration inputs are invalid")
+    oval = np.asarray(key_landmarks, dtype=np.float32)[face.FACE_OVAL]
+    if not np.all(np.isfinite(oval)):
+        raise RuntimeError("soft-3D neck registration landmarks are invalid")
+    projected = cv2.transform(oval[None], affine.astype(np.float32))[0]
+    face_width = float(np.ptp(projected[:, 0]))
+    height, width = body_image.shape[:2]
+    if face_width < 32 or min(height, width) < 16:
+        receipt["reason"] = "insufficient-neck-resolution"
+        return body_image, receipt
+    centre = float((np.min(projected[:, 0]) + np.max(projected[:, 0])) / 2)
+    chin = float(np.max(projected[:, 1]))
+    start = max(1, int(np.floor(chin - face_width * .18)))
+    stop = min(height - 1, int(np.ceil(chin + face_width * .09)))
+    if start >= stop:
+        receipt["reason"] = "neck-outside-canvas"
+        return body_image, receipt
+    canonical = cv2.warpAffine(
+        keyframe[:, :, :3], affine, (width, height), flags=cv2.INTER_AREA)
+    coverage = cv2.warpAffine(
+        head_mask, affine, (width, height), flags=cv2.INTER_LINEAR
+    ).astype(np.float32) / 255.0
+    displacement = np.zeros((height, width), np.float32)
+    rows = np.arange(height, dtype=np.float32)
+    columns = np.arange(width, dtype=np.float32)
+
+    def smoothstep(value):
+        value = np.clip(value, 0.0, 1.0)
+        return value * value * (3.0 - 2.0 * value)
+
+    for side, minimum, maximum in (
+            ("viewer-left", -.40, -.12), ("viewer-right", .12, .40)):
+        left = max(2, int(centre + face_width * minimum))
+        right = min(width - 2, int(centre + face_width * maximum))
+        if right <= left:
+            continue
+        samples = []
+        for row in range(start, stop):
+            source_x, source_strength, source_gradient = _neck_row_edge(
+                canonical, row, left, right)
+            donor_x, donor_strength, donor_gradient = _neck_row_edge(
+                body_image, row, left, right)
+            amount = float(np.interp(source_x, columns, coverage[row]))
+            agreement = float(np.dot(source_gradient, donor_gradient) / max(
+                1e-5, np.linalg.norm(source_gradient)
+                * np.linalg.norm(donor_gradient)))
+            offset = source_x - donor_x
+            if (.1 <= amount <= .9
+                    and min(source_strength, donor_strength) >= 12.0
+                    and agreement >= .92
+                    and abs(offset) <= min(8.0, face_width * .06)):
+                samples.append((row, source_x, donor_x, offset))
+        edge_receipt = {
+            "side": side, "matching_rows": len(samples), "applied": False,
+        }
+        receipt["edges"].append(edge_receipt)
+        if (len(samples) < 3 or any(
+                after[0] - before[0] != 1
+                for before, after in zip(samples, samples[1:]))):
+            edge_receipt["reason"] = "insufficient-consecutive-correspondence"
+            continue
+        offsets = np.asarray([sample[3] for sample in samples])
+        offset = float(np.median(offsets))
+        spread = float(np.max(np.abs(offsets - offset)))
+        if abs(offset) < .8:
+            edge_receipt["reason"] = "already-aligned"
+            continue
+        if spread > 1.75:
+            edge_receipt["reason"] = "ambiguous-offset"
+            continue
+        first_row, last_row = samples[0][0], samples[-1][0]
+        # Keep this local to the jaw-to-neck junction, not the collar or chest.
+        # Below the overlap, smoothly restore the authored body in a few rows.
+        final_row = max(last_row + 5.0, chin + face_width * .02)
+        vertical = smoothstep((rows - (first_row - 4)) / 4) * (
+            1.0 - smoothstep(
+                (rows - (last_row + 1)) / (final_row - (last_row + 1))))
+        donor_x = float(np.median([sample[2] for sample in samples]))
+        contour = donor_x + offset * vertical
+        plateau = max(3.0, face_width * .035)
+        feather = max(5.0, face_width * .10)
+        horizontal = 1.0 - smoothstep(
+            (np.abs(columns[None] - contour[:, None]) - plateau) / feather)
+        flow = offset * vertical[:, None] * horizontal
+        affected = np.abs(flow) > .001
+        # Include interpolation's source support, not just destination pixels.
+        padding = int(np.ceil(abs(offset))) + 1
+        support = cv2.dilate(
+            affected.astype(np.uint8),
+            np.ones((1, 2 * padding + 1), np.uint8)).astype(bool)
+        if np.any(body_image[:, :, 3][support] < 250):
+            edge_receipt["reason"] = "not-opaque-interior"
+            continue
+        displacement += flow
+        edge_receipt.update({
+            "applied": True,
+            "offset_x": round(offset, 6),
+            "max_offset_spread": round(spread, 6),
+            "donor_edge_x": round(donor_x, 6),
+            "matching_row_bounds": [first_row, last_row],
+            "correction_row_bounds": [first_row - 4, round(final_row, 6)],
+        })
+    affected = np.abs(displacement) > .001
+    if not np.any(affected):
+        receipt["reason"] = "no-proven-interior-seam-offset"
+        return body_image, receipt
+    yy, xx = np.mgrid[:height, :width].astype(np.float32)
+    corrected = cv2.remap(
+        body_image[:, :, :3], xx - displacement, yy, cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE)
+    result = body_image.copy()
+    result[:, :, :3][affected] = corrected[affected]
+    changed = np.any(result[:, :, :3] != body_image[:, :, :3], axis=2)
+    changed_y, changed_x = np.nonzero(changed)
+    receipt["applied"] = bool(len(changed_y))
+    receipt["changed_rgb_pixels"] = int(len(changed_y))
+    if len(changed_y):
+        receipt["changed_rgb_bounds"] = [
+            int(changed_x.min()), int(changed_y.min()),
+            int(changed_x.max() - changed_x.min() + 1),
+            int(changed_y.max() - changed_y.min() + 1),
+        ]
+    return result, receipt
+
+
+def _repair_soft_3d_jaw_band(
+        body_image, head_mask, head_clear_mask, transform, face_bounds,
+        *, source_medium=None, neck_handoff=None):
+    """Repair a proven donor-jaw remnant in an existing v5 neck handoff.
+
+    This is an explicit maintenance operation, not a general skin retouch or
+    a new face/body registration. Some older anatomical-jaw recomposites
+    retained two or three rows of the donor's pale chin *inside* the identity
+    head's feather. The authored alpha pair is correct, but its partially
+    visible RGB leaves a second, stair-stepped jaw contour at large zoom.
+
+    Only the known v5 repair provenance is eligible. A continuous lower-jaw
+    arc must have a rapid, monotonic head feather, a same-direction bright
+    RGB step within that feather, and a smooth opaque donor-neck continuation
+    immediately below it. Extrapolate that local shading solely into the
+    detected remnant. Never change alpha, the head, either mask, the affine,
+    the actual donor neck below the step, or earlier lateral registration.
+    Ambiguous sources are left unchanged with an explicit diagnostic reason.
+    Photographic and 2D paths, and ordinary new exports, are exact no-ops.
+    """
+    receipt = {
+        "version": SOFT_3D_JAW_BAND_REPAIR_VERSION,
+        "source_medium": _normalise_source_medium(source_medium),
+        "method": "proven-v5-donor-jaw-band-rgb-only",
+        "applied": False,
+        "changed_rgb_pixels": 0,
+        "alpha_unchanged": True,
+        "head_masks_and_transform_unchanged": True,
+    }
+    if receipt["source_medium"] != "3d render":
+        receipt["reason"] = "not-soft-3d"
+        return body_image, receipt
+    handoff = neck_handoff if isinstance(neck_handoff, dict) else {}
+    if (handoff.get("v") != 5
+            or handoff.get("method") != "anatomical-jaw-plus-local-neck-recomposite"
+            or handoff.get("body_owns_neck") is not True
+            or handoff.get("provider_face_contour_removed") is not True):
+        receipt["reason"] = "not-known-v5-neck-recomposite"
+        return body_image, receipt
+    try:
+        affine = np.asarray(transform, dtype=np.float64)
+        bounds = np.asarray(face_bounds, dtype=np.float64)
+        feather = float(handoff.get("body_feather_px", 0))
+    except (ValueError, TypeError):
+        raise RuntimeError("soft-3D jaw-band repair metadata is invalid") from None
+    if (body_image is None or body_image.ndim != 3
+            or body_image.shape[2] != 4 or body_image.dtype != np.uint8
+            or head_mask is None or head_mask.ndim != 2
+            or head_mask.dtype != np.uint8
+            or head_clear_mask is None or head_clear_mask.ndim != 2
+            or head_clear_mask.dtype != np.uint8
+            or head_clear_mask.shape != body_image.shape[:2]
+            or affine.shape != (2, 3) or not np.all(np.isfinite(affine))
+            or bounds.shape != (4,) or not np.all(np.isfinite(bounds))
+            or not np.isfinite(feather) or not 3 <= feather <= 12):
+        raise RuntimeError("soft-3D jaw-band repair inputs are invalid")
+    # The known repair's upright, positive-scale mapping is essential to the
+    # vertical continuation test. Do not reinterpret tilted or mirrored data.
+    if (min(affine[0, 0], affine[1, 1]) <= 0
+            or max(abs(affine[0, 1]), abs(affine[1, 0])) > 1e-5):
+        receipt["reason"] = "not-upright-neck-handoff"
+        return body_image, receipt
+    height, width = body_image.shape[:2]
+    face_x, face_y, face_width, face_height = bounds
+    if min(face_width, face_height) < 48:
+        receipt["reason"] = "insufficient-jaw-resolution"
+        return body_image, receipt
+    left = max(1, int(np.ceil(face_x + face_width * .1)))
+    right = min(width - 1, int(np.floor(face_x + face_width * .9)))
+    top = max(1, int(np.floor(face_y + face_height * .5)))
+    bottom = min(height - 6, int(np.ceil(face_y + face_height + feather)))
+    if left >= right or top >= bottom:
+        receipt["reason"] = "jaw-outside-canvas"
+        return body_image, receipt
+    coverage = cv2.warpAffine(
+        head_mask, affine, (width, height), flags=cv2.INTER_LINEAR
+    ).astype(np.float32) / 255.0
+    max_tail = int(np.ceil(feather)) + 2
+    samples = []
+    fit_t = np.arange(1, 5, dtype=np.float64)
+    for column in range(left, right + 1):
+        cleared = np.flatnonzero(head_clear_mask[top:bottom, column] >= 250)
+        if not len(cleared):
+            continue
+        anchor = top + int(cleared[-1])
+        if anchor + max_tail + 5 >= height or coverage[anchor, column] < .96:
+            continue
+        transition = coverage[anchor:anchor + max_tail + 1, column]
+        zeros = np.flatnonzero(transition <= .02)
+        if (not len(zeros) or not 3 <= zeros[0] <= max_tail
+                or np.any(np.diff(transition[:int(zeros[0]) + 1]) > .015)):
+            continue
+        end = anchor + int(zeros[0])
+        if np.any(head_clear_mask[anchor + 1:end + 1, column] > 4):
+            continue
+        rgb = body_image[anchor + 1:end + 1, column, :3].astype(np.float64)
+        drops = rgb[:-1] - rgb[1:]
+        if not len(drops):
+            continue
+        index = int(np.argmax(drops.mean(axis=1)))
+        edge = anchor + 1 + index
+        delta = drops[index]
+        if (not .25 <= coverage[edge, column] <= .85
+                or np.min(delta) < 4 or np.mean(delta) < 12
+                or np.max(delta) > 150 or not 1 <= edge - anchor <= max_tail - 2):
+            continue
+        support = body_image[anchor:edge + 5, column, 3]
+        if np.any(support < 250):
+            continue
+        neck = body_image[edge + 1:edge + 5, column, :3].astype(np.float64)
+        slope, intercept = np.polyfit(fit_t, neck, 1)
+        error = float(np.max(np.abs(fit_t[:, None] * slope + intercept - neck)))
+        # A shadow or hair boundary in the support cannot be used as a smooth
+        # neck continuation. Keep this extrapolation shorter than its support.
+        if error > 2.5 or np.max(np.abs(slope)) > 8:
+            continue
+        rows = np.arange(anchor, edge + 1)
+        prediction = (rows - edge)[:, None] * slope + intercept
+        original = body_image[rows, column, :3].astype(np.float64)
+        if (np.min(prediction) < 0 or np.max(prediction) > 255
+                or np.mean(original[-1] - prediction[-1]) < 12
+                or np.any(original[-1] - prediction[-1] < 2)):
+            continue
+        samples.append({
+            "x": column, "anchor": anchor, "edge": edge,
+            "step_mean": float(np.mean(delta)), "fit_error": error,
+            "replacement": np.rint(prediction).astype(np.uint8),
+        })
+    # Isolated highlights or disconnected mouth/hair edges are not a residual
+    # jaw. Require one coherent arc spanning the central chin with both sides.
+    runs = []
+    for sample in samples:
+        if (not runs or sample["x"] != runs[-1][-1]["x"] + 1
+                or abs(sample["edge"] - runs[-1][-1]["edge"]) > 2):
+            runs.append([])
+        runs[-1].append(sample)
+    centre = face_x + face_width * .5
+    eligible = [run for run in runs if (
+        len(run) >= max(16, int(np.ceil(face_width * .25)))
+        and run[0]["x"] <= centre - face_width * .1
+        and run[-1]["x"] >= centre + face_width * .1)]
+    receipt["candidate_columns"] = len(samples)
+    if len(eligible) != 1:
+        receipt["reason"] = "no-single-proven-residual-jaw-arc"
+        return body_image, receipt
+    arc = eligible[0]
+    edge_rows = np.asarray([sample["edge"] for sample in arc])
+    middle = edge_rows[len(arc) // 3:len(arc) * 2 // 3]
+    if (np.max(middle) - min(edge_rows[0], edge_rows[-1]) < face_width * .04
+            or np.max(middle) < np.max(edge_rows) - 2):
+        receipt["reason"] = "residual-not-lower-jaw-shaped"
+        return body_image, receipt
+    result = body_image.copy()
+    for sample in arc:
+        result[sample["anchor"]:sample["edge"] + 1, sample["x"], :3] = (
+            sample["replacement"])
+    changed_y, changed_x = np.nonzero(
+        np.any(result[:, :, :3] != body_image[:, :, :3], axis=2))
+    receipt.update({
+        "applied": bool(len(changed_y)),
+        "reason": "proven-donor-jaw-band-replaced",
+        "changed_rgb_pixels": int(len(changed_y)),
+        "changed_rgb_bounds": [
+            int(changed_x.min()), int(changed_y.min()),
+            int(changed_x.max() - changed_x.min() + 1),
+            int(changed_y.max() - changed_y.min() + 1)],
+        "arc_columns": len(arc),
+        "maximum_neck_fit_error": round(max(s["fit_error"] for s in arc), 6),
+        "minimum_observed_step": round(min(s["step_mean"] for s in arc), 6),
+        "body_neck_below_step_unchanged": True,
+        "bands": [[s["x"], s["anchor"], s["edge"]] for s in arc],
+        "visual_review_required": True,
+    })
+    return result, receipt
+
+
 def _stylized_head_clear_mask(
         body_image, mask_path, transform, key_landmarks, face_bounds,
-        destination):
+        destination, source_medium=None):
     """Build the body-space eraser for doubled cartoon face anatomy.
 
-    The canonical silhouette itself is always cleared.  In the facial band we
+    The canonical silhouette itself is always cleared.  On the head side we
     additionally clear a conservative dilation of the aligned oval, just far
     enough to remove generated ears, cheek outlines, and the second chin that
-    can sit outside the canonical matte.  This anatomical expansion is clipped
-    above the deep neck and does not expand through the hat, hair, or clothing.
+    can sit outside the canonical matte.  Both regions stop on the shared
+    curved jaw boundary, leaving the generated neck intact beneath its feather.
     """
     if (body_image is None or body_image.ndim != 3
             or body_image.shape[2] != 4 or not face_bounds):
@@ -1313,16 +1845,12 @@ def _stylized_head_clear_mask(
     projected = cv2.transform(
         np.asarray(key_landmarks, dtype=np.float32)[face.FACE_OVAL][None, :, :],
         np.asarray(transform, dtype=np.float32))[0]
-    _face_x, face_y, face_width, face_height = [float(v) for v in face_bounds]
-    # Hard replacement ends at the *canonical* projected chin, not the
-    # generated detector's often-taller cartoon oval.  Below it the body remains
-    # fully present and the authored target neck simply source-overs onto it;
-    # partially erasing an opaque body would lower combined alpha and expose a
-    # background crescent during the neck cross-dissolve.
-    chin_stop = min(height, int(np.ceil(float(np.max(projected[:, 1])) + 1.0)))
-    facial_band = np.zeros((height, width), dtype=bool)
-    facial_band[:chin_stop] = True
-    canonical = (warped > 4) & facial_band
+    face_width = float(face_bounds[2])
+    handoff_feather, handoff_profile = _stylized_handoff_feather(
+        max(1.0, float(np.ptp(projected[:, 0]))), source_medium)
+    handoff, head_side, handoff_quality = _stylized_jaw_handoff(
+        (height, width), projected, feather_px=handoff_feather)
+    canonical = (warped > 4) & head_side
     anatomy = np.zeros((height, width), dtype=np.uint8)
     cv2.fillConvexPoly(
         anatomy, cv2.convexHull(np.round(projected).astype(np.int32)), 255)
@@ -1335,62 +1863,24 @@ def _stylized_head_clear_mask(
     # The generated donor can carry a larger or vertically shifted hat/hair
     # silhouette than the canonical animation head. Clearing only the exact
     # canonical support leaves that donor crown or brim visible behind it as a
-    # second head. Full-silhouette replacement means the canonical head owns
-    # every body pixel above its projected chin, so clear all donor alpha in
-    # that hard band. Photographic soft blending never authors or consumes this
-    # clear mask, and the projected-chin cutoff preserves the body neck/collar.
+    # second head. Full-silhouette replacement therefore clears donor alpha on
+    # the solid head side of the shared jaw field. Photographic soft blending
+    # never authors or consumes this clear mask.
     donor_silhouette = (
-        facial_band & (body_image[:, :, 3] > 8) & ~canonical)
-    band = np.zeros((height, width), dtype=np.uint8)
-    top = max(0, int(np.floor(face_y - face_height * 0.08)))
-    # Stop above the generated chin.  The canonical silhouette already removes
-    # the second jaw; the extra dilation exists only for outer cheek/ear strokes.
-    # Extending its flat lower boundary into the neck made a rectangular colour
-    # step visible even though alpha remained valid.
-    bottom = min(
-        height,
-        int(np.ceil(min(
-            face_y + face_height * 0.90,
-            float(np.max(projected[:, 1]))))),
-    )
-    band[top:bottom] = 1
+        head_side & (body_image[:, :, 3] > 8) & ~canonical)
     donor_anatomy = (
-        (anatomy > 0) & (band > 0) & (body_image[:, :, 3] > 8)
+        (anatomy > 0) & head_side & (body_image[:, :, 3] > 8)
         & ~canonical)
-    clear_base = canonical | donor_silhouette | donor_anatomy
-    clear_strength = clear_base.astype(np.float32)
-
-    # A binary eraser is correct through the upper face: donor hair, ears and
-    # cheeks outside the canonical silhouette must disappear completely.  It
-    # is not correct at the final jaw rows, however.  The canonical mask is
-    # antialiased and deliberately feathers into the generated neck there.  A
-    # hard body-space clear used to extend two pixels beyond the canonical
-    # source on one side and five on the other, exposing transparent crescents
-    # that looked like a detached neck at close-up scale.
-    #
-    # Taper the final ~10% of face height and clear only beneath essentially
-    # opaque canonical pixels in that handoff.  Donor neck pixels remain as
-    # the backing layer under the jaw feather, keeping output alpha continuous,
-    # while all doubled anatomy above the handoff remains hard-cleared.  The
-    # photographic compositor never consumes this stylized-only asset.
-    handoff_height = max(6, int(round(face_height * 0.10)))
-    handoff_start = max(0, chin_stop - handoff_height)
-    if chin_stop > handoff_start:
-        row_progress = np.clip(
-            (np.arange(height, dtype=np.float32) - handoff_start)
-            / float(chin_stop - handoff_start),
-            0.0, 1.0)
-        smooth = row_progress * row_progress * (3.0 - 2.0 * row_progress)
-        taper = 1.0 - smooth
-        # Only the last three alpha codes qualify as opaque.  This prevents a
-        # partially transparent source edge from combining with a partially
-        # erased body into another alpha dip.
-        source_gate = np.clip(
-            (warped.astype(np.float32) - 252.0) / 3.0, 0.0, 1.0)
-        source_gate = source_gate * source_gate * (3.0 - 2.0 * source_gate)
-        handoff_rows = np.arange(height) >= handoff_start
-        clear_strength[handoff_rows] *= (
-            taper[handoff_rows, None] * source_gate[handoff_rows])
+    # Clear the body beneath fully opaque canonical art, and hard-clear donor
+    # anatomy that protrudes outside that art on the head side.  The signed-
+    # distance feather itself is deliberately excluded: there the overlay is
+    # source-over and the generated body remains the opaque backing layer.
+    source_gate = np.clip(
+        (warped.astype(np.float32) - 252.0) / 3.0, 0.0, 1.0)
+    source_gate = source_gate * source_gate * (3.0 - 2.0 * source_gate)
+    protrusion = donor_silhouette | donor_anatomy
+    clear_strength = np.maximum(
+        protrusion.astype(np.float32), source_gate * head_side)
     clear_alpha = np.round(clear_strength * 255.0).astype(np.uint8)
     rgba = np.full((height, width, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = clear_alpha
@@ -1400,14 +1890,29 @@ def _stylized_head_clear_mask(
         [round(float(value), 7) for value in row]
         for row in np.asarray(transform, dtype=np.float64)
     ]
+    feather = (handoff > 0.0) & ~head_side
+    feather_points = cv2.findNonZero(feather.astype(np.uint8))
+    if feather_points is None:
+        handoff_row_range = []
+    else:
+        _x, handoff_y, _width, handoff_height = cv2.boundingRect(feather_points)
+        handoff_row_range = [
+            int(handoff_y), int(handoff_y + handoff_height - 1)]
     return {
         "canonical_pixels": int(np.sum(clear_alpha > 4)),
         "silhouette_pixels": int(np.sum(donor_silhouette)),
         "anatomy_pixels": int(np.sum(donor_anatomy)),
-        "handoff_row_range": [int(handoff_start), int(chin_stop - 1)],
+        "handoff_row_range": handoff_row_range,
         "handoff_pixels_preserved": int(np.sum(
-            clear_base[handoff_start:chin_stop]
-            & (clear_alpha[handoff_start:chin_stop] < 250))),
+            feather & (body_image[:, :, 3] > 8) & (clear_alpha < 5))),
+        "handoff_feather_px": round(
+            float(handoff_quality["feather_px"]), 3),
+        "handoff_profile": handoff_profile,
+        "source_medium": _normalise_source_medium(source_medium),
+        "jaw_boundary_row_range": [
+            int(np.floor(handoff_quality["boundary_min_y"])),
+            int(np.ceil(handoff_quality["boundary_max_y"])),
+        ],
         "face_transform": transform_receipt,
         "bounds": _alpha_bounds(rgba),
     }
@@ -1652,6 +2157,13 @@ def _alpha_retry_remediation(reason, view):
         raise ValueError(f"alpha provider retry is unavailable for {view}")
     lowered = str(reason or "").lower()
     corrections = []
+    if "enclosed white silhouette slit" in lowered:
+        corrections.append(
+            "Keep loose hair curls/strands separated from the main silhouette "
+            "so every white background channel opens visibly to the exterior "
+            "plate; do not trap white crescents inside the hair. Preserve the "
+            "original eyes, teeth, face, hair colour, and clothing without "
+            "repainting white anatomy.")
     if view == "side":
         corrections.append(
             "Reproduce the approved front footwear's exact colour and "
@@ -1857,8 +2369,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                 progress, "cutout", .64 + view_index * .05,
                 f"Cutting out {view} full-body view")
             body_path = os.path.join(stage, f"body-{view}.png")
-            if not cutout.render(
-                    staged_sources[view], body_path, log=log, tight=True,
+            if not _render_body_cutout(
+                    staged_sources[view], body_path, view, log=log,
                     allow_stylized=allow_stylized):
                 raise RuntimeError(f"local person cutout failed for the {view} view")
             body_rgba = cv2.imread(body_path, cv2.IMREAD_UNCHANGED)
@@ -1941,7 +2453,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
         head_composite = "blend"
         if allow_stylized:
             head_mask_mode = _stylized_head_mask(
-                portrait_cutout, key_landmarks, head_mask_path)
+                portrait_cutout, key_landmarks, head_mask_path,
+                transform=transform, source_medium=stored_medium)
             head_composite = "replace" \
                 if head_mask_mode == "full-silhouette" else "blend"
         else:
@@ -1954,7 +2467,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                 clear_mask_path = os.path.join(stage, "head-clear-mask.png")
                 clear_mask_quality = _stylized_head_clear_mask(
                     view_images["front"], head_mask_path, transform,
-                    key_landmarks, face_bounds, clear_mask_path)
+                    key_landmarks, face_bounds, clear_mask_path,
+                    source_medium=stored_medium)
             else:
                 _constrain_head_mask(
                     head_mask_path, view_images["front"], transform,
@@ -1964,6 +2478,20 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
                 verified_stylized=allow_stylized)
             if proportion_failure:
                 raise GeneratedBodyIdentityError(proportion_failure)
+        neck_registration = None
+        if head_composite == "replace" and stored_medium == "3d render":
+            authored_mask = cv2.imread(head_mask_path, cv2.IMREAD_UNCHANGED)
+            registered, neck_registration = _register_soft_3d_neck_seam(
+                view_images["front"], keyframe, authored_mask[:, :, 3],
+                transform, key_landmarks, source_medium=stored_medium)
+            if neck_registration["applied"]:
+                view_images["front"] = registered
+                for image_name in ("body.png", "body-front.png"):
+                    if not cv2.imwrite(os.path.join(stage, image_name), registered):
+                        raise RuntimeError(
+                            "the registered soft-3D neck could not be written")
+                log("  registered the soft-3D neck edge without moving the face")
+            view_metadata["front"]["neck_registration"] = neck_registration
         if head_composite != "replace":
             _seam_tone_match(
                 os.path.join(stage, "body.png"), keyframe, portrait_cutout,
@@ -2036,6 +2564,8 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
             metadata["head_clear_quality"] = clear_mask_quality
             metadata["head_handoff_version"] = \
                 STYLIZED_HEAD_HANDOFF_VERSION
+            if neck_registration is not None:
+                metadata["neck_registration"] = neck_registration
         if edit_receipt:
             metadata["edit"] = dict(edit_receipt)
         with open(os.path.join(stage, "body.json"), "w") as handle:
@@ -2063,6 +2593,7 @@ def _install_sources(avatar_dir, sources, provider, options, log=print,
 
 
 def build(avatar_dir, options, log=print, progress=None):
+    options = _source_override_options(avatar_dir, options)
     identity_reference = _identity_reference(avatar_dir)
     if not os.path.isfile(identity_reference):
         raise RuntimeError("avatar identity head is missing")
@@ -2195,6 +2726,75 @@ def build(avatar_dir, options, log=print, progress=None):
             raise
         shutil.rmtree(cache_dir, ignore_errors=True)
         return metadata
+    finally:
+        shutil.rmtree(provider_stage, ignore_errors=True)
+
+
+def regenerate_view(avatar_dir, view, log=print, progress=None):
+    """Repair only a rejected cartoon side/back plate, not the approved front.
+
+    The caller must own the existing body-edit transaction and publish/reconcile
+    afterward. This function does not change the avatar manifest, motion files
+    or their provenance: a Walk tied to a replaced side remains tied to its
+    original source and the normal reconciliation must invalidate it.
+    """
+    if view not in ("side", "back"):
+        raise ValueError("targeted alpha repair supports only side or back")
+    if not _allow_stylized_source(avatar_dir):
+        raise ValueError("targeted alpha repair requires a classified cartoon")
+    current = _body_metadata(avatar_dir)
+    options = _source_override_options(
+        avatar_dir, dict(current.get("options") or {}))
+    sources = {
+        name: _body_source(avatar_dir, current, name) for name in BODY_VIEWS
+    }
+    identity_reference = _identity_reference(avatar_dir)
+    if not os.path.isfile(identity_reference):
+        raise RuntimeError("avatar identity head is missing")
+    try:
+        _preflight_alpha_source(
+            avatar_dir, sources[view], view, options, log=log)
+    except GeneratedBodyAlphaError as error:
+        rejection = str(error)
+    else:
+        raise RuntimeError(
+            f"the current {view} already passes alpha QA; "
+            "no regeneration was requested")
+
+    provider_config, provider = image_provider_selection()
+    prompt = _alpha_retry_prompt(_prompt(options, view=view), rejection, view)
+    # Keep both the approved front and this view's existing character/wardrobe
+    # as visual references. Only the rejected view is sent for replacement.
+    references = [identity_reference, sources["front"], sources[view]]
+    if view == "back":
+        references.append(sources["side"])
+    with open(sources[view], "rb") as handle:
+        original_sha = hashlib.sha256(handle.read()).hexdigest()
+    provider_stage = tempfile.mkdtemp(
+        prefix=f".body-{view}-repair-provider-", dir=avatar_dir)
+    try:
+        _emit(progress, "generation", .16, f"Repairing only {view} body alpha")
+        log(f"regenerating only rejected {view}; keeping approved front and head")
+        generated = media_gen.generate_image_edit_sync(
+            prompt, references, provider_config,
+            aspect_ratio="3:4", quality="high", output_dir=provider_stage,
+            file_name=f"body-source-{view}-alpha-repair")
+        _preflight_alpha_source(
+            avatar_dir, generated, view, options, log=log)
+        replacement_sources = dict(sources)
+        replacement_sources[view] = generated
+        receipt = {
+            "provider": provider,
+            "scope": view,
+            "operation": "targeted-alpha-repair",
+            "rejected_source_sha256": original_sha,
+            "reason": rejection,
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        return _install_sources(
+            avatar_dir, replacement_sources, provider, options, log=log,
+            progress=progress, edit_receipt=receipt, keep_previous=True)
     finally:
         shutil.rmtree(provider_stage, ignore_errors=True)
 

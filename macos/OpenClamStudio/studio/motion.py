@@ -19,9 +19,15 @@ try:
 except ModuleNotFoundError:  # package-style test/import outside server/app.py
     from server import media_gen
 
-from . import body, cutout
+from . import body, cutout, face
 
 
+# v19 audits the native source frames before FPS sampling or atlas padding can
+# hide a hand, shoe, or head that was already cropped by the video provider.
+# v18 makes the rendered-video source-medium audit part of the reusable clip
+# contract. An owner-selected lane may no longer reuse a clip carrying only a
+# medium label: it must also carry the current successful frame-sampling
+# receipt produced before alpha processing and publication.
 # v17 removes only exterior-connected, sparse neutral cast-shadow slivers from
 # stylized motion and restores authored sclera from enclosed source components
 # even when a coarse semantic matte opens the eye cavity to the exterior. The
@@ -33,7 +39,10 @@ from . import body, cutout
 # exterior-connected plate, floor shadows, and the real gaps between limbs and
 # the torso are release-blocking background. Older cuts can have those shadows
 # promoted to opaque pixels, so they must be re-cut before reuse.
-MOTION_VERSION = 17
+MOTION_VERSION = 19
+MOTION_SOURCE_MEDIUM_AUDIT_VERSION = 1
+MOTION_MEDIUM_REFERENCE_AUDIT_VERSION = 1
+MOTION_SOURCE_FRAMING_AUDIT_VERSION = 1
 # Shadows are not harmless presentation on motion plates: a floor shadow can
 # merge into a stiletto stem, while a wall-contact shadow can attach to hair or
 # clothing and become indistinguishable from the subject to a semantic matte.
@@ -69,6 +78,16 @@ WHITE_PLATE_EXTERIOR_CONFIDENCE = 0.30
 # Gate rejections are dominated by near-misses, so a third candidate
 # meaningfully raises the odds a run ships instead of failing outright.
 MAX_CANDIDATE_ATTEMPTS = 3
+# A generated six-second I2V take can preserve its source medium at the first
+# frame and gradually repaint it afterwards.  Sample away from the endpoints,
+# across the whole usable take, so the gate sees that temporal drift without
+# decoding or retaining every full-resolution frame a second time.
+MOTION_MEDIUM_SAMPLE_FRACTIONS = (0.08, 0.28, 0.50, 0.72, 0.92)
+MOTION_MEDIUM_REFERENCE_EXTRA_FRACTIONS = (0.04, 0.18, 0.39, 0.61, 0.82, 0.96)
+MOTION_MEDIUM_MIN_REFERENCE_MATCHES = 2
+MOTION_MEDIUM_MIN_MISMATCH_SAMPLES = 2
+MOTION_MEDIUM_MISMATCH_QUORUM = 0.60
+MOTION_MEDIUM_MAX_SCAN_SECONDS = 10.0
 # Reliability mode keeps observed quality gates from rejecting an otherwise
 # usable provider take. It must not knowingly manufacture a bad loop seam:
 # when a complete gait period is measurable, the in-place walk still uses the
@@ -421,6 +440,44 @@ def _motion_identity_lock(remove_headwear=False, owner_notes=""):
     return note_contract + policy
 
 
+def _motion_source_medium_lock(source_medium):
+    """An explicit visual-medium contract shared by image and video prompts.
+
+    Wardrobe receipts predate stylized avatars and can legitimately contain
+    words such as ``photorealistic`` even when the current owner-selected lane
+    is 2-D.  Visual references remain authoritative, but providers respond to
+    prose too; put one unambiguous contract after that legacy receipt so a
+    motion keyframe cannot silently repaint a drawing as soft 3-D/photography.
+    """
+    medium = normalise_source_medium(source_medium)
+    if medium == "illustration":
+        detail = (
+            "Preserve the exact flat 2-D illustration medium: the same line "
+            "weight, drawn contours, cel/flat shading, color blocking, and "
+            "paper-or-digital-art texture visible in the canonical references. "
+            "Never reinterpret it as 3-D, CGI, a game render, clay, plastic, "
+            "Pixar/Disney-like volume, a photograph, or photorealistic skin."
+        )
+    elif medium == "3d render":
+        detail = (
+            "Preserve the exact 3-D rendered cartoon medium: the same modeled "
+            "geometry, material response, dimensional shading, edge treatment, "
+            "and render style visible in the canonical references. Never flatten "
+            "it into line-art/2-D anime or repaint it as a live-action photograph."
+        )
+    else:
+        detail = (
+            "Preserve the exact photorealistic camera medium: natural skin, hair, "
+            "fabric, lens detail, and real-world material response visible in the "
+            "canonical references. Never turn it into a drawing, anime, toon, CGI, "
+            "game art, doll, or 3-D character render."
+        )
+    return (
+        "SOURCE-MEDIUM LOCK — " + detail + " This contract overrides any "
+        "conflicting medium word in an editable wardrobe receipt or act description."
+    )
+
+
 def resolve_walk_style(style_id=None, custom_prompt=""):
     if isinstance(style_id, dict):
         custom_prompt = style_id.get("prompt", custom_prompt)
@@ -668,6 +725,78 @@ def normalise_source_medium(value):
         "soft-3d": "3d render",
     }
     return aliases.get(value, "photograph")
+
+
+EXPLICIT_SOURCE_MEDIA = frozenset({
+    "photograph", "illustration", "3d render",
+})
+
+
+def explicit_source_medium(avatar_dir):
+    """Return the owner's exact routing selection, or ``None`` for auto mode.
+
+    This intentionally reads only ``source_medium_override``.  Intake reports
+    can contain an automatically detected medium and must retain legacy cache
+    semantics; only a deliberate owner selection makes old, unlabelled motion
+    ineligible for reuse.
+    """
+    try:
+        with open(os.path.join(avatar_dir, "manifest.json"),
+                  encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    value = str((manifest or {}).get("source_medium_override") or "").strip().lower()
+    return value if value in EXPLICIT_SOURCE_MEDIA else None
+
+
+def motion_clip_compatible(clip, expected_medium, require_receipt=False):
+    """Whether one packed clip may be reused for the current source lane.
+
+    Unlabelled historical clips remain valid in automatic/legacy projects.
+    Once the owner explicitly chooses a lane, however, a missing receipt is
+    ambiguous and therefore cannot be published, recut, or silently skipped by
+    one-click.  A newly generated clip records this receipt below.
+    """
+    if not isinstance(clip, dict) or not clip.get("sheets"):
+        return False
+    # Do not silently reuse a take already proven cropped. Historical clips
+    # have no framing receipt; they remain readable and can be re-cut locally
+    # to acquire one, instead of forcing regeneration of every approved avatar.
+    framing = clip.get("source_framing_quality")
+    if framing is not None and (
+            not isinstance(framing, dict) or framing.get("valid") is not True):
+        return False
+    if not require_receipt:
+        return True
+    expected = normalise_source_medium(expected_medium)
+    stored = str(clip.get("source_medium") or "").strip().lower()
+    if stored not in EXPLICIT_SOURCE_MEDIA or stored != expected:
+        return False
+    quality = clip.get("source_medium_quality")
+    base_compatible = (
+        isinstance(quality, dict)
+        and quality.get("v") == MOTION_SOURCE_MEDIUM_AUDIT_VERSION
+        and quality.get("strict") is True
+        and quality.get("valid") is True
+        and str(quality.get("expected") or "").strip().lower() == expected
+    )
+    if not base_compatible:
+        return False
+    if expected != "illustration":
+        return True
+    # A 2-D receipt is proof, not merely a label. Older/partial receipts could
+    # be valid while the rendered-frame classifier was unavailable, allowing a
+    # generated soft-3-D take to be reused indefinitely. Require positive video
+    # evidence only for the owner-selected illustration lane; photographic and
+    # 3-D compatibility intentionally keeps its established contract.
+    matching_samples = quality.get("matching_samples")
+    return (
+        quality.get("available") is True
+        and isinstance(matching_samples, int)
+        and not isinstance(matching_samples, bool)
+        and matching_samples > 0
+    )
 
 
 def body_source_medium(avatar_dir):
@@ -981,47 +1110,43 @@ def _loop_walk_video_prompt(walk_style, identity_lock=None):
     # movement.
     if walk_style["id"] == "custom":
         cycle_contract = (
-            "PRIORITY 0.5 — REPEATED CYCLES: repeat identical cycles of "
-            "exactly the described movement continuously so the whole clip "
-            "is performing; never pause, stand still, or change speed."
+            "REPEATED CYCLES: repeat the described movement continuously at "
+            "one speed; never pause or stand still."
         )
     else:
         cycle_contract = (
-            "PRIORITY 0.5 — COMPLETE TWO-STEP GAIT CYCLES: one step is not "
-            "a cycle. Left foot passes right, then right foot passes left. At "
-            "all times LEFT leg forward = RIGHT arm forward; RIGHT leg forward "
-            "= LEFT arm forward. Each hand passes IN FRONT OF its hip and then "
-            "BEHIND its hip. Reject every ipsilateral / same-side / 顺拐 arm-leg "
-            "swing. Repeat identical cycles at one cadence without pausing."
+            "COMPLETE TWO-STEP GAIT CYCLE: one step is not a cycle. Left foot "
+            "then right foot pass. LEFT leg forward = RIGHT arm "
+            "forward; RIGHT leg forward = LEFT arm forward. Each hand passes IN "
+            "FRONT OF and BEHIND its hip. Reject ipsilateral/same-side/顺拐 motion; "
+            "repeat at one cadence."
         )
     tracking_contract = ""
     if walk_style["validation"] in {"office-gait", "stylized-gait"}:
         tracking_contract = (
-            "\n\nPRIORITY 0.75 — TRACKABLE THREE-QUARTER GAIT: keep the torso "
-            "and head in a slight right-facing 25–30 degree three-quarter view "
-            "throughout, never a flat side profile. Keep both complete arms, elbows, "
-            "wrists, and hands visible and spatially separated from the torso and "
-            "each other by a narrow white-background gap. Each arm completes its "
-            "full alternating contralateral cycle with the opposite leg and returns "
-            "to the identical starting pose."
+            "\n\nTRACKABLE THREE-QUARTER GAIT: keep head/torso right-facing "
+            "25–30 degree three-quarter, never a flat side profile. Keep both "
+            "complete arms, elbows, wrists, and hands visible, spatially separated "
+            "from the torso by a narrow white-background gap. Each arm "
+            "completes its full alternating contralateral cycle and returns to start."
         )
     return f"""{walk_style['loop_video']}
 
-PRIORITY 0 — SEAMLESS IN-PLACE LOOP: the supplied image is the EXACT first frame and the EXACT final frame. The character stays fixed at the same screen position for the entire clip: no forward travel, no sideways drift, no scale change. Motion eases smoothly away from the supplied starting pose and returns precisely to that identical supplied pose at the end.
+SEAMLESS IN-PLACE LOOP: image is the EXACT first frame and the EXACT final frame. Stay IN PLACE at fixed position and scale; return smoothly to it.
 
 {cycle_contract}{tracking_contract}
 
-PRIORITY 1 — IDENTITY, HAIR, AND WARDROBE: preserve the exact selected person's face, apparent age, body proportions, skin tone, hairline, hairstyle, outfit, materials, colors, accessories, and both complete shoes from the input keyframe in every frame. Never restyle, beautify, de-age, change clothes, change footwear, or invent a different person.
+IDENTITY / WARDROBE: keep input face, age, body, hair, outfit, accessories, and shoes unchanged in every frame.
 
 {identity_lock}
 
-CAMERA AND PLATE: locked camera with constant scale, exposure, and color; no camera motion, zoom, reframing, or cuts. The entire background and floor stay seamless pure white with no scenery, shadows, reflections, text, props, gray, or colored spill; white or near-white wardrobe stays one clearly visible tone deeper than the backdrop. The subject's complete full body and both shoes stay inside the frame at all times.
+CAMERA / PLATE: locked camera, position, scale, exposure, and color. Keep the complete full body and both shoes in frame. Background and floor pure white: no scene, prop, text, reflection, color spill, or shadow; keep near-white wardrobe distinct.
 
 {SHADOWLESS_PLATE_CONTRACT}
 
-STYLE-SPECIFIC REJECTIONS — {walk_style['reject']}
+STYLE REJECT — {walk_style['reject']}
 
-GLOBAL REJECTIONS — reject forward travel across the frame, root drift, treadmill speed changes, bounce, camera movement, cuts, body-part disappearance, extra fingers, warped shoes, color flicker, hairstyle drift, identity drift, or wardrobe drift."""
+REJECT travel/root drift, cadence changes, bounce, broken anatomy, flicker, or identity/hair/wardrobe drift."""
 
 
 def _walk_video_prompt(
@@ -1143,6 +1268,561 @@ def _standard_image(source, destination):
 def _body_source_paths(value):
     values = value if isinstance(value, (list, tuple)) else (value,)
     return list(dict.fromkeys(str(path) for path in values if path))
+
+
+def _frame_face_evidence(image):
+    """Detect a head and retain bounded native-pixel style evidence.
+
+    The face detector is calibrated for portraits, while motion keyframes are
+    full-body plates.  Estimate the plate colour from the border (rather than
+    assuming white, because a provider may return a green plate), crop the upper
+    part of the largest foreground subject, then ask the existing intake
+    detector.  An unavailable/ambiguous result stays ``None`` and is never
+    treated as proof of a mismatch.
+    """
+    image = np.asarray(image) if image is not None else None
+    if image is None or image.ndim != 3 or image.shape[2] < 3:
+        return None
+    image = image[:, :, :3]
+    height, width = image.shape[:2]
+    if min(height, width) < 16:
+        return None
+    border = np.zeros((height, width), dtype=bool)
+    border_height = max(2, int(round(height * .045)))
+    border_width = max(2, int(round(width * .045)))
+    border[:border_height] = True
+    border[-border_height:] = True
+    border[:, :border_width] = True
+    border[:, -border_width:] = True
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.int16)
+    plate_lab = np.median(lab[border], axis=0)
+    foreground = np.linalg.norm(lab - plate_lab, axis=2) > 18.0
+    # Compression speckle on a nominally uniform plate must not become the
+    # largest component or widen the inferred subject bounds.
+    foreground = cv2.morphologyEx(
+        foreground.astype(np.uint8), cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    foreground = cv2.morphologyEx(
+        foreground, cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    )
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        foreground, connectivity=8)
+    if count <= 1:
+        return None
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    x, y, width, height = (
+        int(value) for value in stats[largest, :4])
+    pad_x = max(8, int(round(width * .12)))
+    pad_y = max(8, int(round(height * .04)))
+    left = max(0, x - pad_x)
+    right = min(image.shape[1], x + width + pad_x)
+    top = max(0, y - pad_y)
+    bottom = min(image.shape[0], y + max(32, int(round(height * .46))))
+    native_crop = image[top:bottom, left:right]
+    if min(native_crop.shape[:2], default=0) < 16:
+        return None
+    crop = native_crop
+    scale = min(4.0, max(1.0, 640.0 / max(crop.shape[:2])))
+    if scale > 1.0:
+        crop = cv2.resize(
+            crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    try:
+        landmarks, _transform, metadata = face.detect_for_intake(crop)
+    except Exception:
+        return None
+    if landmarks is None:
+        return None
+    landmarks = np.asarray(landmarks, dtype=np.float32)
+    if landmarks.shape != (478, 2) or not np.isfinite(landmarks).all():
+        return None
+    native_landmarks = landmarks.copy()
+    native_landmarks[:, 0] *= native_crop.shape[1] / crop.shape[1]
+    native_landmarks[:, 1] *= native_crop.shape[0] / crop.shape[0]
+    return {
+        "metadata": metadata or {},
+        "native_crop": native_crop,
+        "native_landmarks": native_landmarks,
+    }
+
+
+def _frame_face_medium(image):
+    """Keep the intake classifier's result; unknown is not a style label."""
+    evidence = _frame_face_evidence(image)
+    metadata = evidence["metadata"] if evidence else None
+    value = str((metadata or {}).get("source_medium") or "").strip().lower()
+    return value if value in EXPLICIT_SOURCE_MEDIA else None
+
+
+def _motion_reference_face(evidence, comparison_width):
+    """Register native face pixels to common anchors, without an expression warp.
+
+    Only the two eye centres and nose tip determine one affine registration.
+    The same native-resolution budget and JPEG quantization are applied to
+    both images. This is a compression-tolerant comparison, not a claim that
+    JPEG reproduces the provider's unknown H.264 encoder parameters.
+    """
+    landmarks = evidence["native_landmarks"]
+    source = np.asarray([
+        landmarks[face.EYE_R].mean(axis=0),
+        landmarks[face.EYE_L].mean(axis=0),
+        landmarks[face.NOSE_TIP],
+    ], dtype=np.float32)
+    target = np.asarray([(40, 55), (88, 55), (64, 88)], np.float32)
+    target *= comparison_width / 128.0
+    first, second = source[1] - source[0], source[2] - source[0]
+    source_area = abs(float(first[0] * second[1] - first[1] * second[0]))
+    if source_area < 16.0:
+        return None
+    matrix = cv2.getAffineTransform(source, target)
+    image = cv2.warpAffine(
+        evidence["native_crop"], matrix,
+        (comparison_width, int(round(comparison_width * 144 / 128))),
+        flags=cv2.INTER_LINEAR,
+    )
+    return image
+
+
+def _motion_reference_similarity(reference, candidate):
+    """Compare registered rigid appearance, excluding eyelids and mouth.
+
+    A low-detail classifier can be ambiguous after video compression. Positive
+    resemblance to an exact, independently classified 2-D keyframe can recover
+    that case. Mere colour similarity or a smooth/blank patch is insufficient:
+    require registered structure, bounded colour error and retained ink edges.
+    These bounded samples are evidence, not a whole-video identity guarantee.
+    """
+    result = {"available": False, "valid": False}
+    if reference is None or candidate is None:
+        return result
+    if reference.shape != candidate.shape or reference.ndim != 3 \
+            or reference.shape[2] != 3 or min(reference.shape[:2]) < 64:
+        return result
+    images = []
+    for image in (reference, candidate):
+        ok, data = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 94])
+        decoded = cv2.imdecode(data, cv2.IMREAD_COLOR) if ok else None
+        if decoded is None:
+            return result
+        images.append(cv2.cvtColor(decoded, cv2.COLOR_BGR2LAB).astype(np.float32))
+    reference_lab, candidate_lab = images
+    height, width = reference.shape[:2]
+    scale_x, scale_y = width / 128.0, height / 144.0
+    mask = np.ones((height, width), dtype=bool)
+    for x0, y0, x1, y1 in ((20, 41, 108, 73), (38, 96, 92, 136)):
+        mask[int(y0 * scale_y):int(y1 * scale_y),
+             int(x0 * scale_x):int(x1 * scale_x)] = False
+    gray_a, gray_b = reference_lab[:, :, 0], candidate_lab[:, :, 0]
+    blur_a = cv2.GaussianBlur(reference_lab, (7, 7), 1.5)
+    blur_b = cv2.GaussianBlur(candidate_lab, (7, 7), 1.5)
+    mean_a, mean_b = blur_a[:, :, 0], blur_b[:, :, 0]
+    var_a = cv2.GaussianBlur(gray_a * gray_a, (7, 7), 1.5) - mean_a * mean_a
+    var_b = cv2.GaussianBlur(gray_b * gray_b, (7, 7), 1.5) - mean_b * mean_b
+    cov = cv2.GaussianBlur(gray_a * gray_b, (7, 7), 1.5) - mean_a * mean_b
+    ssim = ((2 * mean_a * mean_b + 6.5) * (2 * cov + 58.5)) / (
+        (mean_a * mean_a + mean_b * mean_b + 6.5) * (var_a + var_b + 58.5))
+    structure = float(np.mean(ssim[mask]))
+    colour_error = float(np.mean(np.linalg.norm(reference_lab - candidate_lab, axis=2)[mask]))
+    smooth_error = float(np.mean(np.linalg.norm(blur_a - blur_b, axis=2)[mask]))
+    edge_fractions = []
+    for lab in images:
+        deltas = np.concatenate((
+            np.linalg.norm(lab[:, 1:] - lab[:, :-1], axis=2).ravel(),
+            np.linalg.norm(lab[1:] - lab[:-1], axis=2).ravel(),
+        ))
+        edge_fractions.append(float(np.mean(deltas > 20.0)))
+    reference_edges, candidate_edges = edge_fractions
+    edge_ratio = candidate_edges / max(reference_edges, 1e-6)
+    result.update({
+        "available": True,
+        "valid": bool(
+            structure >= .54 and colour_error <= 25.0 and smooth_error <= 21.0
+            and reference_edges >= .055 and .80 <= edge_ratio <= 1.45),
+        "structure_similarity": round(structure, 6),
+        "mean_lab_error": round(colour_error, 6),
+        "smooth_lab_error": round(smooth_error, 6),
+        "reference_ink_fraction": round(reference_edges, 6),
+        "candidate_ink_fraction": round(candidate_edges, 6),
+        "ink_retention_ratio": round(edge_ratio, 6),
+        "comparison_size": [int(width), int(height)],
+        "comparison_quantization": "both JPEG q94; provider codec is not inferred",
+    })
+    return result
+
+
+def _motion_illustration_reference_match(reference_evidence, candidate):
+    """Recover only an ambiguous texture label using actual source resemblance."""
+    receipt = {
+        "v": MOTION_MEDIUM_REFERENCE_AUDIT_VERSION,
+        "available": False, "valid": False,
+        "method": "registered-native-2d-keyframe-reference",
+    }
+    if not reference_evidence:
+        return receipt
+    reference_metadata = reference_evidence.get("metadata") or {}
+    if reference_metadata.get("source_medium") != "illustration":
+        return receipt
+    candidate_evidence = _frame_face_evidence(candidate)
+    if not candidate_evidence:
+        return receipt
+    metadata = candidate_evidence.get("metadata") or {}
+    receipt["classifier_medium"] = metadata.get("source_medium")
+    receipt["classifier_score"] = metadata.get("medium_score")
+    # Never rescue a positively classified photo/3-D mismatch, even when its
+    # palette/face outline resembles the drawing. Missing evidence is not a
+    # license to label the frame either.
+    if metadata.get("source_medium") != "unknown":
+        return receipt
+    spans = [float(np.linalg.norm(
+        evidence["native_landmarks"][face.EYE_R].mean(axis=0)
+        - evidence["native_landmarks"][face.EYE_L].mean(axis=0)))
+        for evidence in (reference_evidence, candidate_evidence)]
+    if not all(math.isfinite(span) and span >= 24.0 for span in spans):
+        return receipt
+    comparison_width = min(128, int(math.floor(min(spans) * 128 / 48)))
+    reference = _motion_reference_face(reference_evidence, comparison_width)
+    candidate_face = _motion_reference_face(candidate_evidence, comparison_width)
+    receipt.update(_motion_reference_similarity(reference, candidate_face))
+    receipt["native_eye_spans"] = [round(span, 4) for span in spans]
+    return receipt
+
+
+def _plate_face_medium(path):
+    """Classify the visible head on a generated body plate image."""
+    return _frame_face_medium(cv2.imread(str(path), cv2.IMREAD_COLOR))
+
+
+def _motion_2d_reference_evidence(path):
+    """Load only an exact, positively classified 2-D I2V source keyframe."""
+    if not path or not os.path.isfile(path):
+        return None
+    evidence = _frame_face_evidence(cv2.imread(str(path), cv2.IMREAD_COLOR))
+    if not evidence or (evidence.get("metadata") or {}).get(
+            "source_medium") != "illustration":
+        return None
+    return evidence
+
+
+def _motion_source_sha256(path):
+    if not path or not os.path.isfile(path):
+        return None
+    return _sha256(path)
+
+
+def _representative_video_frames(
+        path, fractions=MOTION_MEDIUM_SAMPLE_FRACTIONS):
+    """Return temporally representative decoded frames with compact receipts.
+
+    Decode sequentially instead of random-seeking H.264: several VideoCapture
+    backends report successful seeks but return the preceding keyframe.  At most
+    ten seconds are scanned, matching the hard cap already used by
+    :func:`_decode_video`.
+    """
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        return []
+    try:
+        frame_count = int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
+        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        max_scan = int(round(
+            max(1.0, source_fps or 24.0) * MOTION_MEDIUM_MAX_SCAN_SECONDS))
+        if frame_count <= 0:
+            # Rare containers omit frame count.  Count one bounded pass, then
+            # reopen for deterministic fractional sampling without retaining
+            # hundreds of full-resolution frames in memory.
+            frame_count = 0
+            while frame_count < max_scan:
+                available, _frame = capture.read()
+                if not available:
+                    break
+                frame_count += 1
+            capture.release()
+            capture = cv2.VideoCapture(str(path))
+            if not capture.isOpened():
+                return []
+        frame_count = min(frame_count, max_scan)
+        if frame_count <= 0:
+            return []
+        clean_fractions = tuple(
+            min(.99, max(.01, float(fraction))) for fraction in fractions)
+        targets = sorted(set(
+            int(round((frame_count - 1) * fraction))
+            for fraction in clean_fractions))
+        target_set = set(targets)
+        results = []
+        for index in range(frame_count):
+            available, frame = capture.read()
+            if not available:
+                break
+            if index in target_set:
+                results.append({
+                    "index": index,
+                    "position": round(
+                        index / max(1, frame_count - 1), 4),
+                    "frame": frame,
+                })
+            if index >= targets[-1]:
+                break
+        return results
+    finally:
+        capture.release()
+
+
+def _motion_video_medium_quality(
+        video, keyframe, body_source, expected_medium, strict=False):
+    """Prove that a rendered I2V take stayed in its selected visual medium.
+
+    Soft-3D and photographic sources retain the conservative legacy guard: the
+    classifier must first corroborate their owner-selected lane on a trusted
+    reference before it can reject generated footage.  A manually selected 2-D
+    illustration is different.  Flat art is often ambiguous to the reference
+    classifier, while a provider repainting it as soft 3-D is readily visible
+    across the rendered take.  Inspect those video frames even when the source
+    reference is ambiguous so repeated 2-D-to-3-D drift cannot fail open.  A
+    lone classifier outlier still never rejects a clip. Illustration audits
+    also require enough positive rendered evidence to verify the take stayed
+    2-D; an unavailable audit cannot be published as a successful receipt. For
+    an unknown texture label only, a registered native-resolution comparison
+    can corroborate the exact 2-D keyframe. It never relabels the classifier,
+    overrules a known mismatch, or applies to photographic/soft-3D lanes.
+    """
+    expected = normalise_source_medium(expected_medium)
+    receipt = {
+        "v": MOTION_SOURCE_MEDIUM_AUDIT_VERSION,
+        "strict": bool(strict),
+        "expected": expected,
+        "available": False,
+        "valid": True,
+        "reference_medium": None,
+        "keyframe_medium": None,
+        "samples": [],
+        "known_samples": 0,
+        "matching_samples": 0,
+        "mismatch_samples": 0,
+        "reason": "owner-selected source medium is not active",
+    }
+    if not strict:
+        return receipt
+
+    references = _body_source_paths(body_source)
+    reference_medium = _plate_face_medium(references[0]) if references else None
+    keyframe_medium = _plate_face_medium(keyframe)
+    receipt["reference_medium"] = reference_medium
+    receipt["keyframe_medium"] = keyframe_medium
+    reference_corroborated = expected in {reference_medium, keyframe_medium}
+    if not reference_corroborated and expected != "illustration":
+        receipt["reason"] = (
+            "selected medium was not classifier-corroborated on the canonical "
+            "body or generated keyframe; no automatic rejection")
+        return receipt
+    if not reference_corroborated:
+        receipt["reason"] = (
+            "selected 2-D illustration was not classifier-corroborated on the "
+            "canonical body or generated keyframe; inspecting rendered frames "
+            "for repeated medium drift")
+
+    reference_evidence = None
+    if expected == reference_medium == keyframe_medium == "illustration":
+        reference_evidence = _motion_2d_reference_evidence(keyframe)
+    if reference_evidence:
+        receipt["reference_comparison"] = {
+            "v": MOTION_MEDIUM_REFERENCE_AUDIT_VERSION,
+            "method": "registered-native-2d-keyframe-reference",
+            "keyframe_sha256": _motion_source_sha256(keyframe),
+            "canonical_body_sha256": _motion_source_sha256(references[0]),
+            "source_video_sha256": _motion_source_sha256(video),
+            "scope": "bounded representative samples; not whole-video identity QA",
+        }
+
+    decoded = _representative_video_frames(video)
+    counts = {medium: 0 for medium in EXPLICIT_SOURCE_MEDIA}
+    reference_matching = 0
+    sampled_indices = set()
+
+    def inspect_sample(sample):
+        nonlocal reference_matching
+        if sample["index"] in sampled_indices:
+            return
+        sampled_indices.add(sample["index"])
+        detected = _frame_face_medium(sample["frame"])
+        if detected in counts:
+            counts[detected] += 1
+        item = {
+            "index": int(sample["index"]),
+            "position": float(sample["position"]),
+            "source_medium": detected,
+        }
+        if detected is None and reference_evidence:
+            reference_match = _motion_illustration_reference_match(
+                reference_evidence, sample["frame"])
+            item["reference_match"] = reference_match
+            if reference_match.get("available") and reference_match.get("valid"):
+                reference_matching += 1
+        receipt["samples"].append(item)
+
+    for sample in decoded:
+        inspect_sample(sample)
+    # A free move can turn or cover the face in most of the five samples. One
+    # resemblance match is not enough. When even the classifier has too little
+    # evidence, zero initial matches must not starve the remaining six bounded
+    # positions: native video decoders can put a borderline frame on either
+    # side of the unchanged comparison threshold. Both reference plates must
+    # still independently corroborate 2-D, and every earlier mismatch remains
+    # in the final receipt. Already decisive all-mismatch samples are not
+    # retried into a success.
+    primary_known = sum(counts.values()) + reference_matching
+    if reference_evidence \
+            and (reference_matching > 0
+                 or primary_known < MOTION_MEDIUM_MIN_MISMATCH_SAMPLES) \
+            and counts.get(expected, 0) + reference_matching \
+            < MOTION_MEDIUM_MIN_REFERENCE_MATCHES:
+        for sample in _representative_video_frames(
+                video, fractions=MOTION_MEDIUM_REFERENCE_EXTRA_FRACTIONS):
+            inspect_sample(sample)
+        receipt["samples"].sort(key=lambda item: item["index"])
+    classifier_known = sum(counts.values())
+    known = classifier_known + reference_matching
+    matching = counts.get(expected, 0) + reference_matching
+    mismatch = known - matching
+    receipt["classifier_known_samples"] = classifier_known
+    receipt["reference_matching_samples"] = reference_matching
+    receipt["known_samples"] = known
+    receipt["matching_samples"] = matching
+    receipt["mismatch_samples"] = mismatch
+    if known < MOTION_MEDIUM_MIN_MISMATCH_SAMPLES:
+        receipt["reason"] = (
+            f"only {known} representative frame"
+            + (" was" if known == 1 else "s were")
+            + " classifiable; owner selection retained")
+        if expected == "illustration":
+            receipt["valid"] = False
+            receipt["failure_kind"] = "insufficient-evidence"
+            receipt["reason"] = (
+                f"only {known} representative frame"
+                + (" was" if known == 1 else "s were")
+                + " classifiable; could not verify the owner-selected 2-D "
+                  "illustration medium")
+        return receipt
+
+    drift_counts = {
+        medium: count for medium, count in counts.items()
+        if medium != expected and count
+    }
+    dominant_medium, dominant_count = (
+        max(drift_counts.items(), key=lambda item: item[1])
+        if drift_counts else (None, 0))
+    drift_ratio = dominant_count / known
+    receipt["available"] = True
+    receipt["dominant_medium"] = dominant_medium
+    receipt["dominant_mismatch_samples"] = dominant_count
+    receipt["dominant_mismatch_ratio"] = round(drift_ratio, 4)
+    repeated_3d_drift = (
+        expected == "illustration"
+        and counts.get("3d render", 0)
+        >= MOTION_MEDIUM_MIN_MISMATCH_SAMPLES
+    )
+    no_illustration_evidence = (
+        expected == "illustration"
+        and matching == 0
+        and mismatch >= MOTION_MEDIUM_MIN_MISMATCH_SAMPLES
+    )
+    if repeated_3d_drift:
+        receipt["valid"] = False
+        receipt["failure_kind"] = "source-medium-drift"
+        receipt["reason"] = (
+            f"{counts['3d render']}/{known} classifiable representative "
+            "frames repeatedly changed from illustration to 3d render")
+    elif no_illustration_evidence:
+        receipt["valid"] = False
+        receipt["failure_kind"] = "source-medium-drift"
+        receipt["reason"] = (
+            f"0/{known} classifiable representative frames matched "
+            "illustration; rendered evidence changed to "
+            + (dominant_medium or "other visual media"))
+    elif (
+            dominant_count >= MOTION_MEDIUM_MIN_MISMATCH_SAMPLES
+            and drift_ratio >= MOTION_MEDIUM_MISMATCH_QUORUM):
+        receipt["valid"] = False
+        receipt["failure_kind"] = "source-medium-drift"
+        receipt["reason"] = (
+            f"{dominant_count}/{known} classifiable representative frames "
+            f"changed from {expected} to {dominant_medium}")
+    elif reference_matching and matching < MOTION_MEDIUM_MIN_REFERENCE_MATCHES:
+        receipt["valid"] = False
+        receipt["failure_kind"] = "insufficient-evidence"
+        receipt["reason"] = (
+            f"only {matching} representative frame positively matched the "
+            "exact 2-D keyframe; at least two are required")
+    else:
+        if reference_matching:
+            receipt["reason"] = (
+                f"{matching}/{known} representative frames with usable evidence "
+                f"matched {expected}, including {reference_matching} native-resolution "
+                "matches to the exact 2-D keyframe; raw unknown labels retained; "
+                "no repeated drift reached quorum")
+        else:
+            receipt["reason"] = (
+                f"{matching}/{known} classifiable representative frames matched "
+                f"{expected}; no repeated drift reached quorum")
+    return receipt
+
+
+class GeneratedMotionMediumError(RuntimeError):
+    """Keep an inconclusive local audit from buying repeated new I2V takes."""
+
+    def __init__(self, kind, quality):
+        self.source_medium_quality = quality
+        self.retryable = bool(
+            quality.get("available")
+            and quality.get("failure_kind") != "insufficient-evidence")
+        if self.retryable:
+            message = (f"generated {kind} video changed the owner-selected "
+                       f"source medium: {quality['reason']}")
+        else:
+            message = (
+                f"could not verify the generated {kind} video's source medium: "
+                f"{quality['reason']}. The original video and keyframe are "
+                "retained for local review/reprocessing; no automatic new "
+                "provider generation was requested.")
+        super().__init__(message)
+
+
+def _motion_keyframe_medium_failures(
+        keyframes, body_sources, expected_medium, strict=False):
+    """Return generated keyframes proven to have crossed visual-media lanes.
+
+    The owner remains the authority.  We only reject when the classifier first
+    corroborates the selected medium on the canonical body reference and then
+    sees a different known medium in its generated keyframe.  Unknown results
+    cannot overrule a manual selection.
+    """
+    if not strict:
+        return []
+    expected = normalise_source_medium(expected_medium)
+    failures = []
+    for kind, keyframe in keyframes.items():
+        references = _body_source_paths((body_sources or {}).get(kind))
+        reference_medium = _plate_face_medium(references[0]) if references else None
+        generated_medium = _plate_face_medium(keyframe)
+        if (reference_medium == expected
+                and generated_medium in EXPLICIT_SOURCE_MEDIA
+                and generated_medium != expected):
+            failures.append(kind)
+    return failures
+
+
+def _discard_medium_drift_keyframes(cache, kinds):
+    keyframe_dir = os.path.join(cache, "keyframes")
+    for kind in kinds:
+        try:
+            os.remove(os.path.join(keyframe_dir, f"{kind}.png"))
+        except FileNotFoundError:
+            pass
+        shutil.rmtree(
+            os.path.join(keyframe_dir, f"{kind}-provider"),
+            ignore_errors=True)
+        _invalidate_cached_video(cache, kind)
 
 
 def _wardrobe_hue_signature(path):
@@ -1288,23 +1968,26 @@ def _keyframe_person(
 
 
 # The in-place loop spends the provider's 720p short side entirely on the
-# subject: a 2:3 portrait plate with the figure at ~86% of frame height,
-# leaving margin for arm swing and hair. No registration lines: the loop
-# contract keeps the camera and root locked, so there is nothing to measure
-# against them, and a pure plate matches the proven reference clip.
+# subject: a native 9:16 portrait plate with the figure at ~86% of frame
+# height, leaving margin for arm swing and hair. The legacy request declared
+# 2:3 but supplied 720x1088 pixels (not an exact 2:3 grid) and was repeatedly
+# rejected before xAI created a job, while Idle and Moves succeed on this exact
+# native 9:16 grid. No registration lines: the loop contract keeps the camera
+# and root locked, so there is nothing to measure against them, and a pure
+# plate matches the proven reference clip.
 LOOP_WALK_PLATE = {
-    "width": 720, "height": 1088,
-    "subject_height": 940, "subject_width": 560, "floor": 1054,
-    "aspect_ratio": "2:3",
+    "width": 720, "height": 1280,
+    "subject_height": 1100, "subject_width": 560, "floor": 1242,
+    "aspect_ratio": "9:16",
 }
 
 
-# The idle i2v runs on the provider's NATIVE 9:16 grid. "2:3" is not one of
-# xAI's video aspect ratios, so a 2:3 request is resampled through the model's
-# internal grid and the subject drifts wide. Composing the keyframe onto a
-# 720x1280 plate and requesting 9:16 keeps request, plate, and output on one
-# grid. The figure at ~78% of frame height matches the subject's pixel scale
-# under the old 2:3 plate, so the 720x1088 bake canvas never has to shrink it.
+# The idle i2v runs on the same exact 9:16 grid as its declared provider
+# request. Composing the keyframe onto a 720x1280 plate keeps request, plate,
+# and output on one proven grid instead of relying on provider resampling from
+# the legacy 720x1088 canvas. The figure at ~78% of frame height matches the
+# subject's pixel scale under that old canvas, so the runtime's 720x1088 bake
+# canvas never has to shrink it.
 IDLE_PLATE = {
     "width": 720, "height": 1280,
     "subject_height": 1000, "subject_width": 620, "floor": 1250,
@@ -1524,7 +2207,151 @@ def _generate_videos(
         return {kind: future.result() for kind, future in futures.items()}
 
 
-def _decode_video(path, target_fps):
+def _source_frame_edge_contacts(frame):
+    """Observe a connected subject touching a known source plate boundary.
+
+    This is geometry QA, not alpha extraction. Neither photographic nor
+    stylized cutouts are modified. Only strong non-background pixels connected
+    into a substantial source component count: compression flecks, a detached
+    speck, or a one-pixel registration line are not severed anatomy. A white
+    garment indistinguishable from a white plate cannot be certified by this
+    test, and an unknown background is explicitly reported as unavailable.
+    """
+    if (not isinstance(frame, np.ndarray) or frame.ndim != 3
+            or frame.shape[2] < 3 or min(frame.shape[:2]) < 8):
+        return None, {}
+    pixels = frame[:, :, :3]
+    height, width = pixels.shape[:2]
+    hsv = cv2.cvtColor(pixels, cv2.COLOR_BGR2HSV)
+    border = np.concatenate((
+        hsv[0], hsv[-1], hsv[:, 0], hsv[:, -1],
+    ))
+    white = (border[:, 1] <= 35) & (border[:, 2] >= 235)
+    green = (
+        (border[:, 0] >= 30) & (border[:, 0] <= 95)
+        & (border[:, 1] >= 70) & (border[:, 2] >= 45)
+    )
+    if float(np.mean(white)) >= .55:
+        plate = "white"
+        core = _white_plate_source_alpha(pixels) >= WHITE_PLATE_DETAIL_CORE_ALPHA
+    elif float(np.mean(green)) >= .55:
+        plate = "green"
+        core = _green_screen_confidence(pixels) <= .12
+    else:
+        return None, {}
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        core.astype(np.uint8), connectivity=8)
+    if count <= 1:
+        return plate, {}
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    largest = int(np.max(areas))
+    if largest < max(64, round(height * width * .001)):
+        return plate, {}
+    # Require direct source connectivity to the main subject, not just any
+    # colored component on the border. An unrelated border mark cannot become
+    # evidence of a clipped hand. White-on-white disconnected anatomy remains
+    # outside the evidence this conservative check can provide.
+    subject_label = 1 + int(np.argmax(areas))
+    # Test the literal decoded border, not a margin around a normalized frame.
+    # Three contiguous pixels preserve fine fingertips while rejecting a lone
+    # antialias/compression pixel or thin floor registration line.
+    minimum_run = max(3, round(min(height, width) * .003))
+    contacts = {}
+    for edge, edge_labels in (
+            ("left", labels[:, 0]), ("right", labels[:, -1]),
+            ("top", labels[0]), ("bottom", labels[-1])):
+        present = edge_labels == subject_label
+        padded = np.r_[False, present, False].astype(np.int8)
+        boundaries = np.flatnonzero(np.diff(padded))
+        lengths = boundaries[1::2] - boundaries[::2]
+        longest = int(np.max(lengths)) if lengths.size else 0
+        if longest < minimum_run:
+            continue
+        positions = np.flatnonzero(present)
+        contacts[edge] = {
+            "pixels": int(positions.size), "longest_run": longest,
+            "first": int(positions[0]), "last": int(positions[-1]),
+        }
+    return plate, contacts
+
+
+class _SourceFramingAudit:
+    """Bounded, streaming receipt; never retain extra decoded image frames."""
+
+    def __init__(self, source_fps=None):
+        self.source_fps = source_fps
+        self.checked = 0
+        self.measured = 0
+        self.plates = set()
+        self.contacts = []
+        self.affected = []
+
+    def observe(self, frame, index):
+        self.checked += 1
+        plate, contacts = _source_frame_edge_contacts(frame)
+        if plate is not None:
+            self.measured += 1
+            self.plates.add(plate)
+        if contacts:
+            self.affected.append(index + 1)
+            if len(self.contacts) < 64:
+                self.contacts.append({
+                    "frame": index + 1,
+                    "time_seconds": (
+                        round(index / self.source_fps, 4)
+                        if self.source_fps else None),
+                    "edges": contacts,
+                })
+
+    def receipt(self, *, all_native_frames=False):
+        available = self.measured > 0
+        valid = not self.affected
+        if not available:
+            reason = "source plate background was not white or green; framing unverified"
+        elif valid:
+            reason = (
+                f"no connected subject crossed the decoded source boundary in "
+                f"{self.measured}/{self.checked} measurable frames")
+        else:
+            first = self.contacts[0]
+            reason = (
+                f"subject touches the {', '.join(first['edges'])} source edge "
+                f"at frame {first['frame']} ({len(self.affected)} affected frames); "
+                "hands, feet, or head may already be cropped before alpha cutting")
+        return {
+            "v": MOTION_SOURCE_FRAMING_AUDIT_VERSION,
+            "checked_at": "raw-source-before-normalization",
+            "available": available, "valid": valid,
+            "frames_checked": self.checked,
+            "measurable_frames": self.measured,
+            "source_fps": self.source_fps,
+            "all_native_frames": bool(all_native_frames),
+            "plates": sorted(self.plates),
+            "affected_frames": self.affected,
+            "edge_contacts": self.contacts,
+            "reason": reason,
+        }
+
+
+def _motion_source_framing_quality(frames, source_fps=None):
+    """Audit raw image frames; used by local QA and non-decoder integrations."""
+    audit = _SourceFramingAudit(source_fps)
+    for index, frame in enumerate(frames):
+        audit.observe(frame, index)
+    return audit.receipt()
+
+
+class GeneratedMotionFramingError(RuntimeError):
+    def __init__(self, kind, quality):
+        self.source_framing_quality = quality
+        super().__init__(
+            f"{kind} generated take failed source framing QA: "
+            f"{quality['reason']}. Regenerate only this video with "
+            "compact movement and the whole subject inside the camera frame; "
+            "padding or re-cutting cannot restore cropped body parts")
+
+
+def _decode_video(path, target_fps, *, framing_receipt=None):
     capture = cv2.VideoCapture(path)
     if not capture.isOpened():
         raise RuntimeError(f"could not decode generated video: {os.path.basename(path)}")
@@ -1532,17 +2359,29 @@ def _decode_video(path, target_fps):
     frames = []
     source_index = 0
     next_sample = 0.0
-    while True:
-        available, frame = capture.read()
-        if not available:
-            break
-        if source_index + 0.001 >= next_sample:
-            frames.append(frame)
-            next_sample += source_fps / target_fps
-        source_index += 1
-        if len(frames) >= target_fps * 10:
-            break
-    capture.release()
+    audit = _SourceFramingAudit(source_fps) if framing_receipt is not None else None
+    reached_end = False
+    try:
+        while True:
+            available, frame = capture.read()
+            if not available:
+                reached_end = True
+                break
+            if audit is not None:
+                # Observe every native frame, including odd 24fps frames that
+                # the 12fps runtime otherwise omits. A brief clipped hand must
+                # not disappear from the quality record during downsampling.
+                audit.observe(frame, source_index)
+            if source_index + 0.001 >= next_sample:
+                frames.append(frame)
+                next_sample += source_fps / target_fps
+            source_index += 1
+            if len(frames) >= target_fps * 10:
+                break
+    finally:
+        capture.release()
+    if audit is not None:
+        framing_receipt.update(audit.receipt(all_native_frames=reached_end))
     if len(frames) < target_fps:
         raise RuntimeError("generated motion clip is too short")
     return frames
@@ -5164,7 +6003,15 @@ def _process_clip(
         kind, video, fps, stage, log, idle_validation="back-heel",
         walk_style=None, source_medium="photograph"):
     walk_style = resolve_walk_style(walk_style) if kind == "walk" else None
-    frames = _decode_video(video, fps)
+    framing_quality = {}
+    frames = _decode_video(video, fps, framing_receipt=framing_quality)
+    if not framing_quality:
+        # Non-decoder integrations may supply an already decoded frame list.
+        # Keep them audited without claiming native-frame coverage.
+        framing_quality = _motion_source_framing_quality(frames, fps)
+    if not framing_quality["valid"]:
+        raise GeneratedMotionFramingError(kind, framing_quality)
+    log(f"{kind} source framing QA: {framing_quality['reason']}")
     with tempfile.TemporaryDirectory(prefix=f".{kind}-frames-", dir=stage) as workspace:
         alpha_frames, poses, matte_method, color_quality = _segment_frames(
             frames, workspace, log,
@@ -5414,6 +6261,7 @@ def _process_clip(
             "alpha_integrity_quality": alpha_integrity_quality,
             "cast_shadow_quality": cast_shadow_quality,
         }
+    metrics["source_framing_quality"] = framing_quality
     return {
         "fps": fps,
         "frames": len(normalised),
@@ -5480,12 +6328,21 @@ def _build_context(
     video_config, video_provider = body.video_provider_selection()
     body_options = body_manifest.get("options") or {}
     source_medium = normalise_source_medium(body_options.get("medium"))
+    selected_medium = explicit_source_medium(avatar_dir)
+    if selected_medium is not None and selected_medium != source_medium:
+        raise RuntimeError(
+            "the current full body was authored as " + source_medium
+            + ", but the owner selected " + selected_medium
+            + "; rebuild the full body before generating motion")
+    strict_source_medium = selected_medium is not None
     outfit = _clean(
         body_options.get("prompt") or body_options.get("outfit"), 800
     ) or "the exact outfit shown in the generated body plates"
     owner_notes = _clean(body_options.get("notes"), 600)
     remove_headwear = bool(body_options.get("remove_headwear", False))
     identity_lock = _motion_identity_lock(remove_headwear, owner_notes)
+    if strict_source_medium:
+        identity_lock += "\n\n" + _motion_source_medium_lock(source_medium)
     prompts = {
         "walk_keyframe": _walk_keyframe_prompt(
             outfit, walk_style,
@@ -5552,6 +6409,7 @@ def _build_context(
         "walk_frame": walk_frame,
         "move_style": move_style,
         "source_medium": source_medium,
+        "strict_source_medium": strict_source_medium,
         "owner_notes": owner_notes,
         "remove_headwear": remove_headwear,
         "identity_lock": identity_lock,
@@ -5685,6 +6543,14 @@ def reprocess_approved_walk(
     with open(metadata_path, encoding="utf-8") as handle:
         metadata = json.load(handle)
     previous_walk = metadata.get("walk") or {}
+    selected_medium = explicit_source_medium(avatar_dir)
+    source_medium = body_source_medium(avatar_dir)
+    if (selected_medium is not None
+            and not motion_clip_compatible(
+                previous_walk, source_medium, require_receipt=True)):
+        raise RuntimeError(
+            "the approved walk predates or differs from the owner-selected "
+            "source medium; regenerate it instead of relabelling it")
     source_loop = source_loop or previous_walk.get("source_loop")
     if not isinstance(source_loop, (list, tuple)) or len(source_loop) != 2:
         raise RuntimeError("approved walk source loop is missing")
@@ -5692,7 +6558,6 @@ def reprocess_approved_walk(
     progress = progress or (lambda *_: None)
     progress("approved-walk", 0.05, "decoding approved original and matte")
     with tempfile.TemporaryDirectory(prefix=".approved-walk-", dir=motion_dir) as stage:
-        source_medium = body_source_medium(avatar_dir)
         process_options = (
             {"source_medium": source_medium}
             if source_medium != "photograph" else {})
@@ -5705,6 +6570,9 @@ def reprocess_approved_walk(
             log,
             **process_options,
         )
+        walk["source_medium"] = source_medium
+        walk["source_medium_quality"] = previous_walk.get(
+            "source_medium_quality")
         updated = dict(metadata)
         updated["v"] = MOTION_VERSION
         updated["walk"] = walk
@@ -5776,6 +6644,14 @@ def preview_keyframes(
         context["identity_reference"], pose_reference,
         {kind: prompts[f"{kind}_keyframe"] for kind in requested_kinds},
         log, requested_kinds)
+    medium_failures = _motion_keyframe_medium_failures(
+        keyframes, context["body_sources"], context["source_medium"],
+        strict=context.get("strict_source_medium", False))
+    if medium_failures:
+        _discard_medium_drift_keyframes(context["cache"], medium_failures)
+        raise RuntimeError(
+            "generated motion keyframe changed the owner-selected source medium "
+            "for " + ", ".join(medium_failures) + "; regenerate it")
     preview_dir = os.path.join(avatar_dir, ".motion-preview")
     shutil.rmtree(preview_dir, ignore_errors=True)
     os.makedirs(preview_dir, mode=0o700)
@@ -5811,6 +6687,12 @@ def recut(avatar_dir, kind, log=print, progress=None):
 
     process_options = {}
     source_medium = body_source_medium(avatar_dir)
+    if (explicit_source_medium(avatar_dir) is not None
+            and not motion_clip_compatible(
+                metadata.get(kind), source_medium, require_receipt=True)):
+        raise RuntimeError(
+            f"the retained {kind} take predates or differs from the "
+            "owner-selected source medium; regenerate it instead of relabelling it")
     if source_medium != "photograph":
         process_options["source_medium"] = source_medium
     if kind == "walk":
@@ -5843,6 +6725,9 @@ def recut(avatar_dir, kind, log=print, progress=None):
             if os.path.isfile(source_path):
                 shutil.copy2(source_path, os.path.join(raw_dir, name))
         clip = _process_clip(kind, raw_video, fps, stage, log, **process_options)
+        clip["source_medium"] = source_medium
+        clip["source_medium_quality"] = (metadata.get(kind) or {}).get(
+            "source_medium_quality")
         metadata["v"] = MOTION_VERSION
         metadata[kind] = clip
         metadata["updated"] = datetime.datetime.now().isoformat(
@@ -6081,14 +6966,23 @@ def _archive_rejected_candidate(
             (video, f"{kind}-source.mp4")):
         if source and os.path.isfile(source):
             shutil.copy2(source, os.path.join(destination, name))
+    rejection = {
+        "kind": kind,
+        "attempt": attempt,
+        "signature": signature,
+        "error": _clean(error, 2000),
+        "created": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    framing = getattr(error, "source_framing_quality", None)
+    if isinstance(framing, dict):
+        rejection["source_framing_quality"] = framing
+    medium = getattr(error, "source_medium_quality", None)
+    if isinstance(medium, dict):
+        rejection["source_medium_quality"] = medium
+        rejection["automatic_retry_allowed"] = bool(
+            getattr(error, "retryable", True))
     with open(os.path.join(destination, "rejection.json"), "w") as handle:
-        json.dump({
-            "kind": kind,
-            "attempt": attempt,
-            "signature": signature,
-            "error": _clean(error, 2000),
-            "created": datetime.datetime.now().isoformat(timespec="seconds"),
-        }, handle, indent=1)
+        json.dump(rejection, handle, indent=1)
     return destination
 
 
@@ -6186,6 +7080,15 @@ def build(
             identity_reference, pose_reference,
             {kind: prompts[f"{kind}_keyframe"] for kind in requested_kinds},
             log, requested_kinds)
+        medium_failures = _motion_keyframe_medium_failures(
+            keyframes, body_sources, source_medium,
+            strict=context.get("strict_source_medium", False))
+        if medium_failures:
+            _discard_medium_drift_keyframes(cache, medium_failures)
+            raise RuntimeError(
+                "generated motion keyframe changed the owner-selected source "
+                "medium for " + ", ".join(medium_failures)
+                + "; regenerate it")
         if not retry_count:
             _emit(progress, "video", 0.32, f"Animating {selected_label}")
         video_options = (
@@ -6227,6 +7130,17 @@ def build(
             for kind, fps, value, label in clip_specs:
                 _emit(progress, "alpha", value, label)
                 try:
+                    medium_quality = _motion_video_medium_quality(
+                        videos[kind], keyframes[kind], body_sources.get(kind),
+                        source_medium,
+                        strict=context.get("strict_source_medium", False),
+                    )
+                    if medium_quality["available"]:
+                        log(
+                            f"{kind} video source-medium audit: "
+                            f"{medium_quality['reason']}")
+                    if not medium_quality["valid"]:
+                        raise GeneratedMotionMediumError(kind, medium_quality)
                     process_options = {}
                     if kind == "idle" and idle_pose["validation"] != "back-heel":
                         process_options["idle_validation"] = idle_pose["validation"]
@@ -6240,6 +7154,8 @@ def build(
                         process_options["source_medium"] = source_medium
                     clips[kind] = _process_clip(
                         kind, videos[kind], fps, stage, log, **process_options)
+                    clips[kind]["source_medium"] = source_medium
+                    clips[kind]["source_medium_quality"] = medium_quality
                 except Exception as error:
                     rejected_kind = kind
                     rejected_error = error
@@ -6254,6 +7170,11 @@ def build(
                     log(f"archived rejected {rejected_kind} candidate at {archived}")
                 except Exception as archive_error:
                     log(f"could not archive rejected {rejected_kind} candidate: {archive_error}")
+                if not getattr(rejected_error, "retryable", True):
+                    # Missing/ambiguous local evidence is not proof that a new
+                    # paid provider take would help. Preserve this cache and
+                    # stop; a subsequent local reprocess can re-audit it.
+                    raise rejected_error
                 _invalidate_cached_video(cache, rejected_kind)
                 rejections[rejected_kind] = attempt
                 if attempt < MAX_CANDIDATE_ATTEMPTS:

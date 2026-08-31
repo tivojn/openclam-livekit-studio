@@ -573,7 +573,7 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
             (self.runtime / "manifest.json").read_text())
         current_body = runtime_manifest["body"]
 
-        for marker in (None, True, "2", 1, 3):
+        for marker in (None, True, "4", 1, 2, 3, 5):
             with self.subTest(runtime_marker=marker):
                 candidate = dict(current_body)
                 if marker is None:

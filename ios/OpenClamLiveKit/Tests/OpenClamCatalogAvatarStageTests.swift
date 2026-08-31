@@ -108,30 +108,104 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
         }
     }
 
-    func testStylizedFullExpressionFaceZerosCanonicalRotationForEverySpeechHeadPose() {
+    func testStylizedFullExpressionFacePreservesAuthoredRegistrationNotDynamicTilt() {
+        // Deliberately large to distinguish the renderer's static registration
+        // contract from the exporter's separate upright-authoring validation.
+        // Canonical rotation is derived from the approved rig affine; it is
+        // not the raw landmark roll that must never drive speech head motion.
         let canonicalRotation = 23.7223
-        let pose = CaptainAyerFaceMirrorHeadPose(
-            yaw: 0.72,
-            pitch: -0.41,
-            roll: 0.88
-        )
-
         for medium in [OpenClamAvatarSourceMedium.anime,
                        .illustration, .rendered3D, .gameArt] {
-            let plan = OpenClamAvatarFaceRegistrationPolicy.plan(
-                canonicalRotationDegrees: canonicalRotation,
-                reaction: pose,
-                bodyLocked: true,
-                sourceMedium: medium,
-                bodyScale: 1.27
-            )
+            for frame in 0 ... 600 {
+                let time = Double(frame) / 60
+                let pose = CaptainAyerFaceMirrorHeadPose(
+                    yaw: sin(time * 1.7),
+                    pitch: cos(time * 1.3),
+                    roll: sin(time * 2.1 + 0.4)
+                )
+                let plan = OpenClamAvatarFaceRegistrationPolicy.plan(
+                    canonicalRotationDegrees: canonicalRotation,
+                    reaction: pose,
+                    bodyLocked: true,
+                    sourceMedium: medium,
+                    bodyScale: 1.27
+                )
 
-            XCTAssertEqual(plan.pitchDegrees, 0, accuracy: 0.000_001)
-            XCTAssertEqual(plan.yawDegrees, 0, accuracy: 0.000_001)
-            XCTAssertEqual(plan.rotationDegrees, 0, accuracy: 0.000_001)
-            XCTAssertEqual(plan.translationX, 0, accuracy: 0.000_001)
-            XCTAssertEqual(plan.translationY, 0, accuracy: 0.000_001)
-            XCTAssertEqual(plan.dynamicResamplingPassCount, 0)
+                XCTAssertEqual(plan.pitchDegrees, 0, accuracy: 0.000_001)
+                XCTAssertEqual(plan.yawDegrees, 0, accuracy: 0.000_001)
+                XCTAssertEqual(plan.rotationDegrees, canonicalRotation, accuracy: 0.000_001)
+                XCTAssertEqual(plan.translationX, 0, accuracy: 0.000_001)
+                XCTAssertEqual(plan.translationY, 0, accuracy: 0.000_001)
+                XCTAssertEqual(plan.dynamicResamplingPassCount, 0)
+            }
+        }
+    }
+
+    func testTwoDimensionalBodyLockedFaceKeepsApprovedOneDegreeAffineDuringSpeech() {
+        // A checksum-verified older 2-D package can legitimately retain this
+        // small authored angle. Erasing its angle while preserving the mapped
+        // centre and scale made the animation disagree with the baked body.
+        // Exact approved body affine from the previously published v4 pack;
+        // the renderer must not change it when source-medium metadata is added.
+        let canonicalDegrees = 1.0378712765831661
+        let transform = OpenClamAvatarFaceTransform(
+            a: 0.3407548,
+            b: 0.0061732,
+            c: -0.0061732,
+            d: 0.3407548,
+            tx: 357.9485741,
+            ty: -3.4640713
+        )
+        XCTAssertEqual(transform.rotationDegrees, canonicalDegrees, accuracy: 0.000_000_001)
+        XCTAssertEqual(transform.rotationDegrees, 1.037871, accuracy: 0.000_001)
+        XCTAssertEqual(transform.uniformScale, hypot(0.3407548, 0.0061732), accuracy: 0.000_000_001)
+        let centre = transform.applying(to: .init(x: 512, y: 512))
+        let facePoints = [
+            OpenClamAvatarPoint(x: 0, y: 0),
+            .init(x: 1_024, y: 1_024),
+            .init(x: 395, y: 505),
+            .init(x: 622, y: 501),
+            .init(x: 505, y: 710),
+            .init(x: 512, y: 890),
+        ]
+        for bodyScale in [CGFloat(0.25), 1, 2.8] {
+            let origin = CGPoint(x: -53.75, y: 12.5)
+            for frame in 0 ... 600 {
+                let time = Double(frame) / 60
+                let plan = OpenClamAvatarFaceRegistrationPolicy.plan(
+                    canonicalRotationDegrees: transform.rotationDegrees,
+                    reaction: .init(
+                        yaw: sin(time * 1.7),
+                        pitch: cos(time * 1.3),
+                        roll: sin(time * 2.1 + 0.4)
+                    ),
+                    bodyLocked: true,
+                    sourceMedium: .illustration,
+                    bodyScale: bodyScale
+                )
+                XCTAssertEqual(plan.pitchDegrees, 0)
+                XCTAssertEqual(plan.yawDegrees, 0)
+                XCTAssertEqual(plan.translationX, 0)
+                XCTAssertEqual(plan.translationY, 0)
+                XCTAssertEqual(plan.dynamicResamplingPassCount, 0)
+                XCTAssertEqual(plan.rotationDegrees, canonicalDegrees, accuracy: 0.000_000_001)
+
+                // Match the view's uniform frame scale, centre-anchored
+                // rotationEffect, and position(M * sourceCentre) against the
+                // original affine directly, at eyes, mouth, chin and corners.
+                let angle = plan.rotationDegrees * .pi / 180
+                for point in facePoints {
+                    let x = (point.x - 512) * transform.uniformScale
+                    let y = (point.y - 512) * transform.uniformScale
+                    let renderedX = origin.x + CGFloat(centre.x + x * cos(angle) - y * sin(angle))
+                        * bodyScale + plan.translationX
+                    let renderedY = origin.y + CGFloat(centre.y + x * sin(angle) + y * cos(angle))
+                        * bodyScale + plan.translationY
+                    let authored = transform.applying(to: point)
+                    XCTAssertEqual(renderedX, origin.x + CGFloat(authored.x) * bodyScale, accuracy: 0.000_001)
+                    XCTAssertEqual(renderedY, origin.y + CGFloat(authored.y) * bodyScale, accuracy: 0.000_001)
+                }
+            }
         }
     }
 

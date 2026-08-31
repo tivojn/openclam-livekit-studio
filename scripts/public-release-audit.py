@@ -234,6 +234,8 @@ MACOS_UI_SYMBOL_BINARY_HASHES = {
         "0dea54ca3b69bdeedd4d2328ae939f534f38f363c0ac44d48573569d81236119",
     Path("macos/OpenClamStudio/web/assets/sf-symbols/speaker-slash.png"):
         "9eaa2f5d756ecbbf8c6810b66e8f1fa6fb05921ce28c568880e7e2eb2df75020",
+    Path("macos/OpenClamStudio/web/assets/sf-symbols/speaker.png"):
+        "8c4dcdb1aa65294106a440a4015ef9f4a979335624ba45d33dcaa9cfb5c83ec5",
     Path("macos/OpenClamStudio/web/assets/sf-symbols/standby.png"):
         "48c6cfe49a24d084613ccd66365deee30fc27067f7aa5f1ce2f1c732a444f83a",
     Path("macos/OpenClamStudio/web/assets/sf-symbols/stop.png"):
@@ -258,6 +260,10 @@ AVATAR_STORE_CATALOG_BINARY_HASHES = {
         "921b7bbe683d52cb5fec03f7b66fe4a6e87cd34ab002c1e73f17747a9ec0c5a6",
     Path("shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png"):
         "26c291079aaae5939620e64aa06bd656fb98441d2e0758c51d64f934ebd757a8",
+    Path("shared/avatar-store-v1/catalog/v1/sarah-thumbnail.png"):
+        "7eebbc725df05c915fade861a730addc36abd1401d91e75dc3971619b3834d9a",
+    Path("shared/avatar-store-v1/catalog/v1/celine-thumbnail.png"):
+        "f623954687561020eed5da8eedf8644b465c3a90ba5d2fb2d6194ce288d54f46",
 }
 
 CAPTAIN_AYER_BINARY_HASHES = {

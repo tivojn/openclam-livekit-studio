@@ -62,6 +62,26 @@ assert.equal(pkg.build.mac.identity, 'THE GREAT LIONHEART PTE. LTD. (X7R8N6MMSU)
 assert.equal(pkg.build.mac.notarize, false);
 assert.deepEqual(pkg.build.mac.target, ['dmg']);
 assert.equal(pkg.build.dmg.artifactName, 'OpenClam-Studio-${version}-${arch}.${ext}');
+assert.equal(pkg.build.afterPack, 'scripts/package-backend-metadata.cjs',
+  'Backend version metadata must be copied before signing by the afterPack hook');
+assert.ok(!pkg.build.extraResources.some((resource) => resource.from === 'package.json'),
+  'A package.json extraResource would exclude Electron metadata from app.asar');
+const backendMetadataHook = read('scripts/package-backend-metadata.cjs');
+for (const required of [
+  "path.join(packager.info.projectDir, 'package.json')",
+  "metadata.version !== packager.appInfo.version",
+  "path.join(resources, 'app.asar'), 'package.json'",
+  "path.join(resources, 'backend', 'package.json')",
+  'await fs.writeFile(target, canonical, { mode: 0o644 })',
+]) assert.ok(backendMetadataHook.includes(required),
+  `Backend metadata hook is missing ${required}`);
+for (const required of [
+  'PACKAGE_METADATA_SHA="$(/usr/bin/shasum -a 256 "$PROJECT_ROOT/package.json")"',
+  'local backend_package="$app_path/Contents/Resources/backend/package.json"',
+  'require_sha256 "$backend_package" "$PACKAGE_METADATA_SHA"',
+  '[[ "$backend_version" == "$expected_version" ]]',
+]) assert.ok(release.includes(required),
+  `App and mounted-DMG verification must validate backend version metadata: ${required}`);
 for (const required of [
   'BUILD_ROOT="$TEMP_ROOT/source"',
   '/bin/cp -R -p -- "$PLUGIN_ROOT/src" "$BUILD_ROOT/src"',

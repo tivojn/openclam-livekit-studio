@@ -143,14 +143,13 @@ enum OpenClamAvatarFaceRegistrationPolicy {
             return OpenClamAvatarFaceRegistrationPlan(
                 pitchDegrees: 0,
                 yawDegrees: 0,
-                // Stylized full-expression packages already author the head
-                // upright in body space. Their permissive landmarks can report
-                // a bogus roll that detaches the jaw/neck, so only that path is
-                // zeroed. Photographic rigs retain their authored canonical
-                // registration while dynamic speech motion remains disabled.
-                rotationDegrees: sourceMedium.isStylized
-                    ? 0
-                    : canonicalRotationDegrees,
+                // This angle comes from the approved face-to-body affine,
+                // not a detected landmark roll or an animated head pose.
+                // Keep it paired with that affine's scale and mapped centre:
+                // zeroing only rotation misaligns the moving face with the
+                // already-composited head/body, even for a one-degree angle.
+                // Body locking disables dynamic tilt, not static registration.
+                rotationDegrees: canonicalRotationDegrees,
                 translationX: 0,
                 translationY: 0,
                 dynamicResamplingPassCount: 0

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -390,10 +391,27 @@ class RigProfileTests(unittest.TestCase):
             renderer = renderer_file.read()
         self.assertIn("const drawStripState2D =", renderer)
         self.assertIn("'brow', 'forehead', 'cheek'", renderer)
-        self.assertLess(renderer.index("if (manifest.gaze) {",
-                        renderer.index("const composeHead")),
-                        renderer.index("if (manifest.eyebag) {",
-                        renderer.index("const composeHead")))
+        # Photographic/legacy eyes retain their reviewed ordering. Measured
+        # cartoon apertures must instead own pixels after the older under-eye
+        # bands, which can overlap a large stylized iris, but still below lids.
+        head_start = renderer.index("const composeHead")
+        mode_start = renderer.index("const gazeAfterUnderEye =", head_start)
+        legacy_gaze = renderer.index(
+            "if (manifest.gaze && !gazeAfterUnderEye) {", mode_start)
+        under_eye = renderer.index("if (manifest.eyebag) {", legacy_gaze)
+        cartoon_gaze = renderer.index(
+            "if (manifest.gaze && gazeAfterUnderEye) {", under_eye)
+        lids = renderer.index("const stylizedBlinkReady =", cartoon_gaze)
+        self.assertEqual(set(re.findall(
+            r"manifest\.gaze\.mode === '([^']+)'",
+            renderer[mode_start:legacy_gaze])), {
+                "soft-3d-rigid-iris-v1",
+                "soft-3d-authored-iris-v1",
+                "authored-2d-rigid-iris-v1",
+            })
+        self.assertLess(legacy_gaze, under_eye)
+        self.assertLess(under_eye, cartoon_gaze)
+        self.assertLess(cartoon_gaze, lids)
 
     def test_raised_forehead_does_not_invent_horizontal_wrinkle_bands(self):
         """A smooth source forehead stays smooth when its brows rise.

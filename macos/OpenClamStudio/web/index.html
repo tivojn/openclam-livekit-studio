@@ -2900,11 +2900,13 @@
 
     const boundedChatAvatarOffset = value => {
       const viewport = chatWorkspaceViewport();
+      const requestedX = Number(value && value.x);
+      const requestedY = Number(value && value.y);
       return {
         x: Math.max(-viewport.width * .55,
-          Math.min(viewport.width * .55, Number(value && value.x) || 0)),
+          Math.min(viewport.width * .55, Number.isFinite(requestedX) ? requestedX : 0)),
         y: Math.max(-viewport.height * .45,
-          Math.min(viewport.height * .45, Number(value && value.y) || 0)),
+          Math.min(viewport.height * .45, Number.isFinite(requestedY) ? requestedY : 0)),
       };
     };
 
@@ -3408,11 +3410,21 @@
         'game art', 'game-art', '3d render', '3d-render', 'soft-3d',
       ].includes(medium) ? 'replace' : 'blend';
     };
-    const STYLIZED_HEAD_HANDOFF_VERSION = 2;
+    const STYLIZED_HEAD_HANDOFF_VERSION = 4;
     const authoredHeadHandoffReady = (body, clearMask, authoredMask) => Boolean(
       body && body.head_composite === 'replace'
       && body.head_handoff_version === STYLIZED_HEAD_HANDOFF_VERSION
       && body.head_clear_mask && clearMask && authoredMask);
+    // Previously published v2/v3 bodies already own a coordinated eraser and
+    // feathered head mask. Keep that exact pair on upgrade: substituting the
+    // broader portrait cutout would restore the source neck as a visible strip.
+    // This is render compatibility only; newly authored/exported masks use v4.
+    const compatibleLegacyHeadHandoffReady = (
+      runtime, body, clearMask, authoredMask) => Boolean(
+      isStylizedFaceRuntime(runtime)
+      && body && body.head_composite === 'replace'
+      && (body.head_handoff_version === 2 || body.head_handoff_version === 3)
+      && body.head_mask && body.head_clear_mask && clearMask && authoredMask);
     const legacyStylizedHeadHandoffReady = (
       runtime, body, clearMask, authoredMask) => Boolean(
       isStylizedFaceRuntime(runtime)
@@ -3464,7 +3476,9 @@
         // seam. Old packages without the coordinated eraser keep their hard
         // full-silhouette fallback so duplicate cheeks/ears stay impossible.
         const authoredHandoff = authoredHeadHandoffReady(
-          body, bodyHeadClearMask, headMask);
+          body, bodyHeadClearMask, headMask)
+          || compatibleLegacyHeadHandoffReady(
+            manifest, body, bodyHeadClearMask, headMask);
         // A short-lived pre-v2 stylized build already shipped the coordinated
         // body eraser and soft portrait mask but omitted the version marker.
         // Its broad cutout includes the complete source neck; hardening that
@@ -3727,21 +3741,198 @@
       };
     };
 
+    // Camera-only alpha geometry: read each loaded image once, retain only
+    // small prefix bounds (not pixels or a canvas), and let the image key be
+    // collected on avatar changes. Prefix bounds exclude the torso below a
+    // measured chin without reading the body again on every paint.
+    const chatCameraAlphaBoundsCache = new WeakMap();
+    const chatCameraAlphaBounds = (image, rowLimit = null, cacheKey = image) => {
+      if (!image || typeof image !== 'object' || image.complete === false) return null;
+      const width = Number(typeof image.naturalWidth === 'number' ? image.naturalWidth : image.width);
+      const height = Number(typeof image.naturalHeight === 'number' ? image.naturalHeight : image.height);
+      if (!(Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)) return null;
+      const limit = rowLimit !== null && Number.isFinite(Number(rowLimit))
+        ? Math.max(0, Math.min(height, Number(rowLimit))) : height;
+      if (!(limit > 0)) return null;
+      const key = cacheKey && typeof cacheKey === 'object' ? cacheKey : image;
+      let cached = chatCameraAlphaBoundsCache.get(key);
+      if (cached === null) return null;
+      if (!cached || cached.width !== width || cached.height !== height) {
+        try {
+          // Bound the one-off readback even for a large imported portrait.
+          const resolution = Math.min(1, 1024 / Math.max(width, height));
+          const sampleWidth = Math.max(1, Math.ceil(width * resolution));
+          const sampleHeight = Math.max(1, Math.ceil(height * resolution));
+          const sample = document.createElement('canvas');
+          sample.width = sampleWidth;
+          sample.height = sampleHeight;
+          const target = sample.getContext('2d', { willReadFrequently: true });
+          if (!target) throw new Error('camera alpha readback unavailable');
+          target.drawImage(image, 0, 0, sampleWidth, sampleHeight);
+          const pixels = target.getImageData(0, 0, sampleWidth, sampleHeight).data;
+          const prefix = new Float64Array(sampleHeight * 4);
+          let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+          for (let y = 0; y < sampleHeight; y += 1) {
+            for (let x = 0; x < sampleWidth; x += 1) {
+              if (!pixels[(y * sampleWidth + x) * 4 + 3]) continue;
+              left = Math.min(left, x);
+              right = Math.max(right, x + 1);
+              top = Math.min(top, y);
+              bottom = Math.max(bottom, y + 1);
+            }
+            prefix.set([left, top, right, bottom], y * 4);
+          }
+          cached = { width, height, sampleWidth, sampleHeight, prefix };
+          chatCameraAlphaBoundsCache.set(key, cached);
+        } catch (_) {
+          // A settled tainted/custom image must not trigger a readback on
+          // every frame. Incomplete images returned above are never cached.
+          chatCameraAlphaBoundsCache.set(key, null);
+          return null;
+        }
+      }
+      const scaleX = width / cached.sampleWidth;
+      const scaleY = height / cached.sampleHeight;
+      const row = Math.max(0, Math.min(cached.sampleHeight - 1, Math.ceil(limit / scaleY) - 1));
+      const offset = row * 4;
+      const left = cached.prefix[offset], top = cached.prefix[offset + 1];
+      const right = cached.prefix[offset + 2], bottom = cached.prefix[offset + 3];
+      if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+      // One sampled pixel of conservative padding protects fine hair and
+      // hat edges against the bounded readback's resampling/antialiasing.
+      const x0 = Math.max(0, left - 1) * scaleX;
+      const y0 = Math.max(0, top - 1) * scaleY;
+      const x1 = Math.min(cached.sampleWidth, right + 1) * scaleX;
+      const y1 = Math.min(cached.sampleHeight, bottom + 1) * scaleY;
+      return [x0, y0, x1 - x0, y1 - y0];
+    };
+
+    // A bust is a framing preference, not the avatar's real top. Hats and
+    // replacement-head hair can extend above that crop (or the body plate).
+    // Keep the actual crown-to-chin span visible without fitting the whole
+    // body again when the user deliberately zooms into a close-up.
+    const chatCameraHeadSpan = (meta, width, height, runtime = null, images = null) => {
+      const validBox = box => Array.isArray(box) && box.length >= 4
+        && box.slice(0, 4).every(value => Number.isFinite(Number(value)))
+        && Number(box[2]) > 0 && Number(box[3]) > 0;
+      const bounds = validBox(meta && meta.bounds)
+        ? meta.bounds.map(Number) : [0, 0,
+          Number.isFinite(Number(width)) && Number(width) > 0 ? Number(width) : 1,
+          Number.isFinite(Number(height)) && Number(height) > 0 ? Number(height) : 1];
+      const face = meta && meta.alignment && meta.alignment.face_bounds;
+      let top = bounds[1];
+      let bottom = bounds[1] + bounds[3];
+      let left = Infinity, right = -Infinity;
+      const includeHorizontal = box => {
+        if (!validBox(box)) return;
+        left = Math.min(left, Number(box[0]));
+        right = Math.max(right, Number(box[0]) + Number(box[2]));
+      };
+      if (validBox(face)) {
+        top = Math.min(top, Number(face[1]));
+        bottom = Number(face[1]) + Number(face[3]) + 1;
+        includeHorizontal(face);
+        // Only the head band of the standing plate belongs to this guard;
+        // a wide coat, shoulders or outstretched arms below it do not.
+        includeHorizontal(chatCameraAlphaBounds(images && images.body, bottom));
+      }
+      if (runtime && meta && meta === runtime.body) {
+        const matrix = meta.face_transform;
+        const cutout = runtime.cutout && runtime.cutout.bounds;
+        const head = chatCameraAlphaBounds(images && images.head, null,
+          images && images.headCacheKey);
+        includeHorizontal(meta.head_clear_quality && meta.head_clear_quality.bounds);
+        if (Array.isArray(matrix) && matrix.length === 2
+            && matrix.every(row => Array.isArray(row) && row.length === 3
+              && row.every(value => Number.isFinite(Number(value))))) {
+          const project = (box, includeWidth) => {
+            if (!validBox(box)) return;
+            const [x, y, w, h] = box.map(Number);
+            const [a, b, c] = matrix[0].map(Number);
+            const [d, e, f] = matrix[1].map(Number);
+            for (const [px, py] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+              const projectedY = d * px + e * py + f;
+              if (Number.isFinite(projectedY)) top = Math.min(top, projectedY);
+              const projectedX = a * px + b * py + c;
+              if (includeWidth && Number.isFinite(projectedX)) {
+                left = Math.min(left, projectedX);
+                right = Math.max(right, projectedX);
+              }
+            }
+          };
+          // The portrait cutout may include a broad torso, so its width is
+          // never used as a proxy for head width. The live head mask is exact.
+          project(head || cutout, Boolean(head));
+        }
+      }
+      const span = { top, bottom: Math.max(top + 1, bottom) };
+      if (Number.isFinite(left) && Number.isFinite(right) && right > left) {
+        // drawAvatar breathes horizontally about the body's centre by at
+        // most +/-0.25%. Reserve that whole stable envelope, not a frame-
+        // dependent moving camera, plus half a source pixel for raster edges.
+        const pivot = bounds[0] + bounds[2] * .5;
+        span.left = left - Math.abs(left - pivot) * .0025 - .5;
+        span.right = right + Math.abs(right - pivot) * .0025 + .5;
+      }
+      return span;
+    };
+
     const clampChatCameraFit = (fit, viewport, { vertical = true } = {}) => {
       if (!fit || !fit.crop || !viewport) return fit;
-      let x = fit.x;
-      let y = fit.y;
-      const subjectLeft = () => x + fit.crop.x * fit.scale;
-      const subjectRight = () => x + (fit.crop.x + fit.crop.w) * fit.scale;
-      const subjectTop = () => y + fit.crop.y * fit.scale;
-      const subjectBottom = () => y + (fit.crop.y + fit.crop.h) * fit.scale;
-      if (subjectLeft() < viewport.x) x += viewport.x - subjectLeft();
-      if (subjectRight() > viewport.right) x -= subjectRight() - viewport.right;
-      if (vertical) {
-        if (subjectTop() < viewport.y) y += viewport.y - subjectTop();
-        if (subjectBottom() > viewport.bottom) y -= subjectBottom() - viewport.bottom;
+      const finite = (value, fallback) => value !== null && value !== undefined
+        && Number.isFinite(Number(value)) ? Number(value) : fallback;
+      const crop = {
+        x: finite(fit.crop.x, 0), y: finite(fit.crop.y, 0),
+        w: Math.max(1, finite(fit.crop.w, 1)), h: Math.max(1, finite(fit.crop.h, 1)),
+      };
+      const left = finite(viewport.x, 0);
+      const top = finite(viewport.y, 0);
+      const right = Math.max(left + 1, finite(viewport.right,
+        left + Math.max(1, finite(viewport.width, 1))));
+      const bottom = Math.max(top + 1, finite(viewport.bottom,
+        top + Math.max(1, finite(viewport.height, 1))));
+      const headTop = finite(fit.headSpan && fit.headSpan.top, crop.y);
+      const headBottom = Math.max(headTop + 1,
+        finite(fit.headSpan && fit.headSpan.bottom, crop.y + crop.h));
+      const headLeft = finite(fit.headSpan && fit.headSpan.left, NaN);
+      const headRight = finite(fit.headSpan && fit.headSpan.right, NaN);
+      const hasHeadWidth = Number.isFinite(headLeft) && Number.isFinite(headRight) && headRight > headLeft;
+      const mirrorCentre = finite(viewport.headMirrorCentreX, NaN);
+      const headGuardLeft = Number.isFinite(mirrorCentre) ? 2 * mirrorCentre - right : left;
+      const headGuardRight = Number.isFinite(mirrorCentre) ? 2 * mirrorCentre - left : right;
+      const requestedScale = Number.isFinite(Number(fit.scale)) && Number(fit.scale) > 0
+        ? Number(fit.scale) : 1;
+      // When even the head cannot fit, limit only the rendered head scale;
+      // retain the saved zoom so enlarging the window restores user intent.
+      const scale = Math.min(requestedScale, (bottom - top) / (headBottom - headTop),
+        hasHeadWidth ? (right - left) / (headRight - headLeft) : Infinity);
+      let x = finite(fit.x, left - crop.x * scale);
+      let y = finite(fit.y, top - headTop * scale);
+      if (scale < requestedScale) {
+        const centre = crop.x + crop.w * .5;
+        x = finite(x + centre * requestedScale, (left + right) * .5) - centre * scale;
+        y = finite(y + headTop * requestedScale, top) - headTop * scale;
       }
-      return { ...fit, x, y };
+      const leftAligned = left - crop.x * scale;
+      const rightAligned = right - (crop.x + crop.w) * scale;
+      x = Math.max(Math.min(leftAligned, rightAligned),
+        Math.min(Math.max(leftAligned, rightAligned), x));
+      if (hasHeadWidth) {
+        // The broad torso/bust crop is not a safe lateral head anchor when
+        // both sidebars leave only a narrow chat column.
+        x = Math.max(headGuardLeft - headLeft * scale, Math.min(headGuardRight - headRight * scale, x));
+      }
+      if (vertical) {
+        const topAligned = top - crop.y * scale;
+        const bottomAligned = bottom - (crop.y + crop.h) * scale;
+        y = Math.max(Math.min(topAligned, bottomAligned),
+          Math.min(Math.max(topAligned, bottomAligned), y));
+      }
+      // This must be LAST: a feet/bottom correction must never push the
+      // crown above the header again. Close-up also obeys this head limit,
+      // while all lower-body pixels remain drawable beyond the lower edge.
+      y = Math.max(top - headTop * scale, Math.min(bottom - headBottom * scale, y));
+      return { ...fit, crop, scale, x, y };
     };
 
     const cameraFor = (meta, width, height, forcedView = null) => {
@@ -3751,7 +3942,19 @@
       })
         : { x: 0, y: 0, width: innerWidth, height: innerHeight,
           right: innerWidth, bottom: innerHeight };
+      if (fullChat && root.classList.contains('avatar-mirrored')) {
+        // CSS reflects the canvas about the workspace centre, not the
+        // narrower/asymmetric control-safe interval. Invert only the final
+        // head guard; leave saved placement, framing and motion paths alone.
+        const workspace = chatWorkspaceViewport();
+        viewport.headMirrorCentreX = workspace.x + workspace.width * .5;
+      }
       const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
+      const headImages = fullChat && manifest && meta === manifest.body
+        ? { body: bodyImage, head: headReplacementActive ? headReplacementCanvas : headMask,
+          headCacheKey: headMask }
+        : (fullChat && manifest && meta && meta.alignment && !manifest.body ? { body: cutoutImage } : null);
+      const headSpan = fullChat ? chatCameraHeadSpan(meta, width, height, manifest, headImages) : null;
       if (fullChat && shellState.chatCloseUp) {
         const closeUpCrop = viewCrop(meta, width, height, 'bust');
         const baseZoom = Number(shellState.chatCloseUpBaseZoom);
@@ -3759,7 +3962,7 @@
           ? requestedZoom / baseZoom : 1;
         const fit = chatCloseUpGeometry(closeUpCrop, viewport.width, viewport.height, closeUpZoom);
         const offset = boundedChatAvatarOffset(chatAvatarOffset);
-        return clampChatCameraFit({ ...fit, x: viewport.x + fit.x + offset.x,
+        return clampChatCameraFit({ ...fit, headSpan, x: viewport.x + fit.x + offset.x,
           y: viewport.y + fit.y + offset.y }, viewport, { vertical: false });
       }
       if (!fullChat && shellState.desktopCloseUp) {
@@ -3785,6 +3988,7 @@
           ? viewport.y + availableHeight - (crop.y + crop.h) * scale + offset.y
           : viewport.y + availableHeight * .5 - (crop.y + crop.h * .5) * scale + offset.y,
         crop,
+        headSpan,
       };
       return fullChat ? clampChatCameraFit(fit, viewport) : fit;
     };
@@ -4654,9 +4858,20 @@
       const registration = stylizedMouthRegistration(selectedName, safeWidth);
       const cell = Math.max(0, Math.floor(Number(sample.state) || 0))
         + Math.max(0, Math.floor(Number(sample.row) || 0)) * spec.states.length;
+      const requestedX = safeX - atlasX - registration;
+      const requestedY = safeY - atlasY;
+      const clippedX = Math.max(0, requestedX);
+      const clippedY = Math.max(0, requestedY);
+      const sourceWidth = Math.min(atlasWidth, requestedX + safeWidth) - clippedX;
+      const sourceHeight = Math.min(atlasHeight, requestedY + safeHeight) - clippedY;
+      if (!(sourceWidth > 0 && sourceHeight > 0)) return null;
       return {
-        sourceX: safeX - atlasX - registration,
-        sourceY: cell * atlasHeight + safeY - atlasY,
+        sourceX: clippedX,
+        sourceY: cell * atlasHeight + clippedY,
+        sourceWidth,
+        sourceHeight,
+        patchX: clippedX - requestedX,
+        patchY: clippedY - requestedY,
         width: safeWidth,
         height: safeHeight,
         destinationX: safeX,
@@ -4668,21 +4883,29 @@
       return stylizedBlinkReady && closure >= .78
         ? 'stylized-closed' : 'static-canonical';
     };
-    // Keep the authored lip drawing but never transfer an oval of provider
-    // skin.  Flat/soft-3-D art makes even a well feathered colour patch read as
-    // a sticker. This spatial envelope is deliberately lip-centred and the
-    // per-viseme compositor below further multiplies it by a source-vs-neutral
-    // difference matte, leaving unchanged skin literally canonical.
+    // Own the COMPLETE lip drawing, including the old smile corners. An oval
+    // feather started inside those corners and left two detached neutral
+    // dimples around the talking mouth. This rounded envelope fills the
+    // canonical outer-lip box, feathering only the surrounding skin. Its top
+    // and rectangular corners remain transparent: the nose is never repainted.
     const stylizedMouthMaskAlpha = (x, y, width, height) => {
       const nx = ((Number(x) + .5) / Math.max(1, Number(width)) - .5) / .5;
-      const ny = ((Number(y) + .5) / Math.max(1, Number(height)) - .45) / .36;
-      const radius = Math.hypot(nx, ny);
-      return 1 - expressionSmoothStep((radius - .62) / .32);
+      const ny = ((Number(y) + .5) / Math.max(1, Number(height)) - .5) / .5;
+      const radius = Math.pow(Math.pow(nx, 6) + Math.pow(ny, 6), 1 / 6);
+      return 1 - expressionSmoothStep((radius - .85) / .13);
     };
     const stylizedMouthDifferenceAlpha = (maximumDelta, spatialAlpha) => (
       Math.max(0, Math.min(1, Number(spatialAlpha) || 0))
         * expressionSmoothStep((Number(maximumDelta) - 6) / 36)
     );
+    const stylizedMouthOwnershipAlpha = (maximumDelta, spatialAlpha) => {
+      const coverage = Math.max(0, Math.min(1, Number(spatialAlpha) || 0));
+      // Difference-only alpha cannot erase a low-contrast old lip/corner.
+      // The interior belongs to one resolved mouth even when its replacement
+      // is skin. Retain the difference matte only in the exterior skin feather.
+      return Math.max(stylizedMouthDifferenceAlpha(maximumDelta, coverage),
+        coverage * expressionSmoothStep((coverage - .72) / .28));
+    };
     const stylizedMouthToneShift = (source, target, limit = 24) => (
       [0, 1, 2].map(index => Math.max(-limit, Math.min(limit,
         (Number(target && target[index]) || 0)
@@ -4702,6 +4925,159 @@
       const limit = Math.max(0, Number(width) * .35);
       return Number.isFinite(offset)
         ? Math.max(-limit, Math.min(limit, offset)) : 0;
+    };
+    const stylizedMouthLipContour = (
+      name, box, registration = 0, emotionSpec = null, emotionSample = null) => {
+      const spec = manifest && manifest.stylized_mouth
+        && manifest.stylized_mouth.skin_match;
+      // These are measured mouth contours, not a skin-colour guess. Keep
+      // flat line art and photographs on their independently reviewed paths.
+      if (!manifest || manifest.source_medium !== '3d render'
+          || !spec || spec.v !== 1 || spec.space !== 'canonical-pixels') return null;
+      let points = spec.contours && spec.contours[name];
+      if (emotionSpec || emotionSample) {
+        const rows = emotionSpec && emotionSpec.visemes;
+        if (!emotionSample || !Array.isArray(rows) || !rows.length
+            || !Number.isInteger(emotionSample.row) || emotionSample.row < 0
+            || !Number.isInteger(emotionSample.state) || emotionSample.state < 0) return null;
+        const family = Array.isArray(emotionSpec.emotions)
+          ? emotionSpec.emotions[Math.floor(emotionSample.row / rows.length)] : 'smile';
+        const familyContours = spec.emotion_contours && spec.emotion_contours[family];
+        const states = familyContours && familyContours[rows[emotionSample.row % rows.length]];
+        // A plain-mouth polygon is not a safe stand-in for a moved smile or
+        // fear mouth. Missing state geometry keeps the legacy compositor.
+        points = states && states[emotionSample.state];
+      }
+      if (!Array.isArray(points) || points.length < 8 || points.length > 64) return null;
+      if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)
+          || box[2] <= 0 || box[3] <= 0 || !Number.isFinite(registration)) return null;
+      const [x, y, width, height] = box;
+      const contour = [];
+      for (const point of points) {
+        if (!Array.isArray(point) || point.length !== 2
+            || !point.every(Number.isFinite)) return null;
+        const px = (point[0] - x + registration) * Math.round(width) / width;
+        const py = (point[1] - y) * Math.round(height) / height;
+        if (px < -.15 * width || px > 1.15 * width
+            || py < -.15 * height || py > 1.15 * height) return null;
+        contour.push([px, py]);
+      }
+      return contour;
+    };
+    const stylizedMouthContourDistance = (x, y, contour) => {
+      let inside = false, squared = Infinity;
+      for (let i = 0, j = contour.length - 1; i < contour.length; j = i++) {
+        const [ax, ay] = contour[j], [bx, by] = contour[i];
+        if ((ay > y) !== (by > y)
+            && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside;
+        const vx = bx - ax, vy = by - ay;
+        const along = Math.max(0, Math.min(1,
+          ((x - ax) * vx + (y - ay) * vy) / Math.max(1e-8, vx * vx + vy * vy)));
+        squared = Math.min(squared,
+          Math.pow(x - ax - along * vx, 2) + Math.pow(y - ay - along * vy, 2));
+      }
+      return inside ? 0 : Math.sqrt(squared);
+    };
+    const stylizedMouthBlurField = (values, width, height, radius) => {
+      // Three separable box passes approximate a smooth Gaussian field in
+      // linear time. Work is cached per mouth state, never per display frame.
+      let input = values;
+      const diameter = radius * 2 + 1;
+      for (let pass = 0; pass < 6; pass += 1) {
+        const horizontal = pass % 2 === 0;
+        const length = horizontal ? width : height;
+        const lines = horizontal ? height : width;
+        const stride = horizontal ? 4 : width * 4;
+        const output = new Float32Array(input.length);
+        for (let line = 0; line < lines; line += 1) {
+          const base = horizontal ? line * width * 4 : line * 4;
+          for (let channel = 0; channel < 4; channel += 1) {
+            let sum = 0;
+            for (let offset = -radius; offset <= radius; offset += 1) {
+              sum += input[base + Math.max(0, Math.min(length - 1, offset)) * stride + channel];
+            }
+            for (let point = 0; point < length; point += 1) {
+              output[base + point * stride + channel] = sum / diameter;
+              sum -= input[base + Math.max(0, point - radius) * stride + channel];
+              sum += input[base + Math.min(length - 1, point + radius + 1) * stride + channel];
+            }
+          }
+        }
+        input = output;
+      }
+      return input;
+    };
+    const correctStylizedMouthSkin = (
+      source, neutral, width, height, oldContour, newContour, fallbackShift = [0, 0, 0]) => {
+      if (!oldContour || !newContour || source.length !== width * height * 4
+          || neutral.length !== source.length) return false;
+      const fields = new Float32Array(source.length);
+      const protection = new Float32Array(width * height);
+      const validation = [];
+      let samples = 0;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const pixel = y * width + x, index = pixel * 4;
+          const previous = stylizedMouthContourDistance(x + .5, y + .5, oldContour);
+          const selected = stylizedMouthContourDistance(x + .5, y + .5, newContour);
+          protection[pixel] = expressionSmoothStep((selected - .07 * width) / (.025 * width));
+          // Exclude lips, teeth, the mouth cavity and their anti-aliased edges
+          // in BOTH drawings. A replaced old corner is skin, not a sample of
+          // the new lighting, and must not bias the correction field.
+          if (Math.min(previous, selected) <= .08 * width
+              || source[index + 3] < 240 || neutral[index + 3] < 240) continue;
+          const deltas = [neutral[index] - source[index],
+            neutral[index + 1] - source[index + 1],
+            neutral[index + 2] - source[index + 2]];
+          if (Math.max(...deltas.map(Math.abs)) > 72) continue;
+          // Hold out a deterministic subset of actual skin. It must improve
+          // over the existing compositor before we change any pixel; already
+          // well-matched avatars must not acquire a new colour correction.
+          if ((x * 3 + y * 5) % 7 === 0) {
+            validation.push(pixel);
+            continue;
+          }
+          for (let channel = 0; channel < 3; channel += 1) fields[index + channel] = deltas[channel];
+          fields[index + 3] = 1;
+          samples += 1;
+        }
+      }
+      if (samples < Math.max(12, width * height * .04)) return false;
+      const field = stylizedMouthBlurField(fields, width, height,
+        Math.max(3, Math.round(width * .06)));
+      let baselineError = 0, candidateError = 0, validationWeight = 0;
+      for (const pixel of validation) {
+        const index = pixel * 4;
+        if (field[index + 3] < .001) continue;
+        const weight = stylizedMouthMaskAlpha(pixel % width,
+          Math.floor(pixel / width), width, height);
+        if (weight < .2) continue;
+        for (let channel = 0; channel < 3; channel += 1) {
+          const correction = Math.max(-48, Math.min(48,
+            field[index + channel] / field[index + 3]));
+          const baseline = Math.max(0, Math.min(255,
+            source[index + channel] + fallbackShift[channel]));
+          const candidate = Math.max(0, Math.min(255,
+            source[index + channel] + correction * protection[pixel]));
+          baselineError += weight * Math.abs(baseline - neutral[index + channel]);
+          candidateError += weight * Math.abs(candidate - neutral[index + channel]);
+          validationWeight += weight;
+        }
+      }
+      if (validationWeight < 12
+          || (baselineError - candidateError) / validationWeight < .35
+          || candidateError > baselineError * .92) return false;
+      for (let pixel = 0; pixel < protection.length; pixel += 1) {
+        const index = pixel * 4;
+        if (!protection[pixel] || field[index + 3] < .001) continue;
+        for (let channel = 0; channel < 3; channel += 1) {
+          const correction = Math.max(-48, Math.min(48,
+            field[index + channel] / field[index + 3]));
+          source[index + channel] = Math.max(0, Math.min(255,
+            source[index + channel] + correction * protection[pixel]));
+        }
+      }
+      return true;
     };
     const prepareStylizedMouthMask = (width, height) => {
       const roundedWidth = Math.max(1, Math.round(width));
@@ -4727,16 +5103,21 @@
       stylizedMouthMaskContext.putImageData(pixels, 0, 0);
     };
     const prepareStylizedMouthPatch = (
-      selectedImage, neutralImage, selectedName, box) => {
+      selectedImage, neutralImage, selectedName, box,
+      emotionImage = null, emotionSpec = null, emotionSample = null) => {
       if (!selectedImage || !neutralImage || !box) return null;
       const [x, y, width, height] = box;
       const roundedWidth = Math.max(1, Math.round(width));
       const roundedHeight = Math.max(1, Math.round(height));
       const registration = stylizedMouthRegistration(selectedName, width);
       const cacheKey = [roundedWidth, roundedHeight, registration,
-        neutralImage.currentSrc || neutralImage.src || 'neutral'].join(':');
-      const cached = stylizedMouthPatchCache.get(selectedImage);
-      if (cached && cached.key === cacheKey) return cached.canvas;
+        neutralImage.currentSrc || neutralImage.src || 'neutral',
+        emotionImage && (emotionImage.currentSrc || emotionImage.src),
+        emotionSpec && emotionSpec.box,
+        emotionSample && emotionSample.state,
+        emotionSample && emotionSample.row].join(':');
+      let cached = stylizedMouthPatchCache.get(selectedImage);
+      if (cached && cached.has(cacheKey)) return cached.get(cacheKey);
 
       const patch = document.createElement('canvas');
       patch.width = roundedWidth;
@@ -4747,6 +5128,21 @@
       patchContext.drawImage(
         selectedImage, x - registration, y, width, height,
         0, 0, roundedWidth, roundedHeight);
+      if (emotionImage) {
+        const placement = stylizedEmotionMouthPlacement(
+          emotionSpec, emotionSample, selectedName);
+        if (placement) {
+          // Atlas RGBA can be transparent at the canonical smile corners.
+          // Resolve it over its OWN selected viseme, not over the canonical
+          // smile or a second partially transparent mouth. Clip to this cell
+          // so an oversized safe box cannot sample the next expression row.
+          patchContext.drawImage(emotionImage,
+            placement.sourceX, placement.sourceY,
+            placement.sourceWidth, placement.sourceHeight,
+            placement.patchX, placement.patchY,
+            placement.sourceWidth, placement.sourceHeight);
+        }
+      }
 
       stylizedMouthNeutralCanvas.width = roundedWidth;
       stylizedMouthNeutralCanvas.height = roundedHeight;
@@ -4801,10 +5197,17 @@
         const neutralMedian = neutralSamples.map(stylizedMouthMedian);
         const shift = sourceSamples[0].length >= 12
           ? stylizedMouthToneShift(sourceMedian, neutralMedian) : [0, 0, 0];
-        for (let index = 0; index + 3 < sourcePixels.data.length; index += 4) {
-          for (let channel = 0; channel < 3; channel += 1) {
-            sourcePixels.data[index + channel] = Math.max(0, Math.min(255,
-              sourcePixels.data[index + channel] + shift[channel]));
+        const spatialSkinMatched = correctStylizedMouthSkin(
+          sourcePixels.data, neutralPixels.data, roundedWidth, roundedHeight,
+          stylizedMouthLipContour('sil', box),
+          stylizedMouthLipContour(selectedName, box, registration,
+            emotionImage ? emotionSpec : null, emotionImage ? emotionSample : null), shift);
+        if (!spatialSkinMatched) {
+          for (let index = 0; index + 3 < sourcePixels.data.length; index += 4) {
+            for (let channel = 0; channel < 3; channel += 1) {
+              sourcePixels.data[index + channel] = Math.max(0, Math.min(255,
+                sourcePixels.data[index + channel] + shift[channel]));
+            }
           }
         }
         const maximumDeltas = new Uint8Array(roundedWidth * roundedHeight);
@@ -4838,7 +5241,7 @@
               }
             }
             const index = (py * roundedWidth + px) * 4;
-            const alpha = stylizedMouthDifferenceAlpha(
+            const alpha = stylizedMouthOwnershipAlpha(
               localDelta,
               stylizedMouthMaskAlpha(
                 px, py, roundedWidth, roundedHeight));
@@ -4849,7 +5252,7 @@
         patchContext.putImageData(sourcePixels, 0, 0);
         differenceMatteReady = true;
       } catch (_) {
-        // Same-origin assets are readable. Preserve the bounded oval fallback
+        // Same-origin assets are readable. Preserve the bounded lip fallback
         // for a legacy custom package whose image origin forbids pixel access.
       }
       if (!differenceMatteReady) {
@@ -4858,7 +5261,15 @@
         patchContext.drawImage(stylizedMouthMaskCanvas, 0, 0);
         patchContext.globalCompositeOperation = 'source-over';
       }
-      stylizedMouthPatchCache.set(selectedImage, { key: cacheKey, canvas: patch });
+      if (!cached) {
+        cached = new Map();
+        stylizedMouthPatchCache.set(selectedImage, cached);
+      }
+      // Cache resolved states, not live pixel work on every animation frame.
+      // Bound each viseme's cache so long expressive replies cannot grow it
+      // indefinitely (roughly 3 MiB per 242x124 Sarah viseme at this limit).
+      if (cached.size >= 24) cached.delete(cached.keys().next().value);
+      cached.set(cacheKey, patch);
       return patch;
     };
     const drawStylizedVisemePatch = (
@@ -4880,29 +5291,15 @@
     };
     const drawStylizedEmotionMouthSample = (
       target, image, spec, sample, selectedName) => {
-      const placement = stylizedEmotionMouthPlacement(
-        spec, sample, selectedName);
-      if (!target || !image || !placement) return;
-      const { sourceX, sourceY, width, height,
-        destinationX, destinationY } = placement;
-      if (stripBlendCanvas.width !== width) stripBlendCanvas.width = width;
-      if (stripBlendCanvas.height !== height) stripBlendCanvas.height = height;
-      stripBlendContext.setTransform(1, 0, 0, 1, 0, 0);
-      stripBlendContext.globalCompositeOperation = 'source-over';
-      stripBlendContext.globalAlpha = 1;
-      stripBlendContext.clearRect(0, 0, width, height);
-      stripBlendContext.drawImage(image,
-        sourceX, sourceY, width, height,
-        0, 0, width, height);
-      // The expression atlases carry a larger provider-painted lower-face
-      // rectangle. Reuse the ordinary stylized lip matte so neither that
-      // rectangle nor a shifted viseme can repaint the philtrum/nose.
-      prepareStylizedMouthMask(width, height);
-      stripBlendContext.globalCompositeOperation = 'destination-in';
-      stripBlendContext.drawImage(stylizedMouthMaskCanvas, 0, 0);
-      stripBlendContext.globalCompositeOperation = 'source-over';
-      target.drawImage(stripBlendCanvas,
-        destinationX, destinationY, width, height);
+      const box = stylizedVisemeGeometry();
+      const neutralImage = visemeImages.get('sil');
+      const selectedImage = visemeImages.get(selectedName) || neutralImage;
+      if (!target || !image || !box || !selectedImage || !neutralImage) return false;
+      const patch = prepareStylizedMouthPatch(
+        selectedImage, neutralImage, selectedName, box, image, spec, sample);
+      if (!patch) return false;
+      target.drawImage(patch, ...box);
+      return true;
     };
     const stripBracket = (values, target) => {
       if (!Array.isArray(values) || values.length < 2) return { low: 0, high: 0, mix: 0 };
@@ -5003,9 +5400,6 @@
         const neutralImage = visemeImages.get('sil') || oldImage || newImage;
         if (neutralImage) {
           faceContext.drawImage(neutralImage, 0, 0, portraitWidth, portraitHeight);
-          drawStylizedVisemePatch(faceContext, oldImage || neutralImage,
-            newImage || oldImage || neutralImage, blend,
-            previousViseme, currentViseme, neutralImage);
         }
       } else {
         // Photorealistic runtimes retain the reviewed full-frame crossfade.
@@ -5051,6 +5445,7 @@
       // phoneme/strength interpolation. Drawn and soft-3-D mouths select one
       // complete authored cell at a time; blending adjacent ink/teeth drawings
       // is the double/blurred-lip defect this stylized route exists to prevent.
+      let stylizedMouthDrawn = false;
       const drawVisemeMouth = (spec, image, amount, emotionIndex = 0) => {
         if (!spec || !image || !Array.isArray(spec.states)
             || !Array.isArray(spec.visemes) || amount <= .004) return;
@@ -5066,7 +5461,7 @@
             const selectedName = blend >= .5 ? currentViseme : previousViseme;
             const registeredName = rows.includes(selectedName)
               ? selectedName : (rows.includes('sil') ? 'sil' : rows[0]);
-            drawStylizedEmotionMouthSample(
+            stylizedMouthDrawn = drawStylizedEmotionMouthSample(
               faceContext, image, spec, sample, registeredName);
           }
           return;
@@ -5109,6 +5504,12 @@
         }
         drawVisemeMouth(dominant.spec, dominant.image,
           Number(dominant.amount || 0), dominant.index || 0);
+      }
+      if (stylizedRuntime && !stylizedMouthDrawn) {
+        const neutralImage = visemeImages.get('sil') || oldImage || newImage;
+        drawStylizedVisemePatch(faceContext, oldImage || neutralImage,
+          newImage || oldImage || neutralImage, blend,
+          previousViseme, currentViseme, neutralImage);
       }
       // Smile/laughter never changes the eyelid plate; only the natural blink
       // remains. Fear/surprise and anger keep their approved open-lash logic.
@@ -5199,13 +5600,19 @@
             Math.max(0, value * side), 0, true);
         }
       }
-      if (manifest.gaze) {
+      const gazeAfterUnderEye = Boolean(manifest.gaze && (
+        manifest.gaze.mode === 'soft-3d-rigid-iris-v1'
+        || manifest.gaze.mode === 'soft-3d-authored-iris-v1'
+        || manifest.gaze.mode === 'authored-2d-rigid-iris-v1'));
+      if (manifest.gaze && !gazeAfterUnderEye) {
         const row = nearestIndex(gazeYValues, gaze.y);
         for (const key of ['l', 'r']) drawStripState(faceContext, layers.gaze[key], manifest.gaze[key], gazeXValues, gaze.x, row);
       }
-      // Draw the infraorbital band after gaze. Its mask starts below the lash
-      // line, so it cannot cover the iris, while the gaze patch can no longer
-      // erase the speech-coupled lower-eye motion.
+      // Preserve the approved photo/legacy order. New cartoon gaze atlases own
+      // their measured wet-eye opening: older human-landmark under-eye masks
+      // can reach inside those larger eyes and repaint the moving lower iris.
+      // Paint the new gaze after that band, before lids, so only its exact
+      // aperture wins; surrounding under-eye expression remains untouched.
       if (manifest.eyebag) {
         const values = manifest.eyebag.ups || [0];
         const maximum = Number(values[values.length - 1] || 0);
@@ -5217,6 +5624,10 @@
           drawStripState(faceContext, layers.eyebag[key], manifest.eyebag[key], values,
             Math.max(blinkValue, speechValue * side), 0, true);
         }
+      }
+      if (manifest.gaze && gazeAfterUnderEye) {
+        const row = nearestIndex(gazeYValues, gaze.y);
+        for (const key of ['l', 'r']) drawStripState(faceContext, layers.gaze[key], manifest.gaze[key], gazeXValues, gaze.x, row);
       }
       const stylizedBlinkReady = stylizedRuntime
         && manifest.stylized_blink
@@ -6382,6 +6793,7 @@
       applyWorkspaceSidebarState();
       closeHistoryThreadMenus();
       closeRailPickers();
+      lastFrame = 0;
       reportControlRects(true);
     };
     const dismissHistoryOverlay = () => {
@@ -6400,6 +6812,7 @@
       workspaceInfoToggle.title = label;
       if (persist) localStorage.setItem('openclam.chat.info-collapsed', workspaceInfoCollapsed ? '1' : '0');
       syncChatWorkspaceGeometry();
+      lastFrame = 0;
       reportControlRects(true);
     };
 
@@ -8913,6 +9326,8 @@
 
     const applyShellState = value => {
       if (!value || typeof value !== 'object') return;
+      const avatarZoomChanged = Number(value.pet && value.pet.zoom) !== Number(shellState.pet && shellState.pet.zoom)
+        || Number(value.pet && value.pet.roamZoom) !== Number(shellState.pet && shellState.pet.roamZoom);
       const chatCloseUpChanged = Boolean(value.chatCloseUp) !== Boolean(shellState.chatCloseUp);
       const chatPoseRevisionChanged = Number(value.chatPoseRevision || 0)
         !== Number(shellState.chatPoseRevision || 0);
@@ -8950,6 +9365,7 @@
         markActivity({ preserveDisplayMode: true });
         lastFrame = 0;
       }
+      if (avatarZoomChanged) lastFrame = 0;
       syncDisplayModeControls();
       if (motion.walk) publishMotionReadiness();
     };
@@ -8975,9 +9391,12 @@
         };
         if (changed) {
           lastFrame = 0;
-          if (root.classList.contains('chat-mode')) markActivity();
         }
         updateHit(false);
+        // Cursor attention is not a conversation action. In Chat/Talk the
+        // pointer can arrive from anywhere on the desktop; only an actual
+        // avatar hover may interrupt a selected Walk/Moves presentation.
+        if (changed && root.classList.contains('chat-mode') && avatarHit) markActivity();
         // Frozen Edge Idle paints only on a low-rate maintenance cadence.
         // Pointer IPC is already event-driven, so use it to engage/release a
         // hovered avatar immediately instead of waiting for that maintenance
@@ -8985,6 +9404,21 @@
         syncPetEngagement();
       }
     };
+
+    const handleLocalPointerMove = event => {
+      // Listen above the canvas: the thread/composer can be the top layer,
+      // and mouse movement must not require a click or an active drag first.
+      // Touch scrolling remains unrelated to eye attention.
+      if (!event || (event.pointerType && event.pointerType !== 'mouse'
+          && event.pointerType !== 'pen')) return;
+      const x = event.clientX;
+      const y = event.clientY;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      handleGlobalPointer({ x, y,
+        inside: x >= 0 && y >= 0 && x < innerWidth && y < innerHeight });
+    };
+    document.addEventListener('pointermove', handleLocalPointerMove,
+      { passive: true, capture: true });
 
     const PET_ZOOM_RANGES = Object.freeze({
       stand: Object.freeze({ min: .25, max: 4 }),
@@ -8996,9 +9430,13 @@
       const value = Number(current);
       const safe = Number.isFinite(value) && value > 0 ? value : 1;
       if (!event || !event.ctrlKey) return safe;
+      const rawDelta = Number(event.deltaY);
+      if (!Number.isFinite(rawDelta)) return Math.max(range.min, Math.min(range.max, safe));
+      const pageHeight = Number.isFinite(Number(viewportHeight))
+        ? Math.max(1, Number(viewportHeight)) : 1;
       const unit = event.deltaMode === 1 ? 16
-        : event.deltaMode === 2 ? Math.max(1, Number(viewportHeight) || 1) : 1;
-      const delta = Math.max(-90, Math.min(90, Number(event.deltaY || 0) * unit));
+        : event.deltaMode === 2 ? pageHeight : 1;
+      const delta = Math.max(-90, Math.min(90, rawDelta * unit));
       const next = safe * Math.exp(-delta * .0075);
       return Math.max(range.min, Math.min(range.max, next));
     };
@@ -9014,6 +9452,7 @@
     const holdAvatarZoom = value => {
       const pet = shellState.pet || (shellState.pet = {});
       if (pet.roam) pet.roamZoom = value; else pet.zoom = value;
+      lastFrame = 0;
     };
 
     const publishAvatarZoom = phase => {
@@ -9171,6 +9610,7 @@
             x: canvasGesture.startOffset.x + deltaX,
             y: canvasGesture.startOffset.y + deltaY,
           });
+          lastFrame = 0;
           return;
         }
       }
@@ -9452,6 +9892,7 @@
       hideSelectionActions(false);
       applyWorkspaceSidebarState({ closeOverlay: workspaceSidebarIsOverlay() });
       resizeCanvas();
+      lastFrame = 0;
       reportControlRects(true);
     });
     addEventListener('blur', () => {

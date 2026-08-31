@@ -66,6 +66,7 @@ const defaultDependencies: BridgeClientDependencies = {
 type ActiveTurn = {
   frame: TurnSubmitFrame;
   controller: AbortController;
+  telemetryController: AbortController;
   acceptanceTask?: Promise<boolean>;
   revision: number;
   terminal: boolean;
@@ -77,6 +78,13 @@ type ActiveTurn = {
   deltaFlushTask?: Promise<void>;
   lastDeltaAt: number;
   deltaCount: number;
+  replyText: string;
+  outboundText: string;
+  textSequence: Promise<void>;
+  textDeliveries: Map<string, {
+    text: string;
+    receipt: Promise<{ messageId: string; conversationId: string }>;
+  }>;
   activityRevision: number;
   activityCount: number;
   lastActivityStatus?: ActivityStatus | null;
@@ -109,6 +117,9 @@ type PendingRelayFrame = {
   frame: ConnectorFrame;
   encoded: string;
   resolve: (persisted: boolean) => void;
+  receiptTimer?: NodeJS.Timeout;
+  transmittedSocket?: WebSocket;
+  transmissions: number;
 };
 
 type SafeRecoveryError = {
@@ -127,6 +138,43 @@ const MAX_ACTIVITY_FRAMES_PER_TURN = 32;
 const WORK_INTERVAL_MS = 250;
 const MAX_WORK_STEPS_PER_TURN = 12;
 const MAX_WORK_FRAMES_PER_TURN = 64;
+// Retry the same event, not a new sequence/revision. A still-open socket must
+// not conceal a missing durable receipt indefinitely.
+const RELAY_RECEIPT_INTERVAL_MS = 1_000;
+const MAX_RELAY_TRANSMISSIONS_PER_SOCKET = 3;
+// Progress is useful, but cannot own an unbounded barrier ahead of the result.
+// This is one budget for the entire drain, not one timeout per queued step.
+const WORK_DRAIN_BUDGET_MS = 2_000;
+const OUTBOUND_TEXT_RECEIPT_BUDGET_MS = 10_000;
+const MAX_OUTBOUND_TEXT_DELIVERIES = 32;
+
+function mergeVisibleText(current: string, incoming: string): string {
+  const trimmed = incoming.trim();
+  if (!current) return trimmed;
+  if (!trimmed || current === trimmed || current.endsWith(trimmed)) return current;
+  if (trimmed.startsWith(current) || trimmed.endsWith(current)) return trimmed;
+  // A normal final may repeat one of several tool-sent blocks rather than the
+  // entire cumulative reply. Keep every distinct block, without displaying
+  // that exact text a second time. Do not attempt semantic/fuzzy deduplication.
+  const incomingBlocks = new Set(trimmed.split(/\n\s*\n/));
+  const previous = current.split(/\n\s*\n/).filter((block) => !incomingBlocks.has(block));
+  return [...previous, trimmed].join("\n\n");
+}
+
+async function waitForTextReceipt<T>(receipt: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      receipt,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("openclam_text_delivery_unconfirmed")),
+          OUTBOUND_TEXT_RECEIPT_BUDGET_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function buildEventsUrl(bridgeUrl: string, connectionId: string): string {
   const base = new URL(bridgeUrl);
@@ -203,6 +251,105 @@ export class OpenClamBridgeClient {
 
   get accountCount(): number {
     return this.accounts.size;
+  }
+
+  async deliverTextToActiveConversation(params: {
+    accountId: string;
+    conversationId: string;
+    text: string;
+    replyToId?: string | null;
+    deliveryId?: string;
+    onPlatformSendDispatch?: () => Promise<void>;
+  }): Promise<{ messageId: string; conversationId: string }> {
+    const active = [...this.activeTurns.values()].find((candidate) =>
+      candidate.frame.conversationId === params.conversationId &&
+      candidate.frame.payload.accountId === params.accountId
+    );
+    if (!active || active.terminal || active.controller.signal.aborted) {
+      throw new Error("openclam_conversation_inactive");
+    }
+    if (params.replyToId?.trim() && params.replyToId !== active.frame.payload.turnId) {
+      throw new Error("openclam_reply_not_current_turn");
+    }
+    const text = redactPrivatePathReferences(params.text).trim();
+    if (!text) throw new Error("openclam_text_missing");
+    if (truncateUnicode(text, MAX_TEXT_LENGTH) !== text) {
+      throw new Error("openclam_text_too_large");
+    }
+    // Retries within this live turn reuse the same durable event. Without a
+    // host delivery intent, identical text is the bounded per-turn identity.
+    const key = params.deliveryId?.trim() ? `id:${params.deliveryId.trim()}` : `text:${text}`;
+    const existing = active.textDeliveries.get(key);
+    if (existing) {
+      if (existing.text !== text) throw new Error("openclam_text_delivery_conflict");
+      return await waitForTextReceipt(existing.receipt);
+    }
+    if (active.textDeliveries.size >= MAX_OUTBOUND_TEXT_DELIVERIES) {
+      throw new Error("openclam_text_delivery_limit");
+    }
+    const receipt = this.deliverActiveText(active, text, params.onPlatformSendDispatch);
+    active.textDeliveries.set(key, { text, receipt });
+    // A timeout is explicitly uncertain, never a fake successful send. The
+    // unchanged event stays in the relay outbox until ACK, cancel or an actual
+    // terminal receipt. Retrying this identity can await that same event.
+    return await waitForTextReceipt(receipt);
+  }
+
+  private async deliverActiveText(
+    active: ActiveTurn,
+    text: string,
+    onPlatformSendDispatch?: () => Promise<void>,
+  ): Promise<{ messageId: string; conversationId: string }> {
+    if (onPlatformSendDispatch) await onPlatformSendDispatch();
+    const reservation = await this.sequenceText(active, async () => {
+      if (active.terminal || active.controller.signal.aborted || this.lifecycle.signal.aborted) {
+        throw new Error("openclam_conversation_inactive");
+      }
+      const outboundText = mergeVisibleText(active.outboundText, text);
+      const visibleText = mergeVisibleText(outboundText, active.replyText);
+      if (truncateUnicode(visibleText, MAX_TEXT_LENGTH) !== visibleText) {
+        throw new Error("openclam_text_too_large");
+      }
+      let frame: ConnectorFrame | undefined;
+      let release!: () => void;
+      const reserved = new Promise<void>((resolve) => { release = resolve; });
+      const revision = active.revision + 1;
+      const persisted = this.sendAwaitingRelayPersistence(
+        "assistant.delta",
+        { turnId: active.frame.payload.turnId, revision, text: visibleText },
+        active.frame.conversationId,
+        undefined,
+        AbortSignal.any([active.controller.signal, active.telemetryController.signal]),
+        (created) => {
+          frame = created;
+          active.revision = revision;
+          active.outboundText = outboundText;
+          active.lastDeltaText = visibleText;
+          active.lastDeltaAt = Date.now();
+          const latest = mergeVisibleText(outboundText, active.replyText);
+          active.pendingDelta = latest === visibleText ? undefined : latest;
+          release();
+        },
+      );
+      void persisted.then(release, release);
+      // Serialize only revision/sequence reservation, never a missing ACK.
+      await reserved;
+      return { frame, persisted };
+    });
+    const persisted = await reservation.persisted;
+    if (!persisted || !reservation.frame || active.controller.signal.aborted) {
+      throw new Error("openclam_text_delivery_unconfirmed");
+    }
+    return {
+      messageId: reservation.frame.messageId,
+      conversationId: active.frame.conversationId,
+    };
+  }
+
+  private sequenceText<T>(active: ActiveTurn, work: () => Promise<T>): Promise<T> {
+    const task = active.textSequence.then(work);
+    active.textSequence = task.then(() => undefined, () => undefined);
+    return task;
   }
 
   async deliverMediaToActiveConversation(params: {
@@ -393,6 +540,12 @@ export class OpenClamBridgeClient {
       socket.once("close", (code) => {
         cleanup();
         if (this.socket === socket) this.socket = undefined;
+        for (const pending of this.relayOutbox.values()) {
+          if (pending.transmittedSocket === socket && pending.receiptTimer) {
+            clearTimeout(pending.receiptTimer);
+            pending.receiptTimer = undefined;
+          }
+        }
         for (const active of this.activeTurns.values()) {
           if (active.deltaTimer) clearTimeout(active.deltaTimer);
           active.deltaTimer = undefined;
@@ -497,12 +650,17 @@ export class OpenClamBridgeClient {
     const active: ActiveTurn = {
       frame,
       controller: new AbortController(),
+      telemetryController: new AbortController(),
       revision: 0,
       terminal: false,
       terminalPersisted: false,
       lastDeltaText: "",
       lastDeltaAt: 0,
       deltaCount: 0,
+      replyText: "",
+      outboundText: "",
+      textSequence: Promise.resolve(),
+      textDeliveries: new Map(),
       activityRevision: 0,
       activityCount: 0,
       lastActivityFrameAt: 0,
@@ -707,8 +865,12 @@ export class OpenClamBridgeClient {
               retryable: true,
             },
           );
-        } else if (code === "empty_reply" && active.attachmentCount > 0) {
-          const fallback = active.attachmentCaption ||
+        } else if (
+          code === "empty_reply" &&
+          !active.controller.signal.aborted &&
+          (active.attachmentCount > 0 || active.outboundText)
+        ) {
+          const fallback = active.outboundText || active.attachmentCaption ||
             `Created ${active.attachmentCount} ${active.attachmentCount === 1 ? "file" : "files"}.`;
           active.terminalPersisted = await this.beginTerminal(
             active,
@@ -843,13 +1005,27 @@ export class OpenClamBridgeClient {
     active.terminal = true;
     this.clearDeltaTimer(active);
     active.terminalTask = (async () => {
+      await active.textSequence;
       await this.drainWork(active);
       await this.markRecoveryError(active, recoveryError);
-      return this.sendAwaitingRelayPersistence(
+      const persisted = await this.sendAwaitingRelayPersistence(
         kind,
-        payload,
+        kind === "assistant.completed" && active.outboundText
+          ? { ...payload, text: truncateUnicode(
+            mergeVisibleText(active.outboundText, String(payload.text ?? "")), MAX_TEXT_LENGTH,
+          ) }
+          : payload,
         active.frame.conversationId,
       );
+      if (persisted) {
+        // Only a real terminal receipt supersedes uncertain progress events.
+        // Until then they retain their exact bytes in the reconnect outbox.
+        active.telemetryController.abort();
+        this.clearActivityTimer(active);
+        this.clearWorkTimer(active);
+        active.pendingWork.clear();
+      }
+      return persisted;
     })().catch(() => {
       this.log("warn", "terminal_delivery_failed");
       return false;
@@ -996,7 +1172,7 @@ export class OpenClamBridgeClient {
         : { turnId: active.frame.payload.turnId, revision, status },
       active.frame.conversationId,
       undefined,
-      active.controller.signal,
+      AbortSignal.any([active.controller.signal, active.telemetryController.signal]),
     );
     if (persisted) {
       active.activityRevision = revision;
@@ -1097,27 +1273,42 @@ export class OpenClamBridgeClient {
       { turnId: active.frame.payload.turnId, revision, ...step },
       active.frame.conversationId,
       undefined,
-      active.controller.signal,
+      AbortSignal.any([active.controller.signal, active.telemetryController.signal]),
     );
     if (persisted) {
       active.workRevision = revision;
       active.workCount += 1;
       active.lastWork.set(stepId, JSON.stringify(step));
       active.lastWorkFrameAt = Date.now();
-    } else if (!active.controller.signal.aborted) {
+    } else if (!active.terminal && !active.controller.signal.aborted) {
       active.pendingWork.set(stepId, step);
     }
   }
 
   private async drainWork(active: ActiveTurn): Promise<void> {
     this.clearWorkTimer(active);
-    while (
-      active.pendingWork.size > 0 &&
-      active.workCount < MAX_WORK_FRAMES_PER_TURN &&
-      this.socket?.readyState === WebSocket.OPEN &&
-      !active.controller.signal.aborted
-    ) {
-      await this.flushWork(active, true);
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), WORK_DRAIN_BUDGET_MS);
+    });
+    try {
+      while (
+        active.pendingWork.size > 0 &&
+        active.workCount < MAX_WORK_FRAMES_PER_TURN &&
+        this.socket?.readyState === WebSocket.OPEN &&
+        !active.controller.signal.aborted
+      ) {
+        const flushed = await Promise.race([
+          this.flushWork(active, true).then(() => true),
+          deadline,
+        ]);
+        if (!flushed) {
+          this.log("warn", "work_drain_receipt_timeout");
+          return;
+        }
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -1182,6 +1373,9 @@ export class OpenClamBridgeClient {
   }
 
   private async offerDelta(active: ActiveTurn, text: string): Promise<void> {
+    if (!text || active.terminal || active.controller.signal.aborted) return;
+    active.replyText = text;
+    text = mergeVisibleText(active.outboundText, text);
     if (
       !text ||
       text === active.pendingDelta ||
@@ -1234,6 +1428,10 @@ export class OpenClamBridgeClient {
   }
 
   private async performDeltaFlush(active: ActiveTurn): Promise<void> {
+    await this.sequenceText(active, () => this.transmitDelta(active));
+  }
+
+  private async transmitDelta(active: ActiveTurn): Promise<void> {
     if (
       this.lifecycle.signal.aborted ||
       active.terminal ||
@@ -1243,9 +1441,10 @@ export class OpenClamBridgeClient {
     ) {
       return;
     }
-    const text = active.pendingDelta;
-    if (!text) return;
+    if (!active.pendingDelta) return;
+    const text = mergeVisibleText(active.outboundText, active.replyText);
     active.pendingDelta = undefined;
+    if (!text || text === active.lastDeltaText) return;
     const revision = active.revision + 1;
     let delivered = false;
     try {
@@ -1287,12 +1486,14 @@ export class OpenClamBridgeClient {
       | "assistant.activity.clear"
       | "assistant.work.upsert"
       | "assistant.attachment"
+      | "assistant.delta"
       | "assistant.completed"
       | "turn.error",
     payload: Record<string, unknown>,
     conversationId: string,
     replyTo?: number,
     signal?: AbortSignal,
+    onReserved?: (frame: ConnectorFrame) => void,
   ): Promise<boolean> {
     if (this.lifecycle.signal.aborted || signal?.aborted) return false;
     let frame: ConnectorFrame | undefined;
@@ -1316,16 +1517,24 @@ export class OpenClamBridgeClient {
         : { frame: created, encoded: encodeFrame(created) };
     const reserved = prepared.frame;
     const encoded = prepared.encoded;
+    onReserved?.(reserved);
     return new Promise<boolean>((resolve) => {
       let settled = false;
       let onAbort = () => undefined;
       const finish = (persisted: boolean) => {
         if (settled) return;
         settled = true;
+        if (pending.receiptTimer) clearTimeout(pending.receiptTimer);
+        pending.receiptTimer = undefined;
         signal?.removeEventListener("abort", onAbort);
         resolve(persisted);
       };
-      const pending: PendingRelayFrame = { frame: reserved, encoded, resolve: finish };
+      const pending: PendingRelayFrame = {
+        frame: reserved,
+        encoded,
+        resolve: finish,
+        transmissions: 0,
+      };
       onAbort = () => {
         if (this.relayOutbox.get(reserved.messageId) === pending) {
           this.relayOutbox.delete(reserved.messageId);
@@ -1338,10 +1547,7 @@ export class OpenClamBridgeClient {
         onAbort();
         return;
       }
-      const socket = this.socket;
-      if (socket?.readyState === WebSocket.OPEN) {
-        this.transmit(socket, encoded);
-      }
+      this.transmitRelayFrame(pending);
     });
   }
 
@@ -1400,6 +1606,42 @@ export class OpenClamBridgeClient {
     }
   }
 
+  private transmitRelayFrame(pending: PendingRelayFrame): boolean {
+    const socket = this.socket;
+    if (
+      this.lifecycle.signal.aborted ||
+      this.relayOutbox.get(pending.frame.messageId) !== pending ||
+      socket?.readyState !== WebSocket.OPEN
+    ) return false;
+    if (pending.receiptTimer) clearTimeout(pending.receiptTimer);
+    pending.receiptTimer = undefined;
+    if (pending.transmittedSocket !== socket) {
+      pending.transmittedSocket = socket;
+      pending.transmissions = 0;
+    }
+    if (!this.transmit(socket, pending.encoded)) return false;
+    pending.transmissions += 1;
+    pending.receiptTimer = setTimeout(() => {
+      pending.receiptTimer = undefined;
+      if (
+        this.lifecycle.signal.aborted ||
+        this.relayOutbox.get(pending.frame.messageId) !== pending ||
+        this.socket !== socket ||
+        socket.readyState !== WebSocket.OPEN
+      ) return;
+      if (pending.transmissions >= MAX_RELAY_TRANSMISSIONS_PER_SOCKET) {
+        this.log("warn", `relay_receipt_timeout kind=${pending.frame.kind}`);
+        // A graceful close can itself wait for the unresponsive peer. Force
+        // reconnect without retiring the pairing or resolving a false success.
+        // flushPendingTransmissions replays the original events in seq order.
+        socket.terminate();
+        return;
+      }
+      this.transmitRelayFrame(pending);
+    }, RELAY_RECEIPT_INTERVAL_MS);
+    return true;
+  }
+
   private enqueueFrame(frame: QueuedFrame): void {
     const droppable = (candidate: QueuedFrame) =>
       candidate.kind === "heartbeat" || candidate.kind === "assistant.delta" || candidate.kind === "ack";
@@ -1427,7 +1669,10 @@ export class OpenClamBridgeClient {
     });
     for (const item of pending) {
       if (socket.readyState !== WebSocket.OPEN) break;
-      if (!this.transmit(socket, item.frame.encoded)) break;
+      const transmitted = item.type === "relay"
+        ? this.transmitRelayFrame(item.frame)
+        : this.transmit(socket, item.frame.encoded);
+      if (!transmitted) break;
       if (item.type === "queued") {
         const index = this.outboundQueue.indexOf(item.frame);
         if (index >= 0) this.outboundQueue.splice(index, 1);

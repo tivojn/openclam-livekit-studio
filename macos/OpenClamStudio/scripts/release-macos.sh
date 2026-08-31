@@ -20,11 +20,16 @@ UVX_BIN="$(command -v uvx || true)"
 WORK_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/openclam-release.XXXXXX")"
 MOUNT_DIR="$WORK_DIR/mounted-dmg"
 MOUNTED=0
+REUSE_STAGED_RUNTIME=0
 
 PACKAGE_VERSION="$(/usr/bin/plutil -extract version raw -o - "$PROJECT_ROOT/package.json" 2>/dev/null)" \
   || { echo 'release failed: package.json has no readable version' >&2; exit 1; }
 [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { echo 'release failed: package version must be strict X.Y.Z' >&2; exit 1; }
+# The backend reads this same canonical file outside ASAR. Capture its exact
+# bytes once so a missing/stale resource cannot pass app/DMG verification.
+PACKAGE_METADATA_SHA="$(/usr/bin/shasum -a 256 "$PROJECT_ROOT/package.json")"
+PACKAGE_METADATA_SHA="${PACKAGE_METADATA_SHA%% *}"
 
 PROFILE_VERIFIED=0
 XAI_OAUTH_CLIENT_VERIFIED=0
@@ -56,6 +61,13 @@ fail() {
   exit 1
 }
 
+for argument in "$@"; do
+  case "$argument" in
+    --reuse-staged-runtime) REUSE_STAGED_RUNTIME=1 ;;
+    *) fail "unknown release option: $argument" ;;
+  esac
+done
+
 cleanup() {
   if [[ "$MOUNTED" -eq 1 ]]; then
     /usr/bin/hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || true
@@ -68,6 +80,26 @@ trap 'exit 143' TERM
 
 require_executable() {
   [[ -x "$1" ]] || fail "required executable is unavailable: $1"
+}
+
+stage_release_backend() {
+  if [[ "$REUSE_STAGED_RUNTIME" -eq 1 ]]; then
+    # Reuse only the expensive dependency staging. All source/privacy,
+    # native, staged-runtime and signing/notary gates still run below.
+    local directory
+    for directory in .electron-python-runtime .electron-site-packages .electron-ffmpeg; do
+      [[ -d "$PROJECT_ROOT/$directory" && ! -L "$PROJECT_ROOT/$directory" ]] \
+        || fail "required staged runtime directory is missing or symlinked: $directory"
+    done
+    require_executable "$PROJECT_ROOT/.electron-python-runtime/bin/python"
+    require_executable "$PROJECT_ROOT/.electron-ffmpeg/ffmpeg"
+    require_executable "$PROJECT_ROOT/.electron-ffmpeg/ffprobe"
+    [[ -f "$PROJECT_ROOT/.electron-site-packages/cv2/__init__.py" ]] \
+      || fail 'required staged OpenCV runtime is missing'
+    echo 'Reusing staged backend runtime; all release audits remain mandatory.'
+  else
+    npm run stage:backend
+  fi
 }
 
 require_sha256() {
@@ -287,6 +319,14 @@ verify_bundle_metadata() {
     || fail "$label has the wrong bundle identifier: $identifier"
   [[ "$version" == "$expected_version" ]] \
     || fail "$label has the wrong bundle version: $version"
+  local backend_package="$app_path/Contents/Resources/backend/package.json"
+  require_sha256 "$backend_package" "$PACKAGE_METADATA_SHA" \
+    "$label backend package metadata"
+  local backend_version
+  backend_version="$(/usr/bin/plutil -extract version raw -o - "$backend_package" 2>/dev/null)" \
+    || fail "$label has no backend version"
+  [[ "$backend_version" == "$expected_version" ]] \
+    || fail "$label has the wrong backend version: $backend_version"
 }
 
 submit_and_require_accepted() {
@@ -394,7 +434,7 @@ require_sha256 "$WHISPER_STAGE/openclam-model-manifest.json" "$WHISPER_MANIFEST_
   'staged Whisper manifest'
 
 npm run build:native
-npm run stage:backend
+stage_release_backend
 npm run stage:openclaw
 
 require_exact_directory_files "$PROJECT_ROOT/.electron-openclaw-plugin" \

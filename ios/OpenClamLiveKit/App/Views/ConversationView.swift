@@ -33,7 +33,8 @@ enum ConversationNavigationTitlePresentation {
     static func title(
         threadTitle: String,
         remoteAgentDisplayName: String?,
-        isRemoteTurnActive: Bool
+        isRemoteTurnActive: Bool,
+        remoteActivityPhase: RemoteAgentActivityPresentation.Phase? = nil
     ) -> String {
         guard let remoteAgentDisplayName = remoteAgentDisplayName?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -41,9 +42,12 @@ enum ConversationNavigationTitlePresentation {
             return threadTitle
         }
 
-        return isRemoteTurnActive
-            ? "Typing..."
-            : "OpenClaw - \(remoteAgentDisplayName)"
+        guard isRemoteTurnActive else { return "OpenClaw - \(remoteAgentDisplayName)" }
+        switch remoteActivityPhase {
+        case .downloading: return "Receiving file…"
+        case .cancelling: return "Cancelling…"
+        default: return "Typing..."
+        }
     }
 }
 
@@ -100,8 +104,11 @@ enum ConversationSpeechStatusCopy {
 enum ConversationThreadLayout {
     static let horizontalContentInset: CGFloat = 16
     static let avatarRailWidth: CGFloat = 64
-    static let avatarRailTextClearance: CGFloat = 12
-    static let trailingMessageInset = avatarRailWidth + avatarRailTextClearance
+    static let avatarRailButtonWidth: CGFloat = 44
+    static let avatarRailTextClearance: CGFloat = 8
+    // The 44-point buttons are centered inside the 64-point rail frame. Only
+    // the actual controls, not its empty left gutter, need a text clearance.
+    static let avatarRailOccupiedWidth = (avatarRailWidth + avatarRailButtonWidth) / 2
     static let standardAnchoredTurnTopClearance: CGFloat = 64
     static let accessibilityAnchoredTurnTopClearance: CGFloat = 80
     static let userBubbleMaximumWidth: CGFloat = 560
@@ -146,9 +153,13 @@ enum ConversationThreadLayout {
     static func userBubbleWidth(
         viewportWidth: CGFloat,
         naturalTextWidth: CGFloat,
-        hasAttachments: Bool
+        hasAttachments: Bool,
+        isRailFolded: Bool
     ) -> CGFloat {
-        let availableWidth = messageLaneWidth(viewportWidth: viewportWidth)
+        let availableWidth = messageLaneWidth(
+            viewportWidth: viewportWidth,
+            isRailFolded: isRailFolded
+        )
         let maximumWidth = min(
             availableWidth,
             userBubbleMaximumWidth,
@@ -162,20 +173,29 @@ enum ConversationThreadLayout {
         return min(maximumWidth, max(userBubbleMinimumWidth, desiredWidth))
     }
 
-    /// The avatar tool rail owns the physical trailing edge of the screen.
-    /// Keep every transcript row to its left so text remains readable while
-    /// the transparent space between rail buttons can still scroll normally.
-    static func messageLaneWidth(viewportWidth: CGFloat) -> CGFloat {
+    /// The expanded rail owns the physical right edge. Once folded, its only
+    /// remaining control is at the bottom, so the thread regains normal margins.
+    static func trailingMessageInset(isRailFolded: Bool) -> CGFloat {
+        isRailFolded
+            ? horizontalContentInset
+            : avatarRailOccupiedWidth + avatarRailTextClearance
+    }
+
+    static func messageLaneWidth(
+        viewportWidth: CGFloat,
+        isRailFolded: Bool
+    ) -> CGFloat {
         max(
             0,
-            viewportWidth - horizontalContentInset - trailingMessageInset
+            viewportWidth - horizontalContentInset
+                - trailingMessageInset(isRailFolded: isRailFolded)
         )
     }
 
-    /// The stack already supplies `horizontalContentInset` on both sides, so
-    /// rows need only the difference to establish the full trailing safe lane.
-    static var additionalMessageRowTrailingPadding: CGFloat {
-        max(0, trailingMessageInset - horizontalContentInset)
+    /// Apply this once to the whole thread, including work cards and starter
+    /// prompts. Per-row spacers would otherwise reserve the same space twice.
+    static func additionalContentTrailingPadding(isRailFolded: Bool) -> CGFloat {
+        max(0, trailingMessageInset(isRailFolded: isRailFolded) - horizontalContentInset)
     }
 }
 
@@ -790,6 +810,12 @@ struct ConversationView: View {
             }
             Color.clear.frame(height: 4).id("bottom")
         }
+        .padding(
+            physicalRightThreadEdge,
+            ConversationThreadLayout.additionalContentTrailingPadding(
+                isRailFolded: isAvatarRailFolded
+            )
+        )
     }
 
     private func threadMessageRow(
@@ -797,10 +823,6 @@ struct ConversationView: View {
         viewportWidth: CGFloat
     ) -> some View {
         messageBubble(message, viewportWidth: viewportWidth)
-            .padding(
-                physicalRightThreadEdge,
-                ConversationThreadLayout.additionalMessageRowTrailingPadding
-            )
             .padding(
                 .top,
                 message.id == threadPositioning.anchoredUserMessageID
@@ -817,7 +839,7 @@ struct ConversationView: View {
         viewportWidth: CGFloat
     ) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            if message.role == .user { Spacer(minLength: 18) }
+            if message.role == .user { Spacer(minLength: 0) }
             Text(message.text)
                 .font(.body)
                 .foregroundStyle(.primary)
@@ -835,9 +857,14 @@ struct ConversationView: View {
                         ? ConversationThreadLayout.userBubbleWidth(
                             viewportWidth: viewportWidth,
                             naturalTextWidth: naturalUserMessageWidth(message.text),
-                            hasAttachments: false
+                            hasAttachments: false,
+                            isRailFolded: isAvatarRailFolded
                         )
                         : nil,
+                    alignment: .leading
+                )
+                .frame(
+                    maxWidth: message.role == .assistant ? .infinity : nil,
                     alignment: .leading
                 )
             ProgressView()
@@ -847,13 +874,8 @@ struct ConversationView: View {
                         ? "Transcribing your speech"
                         : "Receiving the agent's reply"
                 )
-            if message.role == .assistant { Spacer(minLength: 18) }
         }
         .frame(maxWidth: .infinity)
-        .padding(
-            physicalRightThreadEdge,
-            ConversationThreadLayout.additionalMessageRowTrailingPadding
-        )
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(
             message.role == .user
@@ -874,19 +896,17 @@ struct ConversationView: View {
                     width: ConversationThreadLayout.userBubbleWidth(
                         viewportWidth: viewportWidth,
                         naturalTextWidth: naturalUserMessageWidth(message.text),
-                        hasAttachments: !message.attachments.isEmpty
+                        hasAttachments: !message.attachments.isEmpty,
+                        isRailFolded: isAvatarRailFolded
                     ),
                     alignment: .leading
                 )
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .accessibilityElement(children: .contain)
         } else {
-            HStack(alignment: .top) {
-                messageBubbleContent(message)
-                Spacer(minLength: 18)
-            }
-            .accessibilityElement(children: .contain)
-            .frame(maxWidth: .infinity)
+            messageBubbleContent(message)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .contain)
         }
     }
 
@@ -1382,34 +1402,47 @@ struct ConversationView: View {
                 HStack(spacing: 8) {
                     suggestion(
                         "Nearby McDonald’s",
+                        id: "nearby",
                         icon: "location.fill",
                         prompt: "Find the nearest McDonald’s to me."
                     )
                     suggestion(
                         "Email Emma",
+                        id: "email",
                         icon: "envelope",
                         prompt: "Write an email to Emma in my contacts saying I’ll be about 15 minutes late."
                     )
                     suggestion(
                         "Calendar",
+                        id: "calendar",
                         icon: "calendar.badge.plus",
                         prompt: "Add dinner tomorrow at 7 PM for 90 minutes."
                     )
                     suggestion(
                         "Ask anything",
+                        id: "ask-anything",
                         icon: "sparkles",
                         prompt: "Explain in simple terms why the sky looks blue."
                     )
                 }
+                // Keep all choices in the scrollable content at their natural
+                // width instead of compressing later chips into the viewport.
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.vertical, 2)
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .accessibilityIdentifier("openclam-starter-suggestions")
-            .padding(.trailing, 68)
+            .accessibilityHint("Swipe horizontally for more prompts")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 4)
     }
 
-    private func suggestion(_ title: String, icon: String, prompt: String) -> some View {
+    private func suggestion(
+        _ title: String,
+        id: String,
+        icon: String,
+        prompt: String
+    ) -> some View {
         Button {
             conversation.stopSpeechOutput()
             confirmedActionNotice = nil
@@ -1423,11 +1456,14 @@ struct ConversationView: View {
         } label: {
             Label(title, systemImage: icon)
                 .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 4)
                 .frame(minHeight: 44)
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.capsule)
+        .accessibilityIdentifier("openclam-starter-prompt-\(id)")
     }
 
     private var pronunciationCard: some View {
@@ -2727,7 +2763,8 @@ struct ConversationView: View {
         ConversationNavigationTitlePresentation.title(
             threadTitle: conversation.currentThreadTitle,
             remoteAgentDisplayName: currentRemoteBinding?.displayName,
-            isRemoteTurnActive: isRemoteOpenClawTurnActive
+            isRemoteTurnActive: isRemoteOpenClawTurnActive,
+            remoteActivityPhase: conversation.remoteAgentActivity?.phase
         )
     }
 

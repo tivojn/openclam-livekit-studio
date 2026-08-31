@@ -749,8 +749,151 @@ class MotionServerTransactionTests(unittest.TestCase):
                              b"preserved-face-bank")
             self.assertFalse(os.path.exists(live + ".previous"))
 
+    def test_runtime_v22_is_republished_under_current_bundle_version(self):
+        """The handoff marker bump must invalidate an otherwise current v22."""
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "stale-v22"
+            live = os.path.join(avatar_dir, "runtime")
+            os.makedirs(live)
+            Path(live, "manifest.json").write_text(json.dumps({"v": 22}))
+            registry = FakeRegistry(
+                avatar_dir, {"slug": slug, "status": "ready"})
+
+            def republish(_slug, log=None):
+                Path(live, "manifest.json").write_text(json.dumps({
+                    "v": runtime_export.RUNTIME_VERSION,
+                }))
+
+            logs = []
+            with mock.patch.object(server_app, "reg", return_value=registry), \
+                    mock.patch.object(
+                        server_app, "_publish_runtime_atomic",
+                        side_effect=republish) as publish:
+                self.assertEqual(
+                    live, server_app.ensure_runtime(slug, log=logs.append))
+
+            publish.assert_called_once()
+            self.assertEqual(
+                runtime_export.RUNTIME_VERSION,
+                json.loads(Path(live, "manifest.json").read_text())["v"])
+            self.assertEqual(23, server_app.RUNTIME_VERSION)
+            self.assertEqual(
+                server_app.RUNTIME_VERSION, runtime_export.RUNTIME_VERSION)
+            self.assertTrue(any(
+                "runtime bundle is v22; republishing as v23" in line
+                for line in logs))
+
+    def test_current_runtime_drops_unverified_motion_when_refresh_fails(self):
+        """A current schema version cannot bypass the owner's motion audit."""
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "current-stale-motion"
+            live = os.path.join(avatar_dir, "runtime")
+            os.makedirs(live)
+            Path(avatar_dir, "manifest.json").write_text(json.dumps({
+                "slug": slug,
+                "status": "ready",
+                "source_medium_override": "illustration",
+            }))
+            Path(live, "motion-move-0.png").write_bytes(b"stale-atlas")
+            Path(live, "motion-move.mov").write_bytes(b"stale-iphone-video")
+            Path(live, "manifest.json").write_text(json.dumps({
+                "v": server_app.RUNTIME_VERSION,
+                "motion": {
+                    "v": motion.MOTION_VERSION,
+                    "move": {
+                        "sheets": [{"image": "assets/motion-move-0.png"}],
+                        "alpha_stream_hevc": "assets/motion-move.mov",
+                        "source_medium": "illustration",
+                        # A label without a successful strict frame-audit
+                        # receipt is not sufficient for an explicit lane.
+                    },
+                },
+            }))
+            registry = FakeRegistry(avatar_dir, {
+                "slug": slug,
+                "status": "ready",
+                "source_medium_override": "illustration",
+            })
+            logs = []
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(
+                        server_app, "_publish_runtime_atomic",
+                        side_effect=RuntimeError("refresh failed")) as publish):
+                self.assertEqual(
+                    live, server_app.ensure_runtime(slug, log=logs.append))
+
+            publish.assert_called_once()
+            runtime = json.loads(Path(live, "manifest.json").read_text())
+            self.assertIsNone(runtime["motion"])
+            self.assertFalse(Path(live, "motion-move-0.png").exists())
+            # iPhone packaging reads this HEVC reference from the runtime
+            # manifest, so removing both it and the asset closes that path.
+            self.assertFalse(Path(live, "motion-move.mov").exists())
+            self.assertTrue(any(
+                "removed unverified motion" in line and "move" in line
+                for line in logs))
+
+    def test_failed_legacy_refresh_preserves_only_current_audited_motion(self):
+        """Fail closed per clip, without sacrificing a proven sibling take."""
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            slug = "mixed-motion"
+            live = os.path.join(avatar_dir, "runtime")
+            os.makedirs(live)
+            Path(avatar_dir, "manifest.json").write_text(json.dumps({
+                "slug": slug,
+                "status": "ready",
+                "source_medium_override": "3d render",
+            }))
+            Path(live, "motion-walk-0.png").write_bytes(b"audited-walk")
+            Path(live, "motion-idle-0.png").write_bytes(b"stale-idle")
+            receipt = {
+                "v": motion.MOTION_SOURCE_MEDIUM_AUDIT_VERSION,
+                "strict": True,
+                "valid": True,
+                "expected": "3d render",
+            }
+            Path(live, "manifest.json").write_text(json.dumps({
+                "v": 22,
+                "motion": {
+                    "v": motion.MOTION_VERSION,
+                    "walk": {
+                        "sheets": [{"image": "assets/motion-walk-0.png"}],
+                        "source_medium": "3d render",
+                        "source_medium_quality": receipt,
+                    },
+                    "idle": {
+                        "sheets": [{"image": "assets/motion-idle-0.png"}],
+                        "source_medium": "illustration",
+                        "source_medium_quality": {
+                            **receipt, "expected": "illustration",
+                        },
+                    },
+                },
+            }))
+            registry = FakeRegistry(avatar_dir, {
+                "slug": slug,
+                "status": "ready",
+                "source_medium_override": "3d render",
+            })
+            with (
+                    mock.patch.object(server_app, "reg", return_value=registry),
+                    mock.patch.object(
+                        server_app, "_publish_runtime_atomic",
+                        side_effect=RuntimeError("refresh failed"))):
+                self.assertEqual(
+                    live, server_app.ensure_runtime(
+                        slug, log=lambda _line: None))
+
+            runtime = json.loads(Path(live, "manifest.json").read_text())
+            self.assertEqual(22, runtime["v"])
+            self.assertIn("walk", runtime["motion"])
+            self.assertNotIn("idle", runtime["motion"])
+            self.assertTrue(Path(live, "motion-walk-0.png").exists())
+            self.assertFalse(Path(live, "motion-idle-0.png").exists())
+
     def test_runtime_only_v16_missing_under_eye_stays_legacy(self):
-        """A preserved bank cannot claim v22 when its under-eye strip is gone."""
+        """A preserved bank cannot claim current when under-eye is gone."""
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "missing-under-eye"
             live = os.path.join(avatar_dir, "runtime")
@@ -782,11 +925,12 @@ class MotionServerTransactionTests(unittest.TestCase):
             self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
             self.assertFalse(os.path.exists(live + ".previous"))
             self.assertTrue(any(
-                "runtime under-eye layer is missing; cannot migrate to v22" in line
+                "runtime under-eye layer is missing; cannot migrate to "
+                f"v{server_app.RUNTIME_VERSION}" in line
                 for line in logs))
 
     def test_runtime_only_v17_missing_forehead_stays_legacy(self):
-        """A v17 bank needs a source rebuild before it can claim v22."""
+        """A v17 bank needs a source rebuild before it can claim current."""
         with tempfile.TemporaryDirectory() as avatar_dir:
             slug = "missing-forehead"
             live = os.path.join(avatar_dir, "runtime")
@@ -816,7 +960,8 @@ class MotionServerTransactionTests(unittest.TestCase):
 
             self.assertEqual(Path(live, "manifest.json").read_bytes(), original)
             self.assertTrue(any(
-                "runtime forehead layer is missing; cannot migrate to v22" in line
+                "runtime forehead layer is missing; cannot migrate to "
+                f"v{server_app.RUNTIME_VERSION}" in line
                 for line in logs))
 
     def test_settings_resumes_and_tracks_the_reserved_job(self):
@@ -1029,6 +1174,40 @@ class WalkKeyframeWardrobeGateTests(unittest.TestCase):
                         body_sources={"walk": (str(reference),)},
                     )
             generate.assert_not_called()
+
+    def test_in_place_walk_uses_xai_native_nine_by_sixteen_grid(self):
+        """Office/stylized gait must not send xAI its rejected 2:3 ratio."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = root / "cache"
+            keyframe = root / "walk.png"
+            keyframe.write_bytes(b"keyframe")
+            generated = root / "provider.mp4"
+            generated.write_bytes(b"video")
+            provider = {"title": "Video", "model": "test"}
+            with (
+                    mock.patch.object(
+                        motion, "_loop_walk_keyframe",
+                        return_value=str(keyframe)) as compose,
+                    mock.patch.object(
+                        motion.media_gen, "generate_video_from_image_sync",
+                        return_value=str(generated)) as generate):
+                result = motion._generate_videos(
+                    str(cache), {}, provider, {"walk": str(keyframe)},
+                    {"walk": "walk"}, log=lambda _message: None,
+                    kinds=("walk",),
+                    walk_style={
+                        "id": "custom",
+                        "prompt": "walk with a calm natural two-step gait",
+                    },
+                )
+
+            compose.assert_called_once()
+            self.assertTrue(Path(result["walk"]).is_file())
+            self.assertEqual(
+                "9:16", generate.call_args.kwargs["aspect_ratio"])
+            self.assertEqual(720, motion.LOOP_WALK_PLATE["width"])
+            self.assertEqual(1280, motion.LOOP_WALK_PLATE["height"])
 
 if __name__ == "__main__":
     unittest.main()

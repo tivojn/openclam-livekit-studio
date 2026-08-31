@@ -1,6 +1,6 @@
 {
   "name": "openclam-livekit-studio",
-  "version": "1.0.10",
+  "version": "1.0.15",
   "author": "OpenClam contributors",
   "license": "MIT",
   "private": true,
@@ -23,8 +23,8 @@
     "build:native": "npm run build:cutout",
     "stage:livekit": "node scripts/stage-livekit-assets.mjs",
     "pretest": "npm run stage:livekit",
-    "test": ".venv/bin/python -m unittest discover -s tests -v && node qa/track_qa.js && node qa/pet_window_bounds_qa.js && node qa/pet_window_level_qa.js && node qa/avatar_store_qa.js && node qa/standalone_shell_qa.js && node qa/openclam_desktop_renderer_qa.js && node qa/openclam_settings_qa.js && node qa/codex_macos_theme_qa.js && node qa/menu_accessibility_qa.js && node qa/release_security_qa.js",
-    "check:syntax": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/avatar-store.cjs && node --check electron/bubble-preload.cjs && node --check electron/appearance-preload.cjs && node --check electron/menu-preload.cjs && node --check electron/pet-window-bounds.cjs && node --check electron/pet-window-level.cjs && node --check qa/life_probe.js && node --check qa/track_qa.js && node --check qa/pet_window_bounds_qa.js && node --check qa/pet_window_level_qa.js && node --check qa/avatar_store_qa.js && node --check qa/standalone_shell_qa.js && node --check qa/openclam_desktop_renderer_qa.js && node --check qa/openclam_settings_qa.js && node --check qa/codex_macos_theme_qa.js && node --check qa/menu_accessibility_qa.js && node --check qa/release_security_qa.js && /bin/bash -n scripts/release-macos.sh && /bin/bash -n scripts/stage-openclaw-plugin.sh && node scripts/check-inline-scripts.mjs && .venv/bin/python -m compileall -q server studio tests scripts qa",
+    "test": ".venv/bin/python -m unittest discover -s tests -v && node qa/track_qa.js && node qa/pet_window_bounds_qa.js && node qa/pet_window_level_qa.js && node qa/avatar_store_qa.js && node qa/standalone_shell_qa.js && node qa/openclam_desktop_renderer_qa.js && node qa/cursor_gaze_qa.js && node qa/openclam_settings_qa.js && node qa/codex_macos_theme_qa.js && node qa/menu_accessibility_qa.js && node qa/release_security_qa.js",
+    "check:syntax": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/avatar-store.cjs && node --check electron/bubble-preload.cjs && node --check electron/appearance-preload.cjs && node --check electron/menu-preload.cjs && node --check electron/pet-window-bounds.cjs && node --check electron/pet-window-level.cjs && node --check qa/life_probe.js && node --check qa/track_qa.js && node --check qa/pet_window_bounds_qa.js && node --check qa/pet_window_level_qa.js && node --check qa/avatar_store_qa.js && node --check qa/standalone_shell_qa.js && node --check qa/openclam_desktop_renderer_qa.js && node --check qa/cursor_gaze_qa.js && node --check qa/openclam_settings_qa.js && node --check qa/codex_macos_theme_qa.js && node --check qa/menu_accessibility_qa.js && node --check qa/release_security_qa.js && /bin/bash -n scripts/release-macos.sh && /bin/bash -n scripts/stage-openclaw-plugin.sh && node scripts/check-inline-scripts.mjs && .venv/bin/python -m compileall -q server studio tests scripts qa",
     "check:native": "scripts/build-person-cutout.sh --check",
     "check:privacy": ".venv/bin/python scripts/public-release-audit.py .",
     "check:avatar": "node qa/life_probe.js . check && .venv/bin/python -W ignore qa/blink_lash_qa.py && .venv/bin/python -W ignore qa/mouth_motion_qa.py",
@@ -46,6 +46,7 @@
     "appId": "com.lionheart.openclam.macos",
     "productName": "OpenClam Studio",
     "asar": true,
+    "afterPack": "scripts/package-backend-metadata.cjs",
     "forceCodeSigning": true,
     "npmRebuild": false,
     "directories": {

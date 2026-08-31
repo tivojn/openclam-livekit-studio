@@ -9,8 +9,9 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,13 +34,17 @@ def route_test_application():
         )
     }
     fake_rig.DENTAL_DONORS = {"upper": ("SS",), "lower": ("ih",)}
+    fake_body = types.ModuleType("studio.body")
+    fake_body.STYLIZED_HEAD_HANDOFF_VERSION = 4
     fake_studio.rig = fake_rig
+    fake_studio.body = fake_body
     name = f"_openclam_standalone_route_app_{id(fake_studio)}"
     spec = importlib.util.spec_from_file_location(name, ROOT / "server" / "app.py")
     module = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, {
         "studio": fake_studio,
         "studio.rig": fake_rig,
+        "studio.body": fake_body,
         name: module,
     }):
         spec.loader.exec_module(module)
@@ -229,6 +234,149 @@ class StandaloneRouteTests(unittest.TestCase):
             "/api/avatar/export", "/api/avatar/import",
         }
         self.assertTrue(expected.issubset(self.routes), expected - self.routes.keys())
+
+    def test_startup_recovers_face_before_body_and_runtime_publication(self):
+        events = []
+
+        class Registry:
+            @staticmethod
+            def list_avatars():
+                return [{"slug": "captain"}]
+
+            @staticmethod
+            def face_rebuild_recovery_slugs():
+                return ["captain"]
+
+            @staticmethod
+            @contextmanager
+            def avatar_face_build_lock(_slug, blocking=True):
+                yield 9
+
+            @staticmethod
+            def recover_face_rebuild_transactions(slug, log=None):
+                events.append(("face", slug))
+                return ["restored"]
+
+        with patch.object(self.application, "reg", return_value=Registry()), \
+             patch.object(
+                 self.application, "_recover_body_edit_transaction",
+                 side_effect=lambda slug, log=None: events.append(
+                     ("body", slug))), \
+             patch.object(self.application, "active_slug",
+                          return_value="captain"), \
+             patch.object(
+                 self.application, "ensure_runtime",
+                 side_effect=lambda slug: events.append(("runtime", slug))), \
+             patch.object(self.application.threading, "Thread") as thread:
+            self.application._start()
+
+        self.assertEqual([
+            ("face", "captain"),
+            ("body", "captain"),
+            ("runtime", "captain"),
+        ], events)
+        self.assertEqual(2, thread.call_count)
+
+    def test_startup_recovers_journalled_avatar_without_live_manifest(self):
+        events = []
+
+        class Registry:
+            @staticmethod
+            def list_avatars():
+                return []
+
+            @staticmethod
+            def face_rebuild_recovery_slugs():
+                return ["manifestless"]
+
+            @staticmethod
+            @contextmanager
+            def avatar_face_build_lock(_slug, blocking=True):
+                yield 9
+
+            @staticmethod
+            def recover_face_rebuild_transactions(slug, log=None):
+                events.append(("face", slug))
+                return ["restored"]
+
+        with patch.object(self.application, "reg", return_value=Registry()), \
+             patch.object(
+                 self.application, "_recover_body_edit_transaction",
+                 side_effect=lambda slug, log=None: events.append(
+                     ("body", slug))), \
+             patch.object(self.application, "active_slug", return_value=None), \
+             patch.object(self.application.threading, "Thread") as thread:
+            self.application._start()
+
+        self.assertEqual([
+            ("face", "manifestless"),
+            ("body", "manifestless"),
+        ], events)
+        self.assertEqual(2, thread.call_count)
+
+    def test_startup_defers_recovery_while_surviving_face_worker_is_locked(self):
+        events = []
+
+        class Registry:
+            @staticmethod
+            def list_avatars():
+                return [{"slug": "captain"}]
+
+            @staticmethod
+            def face_rebuild_recovery_slugs():
+                return ["captain"]
+
+            @staticmethod
+            @contextmanager
+            def avatar_face_build_lock(_slug, blocking=True):
+                events.append(("lock", blocking))
+                yield None
+
+            @staticmethod
+            def recover_face_rebuild_transactions(slug, log=None):
+                events.append(("face", slug))
+                return ["restored"]
+
+        with patch.object(self.application, "reg", return_value=Registry()), \
+             patch.object(
+                 self.application, "_recover_body_edit_transaction",
+                 side_effect=lambda slug, log=None: events.append(
+                     ("body", slug))), \
+             patch.object(self.application, "active_slug",
+                          return_value="captain"), \
+             patch.object(
+                 self.application, "ensure_runtime",
+                 side_effect=lambda slug: events.append(("runtime", slug))), \
+             patch.object(
+                 self.application, "_defer_avatar_recovery",
+                 side_effect=lambda slug: events.append(("deferred", slug))), \
+             patch.object(self.application.threading, "Thread"):
+            self.application._start()
+
+        self.assertEqual([
+            ("lock", False),
+            ("deferred", "captain"),
+        ], events)
+
+    def test_face_worker_inherits_parent_lock_descriptor(self):
+        class Registry:
+            _FACE_BUILD_LOCK_FD_ENV = "OPENCLAM_FACE_BUILD_LOCK_FD"
+
+        process = Mock()
+        process.stdout = []
+        process.wait.return_value = 0
+        with patch.object(self.application, "reg", return_value=Registry()), \
+             patch.object(
+                 self.application.subprocess, "Popen",
+                 return_value=process) as popen:
+            self.application._run_avatar_worker(
+                ["-m", "studio.build", "build", "captain"],
+                lambda _line: None, lock_fd=17)
+
+        kwargs = popen.call_args.kwargs
+        self.assertEqual((17,), kwargs["pass_fds"])
+        self.assertEqual(
+            "17", kwargs["env"]["OPENCLAM_FACE_BUILD_LOCK_FD"])
 
     def test_expired_openclaw_connector_returns_bounded_repair_contract(self):
         error = self.application.openclaw_pairing.OpenClawPairingError(

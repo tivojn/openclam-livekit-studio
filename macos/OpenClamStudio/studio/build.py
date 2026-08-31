@@ -18,6 +18,10 @@ Swapping the avatar is therefore just pointing `active.json` at another slug -
 nothing else in the project is avatar-specific.
 """
 import os, re, json, time, shutil, datetime, threading, traceback, tempfile, copy, uuid, hashlib
+import errno
+import fcntl
+import stat
+from contextlib import contextmanager
 from . import anatomy, prep, generate, compose, render, visemes, measure, rig, face
 
 CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +34,8 @@ COMPANION = os.path.join(ROOT, "companion.json")
 _locks = {}
 _write_lock = threading.Lock()   # progress callbacks fire from worker threads
 _SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62})$")
+_FACE_BUILD_LOCK = ".face-build.lock"
+_FACE_BUILD_LOCK_FD_ENV = "OPENCLAM_FACE_BUILD_LOCK_FD"
 
 
 def valid_slug(slug):
@@ -49,6 +55,83 @@ def adir(slug):
     if os.path.commonpath((root, full)) != root:
         raise ValueError("avatar path escapes the registry")
     return full
+
+
+@contextmanager
+def avatar_face_build_lock(slug, blocking=True):
+    """Serialize one avatar's face mutation across backend processes.
+
+    The HTTP backend deliberately runs face generation in a child Python
+    process.  If Electron restarts the backend while that child is still
+    alive, an in-memory ``threading.Lock`` disappears with the old parent and
+    the new backend could otherwise roll back the child's transaction while
+    it is still writing.  ``flock`` is owned by the open file description and
+    is released by the kernel on clean exit *or* process death, so it also
+    covers abrupt packaged-app restarts without a stale-lock cleanup protocol.
+
+    The yielded value is the locked descriptor, which a parent process can
+    explicitly pass to its worker.  Non-blocking callers receive ``None``
+    instead of inspecting or recovering an avatar that is still being mutated
+    by a surviving worker.
+    """
+    directory = adir(slug)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    path = os.path.join(directory, _FACE_BUILD_LOCK)
+    flags = os.O_CREAT | os.O_RDWR
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    acquired = False
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError("avatar face-build lock is not a regular file")
+        os.fchmod(descriptor, 0o600)
+        operation = fcntl.LOCK_EX
+        if not blocking:
+            operation |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(descriptor, operation)
+            acquired = True
+        except OSError as error:
+            busy = error.errno in {
+                errno.EACCES, errno.EAGAIN,
+                getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+            }
+            if blocking or not busy:
+                raise
+        yield descriptor if acquired else None
+    finally:
+        # Do not call LOCK_UN: a worker may have inherited this same open file
+        # description.  Closing our copy releases an ordinary local lease, but
+        # deliberately leaves an inherited lease held until the last worker
+        # copy exits (including after its backend parent has died).
+        os.close(descriptor)
+
+
+def inherited_avatar_face_build_lock(slug):
+    """Whether this CLI worker inherited its parent's verified lock lease.
+
+    The descriptor is intentionally not unlocked or closed here.  ``flock``
+    state is shared by inherited copies of the same open file description;
+    the child merely keeps that lease alive if its backend parent exits.
+    """
+    raw = str(os.environ.get(_FACE_BUILD_LOCK_FD_ENV) or "").strip()
+    if not raw:
+        return False
+    try:
+        descriptor = int(raw)
+        locked = os.fstat(descriptor)
+        expected = os.stat(
+            os.path.join(adir(slug), _FACE_BUILD_LOCK),
+            follow_symlinks=False)
+    except (OSError, TypeError, ValueError):
+        return False
+    return (
+        stat.S_ISREG(locked.st_mode)
+        and stat.S_ISREG(expected.st_mode)
+        and locked.st_dev == expected.st_dev
+        and locked.st_ino == expected.st_ino
+    )
 
 
 def manifest_path(slug):
@@ -188,7 +271,88 @@ def _reserve_avatar_directory(requested_slug):
             index += 1
 
 
-def create_avatar(image_path, name=None, slug=None):
+SOURCE_MEDIUM_OVERRIDES = frozenset({
+    "photograph", "illustration", "3d render",
+})
+
+
+def normalise_source_medium_override(value):
+    """Return one canonical owner-selected source lane, or ``None`` for Auto."""
+    if value is None or not str(value).strip():
+        return None
+    medium = str(value).strip().lower()
+    if medium not in SOURCE_MEDIUM_OVERRIDES:
+        raise ValueError(
+            "source medium must be photograph, illustration, or 3d render")
+    return medium
+
+
+def apply_source_medium_override(manifest, value):
+    """Make an explicit owner choice authoritative while retaining evidence.
+
+    ``source_metrics.source_medium`` is the compatibility field consumed by
+    every existing face/body/export/cutout route.  The top-level override makes
+    intent unambiguous, while ``detected_source_medium`` preserves what the
+    heuristic originally observed for diagnostics and future classifier work.
+    """
+    medium = normalise_source_medium_override(value)
+    if medium is None:
+        return manifest
+    if not isinstance(manifest, dict):
+        raise ValueError("avatar manifest is invalid")
+    raw_current_override = str(
+        manifest.get("source_medium_override") or "").strip().lower()
+    current_override = (raw_current_override
+                        if raw_current_override in SOURCE_MEDIUM_OVERRIDES
+                        else None)
+    report = manifest.get("source_metrics")
+    if not isinstance(report, dict):
+        report = {}
+    else:
+        report = copy.deepcopy(report)
+    previous_medium = _source_medium(report)
+    if "detected_source_medium" not in report:
+        # Only treat the current effective value as detector evidence when it
+        # was not itself written by an earlier owner override.
+        if current_override is None:
+            report["detected_source_medium"] = str(
+                report.get("source_medium") or "unknown")
+    report["source_medium"] = medium
+    report["source_medium_source"] = "user"
+    manifest["source_metrics"] = report
+    manifest["source_medium_override"] = medium
+    manifest.pop("source_medium_repair", None)
+    if previous_medium != medium:
+        # The immutable source crop was authored under the old lane.  A 2-D
+        # correction in particular may need to restore wide hair or headwear
+        # that a photographic face crop excluded.  The face worker stages a
+        # replacement and publishes it only after the rebuilt face passes.
+        manifest["source_keyframe_refresh_required"] = True
+    # Before the first generated head, ``metrics`` is the intake report too.
+    # Keep the legacy/UI fallback synchronized without overwriting ready head
+    # measurements on a later correction.
+    if manifest.get("status") == "draft" and isinstance(
+            manifest.get("metrics"), dict):
+        draft_metrics = copy.deepcopy(manifest["metrics"])
+        if "detected_source_medium" not in draft_metrics:
+            draft_metrics["detected_source_medium"] = str(
+                draft_metrics.get("source_medium") or "unknown")
+        draft_metrics["source_medium"] = medium
+        draft_metrics["source_medium_source"] = "user"
+        manifest["metrics"] = draft_metrics
+    return manifest
+
+
+def set_source_medium_override(slug, value):
+    """Persist a validated owner choice when no face rebuild is required."""
+    manifest = read_manifest(slug)
+    if not manifest:
+        raise ValueError(f"unknown avatar: {slug}")
+    apply_source_medium_override(manifest, value)
+    return write_manifest(slug, manifest)
+
+
+def create_avatar(image_path, name=None, slug=None, source_medium=None):
     """Register an uploaded face image and prepare its keyframe. No generation yet -
     this returns fast so the UI can show the crop and any pose warnings first."""
     name = name or os.path.splitext(os.path.basename(image_path))[0]
@@ -212,10 +376,10 @@ def create_avatar(image_path, name=None, slug=None):
         key = os.path.join(d, "keyframe.png")
         metrics = prep.build_keyframe(
             src, source_key, diag_dir=os.path.join(d, "diag"),
-            allow_stylized=True)
+            allow_stylized=True, source_medium=source_medium)
         shutil.copy2(source_key, key)
 
-        return write_manifest(slug, dict(
+        manifest = dict(
             slug=slug, name=name,
             created=datetime.datetime.now().isoformat(timespec="seconds"),
             source=os.path.basename(src), source_keyframe="source-keyframe.png",
@@ -227,7 +391,15 @@ def create_avatar(image_path, name=None, slug=None):
             # generated head's (usually photographic) detector route.
             source_metrics=copy.deepcopy(metrics), metrics=metrics,
             warnings=metrics.get("warnings", []),
-            visemes=[], preview=None, sheet=None, log=[]))
+            visemes=[], preview=None, sheet=None, log=[])
+        selected_medium = normalise_source_medium_override(source_medium)
+        if selected_medium:
+            # prep already stamped the effective/detected pair.  This explicit
+            # field survives future schema migrations and generated-head
+            # metrics replacing the legacy ``metrics`` report.
+            manifest["source_medium_override"] = selected_medium
+        manifest["source_keyframe_medium"] = _source_medium(metrics)
+        return write_manifest(slug, manifest)
     except Exception:
         # This directory was reserved by this call and cannot contain a prior
         # avatar.  A rejected upload must not leave source-only ghosts that
@@ -336,6 +508,11 @@ def repair_source_medium_from_source(slug, manifest=None, log=None):
     """
     current = copy.deepcopy(manifest if manifest is not None
                             else read_manifest(slug))
+    # The owner has resolved the ambiguity.  Never let a later maintenance
+    # scan replace that decision with a fresh heuristic result.
+    if str(current.get("source_medium_override") or "").strip().lower() \
+            in SOURCE_MEDIUM_OVERRIDES:
+        return current
     if not _medium_needs_local_reclassification(current):
         return current
     image_name, image = _original_avatar_image(adir(slug), current)
@@ -1018,7 +1195,70 @@ FACE_REBUILD_TRANSIENTS = (
     ".head-keyframe.png",
     ".head-keyframe.png.best",
     "head.png.best",
+    ".source-keyframe.override.png",
 )
+
+# These large authored sets are not copied into a ready-face rebuild snapshot.
+# Once the replacement face has passed every visual gate, they are displaced
+# into the transaction directory with a same-volume rename and remain there
+# until the replacement manifest has committed.  The caches belong to the
+# same authored identity and therefore follow their canonical directories.
+FACE_REBUILD_DERIVED_ARTIFACTS = (
+    "body",
+    ".body-cache",
+    "motion",
+    ".motion-cache",
+)
+_FACE_REBUILD_DEFERRED_DIR = "deferred"
+_FACE_REBUILD_JOURNAL = "transaction.json"
+_FACE_REBUILD_JOURNAL_VERSION = 1
+
+
+def _fsync_face_rebuild_directory(directory):
+    """Best-effort durability barrier for an avatar-local transaction."""
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_face_rebuild_journal(transaction):
+    """Atomically persist enough state to finish rollback after a restart."""
+    backup = os.path.abspath(transaction["backup"])
+    directory = os.path.abspath(transaction["directory"])
+    if os.path.commonpath((directory, backup)) != directory or backup == directory:
+        raise RuntimeError("face rebuild journal path is invalid")
+    payload = {
+        "v": _FACE_REBUILD_JOURNAL_VERSION,
+        "phase": str(transaction.get("phase") or "prepared"),
+        "present": list(transaction.get("present") or ()),
+        "manifest": copy.deepcopy(transaction.get("manifest") or {}),
+        "deferred": dict(transaction.get("deferred") or {}),
+    }
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".transaction-", dir=backup)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=1)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, os.path.join(backup, _FACE_REBUILD_JOURNAL))
+        _fsync_face_rebuild_directory(backup)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _set_face_rebuild_transaction_phase(transaction, phase):
+    if transaction is None:
+        return
+    transaction["phase"] = str(phase)
+    _write_face_rebuild_journal(transaction)
 
 
 def _copy_face_rebuild_artifact(source, destination):
@@ -1046,9 +1286,10 @@ def _begin_face_rebuild_transaction(directory, manifest):
     generated canonical head and the retained raw/composited plates are one
     authored set, while body and motion metadata in the manifest point at that
     exact identity.  The face files are therefore backed up as a unit before a
-    new head or keyframe can be staged.  Body/motion files themselves are not
-    copied (they can be very large) because build_avatar only removes them
-    after the replacement face has passed every gate.
+    new head or keyframe can be staged.  Body, motion, and the immutable source
+    keyframe are displaced later by same-volume rename only after the new face
+    has passed every gate; they remain recoverable until the new manifest is
+    durably published.
     """
     if not isinstance(manifest, dict) or manifest.get("status") != "ready":
         return None
@@ -1062,44 +1303,353 @@ def _begin_face_rebuild_transaction(directory, manifest):
             _copy_face_rebuild_artifact(
                 source, os.path.join(backup, relative))
             present.append(relative)
-        return {
+        transaction = {
             "backup": backup,
+            "directory": os.path.abspath(directory),
             "present": tuple(present),
             "manifest": copy.deepcopy(manifest),
+            "deferred": {},
+            "phase": "prepared",
+            "settled": None,
         }
+        _write_face_rebuild_journal(transaction)
+        return transaction
     except Exception:
         shutil.rmtree(backup, ignore_errors=True)
         raise
 
 
+def _face_rebuild_artifact_paths(directory, transaction, path):
+    """Return validated live/backup paths for one deferred authored artifact."""
+    root = os.path.abspath(directory)
+    live = os.path.abspath(
+        path if os.path.isabs(path) else os.path.join(root, path))
+    if os.path.commonpath((root, live)) != root or live == root:
+        raise RuntimeError("face rebuild artifact escapes the avatar directory")
+    relative = os.path.relpath(live, root)
+    backup = os.path.abspath(os.path.join(
+        transaction["backup"], _FACE_REBUILD_DEFERRED_DIR, relative))
+    transaction_root = os.path.abspath(transaction["backup"])
+    if os.path.commonpath((transaction_root, backup)) != transaction_root:
+        raise RuntimeError("face rebuild backup path is invalid")
+    return relative, live, backup
+
+
+def _defer_face_rebuild_artifact(directory, transaction, path):
+    """Displace one live artifact without deleting it before manifest commit.
+
+    Ready-avatar rebuilds use an avatar-local transaction directory, so
+    ``os.replace`` is an atomic same-volume rename even for multi-gigabyte body
+    and motion trees.  Draft avatars have no rollback contract and retain the
+    historical direct-removal behavior.
+    """
+    if transaction is None:
+        live = path if os.path.isabs(path) else os.path.join(directory, path)
+        _remove_artifact(live)
+        return False
+    relative, live, backup = _face_rebuild_artifact_paths(
+        directory, transaction, path)
+    deferred = transaction.setdefault("deferred", {})
+    if relative in deferred:
+        return bool(deferred[relative])
+    if not os.path.lexists(live):
+        deferred[relative] = False
+        _write_face_rebuild_journal(transaction)
+        return False
+    os.makedirs(os.path.dirname(backup), mode=0o700, exist_ok=True)
+    os.replace(live, backup)
+    deferred[relative] = True
+    _write_face_rebuild_journal(transaction)
+    return True
+
+
 def _restore_face_rebuild_transaction(directory, transaction):
-    """Atomically put every previously published face artifact back."""
+    """Atomically put every previously published authored artifact back."""
     present = set(transaction.get("present") or ())
     backup = transaction["backup"]
+    # Restore displaced body/motion/source-keyframe state before publishing the
+    # old manifest that names it.  Reverse order mirrors the invalidation order
+    # and keeps a partially restored transaction recoverable if the filesystem
+    # itself fails during rollback.
+    for relative, existed in reversed(tuple(
+            (transaction.get("deferred") or {}).items())):
+        _relative, live, displaced = _face_rebuild_artifact_paths(
+            directory, transaction, relative)
+        # A prior restore attempt may already have moved this backup into the
+        # live path before crashing.  In that case the missing displaced copy
+        # is positive evidence to keep the live artifact, not delete it.
+        if existed and os.path.lexists(displaced):
+            _remove_artifact(live)
+            os.makedirs(os.path.dirname(live), mode=0o700, exist_ok=True)
+            os.replace(displaced, live)
+        elif not existed:
+            _remove_artifact(live)
     for relative in FACE_REBUILD_ARTIFACTS:
         live = os.path.join(directory, relative)
-        _remove_artifact(live)
-        if relative in present:
-            os.replace(os.path.join(backup, relative), live)
+        saved = os.path.join(backup, relative)
+        if relative in present and os.path.lexists(saved):
+            if os.path.isdir(saved) and not os.path.islink(saved):
+                # Python cannot atomically replace a populated directory.
+                # These authored trees remain restart-recoverable in the
+                # transaction, but must be cleared before the same-volume
+                # rename just as before.
+                _remove_artifact(live)
+                os.replace(saved, live)
+            else:
+                # Regular files -- most importantly manifest.json -- can and
+                # must replace their live counterpart directly.  Pre-unlinking
+                # the manifest creates a crash window in which startup cannot
+                # discover the avatar at all.  os.replace is the atomic commit
+                # here and also safely overwrites an existing regular file.
+                os.replace(saved, live)
+                if relative == "manifest.json":
+                    _fsync_face_rebuild_directory(directory)
+        elif relative not in present:
+            _remove_artifact(live)
     for relative in FACE_REBUILD_TRANSIENTS:
         _remove_artifact(os.path.join(directory, relative))
     return copy.deepcopy(transaction["manifest"])
 
 
-def _finish_face_rebuild_transaction(transaction):
+def _commit_face_rebuild_transaction(transaction):
     if transaction:
+        transaction["phase"] = "committed"
+        transaction["settled"] = "committed"
+        # The ready manifest is already the durable commit point.  A journal
+        # refresh is useful if the process dies before cleanup, but failure to
+        # write this redundant marker must not roll a successful build back.
+        try:
+            _write_face_rebuild_journal(transaction)
+        except OSError:
+            pass
+
+
+def _finish_face_rebuild_transaction(transaction):
+    # Never discard the only rollback copy after a failed restore.  A settled
+    # transaction has either committed its replacement manifest or restored
+    # the complete previous authored set and manifest.
+    if transaction and transaction.get("settled"):
         shutil.rmtree(transaction.get("backup") or "", ignore_errors=True)
 
 
-def build_avatar(
+def _read_face_rebuild_journal(directory, backup):
+    """Load a current or pre-journal transaction without trusting its paths."""
+    directory = os.path.abspath(directory)
+    backup = os.path.abspath(backup)
+    if (os.path.commonpath((directory, backup)) != directory
+            or backup == directory or os.path.islink(backup)):
+        raise RuntimeError("face rebuild recovery path is invalid")
+
+    payload = None
+    journal_path = os.path.join(backup, _FACE_REBUILD_JOURNAL)
+    try:
+        with open(journal_path, encoding="utf-8") as handle:
+            candidate = json.load(handle)
+        if (isinstance(candidate, dict)
+                and candidate.get("v") == _FACE_REBUILD_JOURNAL_VERSION):
+            payload = candidate
+    except (OSError, ValueError):
+        pass
+
+    # 1.0.12 and earlier left the snapshot itself but no journal.  Its copied
+    # manifest is sufficient to recover transactions that had not already
+    # moved the manifest back during an interrupted rollback.
+    if payload is None:
+        try:
+            with open(os.path.join(backup, "manifest.json"),
+                      encoding="utf-8") as handle:
+                prior_manifest = json.load(handle)
+        except (OSError, ValueError) as error:
+            raise RuntimeError(
+                "face rebuild transaction has no recoverable journal") from error
+        payload = {
+            "v": 0,
+            "phase": "legacy",
+            "manifest": prior_manifest,
+            "present": [
+                relative for relative in FACE_REBUILD_ARTIFACTS
+                if os.path.lexists(os.path.join(backup, relative))
+            ],
+            "deferred": {},
+        }
+
+    manifest = payload.get("manifest")
+    if not isinstance(manifest, dict) or manifest.get("status") != "ready":
+        raise RuntimeError("face rebuild recovery manifest is not a ready avatar")
+    present = payload.get("present")
+    if not isinstance(present, list) or any(
+            relative not in FACE_REBUILD_ARTIFACTS for relative in present):
+        raise RuntimeError("face rebuild recovery artifact list is invalid")
+    deferred = payload.get("deferred")
+    if not isinstance(deferred, dict) or any(
+            not isinstance(relative, str) or type(existed) is not bool
+            for relative, existed in deferred.items()):
+        raise RuntimeError("face rebuild recovery deferred list is invalid")
+
+    source_keyframe = str(
+        manifest.get("source_keyframe") or "source-keyframe.png")
+    allowed_deferred = set(FACE_REBUILD_DERIVED_ARTIFACTS)
+    allowed_deferred.add(source_keyframe)
+    if any(relative not in allowed_deferred for relative in deferred):
+        raise RuntimeError("face rebuild recovery contains an unknown artifact")
+
+    transaction = {
+        "backup": backup,
+        "directory": directory,
+        "present": tuple(present),
+        "manifest": copy.deepcopy(manifest),
+        "deferred": dict(deferred),
+        "phase": str(payload.get("phase") or "prepared"),
+        "settled": None,
+    }
+    # A process can die between the same-volume rename and the journal update.
+    # Discover only the finite artifact lanes this rebuild is allowed to move.
+    candidates = tuple(FACE_REBUILD_DERIVED_ARTIFACTS) + (source_keyframe,)
+    for relative in candidates:
+        try:
+            _relative, _live, displaced = _face_rebuild_artifact_paths(
+                directory, transaction, relative)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if os.path.lexists(displaced):
+            transaction["deferred"][relative] = True
+    # Validate every journal path even if its displaced copy was already moved
+    # back by a previous partial restore.
+    for relative in tuple(transaction["deferred"]):
+        _face_rebuild_artifact_paths(directory, transaction, relative)
+    return transaction
+
+
+def recover_face_rebuild_transactions(slug, log=print):
+    """Recover abandoned face rebuilds before exposing an avatar after launch.
+
+    A ready live manifest that differs from the transaction's prior manifest
+    is a successfully committed (or subsequently repaired) runtime and always
+    wins.  Building/error/missing manifests are rolled back from the newest
+    complete snapshot.  This prevents stale recovery debris from overwriting a
+    newer good face while still repairing a process crash at any build stage.
+    """
+    directory = adir(slug)
+    if not os.path.isdir(directory):
+        return []
+    entries = [
+        entry for entry in os.scandir(directory)
+        if entry.name.startswith(".face-rebuild-")
+        and entry.is_dir(follow_symlinks=False)
+    ]
+    entries.sort(key=lambda entry: entry.stat(follow_symlinks=False).st_mtime,
+                 reverse=True)
+    outcomes = []
+    for entry in entries:
+        try:
+            transaction = _read_face_rebuild_journal(
+                directory, entry.path)
+            current = read_manifest(slug)
+            prior = transaction["manifest"]
+            if (isinstance(current, dict)
+                    and current.get("status") == "ready"
+                    and current != prior):
+                shutil.rmtree(entry.path, ignore_errors=True)
+                outcomes.append("kept-current")
+                if log:
+                    log("removed a stale face-rebuild snapshot; the current "
+                        "ready avatar was kept")
+                continue
+
+            restored = _restore_face_rebuild_transaction(
+                directory, transaction)
+            restored["status"] = "ready"
+            write_manifest(slug, restored)
+            transaction["settled"] = "restored"
+            shutil.rmtree(entry.path, ignore_errors=True)
+            outcomes.append("restored")
+            if log:
+                log("restored the last published face after an interrupted "
+                    "face rebuild")
+        except Exception as error:
+            current = read_manifest(slug)
+            if isinstance(current, dict) and current.get("status") == "ready":
+                # A journal-less directory can only be an interrupted snapshot
+                # made before live mutation, or legacy debris whose ready live
+                # avatar is the only authoritative state left.  Never replace
+                # that state with an unproven partial backup.
+                shutil.rmtree(entry.path, ignore_errors=True)
+                outcomes.append("kept-current")
+                if log:
+                    log(f"removed incomplete {entry.name}; kept the current "
+                        f"ready avatar ({error})")
+            else:
+                outcomes.append("unrecoverable")
+                if log:
+                    log(f"could not recover {entry.name}: {error}")
+    return outcomes
+
+
+def face_rebuild_recovery_slugs():
+    """List avatar directories containing a recoverable face journal.
+
+    ``list_avatars`` intentionally exposes only directories with readable
+    manifests.  Recovery cannot use that public listing exclusively: an older
+    rollback could be interrupted after unlinking manifest.json and before
+    restoring its snapshot.  Scan only validated avatar directories and only
+    finite transaction markers, so startup can repair that exact state without
+    broadening the registry surface.
+    """
+    os.makedirs(AVATARS, mode=0o700, exist_ok=True)
+    result = []
+    for avatar in os.scandir(AVATARS):
+        if (not valid_slug(avatar.name)
+                or not avatar.is_dir(follow_symlinks=False)):
+            continue
+        recoverable = False
+        try:
+            transactions = os.scandir(avatar.path)
+        except OSError:
+            continue
+        with transactions:
+            for transaction in transactions:
+                if (not transaction.name.startswith(".face-rebuild-")
+                        or not transaction.is_dir(follow_symlinks=False)):
+                    continue
+                try:
+                    markers = os.scandir(transaction.path)
+                except OSError:
+                    continue
+                with markers:
+                    if any(
+                            marker.name in {
+                                _FACE_REBUILD_JOURNAL, "manifest.json",
+                            }
+                            and marker.is_file(follow_symlinks=False)
+                            for marker in markers):
+                        recoverable = True
+                        break
+        if recoverable:
+            result.append(avatar.name)
+    return sorted(result)
+
+
+def _build_avatar_under_lock(
         slug, shapes=None, log=None, quality="high", notes="",
-        remove_headwear=None):
+        remove_headwear=None, source_medium=None):
     d = adir(slug)
+    # A previous daemon may have stopped after staging a replacement face.
+    # Settle that transaction before taking a new snapshot of the avatar.
+    recovery = recover_face_rebuild_transactions(slug, log=log)
+    if "unrecoverable" in recovery:
+        raise RuntimeError(
+            "an interrupted face rebuild could not be recovered safely")
     m = read_manifest(slug)
     if not m:
         raise ValueError(f"unknown avatar: {slug}")
-    m = repair_source_medium_from_source(
-        slug, manifest=m, log=log)
+    requested_source_medium = normalise_source_medium_override(source_medium)
+    # Automatic legacy repair retains its historical behavior.  An explicit
+    # owner choice is applied only after the ready-avatar transaction has taken
+    # its snapshot; otherwise a rejected rebuild restores a manifest that was
+    # already relabelled while its published face/body/motion remain old-lane.
+    if requested_source_medium is None:
+        m = repair_source_medium_from_source(
+            slug, manifest=m, log=log)
     lines = []
 
     def emit(msg):
@@ -1115,6 +1665,8 @@ def build_avatar(
     diag = os.path.join(d, "diag")
     previous_head_policy = bool(
         ((m.get("head") or {}).get("remove_headwear", False)))
+    previous_head_medium = _source_medium({
+        "source_medium": (m.get("head") or {}).get("source_medium")})
     # Missing means "keep this avatar's current policy". This matters for
     # repair/top-up calls that regenerate a subset of visemes without showing
     # the build preferences dialog. A brand-new/legacy avatar naturally falls
@@ -1129,6 +1681,10 @@ def build_avatar(
 
     rebuild_transaction = _begin_face_rebuild_transaction(d, m)
     try:
+        _set_face_rebuild_transaction_phase(
+            rebuild_transaction, "building")
+        if requested_source_medium is not None:
+            apply_source_medium_override(m, requested_source_medium)
         os.makedirs(raw, exist_ok=True); os.makedirs(out, exist_ok=True)
 
         m["status"] = "building"
@@ -1141,12 +1697,24 @@ def build_avatar(
         source_medium = _source_medium(source_report)
         source_keyframe = os.path.join(
             d, m.get("source_keyframe") or "source-keyframe.png")
-        if not os.path.isfile(source_keyframe):
-            source_image = os.path.join(d, m.get("source") or "")
+        source_image = os.path.join(d, m.get("source") or "")
+        build_source_keyframe = source_keyframe
+        pending_source_keyframe = None
+        if (m.get("source_keyframe_refresh_required")
+                and os.path.isfile(source_image)):
+            pending_source_keyframe = os.path.join(
+                d, ".source-keyframe.override.png")
+            prep.build_keyframe(
+                source_image, pending_source_keyframe,
+                allow_stylized=(source_medium != "photograph"),
+                source_medium=source_medium)
+            build_source_keyframe = pending_source_keyframe
+        elif not os.path.isfile(source_keyframe):
             if os.path.isfile(source_image):
                 prep.build_keyframe(
                     source_image, source_keyframe,
-                    allow_stylized=(source_medium != "photograph"))
+                    allow_stylized=(source_medium != "photograph"),
+                    source_medium=source_medium)
             else:
                 shutil.copy2(key, source_keyframe)
             m["source_keyframe"] = os.path.basename(source_keyframe)
@@ -1161,14 +1729,15 @@ def build_avatar(
         pose_note = ""
         for pose_attempt in range(3):
             generate.generate_head(
-                source_keyframe, head_path, provider=head_provider,
+                build_source_keyframe, head_path, provider=head_provider,
                 log=emit, quality=quality, pose_note=pose_note,
                 keep=notes, overwrite=bool(pose_attempt),
                 source_medium=source_medium,
                 remove_headwear=remove_headwear)
             head_metrics = prep.build_keyframe(
                 head_path, staged_keyframe, diag_dir=diag,
-                allow_stylized=(source_medium != "photograph"))
+                allow_stylized=(source_medium != "photograph"),
+                source_medium=source_medium)
             issues = _frontality_issues(head_metrics)
             score = _frontality_score(head_metrics)
             if best is None or score < best[0]:
@@ -1359,6 +1928,14 @@ def build_avatar(
             out, key, os.path.join(d, "sheet.jpg"),
             allow_stylized=(source_medium != "photograph"))
 
+        # A generated closed-eye plate is not sufficient: it must cover the
+        # character's actual eyes without replacing their glasses/face. Check
+        # the same semantic blink used by runtime export BEFORE committing
+        # the replacement face or invalidating its approved body/motions.
+        # The preflight is a no-op for the independent photograph pipeline.
+        from . import export
+        export.preflight_stylized_blink(d, source_medium, log=emit)
+
         worst = max((r["resid_px"] for r in report), default=0)
         drift = max((r["outside_delta"] for r in report), default=0)
         emit(f"done - {len(report)} shapes, worst rigid residual {worst:.2f}px, "
@@ -1380,12 +1957,12 @@ def build_avatar(
         derived_identity_changed = (
             previous_head_digest != current_head_digest
             or previous_head_policy != remove_headwear
+            or previous_head_medium != source_medium
             or bool(str(notes or "").strip())
         )
         if derived_identity_changed and (m.get("body") or m.get("motion")):
-            from . import body, motion
-            body.remove(d)
-            motion.remove(d)
+            for relative in FACE_REBUILD_DERIVED_ARTIFACTS:
+                _defer_face_rebuild_artifact(d, rebuild_transaction, relative)
             m.pop("body", None)
             m.pop("motion", None)
             emit("canonical head changed - cleared stale body and motion assets")
@@ -1394,6 +1971,23 @@ def build_avatar(
         else:
             m.pop("rig_repair", None)
         m["progress"] = dict(done=len(names), total=len(names), stage="done")
+        if pending_source_keyframe:
+            # A ready avatar needs its prior immutable crop retained until the
+            # replacement manifest commits.  Draft avatars have no snapshot;
+            # let os.replace perform its ordinary atomic overwrite there so a
+            # failed replacement cannot delete an otherwise usable crop first.
+            if rebuild_transaction:
+                _defer_face_rebuild_artifact(
+                    d, rebuild_transaction, source_keyframe)
+            os.replace(pending_source_keyframe, source_keyframe)
+            m["source_keyframe"] = os.path.basename(source_keyframe)
+            m["source_keyframe_medium"] = source_medium
+            m.pop("source_keyframe_refresh_required", None)
+        # This is the transaction commit point.  Body, motion, their caches,
+        # and the prior source keyframe remain in the avatar-local backup until
+        # this atomic manifest replacement succeeds.
+        write_manifest(slug, m)
+        _commit_face_rebuild_transaction(rebuild_transaction)
     except Exception as e:
         emit("ERROR: " + str(e))
         emit(traceback.format_exc()[-1500:])
@@ -1415,17 +2009,43 @@ def build_avatar(
             else:
                 m.pop("rig_repair", None)
             write_manifest(slug, m)
+            # The rollback is settled only after the restored manifest is
+            # durably published.  If that final write fails, retain the
+            # transaction directory as the recoverable copy instead of
+            # deleting the only known-good manifest in ``finally``.
+            rebuild_transaction["settled"] = "restored"
             raise
         m["status"] = "error"
         m["error"] = str(e)
         if isinstance(structured_repair, dict):
             m["rig_repair"] = structured_repair
+        write_manifest(slug, m)
     finally:
         for relative in FACE_REBUILD_TRANSIENTS:
             _remove_artifact(os.path.join(d, relative))
         _finish_face_rebuild_transaction(rebuild_transaction)
-    write_manifest(slug, m)
     return m
+
+
+def build_avatar(
+        slug, shapes=None, log=None, quality="high", notes="",
+        remove_headwear=None, source_medium=None):
+    """Build one face while holding its process-wide mutation lease.
+
+    Keep the lock outside transaction recovery and snapshot creation: a new
+    backend can never restore an abandoned journal until the previous worker
+    has either completed or died and the kernel has released its lease.
+    """
+    if inherited_avatar_face_build_lock(slug):
+        return _build_avatar_under_lock(
+            slug, shapes=shapes, log=log, quality=quality, notes=notes,
+            remove_headwear=remove_headwear, source_medium=source_medium)
+    with avatar_face_build_lock(slug, blocking=True) as descriptor:
+        if descriptor is None:  # Blocking acquisition succeeds or raises.
+            raise RuntimeError("could not acquire avatar face-build lock")
+        return _build_avatar_under_lock(
+            slug, shapes=shapes, log=log, quality=quality, notes=notes,
+            remove_headwear=remove_headwear, source_medium=source_medium)
 
 
 def build_async(slug, **kw):
@@ -1445,9 +2065,15 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add", help="register a photo and prepare its keyframe")
     a.add_argument("image"); a.add_argument("--name"); a.add_argument("--slug")
+    a.add_argument(
+        "--source-medium", choices=sorted(SOURCE_MEDIUM_OVERRIDES),
+        help="owner-selected source category; omit to use local detection")
     a.add_argument("--build", action="store_true", help="generate the full set right away")
     b = sub.add_parser("build", help="generate + compose + preview")
     b.add_argument("slug"); b.add_argument("--shapes", nargs="*")
+    b.add_argument(
+        "--source-medium", choices=sorted(SOURCE_MEDIUM_OVERRIDES),
+        help="override a mistaken source category before rebuilding")
     b.add_argument("--keep", default="",
                    help="what must survive the build, e.g. his bandana")
     b.add_argument("--remove-headwear", action="store_true", default=None,
@@ -1461,7 +2087,9 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     if args.cmd == "add":
-        m = create_avatar(args.image, args.name, args.slug)
+        m = create_avatar(
+            args.image, args.name, args.slug,
+            source_medium=args.source_medium)
         print(f"{m['slug']}: keyframe ready")
         for w in m["warnings"]:
             print("  warning:", w)
@@ -1470,7 +2098,8 @@ if __name__ == "__main__":
     elif args.cmd == "build":
         build_avatar(
             args.slug, shapes=args.shapes, notes=args.keep,
-            remove_headwear=args.remove_headwear)
+            remove_headwear=args.remove_headwear,
+            source_medium=args.source_medium)
     elif args.cmd == "list":
         for m in list_avatars():
             print(f"{'*' if m.get('active') else ' '} {m['slug']:24s} {m['status']:9s} "

@@ -57,6 +57,50 @@ class RecutContract(unittest.TestCase):
                 installed = json.load(handle)
             self.assertEqual(motion.MOTION_VERSION, installed["v"])
 
+    def test_recut_preserves_the_verified_source_medium_audit(self):
+        with tempfile.TemporaryDirectory() as avatar_dir:
+            root = Path(avatar_dir)
+            (root / "body").mkdir()
+            (root / "body" / "body.json").write_text(json.dumps({
+                "options": {"medium": "illustration"},
+            }))
+            (root / "manifest.json").write_text(json.dumps({
+                "source_medium_override": "illustration",
+            }))
+            raw_dir = root / "motion" / "raw"
+            raw_dir.mkdir(parents=True)
+            (raw_dir / "move-source.mp4").write_bytes(b"retained motion")
+            quality = {
+                "v": motion.MOTION_SOURCE_MEDIUM_AUDIT_VERSION,
+                "strict": True,
+                "valid": True,
+                "expected": "illustration",
+                "available": True,
+                "matching_samples": 3,
+            }
+            (root / "motion" / "motion.json").write_text(json.dumps({
+                "v": motion.MOTION_VERSION,
+                "move": {
+                    "frames": 3,
+                    "sheets": [{"image": "move-0.png"}],
+                    "source_medium": "illustration",
+                    "source_medium_quality": quality,
+                },
+            }))
+            replacement = {
+                "frames": 3,
+                "fps": 12,
+                "sheets": [{"image": "move-new.png"}],
+            }
+
+            with mock.patch.object(
+                    motion, "_process_clip", return_value=replacement):
+                result = motion.recut(avatar_dir, "move")
+
+            self.assertEqual(quality, result["move"]["source_medium_quality"])
+            self.assertTrue(motion.motion_clip_compatible(
+                result["move"], "illustration", require_receipt=True))
+
     def test_server_and_ui_wiring(self):
         app = (ROOT / "server" / "app.py").read_text()
         self.assertIn('@app.post("/api/avatar/motion/recut")', app)

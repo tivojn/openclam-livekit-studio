@@ -10,7 +10,7 @@ runtime bundle at avatars/<slug>/runtime/, and /assets/* resolves through the
 active slug on every request. Activating a face is therefore one atomic write
 to active.json, and no file is ever copied over another.
 """
-import os, sys, json, base64, tempfile, threading, time, shutil, subprocess, secrets, asyncio
+import os, sys, json, base64, tempfile, threading, time, shutil, subprocess, secrets, asyncio, copy
 import datetime, re
 from contextlib import asynccontextmanager
 from posixpath import normpath as posix_normpath
@@ -40,7 +40,7 @@ import openclaw_acp
 import livekit_bridge as LK
 import avatar_package as AVTR
 import align
-from studio import rig
+from studio import rig, body as body_authoring
 
 WEB = os.path.join(ROOT, "web")
 
@@ -191,6 +191,7 @@ async def security_headers(request, call_next):
 _state = {"warm": False, "warming": ""}
 _jobs = {}                      # slug -> live build/calibration state
 _jlock = threading.Lock()
+_startup_recovery_waiters = {}
 
 
 def _reserve_job(slug, kind, label="Queued"):
@@ -321,6 +322,153 @@ def _validate_runtime_bundle(directory, expect_motion=None):
     return manifest
 
 
+def _source_has_publishable_motion(directory):
+    """Whether the source set should yield at least one runtime motion clip.
+
+    A motion.json file is only a library receipt, not proof that any take is
+    safe to publish.  Once the owner selects a source medium, legacy or
+    mismatched takes are deliberately quarantined by studio.export.  Mirror
+    that compatibility rule here so an all-quarantined set may still publish a
+    valid motion-free runtime, while a compatible take that silently vanishes
+    remains a validation failure.
+    """
+    from studio import motion
+    manifest_path = os.path.join(directory, "motion", "motion.json")
+    if not os.path.isfile(manifest_path):
+        return False
+    try:
+        with open(manifest_path) as handle:
+            source = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(source, dict):
+        return False
+    selected_medium = motion.explicit_source_medium(directory)
+    expected_medium = selected_medium or motion.body_source_medium(directory)
+    return any(
+        isinstance(source.get(kind), dict)
+        and bool(source[kind].get("sheets"))
+        and motion.motion_clip_compatible(
+            source[kind], expected_medium,
+            require_receipt=selected_medium is not None)
+        for kind in ("walk", "idle", "move")
+    )
+
+
+def _runtime_incompatible_motion(directory, runtime_manifest):
+    """Runtime clips that cannot prove the owner's selected source lane.
+
+    Runtime bundles are durable and can outlive their authoring metadata.  A
+    current bundle version is therefore not sufficient proof that its motion
+    was audited after an owner explicitly chose photograph, illustration, or
+    3-D render.  Automatic/legacy projects retain their historical behavior.
+    """
+    from studio import motion
+    selected_medium = motion.explicit_source_medium(directory)
+    if selected_medium is None:
+        return ()
+    runtime_motion = (runtime_manifest or {}).get("motion")
+    if not runtime_motion:
+        return ()
+    if not isinstance(runtime_motion, dict):
+        return ("bundle",)
+    return tuple(
+        kind for kind in ("walk", "idle", "move")
+        if runtime_motion.get(kind)
+        and not motion.motion_clip_compatible(
+            runtime_motion.get(kind), selected_medium,
+            require_receipt=True)
+    )
+
+
+def _runtime_motion_asset_references(clip):
+    if not isinstance(clip, dict):
+        return set()
+    references = {
+        clip.get("alpha_stream"),
+        clip.get("alpha_stream_hevc"),
+        clip.get("poster"),
+    }
+    for sheet in clip.get("sheets") or []:
+        if isinstance(sheet, dict):
+            references.add(sheet.get("image"))
+    return {
+        reference for reference in references
+        if isinstance(reference, str) and reference.startswith("assets/")
+    }
+
+
+def _strip_incompatible_runtime_motion(slug, log=print):
+    """Atomically make an old live runtime safe after refresh failure.
+
+    Compatible clips remain available.  The manifest is replaced before any
+    now-unreferenced assets are deleted, so an interruption can leave only
+    harmless orphan files, never publishable stale motion metadata.
+    """
+    directory = reg().adir(slug)
+    live = runtime_dir(slug)
+    manifest = _runtime_manifest(live)
+    incompatible = _runtime_incompatible_motion(directory, manifest)
+    if not incompatible:
+        return ()
+
+    runtime_motion = manifest.get("motion")
+    removed_references = set()
+    if isinstance(runtime_motion, dict) and "bundle" not in incompatible:
+        safe_motion = dict(runtime_motion)
+        for kind in incompatible:
+            removed_references.update(
+                _runtime_motion_asset_references(safe_motion.pop(kind, None)))
+        retained_references = set()
+        for kind in ("walk", "idle", "move"):
+            retained_references.update(
+                _runtime_motion_asset_references(safe_motion.get(kind)))
+        removed_references -= retained_references
+        has_clip = any(safe_motion.get(kind) for kind in ("walk", "idle", "move"))
+        safe_value = safe_motion if has_clip else None
+    else:
+        if isinstance(runtime_motion, dict):
+            for kind in ("walk", "idle", "move"):
+                removed_references.update(
+                    _runtime_motion_asset_references(runtime_motion.get(kind)))
+        safe_value = None
+
+    updated = dict(manifest)
+    updated["motion"] = safe_value
+    try:
+        _write_private_json(os.path.join(live, "manifest.json"), updated)
+    except Exception as error:
+        # If the safety rewrite itself cannot be made durable, remove the
+        # entire runtime from the live path.  Callers then fail closed instead
+        # of serving or packaging the unverified clip.
+        quarantine = live + ".incompatible-motion-" + secrets.token_hex(4)
+        try:
+            os.replace(live, quarantine)
+            _fsync_directory(os.path.dirname(live))
+        except Exception as quarantine_error:
+            raise RuntimeError(
+                "could not remove incompatible runtime motion") \
+                from quarantine_error
+        raise RuntimeError(
+            "incompatible runtime motion was quarantined after its manifest "
+            "could not be rewritten") from error
+
+    root = os.path.abspath(live)
+    for reference in removed_references:
+        candidate = os.path.abspath(os.path.join(
+            root, reference[len("assets/"):]))
+        if os.path.commonpath((root, candidate)) != root:
+            continue
+        try:
+            os.remove(candidate)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            log(f"could not remove orphaned runtime motion asset: {error}")
+    _fsync_directory(live)
+    return incompatible
+
+
 def _recover_runtime_swap(slug):
     live = runtime_dir(slug)
     previous = live + ".previous"
@@ -337,7 +485,9 @@ def active_slug():
         return None
 
 
-RUNTIME_VERSION = 22  # v22: sharp held smile/laughter plate at exact 18% lift
+# v23 republishes runtime bodies under the medium-aware curved-jaw handoff.
+# The face/expression contract introduced by v22 is otherwise unchanged.
+RUNTIME_VERSION = 23
 
 
 def ensure_runtime(slug, log=print):
@@ -350,18 +500,40 @@ def ensure_runtime(slug, log=print):
     manifest_path = os.path.join(d, "manifest.json")
     if os.path.exists(manifest_path):
         try:
-            with open(manifest_path, encoding="utf-8") as handle:
-                version = int((json.load(handle) or {}).get("v") or 0)
+            manifest = _runtime_manifest(d)
+            version = int(manifest.get("v") or 0)
         except (OSError, ValueError):
+            manifest = {}
             version = 0
-        if version >= RUNTIME_VERSION:
+        incompatible = _runtime_incompatible_motion(
+            reg().adir(slug), manifest)
+        if version >= RUNTIME_VERSION and not incompatible:
             return d
-        log(f"runtime bundle is v{version}; republishing as v{RUNTIME_VERSION}")
+        if incompatible:
+            log(
+                "runtime motion lacks the current owner-selected source-medium "
+                "audit; republishing " + ", ".join(incompatible))
+        else:
+            log(f"runtime bundle is v{version}; republishing as v{RUNTIME_VERSION}")
         try:
             _publish_runtime_atomic(slug, log=log)
+            refreshed = _runtime_manifest(d)
+            remaining = _runtime_incompatible_motion(
+                reg().adir(slug), refreshed)
+            if remaining:
+                removed = _strip_incompatible_runtime_motion(slug, log=log)
+                log(
+                    "runtime refresh did not produce a current motion audit; "
+                    "removed " + ", ".join(removed))
             return d
         except Exception as error:
-            log(f"runtime refresh failed, keeping v{version}: {error}")
+            removed = _strip_incompatible_runtime_motion(slug, log=log) \
+                if incompatible else ()
+            if removed:
+                log(
+                    "runtime refresh failed; removed unverified motion "
+                    "instead of keeping it: " + ", ".join(removed))
+            log(f"runtime refresh failed, keeping safe v{version}: {error}")
             return d
     from studio import export
     log("publishing runtime bundle")
@@ -466,7 +638,13 @@ def _job_progress(slug, stage, value, label, job_id=None):
         job["phase"] = payload["label"]
 
 
-def _run_avatar_worker(args, log):
+def _run_avatar_worker(args, log, lock_fd=None):
+    environment = None
+    inherited_fds = ()
+    if lock_fd is not None:
+        environment = os.environ.copy()
+        environment[reg()._FACE_BUILD_LOCK_FD_ENV] = str(int(lock_fd))
+        inherited_fds = (int(lock_fd),)
     process = subprocess.Popen(
         [sys.executable, "-W", "ignore", *args],
         cwd=ROOT,
@@ -474,6 +652,8 @@ def _run_avatar_worker(args, log):
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=environment,
+        pass_fds=inherited_fds,
     )
     for line in process.stdout:
         log(line.rstrip())
@@ -482,10 +662,16 @@ def _run_avatar_worker(args, log):
         raise RuntimeError(f"avatar worker exited with status {code}")
 
 
-def _build_thread(slug, shapes=None, notes="", remove_headwear=None):
+def _build_thread(
+        slug, job_id, shapes=None, notes="", remove_headwear=None,
+        source_medium=None):
     w = jlog(slug, "starting")
     with _jlock:
-        _jobs[slug].update(done=False, error="", log=[])
+        job = _jobs.get(slug)
+        if not job or job.get("id") != job_id:
+            return
+        job.update(done=False, error="", log=[])
+    failure = ""
     try:
         build_args = ["-m", "studio.build", "build", slug]
         if shapes:
@@ -496,20 +682,28 @@ def _build_thread(slug, shapes=None, notes="", remove_headwear=None):
             build_args.append("--remove-headwear")
         elif remove_headwear is False:
             build_args.append("--preserve-headwear")
-        _run_avatar_worker(build_args, w)
-        d = runtime_dir(slug)
-        if os.path.isdir(d):
-            shutil.rmtree(d)
-        w("publishing runtime bundle")
-        _run_avatar_worker(["-m", "studio.export", slug, "--dest", d], w)
+        if source_medium is not None:
+            build_args.extend(["--source-medium", source_medium])
+        # Keep one kernel-backed lease across both child processes.  ``pass_fds``
+        # means a face worker that outlives a restarted backend retains the
+        # lease until it exits, so the replacement backend cannot recover its
+        # transaction underneath it.  The export worker inherits the same
+        # lease, preventing a restart from racing runtime publication too.
+        with reg().avatar_face_build_lock(
+                slug, blocking=True) as lock_fd:
+            if lock_fd is None:
+                raise RuntimeError("could not acquire avatar face-build lock")
+            _run_avatar_worker(build_args, w, lock_fd=lock_fd)
+            w("publishing runtime bundle")
+            _publish_runtime_atomic(
+                slug, log=w, face_worker_lock_fd=lock_fd,
+                require_stylized_blink=True)
         w("ready")
     except Exception as e:
-        with _jlock:
-            _jobs[slug]["error"] = str(e)
-        w(f"FAILED: {e}")
+        failure = str(e)
+        w(f"FAILED: {failure}")
     finally:
-        with _jlock:
-            _jobs[slug]["done"] = True
+        _finish_job(slug, job_id, failure)
 
 
 def _recompose_thread(slug, profile):
@@ -537,7 +731,9 @@ def _recompose_thread(slug, profile):
             _jobs[slug]["done"] = True
 
 
-def _publish_runtime_atomic(slug, log=print, keep_previous=False):
+def _publish_runtime_atomic(
+        slug, log=print, keep_previous=False, *,
+        face_worker_lock_fd=None, require_stylized_blink=False):
     from studio import export
     directory = reg().adir(slug)
     _recover_runtime_swap(slug)
@@ -547,14 +743,23 @@ def _publish_runtime_atomic(slug, log=print, keep_previous=False):
     try:
         blink_source = os.path.join(directory, "visemes", "v_blink.jpg")
         if os.path.isfile(blink_source):
-            export.export(slug, staged, log=log)
+            if face_worker_lock_fd is not None:
+                args = ["-m", "studio.export", slug, "--dest", staged]
+                if require_stylized_blink:
+                    args.append("--require-stylized-blink")
+                _run_avatar_worker(
+                    args, log, lock_fd=face_worker_lock_fd)
+            elif require_stylized_blink:
+                export.export(
+                    slug, staged, log=log, require_stylized_blink=True)
+            else:
+                export.export(slug, staged, log=log)
         elif os.path.isfile(os.path.join(live, "manifest.json")):
             shutil.copytree(live, staged, dirs_exist_ok=True)
             export.publish_pet_assets(slug, staged, log=log)
         else:
             raise ValueError("avatar has neither source visemes nor a published runtime")
-        expect_motion = os.path.isfile(
-            os.path.join(directory, "motion", "motion.json"))
+        expect_motion = _source_has_publishable_motion(directory)
         _validate_runtime_bundle(staged, expect_motion=expect_motion)
         shutil.rmtree(previous, ignore_errors=True)
         if os.path.exists(live):
@@ -1179,6 +1384,21 @@ def _pipeline_face_needs_rebuild(manifest, notes, remove_headwear):
 
     source_medium = _pipeline_manifest_source_medium(manifest) or "photograph"
 
+    # Prompt versions can coincide across two stylized lanes.  An *explicit*
+    # owner correction is therefore part of cache identity in its own right:
+    # changing 2-D cartoon to 3-D cartoon must rebuild rather than reusing a
+    # head authored under the previous contract.  Do not add this stricter
+    # check to legacy/automatic manifests; their historical cache semantics
+    # remain unchanged when no owner override was supplied.
+    explicit_medium = str(
+        manifest.get("source_medium_override") or "").strip().lower()
+    head_medium = _pipeline_source_medium({
+        "source_medium": head.get("source_medium"),
+    })
+    if explicit_medium in {"photograph", "illustration", "3d render"} \
+            and head_medium != explicit_medium:
+        return True
+
     from studio import generate
     expected_version = generate.head_prompt_version(source_medium)
     try:
@@ -1197,7 +1417,71 @@ def _pipeline_face_needs_rebuild(manifest, notes, remove_headwear):
     )
 
 
-def _pipeline_thread(slug, job_id, notes="", remove_headwear=None):
+def _pipeline_explicit_source_medium(manifest):
+    value = str(
+        (manifest or {}).get("source_medium_override") or "").strip().lower()
+    return value if value in {"photograph", "illustration", "3d render"} else None
+
+
+def _pipeline_body_is_compatible(manifest, body_manifest_path):
+    """Keep legacy body reuse, but never cross an owner-selected medium.
+
+    A body explicitly authored as 2-D or soft 3-D is reusable only when it
+    carries the current coordinated head/clear-mask handoff marker.  Markers v2
+    and v3 predate the coordinated jaw/neck and lateral-hair geometry, so must
+    be rebuilt instead of silently
+    reused after an owner has selected a stylized lane.  Automatic legacy 2-D
+    avatars retain their existing cache behavior, and photographs never need a
+    stylized handoff marker.
+    """
+    selected = _pipeline_explicit_source_medium(manifest)
+    if selected is None:
+        return os.path.isfile(body_manifest_path)
+    try:
+        with open(body_manifest_path, encoding="utf-8") as handle:
+            body_manifest = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    options = body_manifest.get("options") if isinstance(body_manifest, dict) else None
+    authored = _pipeline_source_medium({
+        "source_medium": options.get("medium")
+        if isinstance(options, dict) else None,
+    })
+    if authored != selected:
+        return False
+    if selected == "photograph":
+        return True
+    return (
+        str(body_manifest.get("head_composite") or "").strip().lower()
+        == "replace"
+        and type(body_manifest.get("head_handoff_version")) is int
+        and body_manifest.get("head_handoff_version")
+        == body_authoring.STYLIZED_HEAD_HANDOFF_VERSION
+    )
+
+
+def _pipeline_existing_motion_kinds(avatar_dir, manifest):
+    """Motion clips safe for one-click to skip under the current source lane."""
+    from studio import motion
+    root_kinds = set((manifest or {}).get("motion") or {})
+    metadata_path = os.path.join(avatar_dir, "motion", "motion.json")
+    try:
+        with open(metadata_path, encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, ValueError):
+        metadata = {}
+    selected = _pipeline_explicit_source_medium(manifest)
+    expected = selected or motion.body_source_medium(avatar_dir)
+    return {
+        kind for kind in root_kinds
+        if motion.motion_clip_compatible(
+            metadata.get(kind), expected,
+            require_receipt=selected is not None)
+    }
+
+
+def _pipeline_thread(
+        slug, job_id, notes="", remove_headwear=None, source_medium=None):
     """One click, everything: talking face (if not built) -> full body ->
     walk, edge idle, and moves - sequentially, in one background job."""
     writer = jlog(slug, "one-click pipeline: face, full body, walk, idle, moves")
@@ -1221,6 +1505,13 @@ def _pipeline_thread(slug, job_id, notes="", remove_headwear=None):
     try:
         from studio import motion, wardrobe
         manifest = reg().read_manifest(slug) or {}
+        if source_medium is not None:
+            # Route the decision from an in-memory candidate.  Persistence is
+            # owned by build_avatar's ready-face transaction, so a rejected
+            # face build restores the prior medium and every prior asset as one
+            # authored set instead of leaving a half-switched registry entry.
+            manifest = copy.deepcopy(manifest)
+            reg().apply_source_medium_override(manifest, source_medium)
         manifest = reg().repair_source_medium_from_source(
             slug, manifest=manifest, log=writer)
         previous_remove_headwear = bool(
@@ -1241,18 +1532,27 @@ def _pipeline_thread(slug, job_id, notes="", remove_headwear=None):
                           + (" with your notes" if notes else ""),
                           job_id=job_id)
             manifest = reg().build_avatar(
-                slug, notes=notes, remove_headwear=remove_headwear) or {}
+                slug, notes=notes, remove_headwear=remove_headwear,
+                source_medium=source_medium) or {}
             if manifest.get("status") != "ready":
                 raise RuntimeError(
                     manifest.get("error") or "the face build failed")
+        elif source_medium is not None:
+            # The already-published face was authored in the selected lane, so
+            # no generated files need a transaction.  Persist only the owner
+            # intent before body/motion cache compatibility is evaluated.
+            manifest = reg().set_source_medium_override(
+                slug, source_medium) or manifest
         _job_progress(slug, "face", .30,
                       "One-click 1/3: talking face ready", job_id=job_id)
         # Resumable: a re-click after a partial run picks up where it
         # stopped instead of regenerating finished stages.
         body_manifest_path = os.path.join(
             reg().adir(slug), "body", "body.json")
-        if (reg().read_manifest(slug) or {}).get("body") \
-                and os.path.isfile(body_manifest_path):
+        current_manifest = reg().read_manifest(slug) or {}
+        if current_manifest.get("body") \
+                and _pipeline_body_is_compatible(
+                    current_manifest, body_manifest_path):
             writer("full body already built - skipping")
             _job_progress(slug, "body", .58,
                           "One-click 2/3: full body already built",
@@ -1288,7 +1588,14 @@ def _pipeline_thread(slug, job_id, notes="", remove_headwear=None):
             remap_unsafe=True)
         walk_style = motion.resolve_walk_style(None, "")
         move_style = motion.resolve_move_style(None, "")
-        existing = set((reg().read_manifest(slug) or {}).get("motion") or {})
+        current_manifest = reg().read_manifest(slug) or {}
+        root_motion = set(current_manifest.get("motion") or {})
+        existing = _pipeline_existing_motion_kinds(
+            reg().adir(slug), current_manifest)
+        for kind in sorted(root_motion - existing):
+            writer(
+                f"{kind} take has no matching source-medium receipt; "
+                "regenerating instead of publishing stale motion")
         bands = {"walk": (.58, .14), "idle": (.72, .13), "move": (.85, .13)}
         motion_failures = {}
         for kind in ("walk", "idle", "move"):
@@ -1365,7 +1672,10 @@ async def api_avatars():
 
 
 @app.post("/api/avatar/upload")
-async def api_upload(photo: UploadFile = File(...), name: str = Form("", max_length=120)):
+async def api_upload(
+        photo: UploadFile = File(...),
+        name: str = Form("", max_length=120),
+        source_medium: str = Form("", max_length=20)):
     ext = os.path.splitext(photo.filename or "")[1].lower() or ".png"
     if ext not in (".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"):
         raise HTTPException(400, f"unsupported image type {ext}")
@@ -1376,7 +1686,9 @@ async def api_upload(photo: UploadFile = File(...), name: str = Form("", max_len
         handle.write(raw)
         tmp = handle.name
     try:
-        m = reg().create_avatar(tmp, name or os.path.splitext(photo.filename or "Avatar")[0])
+        m = reg().create_avatar(
+            tmp, name or os.path.splitext(photo.filename or "Avatar")[0],
+            source_medium=source_medium or None)
     except Exception as e:
         raise HTTPException(400, str(e))
     finally:
@@ -1432,6 +1744,11 @@ class Slug(BaseModel):
     # Preserve source-worn headwear by default. This opt-in switch is shared
     # by photo and stylized lanes but does not merge their render pipelines.
     remove_headwear: bool | None = None
+    # Optional for backward compatibility. When present, this owner-selected
+    # lane supersedes the local visual heuristic for every derived asset.
+    source_medium: str | None = Field(
+        default=None,
+        pattern=r"^(photograph|illustration|3d render)$")
 
 
 def _rig_control_field(name):
@@ -1739,14 +2056,20 @@ async def api_build(b: Slug):
         unknown = sorted(set(b.shapes) - set(reg().visemes.ORDER))
         if unknown:
             raise HTTPException(422, f"unknown viseme shapes: {', '.join(unknown)}")
-    with _jlock:
-        j = _jobs.get(b.slug)
-        if j and not j["done"]:
-            return {"started": False, "reason": "already building"}
-    threading.Thread(target=_build_thread,
-                     args=(b.slug, b.shapes, b.notes, b.remove_headwear),
-                     daemon=True).start()
-    return {"started": True, "slug": b.slug}
+    if not reg().read_manifest(b.slug):
+        raise HTTPException(404, "avatar not found")
+    job_id = _reserve_job(b.slug, "build", "Building avatar")
+    if not job_id:
+        return _already_running(b.slug)
+    try:
+        threading.Thread(target=_build_thread,
+                         args=(b.slug, job_id, b.shapes, b.notes,
+                               b.remove_headwear, b.source_medium),
+                         daemon=True).start()
+    except BaseException as error:
+        _finish_job(b.slug, job_id, getattr(error, "detail", error))
+        raise
+    return {"started": True, "slug": b.slug, "job_id": job_id}
 
 
 @app.get("/api/avatar/body")
@@ -2167,6 +2490,9 @@ class PipelineRequest(BaseModel):
     # earring, a scar. Rides with the house prompt, never replaces it.
     notes: str = Field(default="", max_length=600)
     remove_headwear: bool | None = None
+    source_medium: str | None = Field(
+        default=None,
+        pattern=r"^(photograph|illustration|3d render)$")
 
 
 @app.post("/api/avatar/pipeline")
@@ -2184,7 +2510,8 @@ async def api_pipeline(request: PipelineRequest):
         threading.Thread(
             target=_pipeline_thread,
             args=(request.slug, job_id, request.notes,
-                  request.remove_headwear), daemon=True).start()
+                  request.remove_headwear, request.source_medium),
+            daemon=True).start()
     except BaseException as error:
         _finish_job(request.slug, job_id, getattr(error, "detail", error))
         raise
@@ -3483,6 +3810,57 @@ def _warm():
         print("[openclam] warmup skipped:", P.safe_error(e), flush=True)
 
 
+def _recover_avatar_after_restart(slug, blocking=False):
+    """Settle crash journals only while no prior face worker owns the avatar.
+
+    A child ``studio.build`` process can briefly outlive its backend during an
+    Electron restart.  Its inherited flock is the authoritative liveness
+    signal: recovery must wait instead of restoring the transaction beneath
+    that still-running child.
+    """
+    with reg().avatar_face_build_lock(
+            slug, blocking=blocking) as lock_fd:
+        if lock_fd is None:
+            return False
+        face_recovery = reg().recover_face_rebuild_transactions(
+            slug,
+            log=lambda message, current=slug: print(
+                f"[avatar:{current}] {message}", flush=True))
+        if "unrecoverable" in face_recovery:
+            raise RuntimeError(
+                "an interrupted face rebuild could not be recovered")
+        _recover_body_edit_transaction(
+            slug,
+            log=lambda message, current=slug: print(
+                f"[avatar:{current}] {message}", flush=True))
+        if active_slug() == slug:
+            ensure_runtime(slug)
+    return True
+
+
+def _wait_for_avatar_recovery(slug):
+    try:
+        _recover_avatar_after_restart(slug, blocking=True)
+    except Exception as error:
+        print(f"[avatar:{slug}] deferred startup recovery failed: {error}",
+              flush=True)
+    finally:
+        with _jlock:
+            _startup_recovery_waiters.pop(slug, None)
+
+
+def _defer_avatar_recovery(slug):
+    with _jlock:
+        current = _startup_recovery_waiters.get(slug)
+        if current and current.is_alive():
+            return current
+        waiter = threading.Thread(
+            target=_wait_for_avatar_recovery, args=(slug,), daemon=True)
+        _startup_recovery_waiters[slug] = waiter
+    waiter.start()
+    return waiter
+
+
 def _start():
     recovery_failed = set()
     try:
@@ -3490,22 +3868,36 @@ def _start():
     except Exception as error:
         avatars = []
         print("[openclam] body-edit recovery scan failed:", error, flush=True)
-    for avatar in avatars:
-        slug = avatar.get("slug")
-        if not slug:
-            continue
+    recovery_slugs = {
+        avatar.get("slug") for avatar in avatars
+        if isinstance(avatar, dict) and avatar.get("slug")
+    }
+    try:
+        # A killed pre-1.0.13 rollback can have a valid journal and snapshot
+        # but no live manifest.  Such a directory is deliberately absent from
+        # list_avatars(), so include the narrow recovery-only registry scan.
+        recovery_slugs.update(reg().face_rebuild_recovery_slugs())
+    except Exception as error:
+        print("[openclam] face-rebuild recovery scan failed:", error,
+              flush=True)
+    for slug in sorted(recovery_slugs):
         try:
-            _recover_body_edit_transaction(
-                slug,
-                log=lambda message, current=slug: print(
-                    f"[avatar:{current}] {message}", flush=True))
+            if not _recover_avatar_after_restart(slug, blocking=False):
+                print(
+                    f"[avatar:{slug}] face worker still active; startup "
+                    "recovery deferred until it exits",
+                    flush=True)
+                _defer_avatar_recovery(slug)
         except Exception as error:
             recovery_failed.add(slug)
             print(
-                f"[avatar:{slug}] body-edit recovery failed: {error}",
+                f"[avatar:{slug}] startup recovery failed: {error}",
                 flush=True)
     s = active_slug()
-    if s and s not in recovery_failed:
+    # Avatars found by either registry scan were already runtime-checked while
+    # holding their face lease (or queued for that check).  Preserve the legacy
+    # fallback for a valid active pointer absent from both scans.
+    if s and s not in recovery_failed and s not in recovery_slugs:
         try:
             ensure_runtime(s)
         except Exception as e:

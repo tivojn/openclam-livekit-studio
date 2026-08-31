@@ -2319,16 +2319,22 @@ assert.deepEqual(
   {
     sourceX: 32,
     sourceY: 3221,
+    sourceWidth: 228,
+    sourceHeight: 114,
+    patchX: 0,
+    patchY: 0,
     width: 237,
     height: 121,
     destinationX: 397,
     destinationY: 662,
   },
-  'stylized emotion cells must crop to the nose-safe lip box and apply the authored x offset',
+  'stylized emotion cells must clip to their own cell while retaining the full nose-safe lip box',
 );
 assert.match(source,
-  /const drawStylizedEmotionMouthSample = \([\s\S]{0,1800}prepareStylizedMouthMask\(width, height\);[\s\S]{0,220}globalCompositeOperation = 'destination-in';/,
-  'stylized emotional mouths must use the ordinary oval lip matte, never the broad atlas rectangle');
+  /const drawStylizedEmotionMouthSample = \([\s\S]{0,1000}prepareStylizedMouthPatch\([\s\S]{0,160}image, spec, sample\);/,
+  'stylized emotional mouths must resolve against their own viseme using the same lip ownership as speech');
+assert.match(source, /if \(stylizedRuntime && !stylizedMouthDrawn\)/,
+  'exactly one resolved stylized mouth may be painted over the canonical face');
 
 const stylizedMouthMaskSource = inline[1].match(
   /(const stylizedMouthMaskAlpha = \(x, y, width, height\) => \{[\s\S]*?\n    \};)/,
@@ -2344,6 +2350,10 @@ assert.ok(stylizedMouthMaskAlpha(49, 0, 100, 100) < .01,
   'the provider patch must disappear before it reaches the nose');
 assert.equal(stylizedMouthMaskAlpha(0, 0, 100, 100), 0,
   'the provider patch must have no rectangular corner coverage');
+for (const [x, y] of [[41, 36], [202, 32], [40, 15], [122, 102]]) {
+  assert.equal(stylizedMouthMaskAlpha(x, y, 242, 124), 1,
+    'the entire neutral/voiced corner and lip union must be owned, not feathered');
+}
 
 const stylizedMouthToneSource = inline[1].match(
   /(const stylizedMouthToneShift = \(source, target, limit = 24\) => \([\s\S]*?\n    \);)/,
@@ -2409,27 +2419,33 @@ assert.equal(preserveMaskAlpha(featherPixels), 2);
 assert.deepEqual([...featherPixels], [
   255, 255, 255, 17,
   255, 255, 255, 128,
-], 'a marker-v2 stylized body must retain the authored under-jaw alpha ramp');
+], 'a marker-v4 stylized body must retain the authored under-jaw alpha ramp');
 const authoredHandoffSource = inline[1].match(
   /(const authoredHeadHandoffReady = \(body, clearMask, authoredMask\) => Boolean\([\s\S]*?\n      && body\.head_clear_mask && clearMask && authoredMask\);)/,
 );
 assert.ok(authoredHandoffSource,
   'the jaw handoff version gate must remain independently testable');
 const authoredHeadHandoffReady = new Function(
-  `'use strict'; const STYLIZED_HEAD_HANDOFF_VERSION = 2; ${authoredHandoffSource[1]}; return authoredHeadHandoffReady;`,
+  `'use strict'; const STYLIZED_HEAD_HANDOFF_VERSION = 4; ${authoredHandoffSource[1]}; return authoredHeadHandoffReady;`,
 )();
 const legacyHandoff = {
   head_composite: 'replace', head_clear_mask: 'assets/head-clear-mask.png',
 };
 const currentHandoff = {
-  ...legacyHandoff, head_handoff_version: 2,
+  ...legacyHandoff, head_handoff_version: 4,
 };
 assert.equal(authoredHeadHandoffReady(legacyHandoff, {}, {}), false,
-  'legacy v3 bodies must keep the hard silhouette fallback');
+  'unversioned bodies must not claim the new v4 authoring contract');
 assert.equal(authoredHeadHandoffReady(currentHandoff, {}, {}), true,
-  'only the reviewed v2 authored jaw handoff may preserve its alpha ramp');
+  'the reviewed v4 authored jaw handoff must preserve its alpha ramp');
+assert.equal(authoredHeadHandoffReady(
+  { ...legacyHandoff, head_handoff_version: 2 }, {}, {}), false,
+  'v2 compatibility must not claim current v4 authoring');
 assert.equal(authoredHeadHandoffReady(
   { ...legacyHandoff, head_handoff_version: 3 }, {}, {}), false,
+  'v3 compatibility must not claim current v4 authoring');
+assert.equal(authoredHeadHandoffReady(
+  { ...legacyHandoff, head_handoff_version: 5 }, {}, {}), false,
   'future handoff versions must fail closed');
 assert.match(source, /const replacementSource = authoredHandoff \|\| recoveredLegacyHandoff\n          \? headMask : \(cutoutImage \|\| headMask\);/,
   'a coordinated current or narrowly recovered stylized body must use its authored full-head/jaw handoff mask');
@@ -2437,6 +2453,98 @@ assert.match(source, /\? preserveMaskAlpha\(matte\.data\)\n          : hardenMas
   'only legacy stylized packages may harden the complete cutout fallback');
 assert.match(source, /headReplacementContext\.drawImage\(\n          replacementSource/,
   'the selected complete stylized silhouette must become the live head matte');
+
+// Execute the actual compositor setup, not just a version predicate: a cached
+// v23 runtime can still contain a reviewed v2/v3 mask pair after an app update.
+// Its paired feather must not silently become the wider, hardened neck cutout.
+const handoffPolicySource = inline[1].match(
+  /(const STYLIZED_SOURCE_MEDIA = new Set\([\s\S]*?const isStylizedFaceRuntime = value => \{[\s\S]*?\n    \};)/,
+);
+const compatibleHandoffSource = inline[1].match(
+  /(const compatibleLegacyHeadHandoffReady = \([\s\S]*?&& body\.head_mask && body\.head_clear_mask && clearMask && authoredMask\);)/,
+);
+const unversionedHandoffSource = inline[1].match(
+  /(const legacyStylizedHeadHandoffReady = \([\s\S]*?&& runtimeBox\(runtime\.stylized_mouth\)\);)/,
+);
+const prepareHandoffSource = inline[1].match(
+  /(const prepareHeadReplacementMask = body => \{[\s\S]*?\n    \};)/,
+);
+for (const extracted of [handoffPolicySource, compatibleHandoffSource,
+  unversionedHandoffSource, prepareHandoffSource]) {
+  assert.ok(extracted, 'the complete mask-selection path must remain testable');
+}
+const prepareHandoffFixture = new Function('manifest', 'headMask', 'bodyHeadClearMask',
+  `'use strict';
+  const STYLIZED_HEAD_HANDOFF_VERSION = 4;
+  const runtimeBox = value => Array.isArray(value && value.box)
+    && value.box.length === 4 ? value.box : null;
+  ${handoffPolicySource[1]}
+  ${bodyHeadModeSource[1]}
+  ${authoredHandoffSource[1]}
+  ${compatibleHandoffSource[1]}
+  ${unversionedHandoffSource[1]}
+  ${hardenMaskSource[1]}
+  ${preserveMaskSource[1]}
+  let headReplacementActive = false;
+  const portraitWidth = 2, portraitHeight = 1;
+  const headReplacementCanvas = {};
+  const cutoutImage = {id: 'wide-neck-cutout',
+    pixels: new Uint8ClampedArray([1, 2, 3, 255, 4, 5, 6, 255])};
+  const selected = [];
+  let pixels = new Uint8ClampedArray(8);
+  const headReplacementContext = {
+    setTransform() {}, clearRect() { pixels.fill(0); },
+    drawImage(image) { selected.push(image.id); pixels = image.pixels.slice(); },
+    getImageData() { return {data: pixels}; },
+    putImageData(image) { pixels = image.data; }
+  };
+  ${prepareHandoffSource[1]}
+  prepareHeadReplacementMask(manifest.body);
+  return {selected, alpha: [pixels[3], pixels[7]], active: headReplacementActive};
+`);
+const pairedHandoff = {
+  ...legacyHandoff, head_mask: 'assets/head-mask.png',
+};
+const authoredFeather = {id: 'authored-jaw-feather',
+  pixels: new Uint8ClampedArray([1, 2, 3, 17, 4, 5, 6, 128])};
+const preparedMask = (body, medium = '3d render', head = authoredFeather,
+  clear = {}, extra = {}) => prepareHandoffFixture(
+  {v: 23, source_medium: medium, body, ...extra}, head, clear);
+const authoredResult = {
+  selected: ['authored-jaw-feather'], alpha: [17, 128], active: true,
+};
+const fallbackResult = {
+  selected: ['wide-neck-cutout'], alpha: [255, 255], active: true,
+};
+for (const version of [2, 3, 4]) {
+  for (const medium of ['3d render', 'illustration']) {
+    assert.deepEqual(preparedMask({...pairedHandoff, head_handoff_version: version}, medium),
+      authoredResult, `known v${version} ${medium} must keep its paired authored neck feather`);
+  }
+}
+for (const version of [0, 1, 5, 2.5, '2', '3', null, true]) {
+  assert.deepEqual(preparedMask({...pairedHandoff, head_handoff_version: version}),
+    fallbackResult, `unknown/malformed handoff ${JSON.stringify(version)} must not gain compatibility`);
+}
+for (const version of [2, 3]) {
+  const body = {...pairedHandoff, head_handoff_version: version};
+  for (const medium of ['photograph', 'unknown', 'corrupt-future-value', null]) {
+    assert.deepEqual(preparedMask(body, medium), fallbackResult,
+      'known old mask versions must not override non-stylized classification');
+  }
+  assert.deepEqual(preparedMask({...body, head_mask: null}), fallbackResult);
+  assert.deepEqual(preparedMask({...body, head_clear_mask: null}), fallbackResult);
+  assert.deepEqual(preparedMask(body, '3d render', null), fallbackResult);
+  assert.deepEqual(preparedMask(body, '3d render', authoredFeather, null), fallbackResult);
+}
+assert.deepEqual(preparedMask(pairedHandoff), fallbackResult,
+  'unversioned bundles must not gain a new unconditional compatibility path');
+assert.deepEqual(preparedMask(pairedHandoff, '3d render', authoredFeather, {}, {
+  stylized_mouth: {basis: 'canonical-outer-lip-v1', box: [1, 2, 3, 4]},
+}), authoredResult, 'the existing narrow unversioned handoff recovery must stay unchanged');
+assert.deepEqual(preparedMask({options: {medium: 'photograph'}}, 'photograph'),
+  {selected: [], alpha: [0, 0], active: false},
+  'the ordinary photo compositor must not prepare a replacement mask');
 
 const drawBodyHeadSource = inline[1].match(
   /(const drawBodyHeadLayer = \(target, head, replacementMask, mode, width, height\) => \{[\s\S]*?\n    \};)/,

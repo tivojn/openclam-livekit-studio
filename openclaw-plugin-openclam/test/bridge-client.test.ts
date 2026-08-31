@@ -50,6 +50,10 @@ class FakeSocket extends EventEmitter {
     this.readyState = 3;
     this.emit("close", code, Buffer.alloc(0));
   }
+
+  terminate(): void {
+    this.close(1006);
+  }
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

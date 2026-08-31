@@ -36,7 +36,7 @@ def _stylized_portrait():
 
 class StylizedHeadCompositeTests(unittest.TestCase):
     def test_new_jaw_handoff_is_explicitly_versioned_at_authoring(self):
-        self.assertEqual(2, body.STYLIZED_HEAD_HANDOFF_VERSION)
+        self.assertEqual(4, body.STYLIZED_HEAD_HANDOFF_VERSION)
         source = inspect.getsource(body._install_sources)
         self.assertIn('metadata["head_handoff_version"]', source)
         self.assertIn("STYLIZED_HEAD_HANDOFF_VERSION", source)
@@ -53,10 +53,145 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         self.assertGreater(int(mask[20, 90]), 250)   # hat
         self.assertGreater(int(mask[85, 44]), 250)   # left ear
         self.assertGreater(int(mask[126, 90]), 250)  # complete jaw
-        self.assertGreater(int(mask[129, 90]), 64)   # short under-jaw feather
+        self.assertGreater(int(mask[129, 90]), 192)  # signed-distance feather
         self.assertLess(int(mask[129, 90]), 250)
-        self.assertEqual(0, int(mask[132, 90]))      # body owns the neck
+        self.assertGreater(int(mask[132, 90]), 64)
+        self.assertLess(int(mask[132, 90]), 192)
+        self.assertEqual(0, int(mask[137, 90]))      # body owns the neck
         self.assertEqual(0, int(mask[178, 90]))      # source bust/clothing
+
+    def test_soft_3d_handoff_drops_rendered_neck_tail_but_keeps_head_silhouette(self):
+        """A soft-3-D source neck must not become a second shaded chin."""
+        portrait = _stylized_portrait()
+        landmarks = _oval_landmarks()
+        body_rgba = np.full((220, 180, 4), (190, 30, 20, 255), np.uint8)
+        transform = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+
+        with tempfile.TemporaryDirectory() as directory:
+            illustration_mask_path = os.path.join(
+                directory, "illustration-mask.png")
+            soft_3d_mask_path = os.path.join(directory, "soft-3d-mask.png")
+            clear_path = os.path.join(directory, "head-clear-mask.png")
+            body_path = os.path.join(directory, "body.png")
+            preview_path = os.path.join(directory, "preview.png")
+            body._stylized_head_mask(
+                portrait, landmarks, illustration_mask_path,
+                transform=transform, source_medium="illustration")
+            body._stylized_head_mask(
+                portrait, landmarks, soft_3d_mask_path,
+                transform=transform, source_medium="3d render")
+            receipt = body._stylized_head_clear_mask(
+                body_rgba, soft_3d_mask_path, transform, landmarks,
+                [52, 43, 76, 84], clear_path,
+                source_medium="3d render")
+            cv2.imwrite(body_path, body_rgba)
+            body._runtime_composite_preview(
+                body_path, portrait[:, :, :3], soft_3d_mask_path, transform,
+                preview_path, replace=True, clear_mask_path=clear_path)
+            illustration_mask = cv2.imread(
+                illustration_mask_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            soft_3d_mask = cv2.imread(
+                soft_3d_mask_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            preview = cv2.imread(preview_path, cv2.IMREAD_UNCHANGED)
+
+        # Hat, ears and the complete anatomical jaw retain the same authority.
+        for y, x in ((20, 90), (85, 44), (126, 90)):
+            self.assertEqual(
+                int(illustration_mask[y, x]), int(soft_3d_mask[y, x]))
+            self.assertGreater(int(soft_3d_mask[y, x]), 250)
+        # The source portrait deliberately contains a long neck.  The 2-D lane
+        # keeps its established ink-safe overlap, while soft 3-D has already
+        # handed this central row back to the generated body.
+        self.assertGreater(int(illustration_mask[133, 90]), 64)
+        self.assertEqual(0, int(soft_3d_mask[133, 90]))
+        self.assertTrue(np.array_equal(
+            body_rgba[133, 90], preview[133, 90]))
+        self.assertEqual("soft-3d-jaw-v1", receipt["handoff_profile"])
+        self.assertEqual("3d render", receipt["source_medium"])
+        self.assertGreaterEqual(receipt["handoff_feather_px"], 6.0)
+        self.assertLessEqual(receipt["handoff_feather_px"], 12.0)
+
+    def test_illustration_handoff_retains_existing_luffy_safe_overlap(self):
+        portrait = _stylized_portrait()
+        landmarks = _oval_landmarks()
+        body_rgba = np.full((220, 180, 4), 255, np.uint8)
+        transform = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            default_path = os.path.join(directory, "default.png")
+            illustration_path = os.path.join(directory, "illustration.png")
+            clear_path = os.path.join(directory, "clear.png")
+            body._stylized_head_mask(
+                portrait, landmarks, default_path, transform=transform)
+            body._stylized_head_mask(
+                portrait, landmarks, illustration_path, transform=transform,
+                source_medium="illustration")
+            receipt = body._stylized_head_clear_mask(
+                body_rgba, illustration_path, transform, landmarks,
+                [52, 43, 76, 84], clear_path,
+                source_medium="illustration")
+            default_mask = cv2.imread(
+                default_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            illustration_mask = cv2.imread(
+                illustration_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+
+        self.assertTrue(np.array_equal(default_mask, illustration_mask))
+        self.assertEqual("illustration-jaw-v2", receipt["handoff_profile"])
+        self.assertEqual("illustration", receipt["source_medium"])
+        self.assertGreaterEqual(receipt["handoff_feather_px"], 10.0)
+        self.assertLessEqual(receipt["handoff_feather_px"], 16.0)
+
+    def test_shared_curved_jaw_avoids_a_long_horizontal_collar_edge(self):
+        head_source = inspect.getsource(body._stylized_head_mask)
+        clear_source = inspect.getsource(body._stylized_head_clear_mask)
+        self.assertIn("_stylized_jaw_handoff", head_source)
+        self.assertIn("_stylized_jaw_handoff", clear_source)
+        self.assertNotIn("chin_stop", clear_source)
+
+        portrait = _stylized_portrait()
+        landmarks = _oval_landmarks()
+        body_rgba = np.full((220, 180, 4), 255, np.uint8)
+        transform = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            clear_path = os.path.join(directory, "head-clear-mask.png")
+            body._stylized_head_mask(portrait, landmarks, mask_path)
+            receipt = body._stylized_head_clear_mask(
+                body_rgba, mask_path, transform, landmarks,
+                [52, 43, 76, 84], clear_path)
+            mask = cv2.imread(
+                mask_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            clear = cv2.imread(
+                clear_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+
+        vertical_edge = np.abs(
+            clear[1:].astype(np.int16) - clear[:-1].astype(np.int16)) > 200
+
+        def longest_run(row):
+            padded = np.pad(row.astype(np.int8), (1, 1))
+            changes = np.diff(padded)
+            starts = np.flatnonzero(changes == 1)
+            ends = np.flatnonzero(changes == -1)
+            return int(np.max(ends - starts)) if len(starts) else 0
+
+        longest_horizontal_edge = max(
+            longest_run(row) for row in vertical_edge)
+        projected_width = float(np.ptp(
+            landmarks[body.face.FACE_OVAL, 0]))
+        self.assertLess(
+            longest_horizontal_edge, int(round(projected_width * 0.20)))
+        self.assertGreater(
+            receipt["jaw_boundary_row_range"][1]
+            - receipt["jaw_boundary_row_range"][0],
+            20)
+        self.assertGreaterEqual(receipt["handoff_feather_px"], 10.0)
+        self.assertLessEqual(receipt["handoff_feather_px"], 16.0)
+        overlay_feather = (mask > 4) & (mask < 250)
+        self.assertGreater(int(np.sum(overlay_feather)), 0)
+        self.assertTrue(np.all(
+            clear[:mask.shape[0]][overlay_feather] == 0))
 
     def test_body_clear_expands_only_in_face_band_and_preserves_hat_and_neck(self):
         portrait = _stylized_portrait()
@@ -109,6 +244,33 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         self.assertEqual(
             [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             receipt["face_transform"])
+
+    def test_wide_body_plate_never_treats_shoulders_as_extrapolated_jaw(self):
+        portrait = _stylized_portrait()
+        landmarks = _oval_landmarks()
+        body_rgba = np.zeros((360, 800, 4), np.uint8)
+        donor = (20, 30, 190, 255)
+        cv2.ellipse(body_rgba, (400, 84), (50, 46), 0, 0, 360, donor, -1)
+        cv2.rectangle(body_rgba, (80, 150), (720, 359), donor, -1)
+        transform = np.array(
+            [[1.0, 0.0, 310.0], [0.0, 1.0, 0.0]], np.float32)
+
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            clear_path = os.path.join(directory, "head-clear-mask.png")
+            body._stylized_head_mask(
+                portrait, landmarks, mask_path, transform=transform)
+            receipt = body._stylized_head_clear_mask(
+                body_rgba, mask_path, transform, landmarks,
+                [362, 43, 76, 84], clear_path)
+            clear = cv2.imread(
+                clear_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+
+        # The previous unbounded diagonal reached below row 300 at the image
+        # edges and erased these perfectly valid shoulders/torso pixels.
+        self.assertEqual(0, int(clear[170, 100]))
+        self.assertEqual(0, int(clear[170, 700]))
+        self.assertLessEqual(receipt["jaw_boundary_row_range"][1], 130)
 
     def test_jaw_handoff_keeps_body_under_antialiased_stylized_edge(self):
         portrait = _stylized_portrait()
@@ -190,6 +352,8 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         self.assertEqual(0, int(clear[150, 90]))
 
     def test_photographic_preview_retains_legacy_soft_blend_exactly(self):
+        self.assertNotIn(
+            "_stylized_jaw_handoff", inspect.getsource(body._head_mask))
         body_rgba = np.zeros((12, 12, 4), np.uint8)
         body_rgba[:, :, :3] = (10, 40, 200)
         body_rgba[:, :, 3] = 255
