@@ -80,12 +80,35 @@ function dockedPetBounds(size, area, margin = 0, side = 'right') {
   };
 }
 
+// Keep the native transparent canvas GPU/screen sized. The renderer retains
+// the requested zoom and applies any excess inside this bounded canvas, with
+// its anatomical crown/chin guard. This does not overwrite a saved zoom.
+function fitPetWindowToArea(bounds, area) {
+  const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const left = finite(area && area.x, 0), top = finite(area && area.y, 0);
+  const availableWidth = Math.max(1, finite(area && area.width, 1));
+  const availableHeight = Math.max(1, finite(area && area.height, 1));
+  const wantedWidth = Math.max(1, finite(bounds && bounds.width, availableWidth));
+  const wantedHeight = Math.max(1, finite(bounds && bounds.height, availableHeight));
+  const factor = Math.min(1, availableWidth / wantedWidth, availableHeight / wantedHeight);
+  const width = Math.max(1, Math.min(availableWidth, Math.round(wantedWidth * factor)));
+  const height = Math.max(1, Math.min(availableHeight, Math.round(wantedHeight * factor)));
+  return {
+    x: Math.round(Math.max(left, Math.min(left + availableWidth - width,
+      finite(bounds && bounds.x, left)))),
+    y: Math.round(Math.max(top, Math.min(top + availableHeight - height,
+      finite(bounds && bounds.y, top)))),
+    width, height,
+  };
+}
+
 module.exports = {
   boundsForPetZoom,
   boundsForPetZoomAtAnchor,
   clampPetZoom,
   dockedPetBounds,
   fitPetZoomToArea,
+  fitPetWindowToArea,
   petZoomAnchor,
   petZoomSize,
   roamSizeForZoom,

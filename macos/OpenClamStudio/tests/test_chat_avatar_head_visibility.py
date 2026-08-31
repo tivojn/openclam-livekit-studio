@@ -34,6 +34,7 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
         bootstrap = r"""
             const assert = require('node:assert/strict');
             let inChat = true, avatarMirrored = false;
+            let isCompanion = false, idleDocked = false;
             const root = {classList: {contains: name =>
               inChat && (name === 'chat-mode' || name === 'chat-open'
                 || (name === 'avatar-mirrored' && avatarMirrored))}};
@@ -50,8 +51,10 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             const composerShell = {getBoundingClientRect: () => composerRect};
             const chatDock = composerShell;
             let shellState = {chatCloseUp: false, chatCloseUpBaseZoom: .6,
-              desktopCloseUp: false, pet: {view: 'full', zoom: .6, roam: false}};
+              desktopCloseUp: false, pet: {view: 'full', zoom: .6, roam: false,
+                canvasBaseSize: {width: 560, height: 760}}};
             let chatAvatarOffset = {x: 0, y: 0};
+            let desktopCloseUpOffset = {x: 0, y: 0};
             let lastFrame = 123;
             const metadata = {
               bounds: [230, 20, 620, 1400],
@@ -124,6 +127,57 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             assert.equal(actual.scale, 2, 'do not zoom out merely to fit the body');
             assert.ok(actual.y + 1020 * actual.scale > viewport.bottom,
               'intentional large-avatar legs may extend below the viewport');
+        """)
+
+    def test_desktop_close_up_uses_saved_zoom_and_head_guard_without_resizing_canvas(self):
+        self.run_js(r"""
+            inChat = false;
+            shellState.desktopCloseUp = true;
+            innerWidth = 1440; innerHeight = 850;
+            const viewport = {x:0,y:0,right:innerWidth,bottom:innerHeight};
+            shellState.pet.zoom = .6;
+            const small = cameraFor(metadata,1086,1448);
+            shellState.pet.zoom = 1.2;
+            const larger = cameraFor(metadata,1086,1448);
+            assert.ok(larger.scale > small.scale);
+            for (const zoom of [.25,.6,1.2,4]) for (const delta of [-1e6,0,1e6]) {
+              shellState.pet.zoom = zoom;
+              desktopCloseUpOffset = {x:delta,y:delta};
+              visible(cameraFor(metadata,1086,1448),viewport);
+              assert.equal(shellState.pet.zoom,zoom);
+              assert.deepEqual(desktopCloseUpOffset,{x:delta,y:delta});
+              assert.equal(innerWidth,1440); assert.equal(innerHeight,850);
+            }
+        """)
+
+    def test_desktop_standby_retains_excess_zoom_in_bounded_native_canvas(self):
+        self.run_js(r"""
+            inChat = false;
+            innerWidth = 626; innerHeight = 850;
+            shellState.pet.zoom = 1.12;
+            const small = cameraFor(metadata,1086,1448);
+            shellState.pet.zoom = 4;
+            const large = cameraFor(metadata,1086,1448);
+            assert.ok(large.scale > small.scale,'native canvas bound must not swallow user zoom');
+            visible(large,{x:0,y:0,right:innerWidth,bottom:innerHeight});
+            assert.equal(shellState.pet.zoom,4);
+            assert.ok((metadata.bounds[1]+metadata.bounds[3])*large.scale+large.y > innerHeight,
+              'zoomed full body remains available below canvas, not converted to a bust asset');
+        """)
+
+    def test_desktop_companion_and_motion_keep_their_existing_native_fit(self):
+        self.run_js(r"""
+            inChat = false;
+            innerWidth = 336; innerHeight = 456;
+            for (const branch of ['companion','roam','idle']) {
+              isCompanion = branch==='companion'; idleDocked = branch==='idle';
+              shellState.pet.roam = branch==='roam'; shellState.pet.zoom = 4;
+              const fit = cameraFor(metadata,1086,1448);
+              const expected = Math.min(innerWidth/metadata.bounds[2],innerHeight/metadata.bounds[3])
+                * (branch==='roam'?.995:.94);
+              assert.equal(fit.scale,expected);
+              assert.equal(fit.headSpan,null);
+            }
         """)
 
     def test_close_up_clamps_crown_even_with_vertical_body_fitting_disabled(self):
@@ -441,7 +495,7 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             assert.equal(chatCameraAlphaBoundsCache.has(canvas),false);
         """)
 
-    def test_desktop_and_motion_cameras_do_not_read_static_head_images(self):
+    def test_desktop_caches_head_bounds_once_while_motion_remains_readback_free(self):
         self.run_js(r"""
             bodyImage = alphaImage(900,1000,[[100,10,700,900]]);
             headMask = alphaImage(1024,1024,[[50,10,960,800]]);
@@ -449,12 +503,22 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             cameraFor(metadata,1086,1448);
             shellState.desktopCloseUp = true;
             cameraFor(metadata,1086,1448);
+            const desktopReads = alphaReads;
+            assert.equal(desktopReads,2,'desktop now shares the head-safe camera');
+            for (let frame=0;frame<200;frame++) cameraFor(metadata,1086,1448);
+            assert.equal(alphaReads,desktopReads,'never scan image pixels on each paint');
+            shellState.desktopCloseUp = false;
+            for (const kind of ['roam','idle','companion']) {
+              shellState.pet.roam = kind === 'roam'; idleDocked = kind === 'idle';
+              isCompanion = kind === 'companion';
+              cameraFor(metadata,1086,1448);
+            }
             inChat = true;
             const motionMeta = {bounds:[10,20,700,1000]};
             const motionFit = cameraFor(motionMeta,720,1088,'full');
             assert.deepEqual(motionFit.headSpan,{top:20,bottom:1020});
-            assert.equal(alphaReads,0);
-            assert.equal(alphaCanvases,0);
+            assert.equal(alphaReads,desktopReads);
+            assert.equal(alphaCanvases,desktopReads);
         """)
 
     def test_window_resize_reclamps_without_erasing_saved_camera(self):
@@ -479,13 +543,18 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             assert.deepEqual(boundedChatAvatarOffset({x: Infinity, y: -Infinity}), {x: 0, y: 0});
         """)
 
-    def test_desktop_close_up_remains_unchanged(self):
+    def test_desktop_close_up_default_scale_preserved_but_head_extent_is_guarded(self):
         self.run_js(r"""
             inChat = false;
             shellState.desktopCloseUp = true;
             const expected = chatCloseUpGeometry(
               viewCrop(metadata, 1086, 1448, 'bust'), innerWidth, innerHeight, 1);
-            assert.deepEqual(cameraFor(metadata, 1086, 1448), expected);
+            const actual = cameraFor(metadata, 1086, 1448);
+            assert.equal(actual.scale,expected.scale);
+            assert.equal(actual.y,expected.y);
+            assert.deepEqual(actual.crop,expected.crop);
+            visible(actual,{x:0,y:0,right:innerWidth,bottom:innerHeight});
+            assert.ok(actual.x <= expected.x,'head silhouette can pull the portrait off the right edge');
         """)
 
     def test_input_and_layout_paths_request_an_immediate_new_frame(self):

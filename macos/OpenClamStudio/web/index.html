@@ -275,7 +275,7 @@
       padding: 4px;
       border: 1px solid var(--line-strong);
       border-radius: 10px;
-      background: rgba(35, 37, 42, .98);
+      background: var(--codex-surface-raised);
       box-shadow: 0 10px 30px rgba(0, 0, 0, .34);
       opacity: 0;
       visibility: hidden;
@@ -302,7 +302,7 @@
       white-space: nowrap;
     }
 
-    .selection-action:hover { background: rgba(255,255,255,.09); }
+    .selection-action:hover { background: var(--codex-hover); }
 
     .media-card { margin: 8px 0 4px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #080a0d; }
     .media-card img, .media-card video { width: 100%; max-height: 260px; display: block; object-fit: contain; }
@@ -709,11 +709,11 @@
     .response-action:hover { color: var(--codex-text); background: var(--codex-hover); }
     #selectionActions {
       border-color: var(--codex-border-heavy);
-      background: rgba(40, 40, 40, .99);
-      box-shadow: 0 12px 34px rgba(0, 0, 0, .42);
+      background: var(--codex-surface-raised);
+      box-shadow: var(--shadow);
     }
     .selection-action { color: var(--codex-text); }
-    .selection-action:hover { background: rgba(255, 255, 255, .08); }
+    .selection-action:hover { background: var(--codex-hover); }
     .media-card { border-color: var(--codex-border); border-radius: 12px; background: var(--codex-under); }
     #agentModeBar {
       display: flex;
@@ -2329,7 +2329,7 @@
     let assetRevision = Date.now();
     let pixelRatio = 1;
     let shellState = { onBattery: false, chatCloseUp: false, chatCloseUpBaseZoom: 1,
-      chatPoseRevision: 0,
+      chatPoseRevision: 0, closeUpAnchorRevision: 0,
       factoryResetRevision: 0,
       desktopCloseUp: false,
       pet: { enabled: true, view: 'full', roam: false, roamZoom: .6, zoom: .6 } };
@@ -2378,6 +2378,7 @@
       closeUp: loadChatAvatarOffset('openclam.chat.close-up-offset.v1'),
     };
     let chatAvatarOffset = { ...chatAvatarOffsets.standard };
+    let desktopCloseUpOffset = loadChatAvatarOffset('openclam.desktop.close-up-offset.v1');
     let latestAssistantText = '';
     let toastTimer = 0;
     let threadNoticeTimer = 0;
@@ -2911,6 +2912,11 @@
     };
 
     const saveChatAvatarOffset = () => {
+      if (!root.classList.contains('chat-mode') && shellState.desktopCloseUp) {
+        desktopCloseUpOffset = boundedChatAvatarOffset(desktopCloseUpOffset);
+        localStorage.setItem('openclam.desktop.close-up-offset.v1', JSON.stringify(desktopCloseUpOffset));
+        return;
+      }
       chatAvatarOffset = boundedChatAvatarOffset(chatAvatarOffset);
       const presentation = shellState.chatCloseUp ? 'closeUp' : 'standard';
       chatAvatarOffsets[presentation] = { ...chatAvatarOffset };
@@ -3729,7 +3735,7 @@
       const safeHeight = Math.max(1, Number(viewportHeight) || 1);
       const targetWidth = Math.max(240, safeWidth * .4);
       const targetHeight = Math.max(300, safeHeight * .72);
-      const adjustment = Math.max(.42, Math.min(2.4, Number(zoom) || 1));
+      const adjustment = Math.max(.25 / .6, Math.min(4 / .6, Number(zoom) || 1));
       const scale = Math.min(targetWidth / crop.w, targetHeight / crop.h) * adjustment;
       const rightOverflow = crop.w * scale * .035;
       const bottomOverflow = crop.h * scale * .08;
@@ -3937,6 +3943,8 @@
 
     const cameraFor = (meta, width, height, forcedView = null) => {
       const fullChat = root.classList.contains('chat-mode');
+      const safeDesktop = !fullChat && !isCompanion && !idleDocked
+        && !(shellState.pet && shellState.pet.roam);
       const viewport = fullChat ? chatAvatarSafeViewport({
         reserveComposer: !shellState.chatCloseUp, reserveRail: true,
       })
@@ -3950,11 +3958,11 @@
         viewport.headMirrorCentreX = workspace.x + workspace.width * .5;
       }
       const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
-      const headImages = fullChat && manifest && meta === manifest.body
+      const headImages = (fullChat || safeDesktop) && manifest && meta === manifest.body
         ? { body: bodyImage, head: headReplacementActive ? headReplacementCanvas : headMask,
           headCacheKey: headMask }
-        : (fullChat && manifest && meta && meta.alignment && !manifest.body ? { body: cutoutImage } : null);
-      const headSpan = fullChat ? chatCameraHeadSpan(meta, width, height, manifest, headImages) : null;
+        : ((fullChat || safeDesktop) && manifest && meta && meta.alignment && !manifest.body ? { body: cutoutImage } : null);
+      const headSpan = fullChat || safeDesktop ? chatCameraHeadSpan(meta, width, height, manifest, headImages) : null;
       if (fullChat && shellState.chatCloseUp) {
         const closeUpCrop = viewCrop(meta, width, height, 'bust');
         const baseZoom = Number(shellState.chatCloseUpBaseZoom);
@@ -3965,9 +3973,13 @@
         return clampChatCameraFit({ ...fit, headSpan, x: viewport.x + fit.x + offset.x,
           y: viewport.y + fit.y + offset.y }, viewport, { vertical: false });
       }
-      if (!fullChat && shellState.desktopCloseUp) {
+      if (safeDesktop && shellState.desktopCloseUp) {
         const closeUpCrop = viewCrop(meta, width, height, 'bust');
-        return chatCloseUpGeometry(closeUpCrop, innerWidth, innerHeight, 1);
+        const closeUpZoom = Number.isFinite(requestedZoom) && requestedZoom > 0 ? requestedZoom / .6 : 1;
+        const fit = chatCloseUpGeometry(closeUpCrop, innerWidth, innerHeight, closeUpZoom);
+        const offset = boundedChatAvatarOffset(desktopCloseUpOffset);
+        return clampChatCameraFit({ ...fit, headSpan, x: fit.x + offset.x,
+          y: fit.y + offset.y }, viewport, { vertical: false });
       }
       const crop = viewCrop(meta, width, height, forcedView);
       const chatReserve = root.classList.contains('chat-open') && !fullChat
@@ -3976,9 +3988,13 @@
       const availableHeight = Math.max(160, viewport.height - chatReserve);
       const margin = shellState.pet && shellState.pet.roam ? .995 : .94;
       const baseScale = Math.min(viewport.width / crop.w, availableHeight / crop.h) * margin;
-      const chatZoom = fullChat
-        ? Math.max(.42, Math.min(2.4, (Number.isFinite(requestedZoom) ? requestedZoom : .6) / .6))
-        : 1;
+      const zoom = Math.max(.25, Math.min(4, Number.isFinite(requestedZoom) ? requestedZoom : .6));
+      const nativeBase = shellState.pet && shellState.pet.canvasBaseSize;
+      const nativeCanvasZoom = nativeBase && Number(nativeBase.width) > 0 && Number(nativeBase.height) > 0
+        ? Math.max(.001, Math.min(innerWidth / nativeBase.width, innerHeight / nativeBase.height)) : zoom;
+      // The desktop window grows only to its work area. Any remaining zoom
+      // is a camera transform, never an oversized/offscreen native window.
+      const chatZoom = fullChat ? zoom / .6 : safeDesktop ? zoom / nativeCanvasZoom : 1;
       const scale = baseScale * chatZoom;
       const offset = fullChat ? boundedChatAvatarOffset(chatAvatarOffset) : { x: 0, y: 0 };
       const fit = {
@@ -3990,7 +4006,7 @@
         crop,
         headSpan,
       };
-      return fullChat ? clampChatCameraFit(fit, viewport) : fit;
+      return fullChat || safeDesktop ? clampChatCameraFit(fit, viewport) : fit;
     };
 
     const motionTravelAtPhase = (clip, phase) => {
@@ -9333,6 +9349,8 @@
         !== Number(shellState.chatPoseRevision || 0);
       const factoryResetChanged = Number(value.factoryResetRevision || 0)
         !== Number(shellState.factoryResetRevision || 0);
+      const closeUpAnchorChanged = Number(value.closeUpAnchorRevision || 0)
+        !== Number(shellState.closeUpAnchorRevision || 0);
       const closeUpChanged = chatCloseUpChanged
         || Boolean(value.desktopCloseUp) !== Boolean(shellState.desktopCloseUp);
       shellState = value;
@@ -9341,10 +9359,20 @@
         chatAvatarOffsets.closeUp = { x: 0, y: 0 };
         localStorage.removeItem('openclam.chat.avatar-offset.v1');
         localStorage.removeItem('openclam.chat.close-up-offset.v1');
+        localStorage.removeItem('openclam.desktop.close-up-offset.v1');
         chatAvatarOffset = { x: 0, y: 0 };
+        desktopCloseUpOffset = { x: 0, y: 0 };
       } else if (chatCloseUpChanged) {
         const presentation = value.chatCloseUp ? 'closeUp' : 'standard';
         chatAvatarOffset = boundedChatAvatarOffset({ ...chatAvatarOffsets[presentation] });
+      }
+      if (closeUpAnchorChanged && value.chatMode && value.chatCloseUp) {
+        chatAvatarOffsets.closeUp = { x: 0, y: 0 };
+        chatAvatarOffset = { x: 0, y: 0 };
+        localStorage.removeItem('openclam.chat.close-up-offset.v1');
+      } else if (closeUpAnchorChanged && !value.chatMode && value.desktopCloseUp) {
+        desktopCloseUpOffset = { x: 0, y: 0 };
+        localStorage.removeItem('openclam.desktop.close-up-offset.v1');
       }
       const pet = value.pet || {};
       root.classList.toggle('chat-mode', Boolean(value.chatMode));
@@ -9579,7 +9607,8 @@
         at: performance.now(),
         talking: false,
         positionAdjusting: false,
-        startOffset: { ...chatAvatarOffset },
+        startOffset: { ...(!root.classList.contains('chat-mode') && shellState.desktopCloseUp
+          ? desktopCloseUpOffset : chatAvatarOffset) },
         motionAt: performance.now(),
         holdTimer: 0,
       };
@@ -9595,7 +9624,8 @@
 
     canvas.addEventListener('pointermove', event => {
       if (!shell || !canvasGesture || canvasGesture.id !== event.pointerId || canvasGesture.talking) return;
-      if (root.classList.contains('chat-mode') && interactionLayer === 'avatar') {
+      if ((root.classList.contains('chat-mode') && interactionLayer === 'avatar')
+          || (!root.classList.contains('chat-mode') && shellState.desktopCloseUp)) {
         const deltaX = event.clientX - canvasGesture.x;
         const deltaY = event.clientY - canvasGesture.y;
         if (!canvasGesture.positionAdjusting && Math.hypot(deltaX, deltaY) > 5) {
@@ -9606,10 +9636,12 @@
           root.classList.add('dragging');
         }
         if (canvasGesture.positionAdjusting) {
-          chatAvatarOffset = boundedChatAvatarOffset({
+          const nextOffset = boundedChatAvatarOffset({
             x: canvasGesture.startOffset.x + deltaX,
             y: canvasGesture.startOffset.y + deltaY,
           });
+          if (!root.classList.contains('chat-mode') && shellState.desktopCloseUp) desktopCloseUpOffset = nextOffset;
+          else chatAvatarOffset = nextOffset;
           lastFrame = 0;
           return;
         }
@@ -9634,10 +9666,26 @@
       event.preventDefault();
       toggleLiveTalk();
     });
-    canvas.addEventListener('contextmenu', event => {
-      if (root.classList.contains('chat-mode')) return;
+    const showAvatarContextMenu = event => {
+      if (event.defaultPrevented || !event.target || !event.target.closest) return false;
+      // Text and controls retain their own menus even if an avatar is painted
+      // behind them. A blank thread surface may still target the visible avatar
+      // when thread-on-top disables pointer events on the canvas.
+      if (event.target.closest('input, textarea, [contenteditable], button, a, select, #composerShell, #chatHeader, #rail, #chatHistoryPanel, #workspaceInfoPanel, #selectionActions')) return false;
+      const selection = getSelection();
+      if (selection && !selection.isCollapsed && String(selection).trim()) return false;
+      if (!paintedAvatarAt({ x: event.clientX, y: event.clientY, inside: true })) return false;
+      if (!shell || typeof shell.showPetMenu !== 'function') return false;
       event.preventDefault();
-      if (shell && typeof shell.showPetMenu === 'function') shell.showPetMenu();
+      event.stopPropagation();
+      shell.showPetMenu();
+      return true;
+    };
+    canvas.addEventListener('contextmenu', showAvatarContextMenu);
+    document.addEventListener('contextmenu', event => {
+      if (root.classList.contains('chat-mode') && chatWorkspace.contains(event.target)) {
+        showAvatarContextMenu(event);
+      }
     });
 
     const toggleLiveTalk = () => {
@@ -9922,6 +9970,11 @@
         roamState = nextRoamState;
       });
       if (typeof shell.onPetMoves === 'function') shell.onPetMoves(() => { void selectMoveMode(); });
+      if (typeof shell.onDisplayModeRequest === 'function') shell.onDisplayModeRequest(mode => {
+        if (mode === 'walk') void selectWalkMode();
+        else if (mode === 'idle') void selectEdgeIdleMode();
+        else if (mode === 'moves') void selectMoveMode();
+      });
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
       if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(toggleLiveTalk);
     } else {

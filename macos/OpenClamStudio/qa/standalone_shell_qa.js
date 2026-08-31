@@ -74,7 +74,9 @@ for (const required of [
   'function startBuddyRoamMotion()',
   'PET_LEDGE_HOLD_MS',
   "post(chatWindow, 'openclam:pet-chat')",
-  "post(mainWindow, 'openclam:live-toggle')",
+  "post(owner, 'openclam:live-toggle')",
+  'function activeAvatarWindow()',
+  'function requestAvatarMotion(mode)',
   "ipcMain.on('openclam:live-active'",
   "ipcMain.handle('openclam:export-avatar'",
   "ipcMain.handle('openclam:avatar-store-catalog'",
@@ -121,9 +123,9 @@ assert.match(main, /function createChatWindow\(\)[\s\S]{0,1000}frame: true,[\s\S
   'Chat\/Talk must be a standard, opaque, resizable macOS application window');
 assert.match(main, /function setChatMode\(value\)[\s\S]{0,2400}mainWindow\.hide\(\);[\s\S]{0,120}createChatWindow\(\)[\s\S]{0,1000}mainWindow\.showInactive\(\)/,
   'mode switching must move between the normal chat window and standby companion');
-assert.match(main, /chatMode,\s*chatCloseUp,\s*chatCloseUpBaseZoom,\s*chatPoseRevision,\s*factoryResetRevision,\s*desktopCloseUp,/,
+assert.match(main, /chatMode,\s*chatCloseUp,\s*chatCloseUpBaseZoom,\s*chatPoseRevision,\s*closeUpAnchorRevision,\s*factoryResetRevision,\s*desktopCloseUp,/,
   'the renderer must receive the canvas-specific close-up presentation');
-assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,700}return shellState\(\);[\s\S]{0,120}if \(next\) \{[\s\S]{0,120}chatCloseUp = false;/,
+assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,700}return shellState\(\);[\s\S]{0,120}if \(next\) \{[\s\S]{0,260}chatCloseUp = false;/,
   'reopening an active Chat\/Talk window must preserve its close-up state');
 assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,360}mainWindow\.hide\(\);[\s\S]{0,420}return shellState\(\);/,
   'reopening Chat\/Talk must repair any accidental desktop-avatar reveal');
@@ -162,37 +164,39 @@ assert.match(factoryResetMode[1], /if \(chatMode\) \{[\s\S]*?chatCloseUp = false
   'the same factory reset must reset Chat\/Talk size as well as its presentation');
 const closeUpMode = main.match(/function deskCompanionMode\(\) \{([\s\S]*?)\n\}\n\nfunction deskCompanionMenuAction/);
 assert.ok(closeUpMode, 'Close-Up Companion must remain independently auditable');
-assert.match(closeUpMode[1], /if \(chatMode\) \{[\s\S]*?if \(!chatCloseUp\) \{[\s\S]*?chatCloseUp = true;[\s\S]*?chatCloseUpBaseZoom = Number\(state\.petZoom\) \|\| 1;[\s\S]*?applyPetOpacity\(1, false\);[\s\S]*?return;/,
-  'Close-Up Companion must idempotently select the chat-window close-up without revealing the desktop pet');
-assert.match(closeUpMode[1], /if \(chatMode\) \{[\s\S]*?chatPoseRevision \+= 1;[\s\S]*?applyPetOpacity\(1, false\);/,
-  're-selecting Close-Up Companion must leave edge idle without resetting its saved camera');
-assert.match(closeUpMode[1], /companionHold = \{ zoom: state\.petZoom, bounds: mainWindow\.getBounds\(\) \};[\s\S]{0,160}desktopCloseUp = true;/,
+assert.match(closeUpMode[1], /if \(chatMode\) \{[\s\S]*?chatCloseUp = true;[\s\S]*?chatCloseUpBaseZoom = DISPLAY_ZOOM_DEFAULT;[\s\S]*?restoreDisplayZoom\(true\);[\s\S]*?applyPetOpacity\(1, false\);[\s\S]*?return;/,
+  'Close-Up Companion must select its remembered chat-window size without revealing the desktop pet');
+assert.match(closeUpMode[1], /rememberCurrentDisplayZoom\(\);\s*closeUpAnchorRevision \+= 1;\s*chatPoseRevision \+= 1;/,
+  're-selecting Close-Up must leave edge idle and reanchor bottom-right without discarding its own size');
+assert.match(closeUpMode[1], /if \(!desktopCloseUp\) \{\s*companionHold = \{ zoom: state\.petZoom, bounds: mainWindow\.getBounds\(\) \};\s*\}\s*desktopCloseUp = true;/,
   'Avatar-mode Close-Up Companion must preserve and switch renderer presentation state');
-assert.match(closeUpMode[1], /if \(desktopCloseUp\) \{[\s\S]{0,80}applyPetOpacity\(1\);[\s\S]{0,40}return;/,
-  'repeated Close-Up shortcut delivery must be idempotent rather than cancelling itself');
-assert.match(closeUpMode[1], /screen\.getDisplayMatching\(mainWindow\.getBounds\(\)\)\.bounds[\s\S]{0,120}mainWindow\.setBounds\(bounds, false\)/,
-  'Avatar-mode Close-Up must use the selected display as its canvas');
+assert.match(closeUpMode[1], /desktopCloseUp = true;\s*restoreDisplayZoom\(true\);/,
+  'repeated Close-Up shortcut delivery must preserve the selected size rather than cancelling itself');
+assert.match(closeUpMode[1], /screen\.getDisplayMatching\(mainWindow\.getBounds\(\)\)\.workArea[\s\S]{0,120}mainWindow\.setBounds\(bounds, false\)/,
+  'Avatar-mode Close-Up must use the selected display work area so the crown clears the macOS menu bar');
 assert.ok(!closeUpMode[1].includes('state.petZoom = PET_ZOOM_RANGE.max'),
   'Close-Up must not create a GPU-unsafe oversized transparent window');
-assert.match(main, /before-input-event[\s\S]{0,700}input\.type === 'keyDown'[\s\S]{0,220}input\.key === '0' \|\| input\.key === '\)'[\s\S]{0,160}factoryResetCompanionMode\(\)[\s\S]{0,160}input\.key === '9' \|\| input\.key === '\('[\s\S]{0,160}deskCompanionMode\(\)/,
+assert.match(main, /before-input-event[\s\S]{0,700}input\.type === 'keyDown'[\s\S]{0,220}input\.key === '0' \|\| input\.key === '\)'[\s\S]{0,160}standbyCompanionMode\(\)[\s\S]{0,160}input\.key === '9' \|\| input\.key === '\('[\s\S]{0,160}deskCompanionMode\(\)/,
   'focused OpenClam windows must recognise both digit and shifted-glyph forms of the owner shortcuts');
-assert.match(main, /globalShortcut\.register\(accelerator, factoryResetCompanionMode\)/,
-  'the system-wide Cmd+Shift+0 shortcut must use the factory reset, not remembered Standby');
+assert.match(main, /globalShortcut\.register\(accelerator, standbyCompanionMode\)/,
+  'the system-wide Cmd+Shift+0 shortcut must restore the independently remembered Standby size');
 assert.match(preload, /setDisplayMode: \(value\) => ipcRenderer\.invoke\([\s\S]{0,100}'openclam:set-display-mode'/,
   'the isolated renderer bridge must expose one narrow display-mode command');
 assert.match(main, /ipcMain\.handle\('openclam:set-display-mode',[\s\S]{0,260}value === 'standby'[\s\S]{0,100}standbyCompanionMode\(\)[\s\S]{0,160}value === 'close-up'[\s\S]{0,100}deskCompanionMode\(\)/,
   'Electron must route only remembered Standby and Close-up through the window geometry owner');
-assert.match(main, /label: 'Reset Avatar Size & Position'[\s\S]{0,120}registerAccelerator: false[\s\S]{0,80}factoryResetCompanionMode/,
-  'the tray must label Cmd+Shift+0 as a factory reset without registering a duplicate accelerator');
+assert.match(main, /label: 'Standby', accelerator: 'CommandOrControl\+Shift\+0',[\s\S]{0,120}registerAccelerator: false[\s\S]{0,80}standbyCompanionMode/,
+  'the tray must label Cmd+Shift+0 as remembered Standby without registering a duplicate accelerator');
+assert.match(main, /label: 'Reset Avatar Size & Position', click: factoryResetCompanionMode/,
+  'factory reset remains an explicit menu action separate from both remembered shortcuts');
 assert.match(main, /label: 'Close-Up Companion'[\s\S]{0,140}registerAccelerator: false/,
   'the close-up tray item must not double-dispatch the global preset');
-assert.match(main, /function deskCompanionMenuAction\(\)[\s\S]{0,500}desktopCloseUp[\s\S]{0,120}restoreCompanionHold\(\)[\s\S]{0,120}applyPetOpacity\(1\)/,
-  'the explicitly labelled Restore Previous Size context-menu action must remain reversible');
+assert.match(main, /function deskCompanionMenuAction\(\) \{\s*deskCompanionMode\(\);\s*\}/,
+  'the context-menu Close-Up command must share the remembered shortcut contract; Standby restores the other size');
 const avatarMenu = main.match(/function showPetMenu\(\) \{([\s\S]*?)\n\}\n\nfunction createTray/);
 assert.ok(avatarMenu, 'Avatar mode must retain one focused right-click menu');
-assert.match(avatarMenu[1], /name: companionHold \? 'Restore Previous Size' : 'Close-Up Companion'[\s\S]{0,100}hint: companionHold \? '' : '⌘⇧9'[\s\S]{0,80}click: deskCompanionMenuAction/,
-  'the avatar context menu must route its reversible close-up item through the menu-only handler without advertising an idempotent shortcut as Restore');
-for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Moves',
+assert.match(avatarMenu[1], /name: 'Close-Up Companion', hint: '⌘⇧9 · bottom-right', click: deskCompanionMenuAction/,
+  'the avatar context menu must label the remembered bottom-right Close-Up action accurately');
+for (const label of ['Open Chat/Talk', 'Live Talk', 'Horizon Walk', 'Edge Idle', 'Moves',
   'Standby', 'Close-Up Companion', 'Reset Size & Position', 'Resize & Adjust…', 'Always on Top',
   'Character Studio…', 'Quit OpenClam']) {
   assert.ok(avatarMenu[1].includes(label), `missing meaningful Avatar menu item: ${label}`);

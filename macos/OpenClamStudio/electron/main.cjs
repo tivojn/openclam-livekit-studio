@@ -27,10 +27,13 @@ const {
   clampPetZoom,
   dockedPetBounds,
   fitPetZoomToArea,
+  fitPetWindowToArea,
   petZoomAnchor,
   petZoomSize,
   roamSizeForZoom,
 } = require('./pet-window-bounds.cjs');
+const { DISPLAY_ZOOM_DEFAULT, displayZoomKey, normalizeDisplayZooms, nativeEditMenuTemplate }
+  = require('./avatar-display-controls.cjs');
 const { effectivePetAlwaysOnTop } = require('./pet-window-level.cjs');
 const {
   AVATAR_STORE_AVAILABLE,
@@ -118,6 +121,7 @@ let chatMode = false;
 let chatCloseUp = false;
 let chatCloseUpBaseZoom = 1;
 let chatPoseRevision = 0;
+let closeUpAnchorRevision = 0;
 let factoryResetRevision = 0;
 let desktopCloseUp = false;
 let companionHold = null;
@@ -712,6 +716,7 @@ function defaultState() {
     // 60% across the board: the full-size character crowded the desktop,
     // and 60% keeps the 720p-capped animation frames near 1:1 on screen.
     petZoom: 0.6,
+    petDisplayZooms: normalizeDisplayZooms(null),
     petRoamZoom: 0.6,
     appearanceDefaultVersion: 4,
     petLocked: false,
@@ -757,6 +762,7 @@ function loadState() {
     }
     next.petOpacity = Math.max(0, Math.min(1, Number(next.petOpacity) || 0));
     next.petZoom = clampPetZoom(next.petZoom, PET_ZOOM_RANGE);
+    next.petDisplayZooms = normalizeDisplayZooms(saved.petDisplayZooms, next.petZoom);
     next.petRoamZoom = clampPetZoom(next.petRoamZoom, PET_ROAM_ZOOM_RANGE);
     next.petView = PET_VIEWS.has(next.petView) ? next.petView : defaults.petView;
     next.interfaceMode = next.interfaceMode === 'chat' ? 'chat' : 'avatar';
@@ -773,7 +779,7 @@ function saveStateSoon() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (!state.petRoam && !chatMode) state.bounds = mainWindow.getBounds();
+    if (!state.petRoam && !chatMode && !desktopCloseUp && !preDockBounds) state.bounds = mainWindow.getBounds();
     fs.mkdirSync(path.dirname(statePath()), { recursive: true });
     fs.writeFileSync(statePath(), JSON.stringify(state, null, 2), { mode: 0o600 });
   }, 180);
@@ -803,6 +809,7 @@ function shellState() {
     chatCloseUp,
     chatCloseUpBaseZoom,
     chatPoseRevision,
+    closeUpAnchorRevision,
     factoryResetRevision,
     desktopCloseUp,
     pet: {
@@ -816,6 +823,7 @@ function shellState() {
       roam: Boolean(state && state.petRoam),
       motionReady: petMotionReady,
       motionProfile: { ...petMotionProfile },
+      canvasBaseSize: { ...PET_BASE_SIZE },
     },
   };
 }
@@ -882,9 +890,10 @@ function setChatMode(value) {
     return shellState();
   }
   if (next) {
+    rememberCurrentDisplayZoom();
     restoreCompanionHold();
     chatCloseUp = false;
-    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
+    chatCloseUpBaseZoom = DISPLAY_ZOOM_DEFAULT;
     desktopCloseUp = false;
     if (state.petRoam) {
       state.petRoam = false;
@@ -892,6 +901,7 @@ function setChatMode(value) {
       state.petHomeBounds = null;
     }
     chatMode = true;
+    restoreDisplayZoom(false);
     state.interfaceMode = 'chat';
     preDockBounds = null;
     mainWindow.hide();
@@ -903,11 +913,13 @@ function setChatMode(value) {
     }
     app.focus({ steal: true });
   } else {
+    rememberCurrentDisplayZoom();
     chatMode = false;
     chatCloseUp = false;
-    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
+    chatCloseUpBaseZoom = DISPLAY_ZOOM_DEFAULT;
     desktopCloseUp = false;
     state.interfaceMode = 'avatar';
+    restoreDisplayZoom(false);
     if (chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
     applyPetZoom(state.petZoom);
     mainWindow.setOpacity(state.petOpacity > 0 ? state.petOpacity : 0.5);
@@ -1106,14 +1118,27 @@ function petBoundsForZoom(value) {
   const zoom = Math.max(PET_ZOOM_RANGE.min,
     Math.min(PET_ZOOM_RANGE.max, Number(value) || 1));
   const current = mainWindow.getBounds();
-  return boundsForPetZoom(
-    current, PET_BASE_SIZE, PET_NORMAL_MINIMUM, zoom);
+  return fitPetWindowToArea(boundsForPetZoom(
+    current, PET_BASE_SIZE, PET_NORMAL_MINIMUM, zoom), screen.getDisplayMatching(current).workArea);
+}
+
+function rememberCurrentDisplayZoom() {
+  if (!state || state.petRoam) return;
+  state.petDisplayZooms = normalizeDisplayZooms(state.petDisplayZooms, state.petZoom);
+  state.petDisplayZooms[displayZoomKey(chatMode, chatMode ? chatCloseUp : desktopCloseUp)]
+    = clampPetZoom(state.petZoom, PET_ZOOM_RANGE);
+}
+
+function restoreDisplayZoom(closeUp) {
+  state.petDisplayZooms = normalizeDisplayZooms(state.petDisplayZooms, state.petZoom);
+  state.petZoom = state.petDisplayZooms[displayZoomKey(chatMode, closeUp)];
 }
 
 function applyPetZoom(value) {
   petZoomGesture = null;
   state.petZoom = clampPetZoom(value, PET_ZOOM_RANGE);
-  if (!state.petRoam && !chatMode) {
+  rememberCurrentDisplayZoom();
+  if (!state.petRoam && !chatMode && !desktopCloseUp) {
     const bounds = petBoundsForZoom(state.petZoom);
     if (bounds) {
       mainWindow.setBounds(bounds, false);
@@ -1174,7 +1199,7 @@ function applyPetZoomLive(payload) {
   if (!mainWindow || mainWindow.isDestroyed()) return shellState();
   const data = payload && typeof payload === 'object' ? payload : { value: payload };
   const phase = data.phase === 'start' || data.phase === 'end' ? data.phase : 'move';
-  if (chatMode) {
+  if (chatMode || desktopCloseUp) {
     state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE);
   } else if (state.petRoam) {
     state.petRoamZoom = clampPetZoom(data.value, PET_ROAM_ZOOM_RANGE);
@@ -1184,11 +1209,13 @@ function applyPetZoomLive(payload) {
       petZoomGesture = { anchor: petZoomAnchor(mainWindow.getBounds()) };
     }
     state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE);
-    const bounds = boundsForPetZoomAtAnchor(
-      petZoomGesture.anchor, PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom);
+    const bounds = fitPetWindowToArea(boundsForPetZoomAtAnchor(
+      petZoomGesture.anchor, PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom),
+    screen.getDisplayMatching(mainWindow.getBounds()).workArea);
     mainWindow.setBounds(bounds, false);
     state.bounds = { ...bounds };
   }
+  rememberCurrentDisplayZoom();
   if (phase !== 'end') {
     pushAppearanceState();
     return shellState();
@@ -1993,6 +2020,14 @@ async function syncBuddyFromServer() {
 }
 
 function guardNavigation(window, kind) {
+  // Keep text fields native: the avatar menu must never replace editing
+  // actions or require reading the clipboard in the renderer.
+  window.webContents.on('context-menu', (event, params) => {
+    const template = nativeEditMenuTemplate(params);
+    if (!template || window.isDestroyed()) return;
+    event.preventDefault();
+    Menu.buildFromTemplate(template).popup({ window });
+  });
   window.webContents.on('will-navigate', (event, target) => {
     let targetUrl;
     try { targetUrl = new URL(target); } catch { event.preventDefault(); return; }
@@ -2036,7 +2071,7 @@ function guardNavigation(window, kind) {
         && !input.control && !input.alt) {
       if (input.key === '0' || input.key === ')') {
         event.preventDefault();
-        factoryResetCompanionMode();
+        standbyCompanionMode();
       } else if (input.key === '9' || input.key === '(') {
         event.preventDefault();
         deskCompanionMode();
@@ -2288,18 +2323,18 @@ function showAppearanceWindow() {
   pushAppearanceState(true);
 }
 
-// Every launch starts from the bottom-right corner of the work area, at a
-// zoom that fits on screen. A pinch once left the companion larger than the
-// display and pinned under the Dock; restoring the saved corner would bring
-// that stuck state back, so the saved x/y is deliberately ignored here.
+// Restore the requested Standby size and position, but keep the native canvas
+// inside its display. The renderer fits the head without destroying the saved
+// zoom when the current display is smaller than the previous one.
 function startupPetBounds() {
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-  state.petZoom = clampPetZoom(
-    fitPetZoomToArea(
-      PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom, area, PET_DOCK_MARGIN),
-    PET_ZOOM_RANGE);
+  restoreDisplayZoom(false);
   const size = petZoomSize(PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom);
-  return dockedPetBounds(size, area, PET_DOCK_MARGIN);
+  const saved = state.bounds;
+  const requested = saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
+    ? { x: saved.x, y: saved.y, ...size }
+    : dockedPetBounds(size, area, PET_DOCK_MARGIN);
+  return fitPetWindowToArea(requested, area);
 }
 
 function createChatWindow() {
@@ -2460,6 +2495,7 @@ function showChat() {
 function factoryResetCompanionMode() {
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   const defaults = defaultState();
+  state.petDisplayZooms = normalizeDisplayZooms(null);
   companionHold = null;
   factoryResetRevision += 1;
   if (chatMode) {
@@ -2472,8 +2508,8 @@ function factoryResetCompanionMode() {
     return shellState();
   }
   desktopCloseUp = false;
-  // Cmd+Shift+0 is the deliberate factory geometry reset. Standby itself is
-  // a separate display mode and must preserve the user's last drag/resize.
+  // Factory reset is an explicit menu action. Cmd+Shift+0 now restores the
+  // independently remembered Standby size instead of discarding it.
   state.petView = defaults.petView;
   state.petZoom = defaults.petZoom;
   if (state.petRoam) {
@@ -2504,7 +2540,7 @@ function factoryResetCompanionMode() {
 
 function installRecoveryShortcut() {
   const accelerator = 'CommandOrControl+Shift+0';
-  if (!globalShortcut.register(accelerator, factoryResetCompanionMode)) {
+  if (!globalShortcut.register(accelerator, standbyCompanionMode)) {
     writeBackendLog(`[shortcut unavailable] ${accelerator}\n`);
   }
   // Cmd+Shift+9: the owner's close-up composition. Avatar mode uses the
@@ -2522,15 +2558,19 @@ function standbyCompanionMode() {
   // selections cannot leave a transient clip running merely because the
   // Electron window geometry itself did not change.
   chatPoseRevision += 1;
+  rememberCurrentDisplayZoom();
   if (chatMode) {
     chatCloseUp = false;
-    chatCloseUpBaseZoom = Number(state.petZoom) || 1;
+    chatCloseUpBaseZoom = DISPLAY_ZOOM_DEFAULT;
+    restoreDisplayZoom(false);
+    saveStateSoon();
     broadcastState();
     return shellState();
   }
   if (state.petRoam) applyPetRoam(false);
   else if (desktopCloseUp) restoreCompanionHold();
   desktopCloseUp = false;
+  restoreDisplayZoom(false);
   saveStateSoon();
   broadcastState();
   return shellState();
@@ -2542,59 +2582,52 @@ function restoreCompanionHold() {
   companionHold = null;
   desktopCloseUp = false;
   state.petZoom = hold.zoom;
-  mainWindow.setBounds(hold.bounds, false);
-  state.bounds = { ...hold.bounds };
+  const bounds = fitPetWindowToArea(hold.bounds, screen.getDisplayMatching(hold.bounds).workArea);
+  mainWindow.setBounds(bounds, false);
+  state.bounds = { ...bounds };
   return true;
 }
 
 function deskCompanionMode() {
+  rememberCurrentDisplayZoom();
+  closeUpAnchorRevision += 1;
+  chatPoseRevision += 1;
   if (chatMode) {
     // Cmd+Shift+9 is a preset, not a toggle.  Electron can deliver the same
     // accelerator through both the global shortcut and a focused menu/window
     // path; toggling here made the two deliveries cancel and look broken.
-    if (!chatCloseUp) {
-      chatCloseUp = true;
-      chatCloseUpBaseZoom = Number(state.petZoom) || 1;
-    }
-    // Re-selecting an already-active preset is still an explicit request to
-    // leave the temporary 10-second edge idle and return to the saved camera.
-    // A revision makes that intent observable without toggling the preset or
-    // disturbing the user's close-up zoom/drag coordinates.
-    chatPoseRevision += 1;
+    chatCloseUp = true;
+    chatCloseUpBaseZoom = DISPLAY_ZOOM_DEFAULT;
+    restoreDisplayZoom(true);
+    // Re-selecting 9 returns to the corner while retaining its own zoom.
     applyPetOpacity(1, false);
     return;
   }
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (desktopCloseUp) {
-    applyPetOpacity(1);
-    return;
-  }
   if (state.petRoam) applyPetRoam(false);
-  companionHold = { zoom: state.petZoom, bounds: mainWindow.getBounds() };
+  if (preDockBounds) {
+    mainWindow.setBounds(preDockBounds, false);
+    preDockBounds = null;
+  }
+  if (!desktopCloseUp) {
+    companionHold = { zoom: state.petZoom, bounds: mainWindow.getBounds() };
+  }
   desktopCloseUp = true;
+  restoreDisplayZoom(true);
   applyPetOpacity(1);
   // In Avatar mode the canvas is the selected display. Keep that canvas at a
   // GPU-safe screen size and let the renderer crop the full-resolution source
   // into the owner's bottom-right head-and-shoulders composition. A 4x pet
   // window can exceed Chromium's transparent-canvas limits and render blank.
-  const bounds = { ...screen.getDisplayMatching(mainWindow.getBounds()).bounds };
+  const bounds = { ...screen.getDisplayMatching(mainWindow.getBounds()).workArea };
   mainWindow.setBounds(bounds, false);
-  state.bounds = { ...bounds };
   if (state.petOpacity > 0.001) mainWindow.showInactive();
   saveStateSoon();
   broadcastState();
 }
 
 function deskCompanionMenuAction() {
-  // The keyboard shortcut is deliberately an idempotent close-up preset, but
-  // the avatar's context menu also exposes the saved pre-close-up geometry as
-  // an explicit Restore action. Keep that one reversible without turning the
-  // shortcut back into a duplicate-dispatch-sensitive toggle.
-  if (!chatMode && desktopCloseUp && restoreCompanionHold()) {
-    applyPetOpacity(1);
-    return;
-  }
   deskCompanionMode();
 }
 
@@ -2688,11 +2721,11 @@ function buildTrayMenu() {
       click: (item) => applyPetRoam(item.checked) },
     { label: 'Lock Position', type: 'checkbox', checked: state.petLocked,
       enabled: !state.petRoam, click: (item) => applyPetLock(item.checked) },
-    { label: 'Standby', click: standbyCompanionMode },
+    { label: 'Standby', accelerator: 'CommandOrControl+Shift+0',
+      registerAccelerator: false, click: standbyCompanionMode },
     { label: 'Close-Up Companion', accelerator: 'CommandOrControl+Shift+9',
       registerAccelerator: false, click: deskCompanionMode },
-    { label: 'Reset Avatar Size & Position', accelerator: 'CommandOrControl+Shift+0',
-      registerAccelerator: false, click: factoryResetCompanionMode },
+    { label: 'Reset Avatar Size & Position', click: factoryResetCompanionMode },
     { label: 'Restart Voice Engine', enabled: ownsBackend, click: restartBackend },
     { type: 'separator' },
     // Which build am I actually running? A question the owner should
@@ -2720,8 +2753,19 @@ function petViewItems() {
   }));
 }
 
+function activeAvatarWindow() {
+  return chatMode ? chatWindow : mainWindow;
+}
+
+function requestAvatarMotion(mode) {
+  if (!['walk', 'idle', 'moves'].includes(mode)) return;
+  const owner = activeAvatarWindow();
+  if (owner && !owner.isDestroyed()) post(owner, 'openclam:display-mode-request', mode);
+}
+
 function showPetMenu() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const owner = activeAvatarWindow();
+  if (!owner || owner.isDestroyed()) return;
   // Name on the left, the gesture that does the same thing on the right.
   showMenuWindow([
     { name: 'Open Chat/Talk', hint: 'full conversation workspace',
@@ -2729,26 +2773,23 @@ function showPetMenu() {
     { name: liveTalkActive ? 'End Live Talk' : 'Live Talk',
       hint: liveTalkActive ? 'hang up now' : 'double-click avatar',
       click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          post(mainWindow, 'openclam:live-toggle');
+        if (!owner.isDestroyed()) {
+          post(owner, 'openclam:live-toggle');
         }
       } },
     { type: 'separator' },
     { name: state.petRoam ? 'Stop Horizon Walk' : 'Horizon Walk',
       hint: !petMotionReady ? 'generate first'
-        : state.petRoam ? 'return to standing' : 'cross the desktop',
+        : state.petRoam ? 'return to standing' : 'cross the canvas',
       type: 'checkbox', checked: state.petRoam, enabled: petMotionReady,
-      click: () => applyPetRoam(!state.petRoam) },
-    { name: 'Moves', hint: 'play once', click: () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        post(mainWindow, 'openclam:pet-moves');
-      }
-    } },
+      click: () => state.petRoam ? standbyCompanionMode() : requestAvatarMotion('walk') },
+    { name: 'Edge Idle', hint: 'lean at the canvas edge',
+      click: () => requestAvatarMotion('idle') },
+    { name: 'Moves', hint: 'play once', click: () => requestAvatarMotion('moves') },
     { type: 'separator' },
-    { name: 'Standby', hint: 'remembered size & position', click: standbyCompanionMode },
-    { name: companionHold ? 'Restore Previous Size' : 'Close-Up Companion',
-      hint: companionHold ? '' : '⌘⇧9', click: deskCompanionMenuAction },
-    { name: 'Reset Size & Position', hint: '⌘⇧0', click: factoryResetCompanionMode },
+    { name: 'Standby', hint: '⌘⇧0 · remembered size', click: standbyCompanionMode },
+    { name: 'Close-Up Companion', hint: '⌘⇧9 · bottom-right', click: deskCompanionMenuAction },
+    { name: 'Reset Size & Position', hint: 'factory defaults', click: factoryResetCompanionMode },
     { name: 'Resize & Adjust…', hint: 'avatar · animation · opacity %',
       click: showAppearanceWindow },
     { name: 'Always on Top', type: 'checkbox', checked: state.alwaysOnTop,
@@ -2757,10 +2798,10 @@ function showPetMenu() {
     { name: 'Character Studio…', click: openSettings },
     { name: 'Quit OpenClam', hint: '⌘Q', click: () => app.quit() },
   ], () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (owner.isDestroyed()) return;
     const point = screen.getCursorScreenPoint();
-    const bounds = mainWindow.getBounds();
-    post(mainWindow, 'openclam:pet-pointer', {
+    const bounds = owner.getBounds();
+    post(owner, 'openclam:pet-pointer', {
       x: point.x - bounds.x,
       y: point.y - bounds.y,
       inside: point.x >= bounds.x && point.x < bounds.x + bounds.width
@@ -2838,7 +2879,7 @@ function installIpc() {
   ipcMain.handle('openclam:toggle-top', () => applyAlwaysOnTop(!state.alwaysOnTop));
   ipcMain.handle('openclam:pet-menu', (event) => {
     if (isBuddySender(event)) { showBuddyMenu(); return buddyShellState(); }
-    showPetMenu();
+    if (event.sender === activeAvatarWindow()?.webContents) showPetMenu();
     return shellState();
   });
   ipcMain.handle('openclam:set-pet-view', (_event, value) => applyPetView(value));
@@ -3004,7 +3045,7 @@ function installIpc() {
     if (state.petRoam || state.petLocked) return;
     mainWindow.setMinimumSize(PET_NORMAL_MINIMUM.width, PET_NORMAL_MINIMUM.height);
     mainWindow.setBounds(bounds, false);
-    state.bounds = { ...bounds };
+    if (!desktopCloseUp) state.bounds = { ...bounds };
     saveStateSoon();
   });
   // Renderer screen coordinates move with a transparent BrowserWindow on
@@ -3033,7 +3074,7 @@ function installIpc() {
       return;
     }
     if (!mainWindow || event.sender !== mainWindow.webContents
-        || state.petLocked || state.petRoam) return;
+        || state.petLocked || state.petRoam || desktopCloseUp) return;
     petDrag = {
       x: cursor.x,
       y: cursor.y,
@@ -3063,7 +3104,14 @@ function installIpc() {
     const x = dragCoord(petDrag.bounds.x, cursor.x, petDrag.x);
     const y = dragCoord(petDrag.bounds.y, cursor.y, petDrag.y);
     if (x !== null && y !== null) {
-      try { mainWindow.setPosition(x, y, false); } catch {}
+      const safe = fitPetWindowToArea({ ...petDrag.bounds, x, y },
+        screen.getDisplayNearestPoint(cursor).workArea);
+      try {
+        const current = mainWindow.getBounds();
+        if (current.width !== safe.width || current.height !== safe.height) {
+          mainWindow.setBounds(safe, false);
+        } else mainWindow.setPosition(safe.x, safe.y, false);
+      } catch {}
     }
   });
   ipcMain.on('openclam:drag-end', (event) => {

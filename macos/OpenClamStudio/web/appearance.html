@@ -77,7 +77,9 @@
         read:pet=>percent(pet.roamZoom,1),send:value=>api?.setMotionSize(value/100)},
     ];
     const frames=new WeakMap();
-    let holding=null,editedAt=0;
+    // No edit has occurred at startup. A zero timestamp wrongly protects the
+    // HTML defaults during the first 420ms, swallowing the initial shell state.
+    let holding=null,editedAt=-Infinity;
     // Only an in-progress drag may outrank the shell. Focus alone must not:
     // a slider keeps focus after the panel hides, which used to freeze the
     // readout at a stale value while a pinch moved the real size underneath.
@@ -117,13 +119,13 @@
     addEventListener('pointerup',()=>{holding=null;});
     addEventListener('pointercancel',()=>{holding=null;});
     addEventListener('blur',()=>{
-      holding=null;editedAt=0;
+      holding=null;editedAt=-Infinity;
       if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
     });
-    addEventListener('focus',()=>{holding=null;editedAt=0;refresh();});
+    addEventListener('focus',()=>{holding=null;editedAt=-Infinity;refresh();});
     document.addEventListener('visibilitychange',()=>{
       if(document.hidden)return;
-      holding=null;editedAt=0;refresh();
+      holding=null;editedAt=-Infinity;refresh();
     });
     api?.onState(sync);refresh();
     addEventListener('keydown',event=>{if(event.key==='Escape')window.close();});

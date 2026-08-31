@@ -170,8 +170,8 @@ assert.match(source, /right = Math\.min\(right, railRect\.left - 16\)/,
   'the avatar safe area must stop before the visible rail');
 assert.match(source, /bottom = Math\.min\(bottom, composerRect\.top - 16\)/,
   'full-body and motion feet must stop above the floating composer');
-assert.match(source, /return fullChat \? clampChatCameraFit\(fit, viewport\) : fit;/,
-  'saved Standby placement must be clamped back inside the usable chat canvas');
+assert.match(source, /return fullChat \|\| safeDesktop \? clampChatCameraFit\(fit, viewport\) : fit;/,
+  'saved Standby placement must keep the head inside the usable chat or static desktop canvas');
 assert.match(source, /chatAvatarSafeViewport\(\{ reserveComposer: true, reserveRail: true \}\)/,
   'chat Walk and Edge Idle must share the same rail/composer-safe canvas');
 assert.match(source, /if \(chatScoped && kind === 'idle'\) \{[\s\S]{0,420}const viewport = chatAvatarSafeViewport\(\{ reserveComposer: true, reserveRail: true \}\);/,
@@ -1834,7 +1834,7 @@ assert.ok(zoomedCloseUp.scale > closeUp.scale * 1.49,
   'pinch zoom must adjust the close-up preset rather than being discarded');
 assert.match(source, /if \(fullChat && shellState\.chatCloseUp\)[\s\S]{0,520}requestedZoom \/ baseZoom[\s\S]{0,360}fit\.x \+ offset\.x[\s\S]{0,120}fit\.y \+ offset\.y/,
   'Chat\/Talk close-up must retain its own zoom baseline and dragged position');
-assert.match(source, /if \(!fullChat && shellState\.desktopCloseUp\)/,
+assert.match(source, /if \(safeDesktop && shellState\.desktopCloseUp\)/,
   'the same close-up camera must be scoped to each mode\'s own canvas');
 assert.match(source, /openclam\.chat\.close-up-offset\.v1/,
   'the close-up drag position must persist independently from standard framing');
@@ -1843,7 +1843,7 @@ assert.match(source, /const chatPoseRevisionChanged = Number\(value\.chatPoseRev
 assert.match(source, /if \(closeUpChanged \|\| chatPoseRevisionChanged \|\| factoryResetChanged\) \{[\s\S]{0,220}clearLocalTransientDisplayMode\(\);[\s\S]{0,140}markActivity\(\{ preserveDisplayMode: true \}\);/,
   're-selecting a saved pose must immediately leave its temporary edge-idle presentation');
 assert.match(source, /const factoryResetChanged = Number\(value\.factoryResetRevision \|\| 0\)[\s\S]{0,180}Number\(shellState\.factoryResetRevision \|\| 0\)/,
-  'Cmd+Shift+0 must publish a reset revision even when the current mode Boolean is unchanged');
+  'the explicit factory-reset action must publish a reset revision even when the current mode Boolean is unchanged');
 assert.match(source, /if \(factoryResetChanged\) \{[\s\S]{0,420}chatAvatarOffsets\.standard = \{ x: 0, y: 0 \};[\s\S]{0,320}localStorage\.removeItem\('openclam\.chat\.avatar-offset\.v1'\)/,
   'factory reset must clear the remembered Chat\/Talk drag position rather than restoring it');
 assert.match(source, /const resumeChatSpeakingPose = \(\) => \{[\s\S]{0,100}markActivity\(\);[\s\S]{0,80}lastFrame = 0;/,
@@ -1871,7 +1871,7 @@ assert.match(source, /Promise\.resolve\(shell\.setDisplayMode\('standby'\)\)/,
   'desktop Horizon Walk hover must ask Electron to restore its remembered Standby window');
 assert.match(source, /const prepareTransientDisplayMode = async kind => \{[\s\S]{0,360}clearLocalTransientDisplayMode\(\);[\s\S]{0,120}await selectShellDisplayMode\('standby'\);/,
   'every temporary mode must start from remembered Standby, never mutate its camera geometry');
-assert.match(source, /const saveChatAvatarOffset = \(\) => \{[\s\S]{0,420}chatAvatarOffsets\[presentation\] = \{ \.\.\.chatAvatarOffset \};[\s\S]{0,220}localStorage\.setItem\(key, JSON\.stringify\(chatAvatarOffset\)\)/,
+assert.match(source, /const saveChatAvatarOffset = \(\) => \{[\s\S]{0,800}chatAvatarOffsets\[presentation\] = \{ \.\.\.chatAvatarOffset \};[\s\S]{0,220}localStorage\.setItem\(key, JSON\.stringify\(chatAvatarOffset\)\)/,
   'a user drag in Standby must remain the next remembered Standby position');
 assert.match(drawMotionSource[1], /anchors\[`\$\{displayEdge\}_frames`\]/,
   'Chat\/Talk Edge Idle must use authored anchors for both window edges');
