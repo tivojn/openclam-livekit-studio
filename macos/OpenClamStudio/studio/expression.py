@@ -30,7 +30,7 @@ without widening the mouth. Corrected cartoon gaze owns the wet eye after the
 under-eye tissue and before the lid; the approved photographic order is unchanged.
 """
 import numpy as np, cv2
-from . import authored_gaze, button3d_gaze, face, rigid_gaze, soft3d_gaze
+from . import authored_gaze, button3d_gaze, compose, face, rigid_gaze, soft3d_gaze
 from .blink import EYE, BROW, SIDES, UPPER, LOWER, _line, _box
 
 IRIS = {"r": 468, "l": 473}                       # refined-landmark iris centres
@@ -163,6 +163,67 @@ def _mouth_warp_patch(image, lm, amount, box, controls):
     return np.dstack([rgb.astype(np.uint8), (alpha * 255).astype(np.uint8)])
 
 
+def _own_canonical_sil_alpha(patch, key_lm, box, key_shape, source_medium):
+    """Let an explicit cartoon's closed-mouth plate erase its old mouth.
+
+    Runtime uses the immutable keyframe for ``sil``. A generated closed-mouth
+    donor can have narrower lips, so its own feather must not leave the old
+    keyframe corners showing through. Claim only the canonical outer-lip hull
+    and a small antialiased margin; keep all donor RGB and existing ownership
+    outside this region unchanged. Callers apply this to ``sil`` cells only.
+    Photographic, legacy/unspecified, and malformed geometry are exact no-ops.
+    """
+    if not isinstance(source_medium, str) or source_medium not in {
+            "illustration", "3d render"}:
+        return patch
+    try:
+        if (not isinstance(patch, np.ndarray) or patch.dtype != np.uint8
+                or patch.ndim != 3 or patch.shape[2] != 4
+                or len(box) != 4 or len(key_shape) < 2
+                or any(isinstance(v, (bool, np.bool_))
+                       or not isinstance(v, (int, np.integer)) for v in box)):
+            return patch
+        x, y, w, h = [int(v) for v in box]
+        height, width = [int(v) for v in key_shape[:2]]
+        if (w <= 0 or h <= 0 or patch.shape[:2] != (h, w)
+                or x < 0 or y < 0 or x + w > width or y + h > height):
+            return patch
+        lip = np.asarray(key_lm[face.OUTER_LIP], np.float64)
+        if lip.shape != (len(face.OUTER_LIP), 2) or not np.isfinite(lip).all():
+            return patch
+        lip_width = float(np.ptp(lip[:, 0]))
+        if (lip_width < 8.0 or np.ptp(lip[:, 1]) < 1.0
+                or (lip[:, 0] < 0).any() or (lip[:, 0] >= width).any()
+                or (lip[:, 1] < 0).any() or (lip[:, 1] >= height).any()):
+            return patch
+        ownership_radius = max(1, int(np.ceil(lip_width * .06)))
+        feather = max(1, int(np.ceil(lip_width * .04)))
+        local = lip - (x, y)
+        padding = ownership_radius + feather + 1
+        # Do not create a clipped/rectangular ownership boundary, or infer
+        # unseen mouth anatomy from a cropped or mismatched landmark set.
+        if (local[:, 0].min() < padding or local[:, 1].min() < padding
+                or local[:, 0].max() >= w - padding
+                or local[:, 1].max() >= h - padding):
+            return patch
+        hull = cv2.convexHull(np.rint(local).astype(np.int32))
+        if cv2.contourArea(hull) < 1.0:
+            return patch
+        core = np.zeros((h, w), np.uint8)
+        cv2.fillConvexPoly(core, hull, 255)
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (2 * ownership_radius + 1, 2 * ownership_radius + 1))
+        core = cv2.dilate(core, kernel)
+        distance = cv2.distanceTransform(255 - core, cv2.DIST_L2, 5)
+        ownership = np.rint(255 * (1 - _smoothstep(0, feather, distance))).astype(np.uint8)
+        result = patch.copy()
+        result[:, :, 3] = np.maximum(result[:, :, 3], ownership)
+        return result
+    except (IndexError, TypeError, ValueError, cv2.error):
+        return patch
+
+
 def _smile_patch(image, lm, amount, box):
     """Lift both photographed lip corners without changing mouth size.
 
@@ -227,12 +288,16 @@ def _emotion_mouth_patch(image, lm, emotion, amount, box):
     return _mouth_warp_patch(image, lm, amount, box, controls)
 
 
-def build_smile(key, key_lm, visemes, states=None, log=print):
+def build_smile(key, key_lm, visemes, states=None, log=print, *,
+                source_medium=None, canonical_registrations=None):
     """Build a row-major ``viseme x smile-strength`` RGBA mouth atlas.
 
     ``visemes`` is a sequence of ``(runtime_name, BGR_frame)`` pairs.  The
     fixed keyframe box makes every row the same size, while per-frame landmarks
-    ensure the deformation follows that viseme's actual lips and jaw.
+    ensure the deformation follows that viseme's actual lips and jaw. Explicit
+    cartoon plates with hash-verified upstream canonical registration need no
+    second global centring shift; photographic and unproven banks retain their
+    previous landmark-derived offsets.
     """
     strengths = list(SMILE_STATES if states is None else states)
     box = _smile_box(key.shape, key_lm)
@@ -255,7 +320,14 @@ def build_smile(key, key_lm, visemes, states=None, log=print):
         runtime_name = str(name)
         names.append(runtime_name)
         offset = 0.0
-        if key_centre_x is not None and runtime_name != "sil":
+        canonical_registered = (
+            isinstance(source_medium, str)
+            and source_medium in {"illustration", "3d render"}
+            and isinstance(canonical_registrations, dict)
+            and compose.canonical_mouth_registration_matches(
+                key, image, canonical_registrations.get(runtime_name)))
+        if (key_centre_x is not None and runtime_name != "sil"
+                and not canonical_registered):
             try:
                 lip = np.asarray(lm[face.OUTER_LIP], np.float64)
                 candidate = key_centre_x - float(lip[:, 0].mean())
@@ -264,8 +336,12 @@ def build_smile(key, key_lm, visemes, states=None, log=print):
             except (IndexError, TypeError, ValueError):
                 pass
         x_offsets[runtime_name] = round(offset, 4)
-        patches.extend(_smile_patch(image, lm, strength, box)
-                       for strength in strengths)
+        for strength in strengths:
+            patch = _smile_patch(image, lm, strength, box)
+            if runtime_name == "sil":
+                patch = _own_canonical_sil_alpha(
+                    patch, key_lm, box, key.shape, source_medium)
+            patches.append(patch)
     log(f"  laughter mouth: {len(names)} visemes x {len(strengths)} states, "
         f"patch {box[2]}x{box[3]}")
     return dict(states=[round(float(v), 4) for v in strengths],
@@ -273,21 +349,25 @@ def build_smile(key, key_lm, visemes, states=None, log=print):
                 viseme_x_offsets=x_offsets)
 
 
-def build_emotion_mouths(key, key_lm, visemes, states=None, log=print):
+def build_emotion_mouths(key, key_lm, visemes, states=None, log=print, *,
+                        source_medium=None):
     """Build ``emotion x viseme x strength`` lower-face states."""
     strengths = list(EMOTION_MOUTH_STATES if states is None else states)
     box = _smile_box(key.shape, key_lm)
     detected, names = [], []
     for name, image in visemes:
         lm, _ = face.detect(image)
-        detected.append((image, key_lm if lm is None else lm))
+        detected.append((str(name), image, key_lm if lm is None else lm))
         names.append(str(name))
-    patches = [
-        _emotion_mouth_patch(image, lm, emotion, strength, box)
-        for emotion in EMOTION_MOUTHS
-        for image, lm in detected
-        for strength in strengths
-    ]
+    patches = []
+    for emotion in EMOTION_MOUTHS:
+        for name, image, lm in detected:
+            for strength in strengths:
+                patch = _emotion_mouth_patch(image, lm, emotion, strength, box)
+                if name == "sil":
+                    patch = _own_canonical_sil_alpha(
+                        patch, key_lm, box, key.shape, source_medium)
+                patches.append(patch)
     log(f"  emotion mouth: {len(EMOTION_MOUTHS)} emotions x {len(names)} visemes "
         f"x {len(strengths)} states, patch {box[2]}x{box[3]}")
     return dict(states=[round(float(v), 4) for v in strengths],

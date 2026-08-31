@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import OpenClamLiveKit
 
 final class OpenClamCatalogAvatarStageTests: XCTestCase {
@@ -1148,6 +1149,343 @@ final class OpenClamCatalogAvatarStageTests: XCTestCase {
             0.65,
             accuracy: 0.0001
         )
+    }
+
+    func testCompleteMouthOwnershipErasesBothReportedSarahCornerRegions() {
+        func oldEllipse(_ x: Int, _ y: Int) -> Double {
+            let nx = ((Double(x) + 0.5) / 242 - 0.5) / 0.5
+            let ny = ((Double(y) + 0.5) / 124 - 0.45) / 0.36
+            let t = min(1, max(0, (hypot(nx, ny) - 0.62) / 0.32))
+            return 1 - t * t * (3 - 2 * t)
+        }
+        // Actual canonical Sarah ROIs from the user-reported detached smile
+        // stubs, translated into the published [391,694,242,124] mouth box.
+        for rect in [CGRect(x: 35, y: 29, width: 13, height: 13),
+                     CGRect(x: 195, y: 25, width: 13, height: 13)] {
+            var oldUnderlay = 0.0
+            for y in Int(rect.minY) ..< Int(rect.maxY) {
+                for x in Int(rect.minX) ..< Int(rect.maxX) {
+                    oldUnderlay += 1 - oldEllipse(x, y)
+                    let alpha = OpenClamAvatarStylizedSpeechPatchPixelPolicy.ownershipAlpha(
+                        maximumChannelDelta: 4,
+                        spatialAlpha: OpenClamAvatarStylizedSpeechPatchPixelPolicy.spatialAlpha(
+                            x: x, y: y, width: 242, height: 124
+                        )
+                    )
+                    XCTAssertEqual(alpha, 1, accuracy: 0.000_001,
+                                   "Low-contrast replacement skin must own the old corner.")
+                }
+            }
+            XCTAssertGreaterThan(oldUnderlay / 169, 0.15,
+                                 "The prior ellipse must reproduce incomplete corner replacement.")
+        }
+        for point in [(0, 0), (121, 0), (121, 123), (241, 123)] {
+            XCTAssertEqual(OpenClamAvatarStylizedSpeechPatchPixelPolicy.spatialAlpha(
+                x: point.0, y: point.1, width: 242, height: 124
+            ), 0, accuracy: 0.000_001)
+        }
+    }
+
+    @MainActor
+    func testAllFifteenResolvedMouthsRemoveOldCornersEvenWhenExpressionIsTransparent() throws {
+        let geometry = try mouthFixtureGeometry()
+        let neutral = try rgbaImage(width: 256, height: 256) { x, y in
+            if (100 ... 105).contains(x) && (114 ... 122).contains(y)
+                || (180 ... 185).contains(x) && (115 ... 122).contains(y) {
+                return [55, 25, 20, 255]
+            }
+            return [188, 137, 101, 255]
+        }
+        let sprite = OpenClamAvatarSpriteGeometry(
+            box: .init(x: 80, y: 100, width: 120, height: 64),
+            columns: 2, rows: 1, storage: .gridAtlas
+        )
+        let atlas = try rgbaImage(width: 240, height: 64) { x, y in
+            if x >= 120 { return [0, 255, 0, 255] } // poisonous neighbour cell
+            return (54 ... 66).contains(x) && (26 ... 38).contains(y)
+                ? [99, 19, 33, 255] : [0, 0, 0, 0]
+        }
+        for (index, viseme) in OpenClamAvatarViseme.allCases.enumerated() {
+            let selected = try rgbaImage(width: 256, height: 256) { x, y in
+                (134 ... 146).contains(x) && (126 ... 138).contains(y)
+                    ? [UInt8(65 + index), 22, 31, 255] : [188, 137, 101, 255]
+            }
+            for emotion in [nil, OpenClamAvatarStylizedEmotionMouthSample(
+                image: atlas, frame: 0, geometry: sprite
+            )] {
+                let result = try XCTUnwrap(OpenClamAvatarStylizedSpeechPatchRenderer.image(
+                    selected: selected, neutral: neutral, geometry: geometry,
+                    viseme: viseme, sourceMedium: .rendered3D, emotion: emotion
+                ))
+                let pixels = try rgbaPixels(result)
+                XCTAssertEqual(result.cgImage?.width, 120)
+                XCTAssertEqual(result.cgImage?.height, 64)
+                for point in [(22, 18), (102, 18)] {
+                    let position = (point.1 * 120 + point.0) * 4
+                    XCTAssertEqual(Array(pixels[position ..< position + 4]), [188, 137, 101, 255],
+                                   "\(viseme.rawValue): an expression cannot expose the canonical corner.")
+                }
+                let middle = (32 * 120 + 60) * 4
+                XCTAssertEqual(Array(pixels[middle ..< middle + 4]),
+                               emotion == nil ? [UInt8(65 + index), 22, 31, 255] : [99, 19, 33, 255])
+                XCTAssertEqual(pixels[3], 0)
+                XCTAssertEqual(pixels[(63 * 120 + 119) * 4 + 3], 0)
+                // The sole output is bounded below the nose; compositing it
+                // cannot alter any of the remaining canonical head pixels.
+                XCTAssertGreaterThanOrEqual(geometry.coreBounds.minY, 100)
+                XCTAssertEqual(pixels.enumerated().filter { $0.offset % 4 == 1 && $0.element == 255 }.count, 0,
+                               "A neighbouring atlas cell must never bleed into the selected mouth.")
+            }
+        }
+        XCTAssertNil(OpenClamAvatarStylizedSpeechPatchRenderer.image(
+            selected: neutral, neutral: neutral, geometry: geometry,
+            viseme: .open, sourceMedium: .photograph
+        ), "The photographic renderer is not redirected to this path.")
+    }
+
+    @MainActor
+    func testResolvedMouthUsesIdenticalGridAndStripCellsAndSubpixelRegistration() throws {
+        let geometry = try mouthFixtureGeometry(offset: 0.375)
+        let neutral = try rgbaImage(width: 256, height: 256) { _, _ in [180, 130, 100, 255] }
+        let selected = try rgbaImage(width: 256, height: 256) { x, y in
+            (126 ... 138).contains(y) && (132 ... 147).contains(x)
+                ? [UInt8((x - 132) * 10), 10, 20, 255] : [180, 130, 100, 255]
+        }
+        func cell(_ frame: Int, _ x: Int, _ y: Int) -> [UInt8] {
+            if frame == 1 && (20 ... 28).contains(y) && (40 ... 44).contains(x) {
+                return [61, 9, 17, 255]
+            }
+            return frame == 1 ? [0, 0, 0, 0] : [0, 255, 0, 255]
+        }
+        let grid = try rgbaImage(width: 240, height: 64) { x, y in cell(x / 120, x % 120, y) }
+        let strip = try rgbaImage(width: 120, height: 128) { x, y in cell(y / 64, x, y % 64) }
+        var outputs: [[UInt8]] = []
+        for (image, storage) in [(grid, OpenClamAvatarSpriteStorage.gridAtlas), (strip, .verticalStrip)] {
+            let sprite = OpenClamAvatarSpriteGeometry(
+                box: .init(x: 80, y: 100, width: 120, height: 64),
+                columns: 2, rows: 1, storage: storage
+            )
+            let result = try XCTUnwrap(OpenClamAvatarStylizedSpeechPatchRenderer.image(
+                selected: selected, neutral: neutral, geometry: geometry,
+                viseme: .open, sourceMedium: .illustration,
+                emotion: .init(image: image, frame: 1, geometry: sprite)
+            ))
+            outputs.append(try rgbaPixels(result))
+        }
+        XCTAssertEqual(outputs[0], outputs[1])
+        let middle = (32 * 120 + 60) * 4
+        // Sample source x139.625 rather than rounding registration to zero.
+        XCTAssertEqual(outputs[0][middle], 76)
+        XCTAssertEqual(outputs[0][middle + 1], 10)
+        XCTAssertEqual(outputs[0][middle + 3], 255)
+    }
+
+    @MainActor
+    func testResolvedExpressionPremultiplicationAndInvalidFrameFailSafely() throws {
+        let geometry = try mouthFixtureGeometry()
+        let source = try rgbaImage(width: 256, height: 256) { _, _ in [160, 120, 80, 255] }
+        let atlas = try rgbaImage(width: 120, height: 64) { x, y in
+            (50 ... 70).contains(x) && (25 ... 40).contains(y)
+                ? [100, 0, 0, 128] : [0, 0, 0, 0]
+        }
+        let sprite = OpenClamAvatarSpriteGeometry(
+            box: .init(x: 80, y: 100, width: 120, height: 64),
+            columns: 1, rows: 1, storage: .gridAtlas
+        )
+        let result = try XCTUnwrap(OpenClamAvatarStylizedSpeechPatchRenderer.image(
+            selected: source, neutral: source, geometry: geometry, viseme: .open,
+            sourceMedium: .rendered3D, emotion: .init(image: atlas, frame: 0, geometry: sprite)
+        ))
+        let pixel = try rgbaPixels(result)
+        let middle = (32 * 120 + 60) * 4
+        XCTAssertEqual(Array(pixel[middle ..< middle + 4]), [180, 60, 40, 255],
+                       "Resolve premultiplied atlas over its own opaque viseme exactly once.")
+        XCTAssertNil(OpenClamAvatarStylizedSpeechPatchRenderer.image(
+            selected: source, neutral: source, geometry: geometry, viseme: .open,
+            sourceMedium: .rendered3D, emotion: .init(image: atlas, frame: 1, geometry: sprite)
+        ))
+        XCTAssertNil(OpenClamAvatarStylizedSpeechPatchRenderer.image(
+            selected: source, neutral: source, geometry: try mouthFixtureGeometry(offset: .nan),
+            viseme: .open, sourceMedium: .rendered3D
+        ))
+    }
+
+    func testStylizedResolutionChoosesExactlyOneOwnVisemeOrUnmodifiedRest() throws {
+        let geometry = fullExpressionGeometry()
+        for medium in [OpenClamAvatarSourceMedium.illustration, .anime, .gameArt, .rendered3D] {
+            XCTAssertNil(OpenClamAvatarStylizedMouthResolutionPolicy.plan(
+                speech: .idle, expression: .neutral, geometry: geometry, sourceMedium: medium
+            ))
+            for viseme in CaptainAyerViseme.allCases {
+                let expression = CaptainAyerExpressionLayerRenderState(
+                    smile: 0.68, sorrowMouth: 0, horrorMouth: 0, angerMouth: 0,
+                    cheek: 0, underEye: 0
+                )
+                let state = CaptainAyerAvatarRenderState(previous: .silence, current: viseme, blend: 1)
+                let plan = try XCTUnwrap(OpenClamAvatarStylizedMouthResolutionPolicy.plan(
+                    speech: state, expression: expression, geometry: geometry, sourceMedium: medium
+                ))
+                XCTAssertEqual(plan.viseme.rawValue, viseme.rawValue)
+                XCTAssertEqual(plan.emotion, .smile)
+                XCTAssertEqual(OpenClamAvatarExpressionMouthPolicy.viseme(
+                    forFrame: try XCTUnwrap(plan.frame), kind: .smile, geometry: geometry
+                ), plan.viseme)
+                XCTAssertNil(OpenClamAvatarStylizedMouthResolutionPolicy.plan(
+                    speech: state, expression: expression, geometry: geometry, sourceMedium: .photograph
+                ))
+            }
+        }
+    }
+
+    func testContourSkinFieldImprovesLightingWithoutChangingLipsOrAlpha() {
+        let width = 120, height = 64
+        let contour = (0 ..< 12).map { index -> CGPoint in
+            let angle = Double(index) * .pi / 6
+            return CGPoint(x: 60 + cos(angle) * 15, y: 32 + sin(angle) * 7)
+        }
+        var original = [UInt8](repeating: 255, count: width * height * 4)
+        var neutral = original
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let at = (y * width + x) * 4
+                let inside = OpenClamAvatarStylizedMouthSkinPolicy.distance(
+                    CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5), contour: contour
+                ) == 0
+                let bias = Int((Double(x) - 60) * 0.34)
+                for channel in 0 ..< 3 {
+                    neutral[at + channel] = UInt8(inside ? 50 + channel * 6 : 170 - channel * 30)
+                    original[at + channel] = UInt8(inside ? 50 + channel * 6 : 170 - channel * 30 + bias)
+                }
+            }
+        }
+        var corrected = original
+        XCTAssertTrue(OpenClamAvatarStylizedMouthSkinPolicy.correct(
+            source: &corrected, neutral: neutral, width: width, height: height,
+            oldContour: contour, newContour: contour, fallbackShift: [0, 0, 0]
+        ))
+        var before = 0, after = 0
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let at = (y * width + x) * 4
+                XCTAssertEqual(corrected[at + 3], original[at + 3])
+                let distance = OpenClamAvatarStylizedMouthSkinPolicy.distance(
+                    CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5), contour: contour
+                )
+                if distance <= Double(width) * 0.07 {
+                    XCTAssertEqual(Array(corrected[at ..< at + 4]), Array(original[at ..< at + 4]))
+                } else if distance > Double(width) * 0.10 {
+                    before += abs(Int(original[at]) - Int(neutral[at]))
+                    after += abs(Int(corrected[at]) - Int(neutral[at]))
+                }
+            }
+        }
+        XCTAssertLessThan(after, before / 3)
+        var alreadyMatched = neutral
+        XCTAssertFalse(OpenClamAvatarStylizedMouthSkinPolicy.correct(
+            source: &alreadyMatched, neutral: neutral, width: width, height: height,
+            oldContour: contour, newContour: contour, fallbackShift: [0, 0, 0]
+        ))
+        XCTAssertEqual(alreadyMatched, neutral)
+        var legacy = original
+        XCTAssertFalse(OpenClamAvatarStylizedMouthSkinPolicy.correct(
+            source: &legacy, neutral: neutral, width: width, height: height,
+            oldContour: nil, newContour: contour, fallbackShift: [0, 0, 0]
+        ))
+        XCTAssertEqual(legacy, original)
+    }
+
+    func testOversizeImportedMouthSkipsContourFieldsWithoutChangingInput() {
+        let width = 257, height = 256
+        XCTAssertGreaterThan(width * height, OpenClamAvatarStylizedMouthSkinPolicy.maximumCorrectionPixels)
+        XCTAssertLessThan(242 * 124, OpenClamAvatarStylizedMouthSkinPolicy.maximumCorrectionPixels)
+        let contour = (0 ..< 64).map { index -> CGPoint in
+            let angle = Double(index) * .pi / 32
+            return CGPoint(x: 128 + cos(angle) * 30, y: 128 + sin(angle) * 12)
+        }
+        let original = [UInt8](repeating: 180, count: width * height * 4)
+        let neutral = [UInt8](repeating: 150, count: original.count)
+        var selected = original
+        XCTAssertFalse(OpenClamAvatarStylizedMouthSkinPolicy.correct(
+            source: &selected, neutral: neutral, width: width, height: height,
+            oldContour: contour, newContour: contour, fallbackShift: [-24, -24, -24]
+        ))
+        XCTAssertEqual(selected, original, "The caller retains its bounded annulus fallback, without allocating contour fields.")
+    }
+
+    func testLegacyStylizedPackWithoutAuthoredLipBoundsKeepsExistingSpeechPath() throws {
+        let avatar = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
+        for medium in [OpenClamAvatarSourceMedium.anime, .gameArt, .illustration, .rendered3D] {
+            let legacy = OpenClamAvatarSpeechPatchGeometry(rig: avatar.geometry, sourceMedium: medium)
+            XCTAssertFalse(OpenClamAvatarStylizedMouthResolutionPolicy.usesResolvedPatch(sourceMedium: medium, geometry: legacy))
+            XCTAssertFalse(legacy.clipsFeatherToCoreBounds)
+            XCTAssertGreaterThan(legacy.coreBounds.height, 0)
+            let authored = OpenClamAvatarSpeechPatchGeometry(
+                rig: avatar.geometry, sourceMedium: medium,
+                speechPatch: .init(box: .init(x: 391, y: 694, width: 242, height: 124), visemeXOffsets: [:])
+            )
+            XCTAssertTrue(OpenClamAvatarStylizedMouthResolutionPolicy.usesResolvedPatch(sourceMedium: medium, geometry: authored))
+            XCTAssertFalse(OpenClamAvatarStylizedMouthResolutionPolicy.usesResolvedPatch(sourceMedium: .photograph, geometry: authored))
+        }
+    }
+
+    func testContourMetadataIsAppliedOnlyToExplicitSoftThreeDimensionalSource() throws {
+        let avatar = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
+        let metadata = OpenClamAvatarMouthSkinMatchMetadata(
+            version: 1, space: "canonical-pixels", contours: [:], emotionContours: [:]
+        )
+        let speech = OpenClamAvatarSpeechPatchMetadata(
+            box: .init(x: 391, y: 694, width: 242, height: 124),
+            visemeXOffsets: [:], skinMatch: metadata
+        )
+        for medium in [OpenClamAvatarSourceMedium.photograph, .anime, .illustration, .gameArt, .rendered3D] {
+            let geometry = OpenClamAvatarSpeechPatchGeometry(
+                rig: avatar.geometry, sourceMedium: medium, speechPatch: speech
+            )
+            XCTAssertEqual(geometry.skinMatch, medium == .rendered3D ? metadata : nil)
+        }
+    }
+
+    private func mouthFixtureGeometry(offset: Double = 0) throws -> OpenClamAvatarSpeechPatchGeometry {
+        let avatar = try XCTUnwrap(OpenClamAvatarCatalog.avatar(id: "captain-ayer"))
+        return OpenClamAvatarSpeechPatchGeometry(
+            rig: avatar.geometry, sourceMedium: .rendered3D,
+            speechPatch: .init(
+                box: .init(x: 80, y: 100, width: 120, height: 64),
+                visemeXOffsets: ["aa": offset]
+            )
+        )
+    }
+
+    @MainActor
+    private func rgbaImage(width: Int, height: Int, pixel: (Int, Int) -> [UInt8]) throws -> UIImage {
+        var data: [UInt8] = []
+        data.reserveCapacity(width * height * 4)
+        for y in 0 ..< height {
+            for x in 0 ..< width { data.append(contentsOf: pixel(x, y)) }
+        }
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(data) as CFData))
+        let cgImage = try XCTUnwrap(CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Big.rawValue
+                | CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        ))
+        return UIImage(cgImage: cgImage)
+    }
+
+    @MainActor
+    private func rgbaPixels(_ image: UIImage) throws -> [UInt8] {
+        let cgImage = try XCTUnwrap(image.cgImage)
+        var bytes = [UInt8](repeating: 0, count: cgImage.width * cgImage.height * 4)
+        let context = try XCTUnwrap(CGContext(
+            data: &bytes, width: cgImage.width, height: cgImage.height,
+            bitsPerComponent: 8, bytesPerRow: cgImage.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+        return bytes
     }
 
     private func fullExpressionGeometry() -> OpenClamAvatarExpressionGeometry {

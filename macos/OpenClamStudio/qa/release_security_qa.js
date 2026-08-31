@@ -164,7 +164,7 @@ for (const contract of [
 ]) assert.ok(contractResource && contractResource.filter.includes(contract),
   `packaging must include portable avatar contract ${contract}`);
 const iosFullExpressionV4Sha =
-  '6a5011d520d160d4d66430576b5beac534bd24f84ed40f24531838906541a72d';
+  '59d1729486b920d3d82ed63c59dbfc45711181f0cf5b741fe8e3e967454a1258';
 assert.ok(
   release.includes(`AVATAR_IOS_V4_SCHEMA_SHA='${iosFullExpressionV4Sha}'`),
   'macOS release must pin the reviewed iPhone full-expression v4 schema');

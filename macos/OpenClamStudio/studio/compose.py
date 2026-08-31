@@ -7,7 +7,7 @@ cheek motion. For stylized sources, only the registered outer-lip union is
 transferred and locally colour-harmonized; the canonical face remains literal
 art. Eyes and the rest of the upper face remain canonical pixels.
 """
-import os, json
+import os, json, hashlib
 import numpy as np, cv2
 from . import face, rig, visemes
 
@@ -464,6 +464,167 @@ def _alpha_ring(mask, face_m, scale, profile=None):
     return alpha, ring
 
 
+def _stylized_mouth_registration(key, donor, key_landmarks, source_landmarks,
+                                  landmark_transform):
+    """Prefer a proven rigid pixel fit when a cartoon mesh invents face tilt.
+
+    Large drawn eyes can move the human detector's cheek/nose anchors between
+    otherwise pixel-aligned plates. Fitting an affine to those anchors then
+    rotates a clean authored mouth and pulls a second nose into its mask. This
+    optional refinement sees only the unchanged upper image, never the moving
+    lips, and cannot shear or scale artwork. A high correlation AND a material
+    improvement on upper-face edge pixels are required; ambiguous inputs keep
+    their existing registration. Photographs and eye plates never call it.
+    """
+    diagnostics = {"method": "landmarks"}
+    if key.shape != donor.shape or key.ndim != 3:
+        return landmark_transform, diagnostics
+    height, width = key.shape[:2]
+    canonical = np.asarray(key_landmarks, np.float32)[face.OUTER_LIP]
+    generated = np.asarray(source_landmarks, np.float32)[face.OUTER_LIP]
+    if not np.isfinite(canonical).all() or not np.isfinite(generated).all():
+        return landmark_transform, diagnostics
+    mouth_width = max(float(np.ptp(canonical[:, 0])),
+                      float(np.ptp(generated[:, 0])), 4.0)
+    cutoff = min(float(canonical[:, 1].min()),
+                 float(generated[:, 1].min())) - mouth_width * 0.15
+    sample_scale = min(1.0, 512.0 / max(height, width))
+    sample_size = (max(1, int(round(width * sample_scale))),
+                   max(1, int(round(height * sample_scale))))
+    top = min(sample_size[1], int(cutoff * sample_scale))
+    if top < 32 or sample_size[0] < 32:
+        return landmark_transform, diagnostics
+    key_gray = cv2.resize(cv2.cvtColor(key, cv2.COLOR_BGR2GRAY), sample_size,
+                          interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    donor_gray = cv2.resize(cv2.cvtColor(donor, cv2.COLOR_BGR2GRAY), sample_size,
+                            interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    input_mask = np.zeros(key_gray.shape, np.uint8)
+    input_mask[2:top, 2:-2] = 255
+    gradient_x = cv2.Sobel(key_gray, cv2.CV_32F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(key_gray, cv2.CV_32F, 0, 1, ksize=3)
+    edges = ((input_mask > 0)
+             & (gradient_x * gradient_x + gradient_y * gradient_y > 0.04))
+    if np.count_nonzero(edges) < max(64, int(input_mask.size * 0.002)):
+        return landmark_transform, diagnostics
+
+    try:
+        correlation, inverse = cv2.findTransformECC(
+            key_gray, donor_gray, np.eye(2, 3, dtype=np.float32),
+            cv2.MOTION_EUCLIDEAN,
+            (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-6),
+            input_mask, 5)
+    except cv2.error:
+        return landmark_transform, diagnostics
+    if (not np.isfinite(correlation) or correlation < 0.97
+            or not np.isfinite(inverse).all()):
+        return landmark_transform, diagnostics
+    fitted = cv2.invertAffineTransform(inverse).astype(np.float32)
+    angle = float(np.degrees(np.arctan2(fitted[1, 0], fitted[0, 0])))
+    translation = float(np.linalg.norm(fitted[:, 2])) / sample_scale
+    if abs(angle) > 8.0 or translation > max(height, width) * 0.04:
+        return landmark_transform, diagnostics
+
+    legacy = np.asarray(landmark_transform, np.float32).copy()
+    if legacy.shape != (2, 3) or not np.isfinite(legacy).all():
+        return landmark_transform, diagnostics
+    legacy[:, 2] *= sample_scale
+
+    def edge_error(transform):
+        registered = cv2.warpAffine(
+            donor_gray, transform, sample_size, flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE)
+        return float(np.mean(np.abs(registered[edges] - key_gray[edges]))) * 255.0
+
+    legacy_error = edge_error(legacy)
+    fitted_error = edge_error(fitted)
+    if fitted_error > legacy_error * 0.8 or legacy_error - fitted_error < 1.0:
+        return landmark_transform, diagnostics
+    fitted[:, 2] /= sample_scale
+    diagnostics = {
+        "method": "stylized-upper-face-rigid-pixels-v1",
+        "correlation": round(float(correlation), 7),
+        "landmark_edge_mae": round(legacy_error, 4),
+        "registered_edge_mae": round(fitted_error, 4),
+        "rotation_degrees": round(angle, 5),
+    }
+    return fitted, diagnostics
+
+
+def _registration_pixel_sha256(image):
+    return hashlib.sha256(np.ascontiguousarray(image).tobytes()).hexdigest()
+
+
+def _registration_file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _seal_stylized_registration(key, keyframe_path, processed_path, registration):
+    """Bind successful pixel registration to the exact resulting JPEG bank.
+
+    The normal build already retains each registration record in its manifest.
+    A later expression export must not re-centre these canonical plates using
+    the same human lip detector which misregistered the cartoon in the first
+    place. Hash both files and their decoded pixels: a stale report or a newly
+    encoded/replaced plate is not evidence of canonical registration.
+    """
+    if registration.get("method") != "stylized-upper-face-rigid-pixels-v1":
+        return
+    decoded = cv2.imread(processed_path)
+    if decoded is None or decoded.shape != key.shape:
+        return
+    registration["canonical_pixel_registration"] = {
+        "v": 1, "shape": list(key.shape),
+        "canonical_file_sha256": _registration_file_sha256(keyframe_path),
+        "canonical_bgr_sha256": _registration_pixel_sha256(key),
+        "processed_file_sha256": _registration_file_sha256(processed_path),
+        "processed_bgr_sha256": _registration_pixel_sha256(decoded),
+    }
+
+
+def canonical_mouth_registration_matches(key, image, registration, *,
+                                         keyframe_path=None, processed_path=None):
+    """Verify an upstream pixel-registration seal; unproven banks stay legacy."""
+    if (not isinstance(registration, dict)
+            or registration.get("method") != "stylized-upper-face-rigid-pixels-v1"):
+        return False
+    seal = registration.get("canonical_pixel_registration")
+    if (not isinstance(seal, dict) or type(seal.get("v")) is not int
+            or seal["v"] != 1 or not isinstance(seal.get("shape"), list)
+            or len(seal["shape"]) != 3
+            or any(type(value) is not int for value in seal["shape"])
+            or not isinstance(key, np.ndarray) or not isinstance(image, np.ndarray)
+            or key.dtype != np.uint8 or image.dtype != np.uint8
+            or key.ndim != 3 or key.shape[2] != 3
+            or key.shape != image.shape or seal["shape"] != list(key.shape)):
+        return False
+    measured = [registration.get(name) for name in (
+        "correlation", "landmark_edge_mae", "registered_edge_mae", "rotation_degrees")]
+    if any(type(value) not in (int, float) or not np.isfinite(value)
+           for value in measured):
+        return False
+    correlation, legacy_error, fitted_error, angle = measured
+    if (not 0.97 <= correlation <= 1.000001 or abs(angle) > 8.0
+            or fitted_error < 0 or fitted_error > legacy_error * 0.8
+            or legacy_error - fitted_error < 1.0):
+        return False
+    if (seal.get("canonical_bgr_sha256") != _registration_pixel_sha256(key)
+            or seal.get("processed_bgr_sha256") != _registration_pixel_sha256(image)):
+        return False
+    if keyframe_path is not None or processed_path is not None:
+        if keyframe_path is None or processed_path is None:
+            return False
+        try:
+            return (seal.get("canonical_file_sha256") == _registration_file_sha256(keyframe_path)
+                    and seal.get("processed_file_sha256") == _registration_file_sha256(processed_path))
+        except (OSError, TypeError, ValueError):
+            return False
+    return True
+
+
 def _stylized_mouth_alpha(shape, key_landmarks, source_landmarks, transform):
     """Return a tight, registered lip transfer for illustrated faces.
 
@@ -492,16 +653,20 @@ def _stylized_mouth_alpha(shape, key_landmarks, source_landmarks, transform):
     core = np.zeros((height, width), np.uint8)
     cv2.fillConvexPoly(
         core, cv2.convexHull(np.round(finite).astype(np.int32)), 255)
-    # Eight percent retains moving corners and the immediate lip antialiasing
-    # but cannot reach the nose, chin edge, cheek texture, or face outline.
+    # Human lip landmarks can sit slightly inside/below authored cartoon lines.
+    # The margin must own those old corners fully, not just feather them: a
+    # partially covered rest-mouth line becomes a detached stroke beside a
+    # smaller viseme. Keep the smooth skin transition OUTSIDE this bounded
+    # eight-percent ownership margin, not through the lip art itself.
     margin = max(2, int(round(mouth_width * 0.08)))
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (margin * 2 + 1, margin * 2 + 1))
     support = cv2.dilate(core, kernel)
-    sigma = max(0.8, mouth_width * 0.025)
-    alpha = cv2.GaussianBlur(
-        support, (0, 0), sigma).astype(np.float32) / 255.0
-    alpha[core > 0] = 1.0
+    distance = cv2.distanceTransform(
+        (support == 0).astype(np.uint8), cv2.DIST_L2, 5)
+    feather = max(2.4, mouth_width * 0.075)
+    progress = np.clip(distance / feather, 0.0, 1.0)
+    alpha = 1.0 - progress * progress * (3.0 - 2.0 * progress)
     return np.clip(alpha, 0.0, 1.0)
 
 
@@ -617,6 +782,10 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
                                     method=cv2.LMEDS, refineIters=50)
         if M is None:
             M = cv2.estimateAffinePartial2D(slm[face.RIGID], klm[face.RIGID])[0]
+        registration = None
+        if allow_stylized and name not in visemes.EYE_SHAPES:
+            M, registration = _stylized_mouth_registration(
+                key, src, klm, slm, M)
         warped = cv2.warpAffine(src, M, (W, H), flags=cv2.INTER_LANCZOS4,
                                 borderMode=cv2.BORDER_REPLICATE)
         proj = (M[:, :2] @ slm[face.RIGID].T).T + M[:, 2]
@@ -648,8 +817,11 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
             off = kl[ring].mean(axis=0) - wl[ring].mean(axis=0)
             wl = np.clip(wl + off, 0, 255)
         out = (kl * (1 - alpha[..., None]) + wl * alpha[..., None]).astype(np.uint8)
-        cv2.imwrite(os.path.join(out_dir, f"v_{name}.jpg"), out,
-                    [cv2.IMWRITE_JPEG_QUALITY, 95])
+        processed_path = os.path.join(out_dir, f"v_{name}.jpg")
+        cv2.imwrite(processed_path, out, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if registration is not None:
+            _seal_stylized_registration(
+                key, keyframe_path, processed_path, registration)
 
         d = np.abs(out.astype(np.float32) - kl).mean(axis=2)
         outside = float(d[alpha < 0.02].mean())
@@ -659,6 +831,8 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
                            outside_delta=round(outside, 4),
                            foreshortening=None if fs is None else round(fs, 3),
                            tone_shift=[round(float(v), 1) for v in off]))
+        if registration is not None:
+            report[-1]["registration"] = registration
         log(f"  {name:7s} rigid residual {resid:5.2f}px   off-region delta {outside:.4f}"
             + (f"   foreshortening {fs:.2f}" if fs else ""))
 

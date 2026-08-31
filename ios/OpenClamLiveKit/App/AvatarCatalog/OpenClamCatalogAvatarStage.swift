@@ -255,6 +255,7 @@ struct OpenClamAvatarSpeechPatchGeometry: Equatable, Sendable {
     let featherRadius: CGFloat
     let clipsFeatherToCoreBounds: Bool
     let visemeXOffsets: [String: Double]
+    let skinMatch: OpenClamAvatarMouthSkinMatchMetadata?
 
     init(
         rig: OpenClamAvatarRigGeometry,
@@ -262,6 +263,7 @@ struct OpenClamAvatarSpeechPatchGeometry: Equatable, Sendable {
         expressionMouthBounds: CGRect? = nil,
         speechPatch: OpenClamAvatarSpeechPatchMetadata? = nil
     ) {
+        skinMatch = sourceMedium == .rendered3D ? speechPatch?.skinMatch : nil
         let canonicalBounds = CGRect(origin: .zero, size: Self.canonicalSize)
         let authoredMouth = speechPatch?.box.cgRect ?? expressionMouthBounds
         let canonicalMouth = authoredMouth?.intersection(canonicalBounds)
@@ -334,9 +336,11 @@ enum OpenClamAvatarStylizedSpeechPatchPixelPolicy {
         height: Int
     ) -> Double {
         let nx = ((Double(x) + 0.5) / Double(max(1, width)) - 0.5) / 0.5
-        let ny = ((Double(y) + 0.5) / Double(max(1, height)) - 0.45) / 0.36
-        let radius = hypot(nx, ny)
-        return 1 - smoothStep((radius - 0.62) / 0.32)
+        let ny = ((Double(y) + 0.5) / Double(max(1, height)) - 0.5) / 0.5
+        // Match the approved desktop mouth ownership, not the old ellipse
+        // whose feather started inside the canonical upturned lip corners.
+        let radius = pow(pow(nx, 6) + pow(ny, 6), 1.0 / 6.0)
+        return 1 - smoothStep((radius - 0.85) / 0.13)
     }
 
     static func differenceAlpha(
@@ -347,21 +351,180 @@ enum OpenClamAvatarStylizedSpeechPatchPixelPolicy {
             * smoothStep((Double(maximumChannelDelta) - 6) / 36)
     }
 
+    static func ownershipAlpha(
+        maximumChannelDelta: Int,
+        spatialAlpha: Double
+    ) -> Double {
+        let coverage = min(1, max(0, spatialAlpha))
+        // Replacement skin must erase the old mouth even when its contrast
+        // is small. Only the exterior skin feather is difference-matted.
+        return max(
+            differenceAlpha(
+                maximumChannelDelta: maximumChannelDelta,
+                spatialAlpha: coverage
+            ),
+            coverage * smoothStep((coverage - 0.72) / 0.28)
+        )
+    }
+
     private static func smoothStep(_ value: Double) -> Double {
         let amount = min(1, max(0, value))
         return amount * amount * (3 - 2 * amount)
     }
 }
 
-/// Builds a transparent, lip-difference plate once per stylized viseme. The
-/// neutral head stays underneath, so identical skin is not redrawn and a
-/// provider's slightly different JPEG texture cannot reveal an oval patch.
+/// The desktop's measured-contour skin correction, limited to explicit soft
+/// 3D metadata. Lips/teeth stay original, and a deterministic held-out skin
+/// sample must improve before any correction is applied.
+enum OpenClamAvatarStylizedMouthSkinPolicy {
+    // Imported v4 mouth bounds may legally span the entire canonical image.
+    // Do not allocate spatial fields or run contour fitting at that size on
+    // the UI actor. Larger plates retain the bounded annulus-tone fallback.
+    static let maximumCorrectionPixels = 65_536
+
+    static func correct(
+        source: inout [UInt8], neutral: [UInt8], width: Int, height: Int,
+        oldContour: [CGPoint]?, newContour: [CGPoint]?, fallbackShift: [Double]
+    ) -> Bool {
+        guard width > 0, height > 0, width <= 1_024, height <= 1_024,
+              width * height <= maximumCorrectionPixels,
+              let oldContour, let newContour,
+              (8 ... 64).contains(oldContour.count), (8 ... 64).contains(newContour.count),
+              (oldContour + newContour).allSatisfy({ $0.x.isFinite && $0.y.isFinite }),
+              source.count == width * height * 4, neutral.count == source.count,
+              fallbackShift.count == 3, fallbackShift.allSatisfy(\.isFinite) else { return false }
+        var fields = [Double](repeating: 0, count: source.count)
+        var protection = [Double](repeating: 0, count: width * height)
+        var validation: [Int] = []
+        var samples = 0
+        let span = Double(width)
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let pixel = y * width + x, index = pixel * 4
+                let point = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)
+                let previous = distance(point, contour: oldContour)
+                let selected = distance(point, contour: newContour)
+                protection[pixel] = smoothStep((selected - 0.07 * span) / (0.025 * span))
+                guard min(previous, selected) > 0.08 * span,
+                      source[index + 3] >= 240, neutral[index + 3] >= 240 else { continue }
+                let deltas = (0 ..< 3).map { Double(neutral[index + $0]) - Double(source[index + $0]) }
+                guard (deltas.map(abs).max() ?? 0) <= 72 else { continue }
+                if (x * 3 + y * 5) % 7 == 0 {
+                    validation.append(pixel)
+                    continue
+                }
+                for channel in 0 ..< 3 { fields[index + channel] = deltas[channel] }
+                fields[index + 3] = 1
+                samples += 1
+            }
+        }
+        guard Double(samples) >= max(12, Double(width * height) * 0.04) else { return false }
+        let field = blur(fields, width: width, height: height, radius: max(3, Int((span * 0.06).rounded())))
+        var baselineError = 0.0, candidateError = 0.0, validationWeight = 0.0
+        for pixel in validation {
+            let index = pixel * 4
+            guard field[index + 3] >= 0.001 else { continue }
+            let weight = OpenClamAvatarStylizedSpeechPatchPixelPolicy.spatialAlpha(
+                x: pixel % width, y: pixel / width, width: width, height: height
+            )
+            guard weight >= 0.2 else { continue }
+            for channel in 0 ..< 3 {
+                let correction = min(48, max(-48, field[index + channel] / field[index + 3]))
+                let baseline = min(255, max(0, Double(source[index + channel]) + fallbackShift[channel]))
+                let candidate = min(255, max(0, Double(source[index + channel]) + correction * protection[pixel]))
+                baselineError += weight * abs(baseline - Double(neutral[index + channel]))
+                candidateError += weight * abs(candidate - Double(neutral[index + channel]))
+                validationWeight += weight
+            }
+        }
+        guard validationWeight >= 12,
+              (baselineError - candidateError) / validationWeight >= 0.35,
+              candidateError <= baselineError * 0.92 else { return false }
+        for pixel in protection.indices {
+            let index = pixel * 4
+            guard protection[pixel] > 0, field[index + 3] >= 0.001 else { continue }
+            for channel in 0 ..< 3 {
+                let correction = min(48, max(-48, field[index + channel] / field[index + 3]))
+                source[index + channel] = UInt8(min(255, max(0,
+                    (Double(source[index + channel]) + correction * protection[pixel]).rounded()
+                )))
+            }
+        }
+        return true
+    }
+
+    static func distance(_ point: CGPoint, contour: [CGPoint]) -> Double {
+        guard !contour.isEmpty else { return .infinity }
+        var inside = false, squared = Double.infinity
+        for index in contour.indices {
+            let a = contour[(index + contour.count - 1) % contour.count], b = contour[index]
+            if (a.y > point.y) != (b.y > point.y),
+               point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x {
+                inside.toggle()
+            }
+            let vx = b.x - a.x, vy = b.y - a.y
+            let along = min(1, max(0,
+                ((point.x - a.x) * vx + (point.y - a.y) * vy) / max(1e-8, vx * vx + vy * vy)
+            ))
+            squared = min(squared, pow(point.x - a.x - along * vx, 2) + pow(point.y - a.y - along * vy, 2))
+        }
+        return inside ? 0 : sqrt(squared)
+    }
+
+    private static func smoothStep(_ value: Double) -> Double {
+        let amount = min(1, max(0, value))
+        return amount * amount * (3 - 2 * amount)
+    }
+
+    private static func blur(_ values: [Double], width: Int, height: Int, radius: Int) -> [Double] {
+        var input = values
+        let diameter = Double(radius * 2 + 1)
+        // Six separable running-sum passes: the cached state build is linear
+        // in pixel count, not a blur kernel on every display frame.
+        for pass in 0 ..< 6 {
+            let horizontal = pass % 2 == 0
+            let length = horizontal ? width : height
+            let lines = horizontal ? height : width
+            let step = horizontal ? 4 : width * 4
+            var output = [Double](repeating: 0, count: input.count)
+            for line in 0 ..< lines {
+                let base = horizontal ? line * width * 4 : line * 4
+                for channel in 0 ..< 4 {
+                    var sum = 0.0
+                    for offset in -radius ... radius {
+                        sum += input[base + max(0, min(length - 1, offset)) * step + channel]
+                    }
+                    for point in 0 ..< length {
+                        output[base + point * step + channel] = sum / diameter
+                        sum -= input[base + max(0, point - radius) * step + channel]
+                        sum += input[base + min(length - 1, point + radius + 1) * step + channel]
+                    }
+                }
+            }
+            input = output
+        }
+        return input
+    }
+}
+
+/// A single authored expression cell. Its transparent pixels are resolved
+/// over the selected phoneme, never over a second mouth on the neutral head.
+struct OpenClamAvatarStylizedEmotionMouthSample {
+    let image: UIImage
+    let frame: Int
+    let geometry: OpenClamAvatarSpriteGeometry
+    var contourFamily: String? = nil
+    var contourState: Int? = nil
+}
+
+/// Builds one resolved, colour-matched mouth with an opaque lip interior and
+/// a bounded skin feather. No second SwiftUI ellipse is applied afterwards.
 /// Photographic avatars never call this renderer.
 @MainActor
 enum OpenClamAvatarStylizedSpeechPatchRenderer {
     private static let cache: NSCache<NSString, UIImage> = {
         let value = NSCache<NSString, UIImage>()
-        value.countLimit = 48
+        value.countLimit = 96
         value.totalCostLimit = 24 * 1_024 * 1_024
         return value
     }()
@@ -370,41 +533,99 @@ enum OpenClamAvatarStylizedSpeechPatchRenderer {
         selected: UIImage?,
         neutral: UIImage?,
         geometry: OpenClamAvatarSpeechPatchGeometry,
-        viseme: OpenClamAvatarViseme
+        viseme: OpenClamAvatarViseme,
+        sourceMedium: OpenClamAvatarSourceMedium = .illustration,
+        emotion: OpenClamAvatarStylizedEmotionMouthSample? = nil
     ) -> UIImage? {
-        guard let selected, let neutral,
+        guard sourceMedium.isStylized, geometry.clipsFeatherToCoreBounds,
+              let selected, let neutral,
               let selectedCG = selected.cgImage,
               let neutralCG = neutral.cgImage else { return nil }
         let bounds = geometry.coreBounds
+        guard [bounds.minX, bounds.minY, bounds.width, bounds.height].allSatisfy(\.isFinite),
+              bounds.width > 0, bounds.height > 0,
+              bounds.width <= 1_024, bounds.height <= 1_024,
+              geometry.translationX(for: viseme).isFinite else { return nil }
+        let registration = min(bounds.width * 0.35, max(-bounds.width * 0.35,
+            geometry.translationX(for: viseme)))
         let width = max(1, Int(bounds.width.rounded()))
         let height = max(1, Int(bounds.height.rounded()))
-        let sourceX = Int((bounds.minX - geometry.translationX(for: viseme)).rounded())
-        let sourceY = Int(bounds.minY.rounded())
-        let neutralX = Int(bounds.minX.rounded())
-        let neutralY = sourceY
+        let selectedBounds = bounds.offsetBy(dx: -registration, dy: 0)
+        let oldContour = lipContour(
+            geometry: geometry, viseme: .silence, registration: 0, emotion: nil
+        )
+        let newContour = lipContour(
+            geometry: geometry, viseme: viseme,
+            registration: registration, emotion: emotion
+        )
+        var contourHasher = Hasher()
+        for contour in [oldContour, newContour] {
+            contourHasher.combine(contour?.count ?? 0)
+            for point in contour ?? [] {
+                contourHasher.combine(point.x)
+                contourHasher.combine(point.y)
+            }
+        }
         let key = [
             String(selected.hash), String(neutral.hash), viseme.rawValue,
-            String(sourceX), String(sourceY), String(width), String(height),
+            sourceMedium.rawValue,
+            String(describing: bounds), String(Double(registration)),
+            String(width), String(height),
+            emotion.map { String($0.image.hash) } ?? "plain",
+            emotion.map { String($0.frame) } ?? "",
+            emotion.map { String(describing: $0.geometry) } ?? "",
+            String(contourHasher.finalize()),
         ].joined(separator: ":") as NSString
         if let cached = cache.object(forKey: key) { return cached }
-        guard let selectedPixels = pixels(
-                  selectedCG, x: sourceX, y: sourceY,
-                  width: width, height: height),
-              let neutralPixels = pixels(
-                  neutralCG, x: neutralX, y: neutralY,
-                  width: width, height: height) else { return nil }
+        guard var selectedPixels = sampledPixels(
+                  selectedCG, bounds: selectedBounds, width: width, height: height),
+              let neutralPixels = sampledPixels(
+                  neutralCG, bounds: bounds, width: width, height: height) else { return nil }
+
+        if let emotion {
+            guard resolve(
+                emotion: emotion, over: &selectedPixels,
+                bounds: bounds, width: width, height: height,
+                registration: registration
+            ) else { return nil }
+        }
+        // Pixel readers use premultiplied RGBA. The colour/difference work is
+        // straight RGB; premultiply exactly once after applying ownership.
+        unpremultiply(&selectedPixels)
+        var neutralRGB = neutralPixels
+        unpremultiply(&neutralRGB)
+        let shift = annulusToneShift(
+            source: selectedPixels, neutral: neutralRGB,
+            width: width, height: height
+        )
+        let matched = sourceMedium == .rendered3D
+            && OpenClamAvatarStylizedMouthSkinPolicy.correct(
+                source: &selectedPixels, neutral: neutralRGB,
+                width: width, height: height,
+                oldContour: oldContour, newContour: newContour,
+                fallbackShift: shift
+            )
+        if !matched {
+            for index in stride(from: 0, to: selectedPixels.count, by: 4) {
+                for channel in 0 ..< 3 {
+                    selectedPixels[index + channel] = UInt8(min(255, max(0,
+                        (Double(selectedPixels[index + channel]) + shift[channel]).rounded()
+                    )))
+                }
+            }
+        }
 
         var deltas = [UInt8](repeating: 0, count: width * height)
         for pixel in deltas.indices {
             let index = pixel * 4
             let red = abs(
-                Int(selectedPixels[index]) - Int(neutralPixels[index])
+                Int(selectedPixels[index]) - Int(neutralRGB[index])
             )
             let green = abs(
-                Int(selectedPixels[index + 1]) - Int(neutralPixels[index + 1])
+                Int(selectedPixels[index + 1]) - Int(neutralRGB[index + 1])
             )
             let blue = abs(
-                Int(selectedPixels[index + 2]) - Int(neutralPixels[index + 2])
+                Int(selectedPixels[index + 2]) - Int(neutralRGB[index + 2])
             )
             deltas[pixel] = UInt8(max(red, max(green, blue)))
         }
@@ -428,7 +649,7 @@ enum OpenClamAvatarStylizedSpeechPatchRenderer {
                 let pixel = y * width + x
                 let index = pixel * 4
                 let alpha = OpenClamAvatarStylizedSpeechPatchPixelPolicy
-                    .differenceAlpha(
+                    .ownershipAlpha(
                         maximumChannelDelta: localDelta,
                         spatialAlpha: OpenClamAvatarStylizedSpeechPatchPixelPolicy
                             .spatialAlpha(
@@ -457,6 +678,146 @@ enum OpenClamAvatarStylizedSpeechPatchRenderer {
         return rendered
     }
 
+    private static func resolve(
+        emotion: OpenClamAvatarStylizedEmotionMouthSample,
+        over selected: inout [UInt8],
+        bounds: CGRect,
+        width: Int,
+        height: Int,
+        registration: CGFloat
+    ) -> Bool {
+        guard let atlas = emotion.image.cgImage else { return false }
+        let spec = emotion.geometry
+        guard spec.columns > 0, spec.rows > 0,
+              spec.columns <= 1_024, spec.rows <= 1_024,
+              emotion.frame >= 0, emotion.frame < spec.frameCount,
+              spec.box.width > 0, spec.box.height > 0 else { return false }
+        let columns = spec.storage == .verticalStrip ? 1 : spec.columns
+        let rows = spec.storage == .verticalStrip ? spec.frameCount : spec.rows
+        guard atlas.width % columns == 0, atlas.height % rows == 0 else { return false }
+        let cellWidth = atlas.width / columns
+        let cellHeight = atlas.height / rows
+        guard cellWidth > 0, cellHeight > 0 else { return false }
+        let column = spec.storage == .verticalStrip ? 0 : emotion.frame % columns
+        let row = spec.storage == .verticalStrip ? emotion.frame : emotion.frame / columns
+        guard let cell = pixels(
+            atlas, x: column * cellWidth, y: row * cellHeight,
+            width: cellWidth, height: cellHeight
+        ) else { return false }
+
+        // Sampling is constrained to ONE atlas cell. A mouth box extending
+        // beyond that cell must not borrow skin/ink from the next expression.
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let localX = bounds.minX + (CGFloat(x) + 0.5) * bounds.width / CGFloat(width)
+                    - registration - spec.box.x
+                let localY = bounds.minY + (CGFloat(y) + 0.5) * bounds.height / CGFloat(height) - spec.box.y
+                guard localX >= 0, localY >= 0,
+                      localX < spec.box.width, localY < spec.box.height else { continue }
+                let sx = Double(localX / spec.box.width) * Double(cellWidth) - 0.5
+                let sy = Double(localY / spec.box.height) * Double(cellHeight) - 0.5
+                let x0 = Int(floor(sx)), y0 = Int(floor(sy))
+                let wx = sx - Double(x0), wy = sy - Double(y0)
+                var sample = [Double](repeating: 0, count: 4)
+                for dy in 0 ... 1 {
+                    for dx in 0 ... 1 {
+                        let ix = min(cellWidth - 1, max(0, x0 + dx))
+                        let iy = min(cellHeight - 1, max(0, y0 + dy))
+                        let weight = (dx == 0 ? 1 - wx : wx) * (dy == 0 ? 1 - wy : wy)
+                        let index = (iy * cellWidth + ix) * 4
+                        for channel in 0 ..< 4 {
+                            sample[channel] += Double(cell[index + channel]) * weight
+                        }
+                    }
+                }
+                let index = (y * width + x) * 4
+                let remainder = 1 - sample[3] / 255
+                for channel in 0 ..< 4 {
+                    selected[index + channel] = UInt8(min(255, max(0,
+                        (sample[channel] + Double(selected[index + channel]) * remainder).rounded()
+                    )))
+                }
+            }
+        }
+        return true
+    }
+
+    private static func unpremultiply(_ pixels: inout [UInt8]) {
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = Int(pixels[index + 3])
+            guard alpha > 0, alpha < 255 else { continue }
+            for channel in 0 ..< 3 {
+                pixels[index + channel] = UInt8(min(255,
+                    (Int(pixels[index + channel]) * 255 + alpha / 2) / alpha
+                ))
+            }
+        }
+    }
+
+    private static func lipContour(
+        geometry: OpenClamAvatarSpeechPatchGeometry,
+        viseme: OpenClamAvatarViseme,
+        registration: CGFloat,
+        emotion: OpenClamAvatarStylizedEmotionMouthSample?
+    ) -> [CGPoint]? {
+        guard let spec = geometry.skinMatch,
+              spec.version == 1, spec.space == "canonical-pixels" else { return nil }
+        var points = spec.contours[viseme.rawValue]
+        if let emotion {
+            guard let family = emotion.contourFamily,
+                  let state = emotion.contourState,
+                  let states = spec.emotionContours[family]?[viseme.rawValue],
+                  state >= 0, state < states.count else { return nil }
+            points = states[state]
+        }
+        guard let points, (8 ... 64).contains(points.count),
+              registration.isFinite else { return nil }
+        let box = geometry.coreBounds
+        var result: [CGPoint] = []
+        for point in points {
+            guard point.count == 2, point.allSatisfy(\.isFinite) else { return nil }
+            let x = (point[0] - box.minX + registration) * box.width.rounded() / box.width
+            let y = (point[1] - box.minY) * box.height.rounded() / box.height
+            guard x >= -0.15 * box.width, x <= 1.15 * box.width,
+                  y >= -0.15 * box.height, y <= 1.15 * box.height else { return nil }
+            result.append(CGPoint(x: x, y: y))
+        }
+        return result
+    }
+
+    private static func annulusToneShift(
+        source: [UInt8], neutral: [UInt8], width: Int, height: Int
+    ) -> [Double] {
+        var selectedSamples = [[Int]](repeating: [], count: 3)
+        var neutralSamples = [[Int]](repeating: [], count: 3)
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let coverage = OpenClamAvatarStylizedSpeechPatchPixelPolicy
+                    .spatialAlpha(x: x, y: y, width: width, height: height)
+                guard coverage >= 0.08, coverage <= 0.42 else { continue }
+                let index = (y * width + x) * 4
+                guard source[index + 3] >= 240, neutral[index + 3] >= 240 else { continue }
+                let sourceLuma = (0 ..< 3).reduce(0) { $0 + Int(source[index + $1]) } / 3
+                let neutralLuma = (0 ..< 3).reduce(0) { $0 + Int(neutral[index + $1]) } / 3
+                let delta = (0 ..< 3).map { abs(Int(source[index + $0]) - Int(neutral[index + $0])) }.max() ?? 0
+                guard sourceLuma >= 35, neutralLuma >= 35, delta <= 72 else { continue }
+                for channel in 0 ..< 3 {
+                    selectedSamples[channel].append(Int(source[index + channel]))
+                    neutralSamples[channel].append(Int(neutral[index + channel]))
+                }
+            }
+        }
+        guard selectedSamples[0].count >= 12 else { return [0, 0, 0] }
+        func median(_ input: [Int]) -> Double {
+            let sorted = input.sorted(), middle = input.count / 2
+            return input.count % 2 == 1 ? Double(sorted[middle])
+                : Double(sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return (0 ..< 3).map {
+            min(24, max(-24, median(neutralSamples[$0]) - median(selectedSamples[$0])))
+        }
+    }
+
     private static func pixels(
         _ image: CGImage,
         x: Int,
@@ -483,6 +844,43 @@ enum OpenClamAvatarStylizedSpeechPatchRenderer {
         ) else { return nil }
         context.interpolationQuality = .high
         context.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return result
+    }
+
+    private static func sampledPixels(
+        _ image: CGImage, bounds: CGRect, width: Int, height: Int
+    ) -> [UInt8]? {
+        guard bounds.minX >= 0, bounds.minY >= 0,
+              bounds.maxX <= CGFloat(image.width), bounds.maxY <= CGFloat(image.height) else { return nil }
+        let left = Int(floor(bounds.minX)), top = Int(floor(bounds.minY))
+        let cropWidth = Int(ceil(bounds.maxX)) - left
+        let cropHeight = Int(ceil(bounds.maxY)) - top
+        guard let crop = pixels(image, x: left, y: top, width: cropWidth, height: cropHeight) else { return nil }
+        if bounds.minX == CGFloat(left), bounds.minY == CGFloat(top),
+           bounds.width == CGFloat(width), bounds.height == CGFloat(height) { return crop }
+        // Do not round the measured viseme registration. Ordinary speech and
+        // its expression cell must share the same subpixel coordinate frame.
+        var result = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0 ..< height {
+            let sy = bounds.minY - CGFloat(top) + (CGFloat(y) + 0.5) * bounds.height / CGFloat(height) - 0.5
+            let y0 = Int(floor(sy)), wy = Double(sy - CGFloat(y0))
+            for x in 0 ..< width {
+                let sx = bounds.minX - CGFloat(left) + (CGFloat(x) + 0.5) * bounds.width / CGFloat(width) - 0.5
+                let x0 = Int(floor(sx)), wx = Double(sx - CGFloat(x0))
+                for channel in 0 ..< 4 {
+                    var value = 0.0
+                    for dy in 0 ... 1 {
+                        for dx in 0 ... 1 {
+                            let ix = min(cropWidth - 1, max(0, x0 + dx))
+                            let iy = min(cropHeight - 1, max(0, y0 + dy))
+                            let weight = (dx == 0 ? 1 - wx : wx) * (dy == 0 ? 1 - wy : wy)
+                            value += Double(crop[(iy * cropWidth + ix) * 4 + channel]) * weight
+                        }
+                    }
+                    result[(y * width + x) * 4 + channel] = UInt8(min(255, max(0, value.rounded())))
+                }
+            }
+        }
         return result
     }
 
@@ -1635,46 +2033,24 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
             // changes during speech, so hair, eyes, and skin cannot flicker.
             assetImage(.viseme(plan.base.viseme))
 
-            if plan.speechPatch != nil
-                || (showsReactionMouth && reaction.wideMouthOpacity > 0) {
-                if avatar.sourceMedium.isStylized {
-                    GeometryReader { proxy in
-                        ZStack {
-                            if let patch = plan.speechPatch {
-                                speechPatchImage(
-                                    patch.back.viseme,
-                                    geometry: patchGeometry,
-                                    canvasSize: proxy.size
-                                )
-                                if let front = patch.front {
-                                    speechPatchImage(
-                                        front.viseme,
-                                        geometry: patchGeometry,
-                                        canvasSize: proxy.size
-                                    )
-                                    .opacity(front.opacity)
-                                }
-                            }
-
-                            if showsReactionMouth, reaction.wideMouthOpacity > 0 {
-                                speechPatchImage(
-                                    .wide,
-                                    geometry: patchGeometry,
-                                    canvasSize: proxy.size
-                                )
-                                .opacity(reaction.wideMouthOpacity)
-                            }
-                        }
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .compositingGroup()
-                        .mask {
-                            OpenClamAvatarSpeechPatchMask(geometry: patchGeometry)
-                        }
-                    }
-                } else {
-                    // Preserve the reviewed photographic renderer byte-for-byte
-                    // in behavior and layout; only explicit stylized metadata
-                    // enters the translated, tighter compositor above.
+            if OpenClamAvatarStylizedMouthResolutionPolicy.usesResolvedPatch(
+                sourceMedium: avatar.sourceMedium, geometry: patchGeometry
+            ) {
+                OpenClamCatalogStylizedMouthLayer(
+                    avatar: avatar,
+                    imageStore: imageStore,
+                    speechState: state,
+                    expressionState: reaction.expressionLayers,
+                    geometry: patchGeometry,
+                    fallbackWideAmount: showsReactionMouth ? reaction.wideMouthOpacity : 0
+                )
+            } else {
+                if plan.speechPatch != nil
+                    || (showsReactionMouth && reaction.wideMouthOpacity > 0) {
+                    // Preserve the photographic renderer and valid legacy
+                    // stylized v2/v3 packs without authored lip bounds. Those
+                    // older packs must not silently lose speech because the
+                    // new bounded replacement compositor cannot fit them.
                     ZStack {
                         if let patch = plan.speechPatch {
                             assetImage(.viseme(patch.back.viseme))
@@ -1696,7 +2072,7 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
                 }
             }
 
-            if let expression = avatar.expressionGeometry {
+            if !avatar.sourceMedium.isStylized, let expression = avatar.expressionGeometry {
                 OpenClamCatalogExpressionMouthLayers(
                     avatar: avatar,
                     imageStore: imageStore,
@@ -1722,44 +2098,120 @@ private struct OpenClamCatalogAvatarFaceArtwork: View {
         OpenClamAvatarAssetImage(image: imageStore.image(for: avatar, role: role))
     }
 
-    @ViewBuilder
-    private func speechPatchImage(
-        _ viseme: OpenClamAvatarViseme,
-        geometry: OpenClamAvatarSpeechPatchGeometry,
-        canvasSize: CGSize
-    ) -> some View {
-        if avatar.sourceMedium.isStylized,
-           let patch = OpenClamAvatarStylizedSpeechPatchRenderer.image(
-               selected: imageStore.image(for: avatar, role: .viseme(viseme)),
-               neutral: imageStore.image(for: avatar, role: .viseme(.silence)),
-               geometry: geometry,
-               viseme: viseme
-           ) {
-            let bounds = geometry.coreBounds
-            let scaleX = canvasSize.width
-                / OpenClamAvatarSpeechPatchGeometry.canonicalSize.width
-            let scaleY = canvasSize.height
-                / OpenClamAvatarSpeechPatchGeometry.canonicalSize.height
-            OpenClamAvatarAssetImage(image: patch)
-                .frame(
-                    width: bounds.width * scaleX,
-                    height: bounds.height * scaleY
-                )
-                .position(
-                    x: bounds.midX * scaleX,
-                    y: bounds.midY * scaleY
-                )
-        } else {
-            // Keep the reviewed photographic full-plate patch and its legacy
-            // positioning unchanged. The explicit stylized branch above is
-            // the only route that creates a difference-matted crop.
-            assetImage(.viseme(viseme))
-                .offset(
-                    x: geometry.translationX(for: viseme)
-                        * canvasSize.width
-                        / OpenClamAvatarSpeechPatchGeometry.canonicalSize.width
-                )
+}
+
+struct OpenClamAvatarStylizedMouthResolutionPlan: Equatable, Sendable {
+    let viseme: OpenClamAvatarViseme
+    let emotion: OpenClamAvatarExpressionMouthKind?
+    let frame: Int?
+}
+
+enum OpenClamAvatarStylizedMouthResolutionPolicy {
+    static func usesResolvedPatch(
+        sourceMedium: OpenClamAvatarSourceMedium,
+        geometry: OpenClamAvatarSpeechPatchGeometry
+    ) -> Bool {
+        sourceMedium.isStylized && geometry.clipsFeatherToCoreBounds
+    }
+
+    static func plan(
+        speech: CaptainAyerAvatarRenderState,
+        expression: CaptainAyerExpressionLayerRenderState,
+        geometry: OpenClamAvatarExpressionGeometry?,
+        sourceMedium: OpenClamAvatarSourceMedium,
+        fallbackWideAmount: Double = 0
+    ) -> OpenClamAvatarStylizedMouthResolutionPlan? {
+        guard sourceMedium.isStylized else { return nil }
+        let selected = speech.blend < 0.5
+            ? speech.previous.catalogViseme : speech.current.catalogViseme
+        if let geometry,
+           let active = OpenClamAvatarExpressionMouthPolicy.dominant(expression, geometry: geometry),
+           let sample = OpenClamAvatarExpressionMouthPolicy.samples(
+               kind: active.kind, amount: active.amount,
+               previous: speech.previous.catalogViseme,
+               current: speech.current.catalogViseme,
+               speechBlend: speech.blend, geometry: geometry,
+               sourceMedium: sourceMedium
+           ).first {
+            return .init(
+                viseme: OpenClamAvatarExpressionMouthPolicy.viseme(
+                    forFrame: sample.frame, kind: active.kind, geometry: geometry
+                ),
+                emotion: active.kind,
+                frame: sample.frame
+            )
         }
+        // A legacy broad-mouth reaction also selects one complete drawing;
+        // it must not add another semi-transparent mouth on top of speech.
+        let viseme: OpenClamAvatarViseme = fallbackWideAmount >= 0.5 ? .wide : selected
+        guard viseme != .silence else { return nil }
+        return .init(viseme: viseme, emotion: nil, frame: nil)
+    }
+}
+
+@MainActor
+private struct OpenClamCatalogStylizedMouthLayer: View {
+    let avatar: OpenClamAvatarDescriptor
+    let imageStore: OpenClamAvatarAssetStore
+    let speechState: CaptainAyerAvatarRenderState
+    let expressionState: CaptainAyerExpressionLayerRenderState
+    let geometry: OpenClamAvatarSpeechPatchGeometry
+    let fallbackWideAmount: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let plan = OpenClamAvatarStylizedMouthResolutionPolicy.plan(
+                speech: speechState, expression: expressionState,
+                geometry: avatar.expressionGeometry,
+                sourceMedium: avatar.sourceMedium,
+                fallbackWideAmount: fallbackWideAmount
+            ), let image = resolvedImage(plan) {
+                let bounds = geometry.coreBounds
+                let scaleX = proxy.size.width / 1_024
+                let scaleY = proxy.size.height / 1_024
+                OpenClamAvatarAssetImage(image: image)
+                    .frame(width: bounds.width * scaleX, height: bounds.height * scaleY)
+                    .position(x: bounds.midX * scaleX, y: bounds.midY * scaleY)
+                // Ownership and feather were applied once to the resolved
+                // pixels. A second ellipse would expose the old corners again.
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func resolvedImage(_ plan: OpenClamAvatarStylizedMouthResolutionPlan) -> UIImage? {
+        var emotion: OpenClamAvatarStylizedEmotionMouthSample?
+        if let kind = plan.emotion, let frame = plan.frame,
+           let expression = avatar.expressionGeometry {
+            let role: OpenClamAvatarAssetRole
+            let sprite: OpenClamAvatarSpriteGeometry
+            let family: String
+            let strengthCount: Int
+            switch kind {
+            case .smile:
+                role = .smileAtlas
+                sprite = expression.smile
+                family = "smile"
+                strengthCount = expression.smileStrengths.count
+            case let .emotion(name, _):
+                role = .emotionMouthAtlas
+                sprite = expression.emotionMouth
+                family = name
+                strengthCount = expression.emotionMouthStrengths.count
+            }
+            if let image = imageStore.image(for: avatar, role: role), strengthCount > 0 {
+                emotion = .init(
+                    image: image, frame: frame, geometry: sprite,
+                    contourFamily: family, contourState: frame % strengthCount
+                )
+            }
+        }
+        let selected = imageStore.image(for: avatar, role: .viseme(plan.viseme))
+        let neutral = imageStore.image(for: avatar, role: .viseme(.silence))
+        return OpenClamAvatarStylizedSpeechPatchRenderer.image(
+            selected: selected, neutral: neutral, geometry: geometry,
+            viseme: plan.viseme, sourceMedium: avatar.sourceMedium, emotion: emotion
+        )
     }
 }
 

@@ -1317,6 +1317,101 @@ def _expression_geometry(runtime_manifest: Mapping[str, object]) -> dict | None:
     }
 
 
+MAX_IOS_MOUTH_SKIN_MATCH_BYTES = 112 * 1024
+IOS_MOUTH_SKIN_FAMILIES = {"smile": 5, "sorrow": 4, "horror": 4, "anger": 4}
+
+
+def _mouth_skin_match(
+    metadata: object, box: Mapping[str, float], offsets: Mapping[str, float],
+) -> dict:
+    """Copy public-only measured geometry, never regenerate or recolour pixels.
+
+    Only the explicit soft-3D caller opts in. Validate every selected-state
+    contour rather than letting missing/malformed geometry accidentally treat
+    a lip as skin. The private canonical-key provenance stays on the Mac.
+    """
+    error = "soft-3D iPhone mouth skin geometry is invalid"
+    public_keys = {"v", "space", "contours", "emotion_contours"}
+    if not isinstance(metadata, dict) \
+            or not public_keys.issubset(metadata) \
+            or not set(metadata).issubset(public_keys | {"canonical_key"}) \
+            or type(metadata["v"]) is not int or metadata["v"] != 1 \
+            or metadata["space"] != "canonical-pixels":
+        raise AvatarPackageError(error)
+    contours = metadata["contours"]
+    emotions = metadata["emotion_contours"]
+    if not isinstance(contours, dict) or set(contours) != set(IOS_VISEMES) \
+            or not isinstance(emotions, dict) \
+            or set(emotions) != set(IOS_MOUTH_SKIN_FAMILIES):
+        raise AvatarPackageError(error)
+    x, y, width, height = (box[k] for k in ("x", "y", "width", "height"))
+
+    def polygon(value, name):
+        if not isinstance(value, list) or not 8 <= len(value) <= 64 \
+                or abs(offsets[name]) > .35 * width + 1e-6:
+            raise AvatarPackageError(error)
+        points = []
+        for point in value:
+            if not isinstance(point, list) or len(point) != 2 or any(
+                isinstance(v, bool) or not isinstance(v, (int, float))
+                or not math.isfinite(float(v)) or not 0 <= float(v) <= 1024
+                for v in point
+            ):
+                raise AvatarPackageError(error)
+            px, py = map(float, point)
+            if not x - .15 * width <= px + offsets[name] <= x + 1.15 * width \
+                    or not y - .15 * height <= py <= y + 1.15 * height:
+                raise AvatarPackageError(error)
+            # The measured generator already uses 4 decimal places. Do not
+            # quantize or transform a validated contour at the export boundary.
+            points.append([px, py])
+        if len({tuple(p) for p in points}) != len(points):
+            raise AvatarPackageError(error)
+        winding = 0
+        area = 0.0
+        for index, a in enumerate(points):
+            b, c = points[(index + 1) % len(points)], points[(index + 2) % len(points)]
+            cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+            if abs(cross) > 1e-6:
+                direction = 1 if cross > 0 else -1
+                if winding and direction != winding:
+                    raise AvatarPackageError(error)
+                winding = direction
+            area += a[0] * b[1] - b[0] * a[1]
+        if not winding or abs(area) < 4:
+            raise AvatarPackageError(error)
+        # Equal consecutive turns alone also admit self-crossing stars. A
+        # convex measured contour keeps every vertex inside every edge.
+        for index, a in enumerate(points):
+            b = points[(index + 1) % len(points)]
+            if any(winding * ((b[0] - a[0]) * (p[1] - a[1])
+                              - (b[1] - a[1]) * (p[0] - a[0])) < -1e-6
+                   for p in points):
+                raise AvatarPackageError(error)
+        return points
+
+    clean = {
+        "v": 1, "space": "canonical-pixels",
+        "contours": {name: polygon(contours[name], name) for name in IOS_VISEMES},
+        "emotion_contours": {},
+    }
+    for family, count in IOS_MOUTH_SKIN_FAMILIES.items():
+        bank = emotions[family]
+        if not isinstance(bank, dict) or set(bank) != set(IOS_VISEMES):
+            raise AvatarPackageError(error)
+        clean_bank = {}
+        for name in IOS_VISEMES:
+            states = bank[name]
+            if not isinstance(states, list) or len(states) != count:
+                raise AvatarPackageError(error)
+            clean_bank[name] = [polygon(state, name) for state in states]
+        clean["emotion_contours"][family] = clean_bank
+    if len(json.dumps(clean, separators=(",", ":"), allow_nan=False).encode("utf-8")) \
+            > MAX_IOS_MOUTH_SKIN_MATCH_BYTES:
+        raise AvatarPackageError("soft-3D iPhone mouth skin geometry is too large")
+    return clean
+
+
 def _stylized_speech_patch(
     runtime_manifest: Mapping[str, object],
     source_medium: str,
@@ -1376,7 +1471,7 @@ def _stylized_speech_patch(
         raise AvatarPackageError(
             "stylized iPhone silence registration must remain zero"
         )
-    return {
+    result = {
         "box": {
             "x": round(x, 4),
             "y": round(safe_y, 4),
@@ -1385,6 +1480,11 @@ def _stylized_speech_patch(
         },
         "visemeXOffsets": clean_offsets,
     }
+    if source_medium == "3d render" and "skin_match" in mouth:
+        result["skinMatch"] = _mouth_skin_match(
+            mouth["skin_match"], result["box"], clean_offsets
+        )
+    return result
 
 
 def _validate_ios_rig_assets(

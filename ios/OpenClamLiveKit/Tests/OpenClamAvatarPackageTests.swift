@@ -175,6 +175,7 @@ final class OpenClamAvatarPackageTests: XCTestCase {
 
         XCTAssertEqual(descriptor.sourceMedium, .illustration)
         let speechPatch = try XCTUnwrap(descriptor.speechPatch)
+        XCTAssertNil(speechPatch.skinMatch)
         XCTAssertEqual(
             speechPatch.box,
             OpenClamAvatarRect(x: 400, y: 680, width: 240, height: 150)
@@ -187,6 +188,175 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         let reloaded = try XCTUnwrap(store.loadInstalledDescriptors().first)
         XCTAssertEqual(reloaded.sourceMedium, .illustration)
         XCTAssertEqual(reloaded.speechPatch, speechPatch)
+    }
+
+    func testFullExpressionV4ImportsOptionalMouthSkinMatchAndReloads() throws {
+        let archive = try mouthSkinMatchArchive()
+        let root = try temporaryDirectory().appendingPathComponent("installed")
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        let descriptor = try store.installArchive(at: archive)
+        let skin = try XCTUnwrap(descriptor.speechPatch?.skinMatch)
+        XCTAssertEqual(skin.version, 1)
+        XCTAssertEqual(skin.space, "canonical-pixels")
+        XCTAssertEqual(Set(skin.contours.keys), Set(OpenClamAvatarViseme.allCases.map(\.rawValue)))
+        XCTAssertEqual(skin.contours["sil"]?.count, 12)
+        XCTAssertEqual(skin.emotionContours["smile"]?["ou"]?.count, 5)
+        XCTAssertEqual(skin.emotionContours["horror"]?["aa"]?.count, 4)
+        XCTAssertEqual(
+            skin.emotionContours.values.reduce(skin.contours.count) { count, bank in
+                count + bank.values.reduce(0) { $0 + $1.count }
+            },
+            270
+        )
+        let reloaded = try XCTUnwrap(store.loadInstalledDescriptors().first)
+        XCTAssertEqual(reloaded.speechPatch?.skinMatch, skin)
+        let encoded = try JSONEncoder().encode(skin)
+        let raw = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(Set(raw.keys), ["v", "space", "contours", "emotion_contours"])
+        XCTAssertEqual(try JSONDecoder().decode(OpenClamAvatarMouthSkinMatchMetadata.self, from: encoded), skin)
+    }
+
+    func testSpeechPatchInitializerRemainsBackwardCompatible() {
+        let value = OpenClamAvatarSpeechPatchMetadata(
+            box: .init(x: 400, y: 680, width: 240, height: 150),
+            visemeXOffsets: ["sil": 0]
+        )
+        XCTAssertNil(value.skinMatch)
+    }
+
+    func testMouthSkinMatchRequiresExplicitSoft3DClassification() throws {
+        for medium in ["photograph", "illustration", "anime", "game art", nil] {
+            try assertImportError(.invalidRig, archive: mouthSkinMatchArchive(sourceMedium: medium))
+        }
+    }
+
+    func testMouthSkinMatchRejectsUnknownVersionAndCoordinateSpace() throws {
+        for version: Any in [2, true, "1"] {
+            try assertImportError(.invalidRig, archive: mouthSkinMatchArchive { skin in
+                skin["v"] = version
+            })
+        }
+        try assertImportError(.invalidRig, archive: mouthSkinMatchArchive { skin in
+            skin["space"] = "mouth-local"
+        })
+    }
+
+    func testMouthSkinMatchRejectsMissingOrExtraVisemesAndPrivateMetadata() throws {
+        for extra in [false, true] {
+            try assertImportError(.privateMetadataNotAllowed, archive: mouthSkinMatchArchive { skin in
+                var contours = try XCTUnwrap(skin["contours"] as? [String: [[Double]]])
+                if extra {
+                    contours["future"] = contours["sil"]
+                } else {
+                    contours.removeValue(forKey: "ou")
+                }
+                skin["contours"] = contours
+            })
+        }
+        try assertImportError(.privateMetadataNotAllowed, archive: mouthSkinMatchArchive { skin in
+            skin["canonical_key"] = ["sha256": "private-authoring-provenance"]
+        })
+    }
+
+    func testMouthSkinMatchRejectsMissingFamilyVisemeOrState() throws {
+        for problem in 0 ... 2 {
+            let expected: OpenClamAvatarPackageError = problem == 2 ? .invalidRig : .privateMetadataNotAllowed
+            try assertImportError(expected, archive: mouthSkinMatchArchive { skin in
+                var emotions = try XCTUnwrap(skin["emotion_contours"] as? [String: [String: [[[Double]]]]])
+                if problem == 0 { emotions.removeValue(forKey: "anger") }
+                if problem == 1 { emotions["anger"]?.removeValue(forKey: "TH") }
+                if problem == 2 { emotions["smile"]?["PP"]?.removeLast() }
+                skin["emotion_contours"] = emotions
+            })
+        }
+    }
+
+    func testMouthSkinMatchRejectsBooleanAndStringPointComponents() throws {
+        for component: Any in [true, "512"] {
+            try assertImportError(.invalidRig, archive: mouthSkinMatchArchive { skin in
+                var contours = try XCTUnwrap(skin["contours"] as? [String: [[Double]]])
+                    .mapValues { $0.map { $0.map { $0 as Any } } }
+                contours["sil"]?[0][0] = component
+                skin["contours"] = contours
+            })
+        }
+    }
+
+    func testMouthSkinMatchRejectsOutOfCanonicalAndMouthBounds() throws {
+        for coordinate in [-1.0, 1_025.0, 10.0, 1_000.0] {
+            try assertImportError(.invalidRig, archive: mouthSkinMatchArchive { skin in
+                var contours = try XCTUnwrap(skin["contours"] as? [String: [[Double]]])
+                contours["aa"]?[0][0] = coordinate
+                skin["contours"] = contours
+            })
+        }
+    }
+
+    func testMouthSkinMatchRejectsShortCrossedAndDegeneratePolygons() throws {
+        for problem in 0 ... 4 {
+            try assertImportError(.invalidRig, archive: mouthSkinMatchArchive { skin in
+                var contours = try XCTUnwrap(skin["contours"] as? [String: [[Double]]])
+                var points = try XCTUnwrap(contours["sil"])
+                switch problem {
+                case 0: points = Array(points.prefix(7))
+                case 1: points.swapAt(2, 8)
+                case 2: points[points.count - 1] = points[0]
+                case 3:
+                    let ring = (0 ..< 9).map { index in
+                        let angle = Double(index) * 2 * Double.pi / 9
+                        return [511 + 42 * cos(angle), 752 + 13 * sin(angle)]
+                    }
+                    points = (0 ..< 9).map { ring[($0 * 2) % 9] }
+                default: points = (0 ..< 8).map { [500.0 + Double($0), 750.0] }
+                }
+                contours["sil"] = points
+                skin["contours"] = contours
+            })
+        }
+    }
+
+    func testMouthSkinMatchRejectsOversizedGeometryBeforeInstalling() throws {
+        let archive = try mouthSkinMatchArchive { skin in
+            skin = self.validMouthSkinMatchManifest(vertices: 64)
+        }
+        try assertImportError(.manifestTooLarge, archive: archive)
+    }
+
+    func testMouthSkinMatchFractionalContoursUseTypedByteBudget() throws {
+        let archive = try shortestDoubleMouthSkinMatchArchive(vertices: 18)
+        let manifestData = try XCTUnwrap(
+            fixtureEntries(from: archive).first(where: { $0.path == "manifest.json" })?.data
+        )
+        let manifest = try JSONDecoder().decode(OpenClamAvatarPackageManifest.self, from: manifestData)
+        let skin = try XCTUnwrap(manifest.speechPatch?.skinMatch)
+        let compact = try JSONEncoder().encode(skin)
+        let raw = try JSONSerialization.jsonObject(with: compact)
+        let foundationExpanded = try JSONSerialization.data(withJSONObject: raw)
+
+        XCTAssertLessThanOrEqual(UInt64(manifestData.count), OpenClamAvatarPackageContract.maximumManifestByteCount)
+        XCTAssertLessThanOrEqual(compact.count, OpenClamAvatarPackageContract.maximumMouthSkinMatchByteCount)
+        XCTAssertGreaterThan(foundationExpanded.count, OpenClamAvatarPackageContract.maximumMouthSkinMatchByteCount)
+
+        let root = try temporaryDirectory().appendingPathComponent("installed")
+        let store = OpenClamAvatarPackageStore(storageRoot: root)
+        let descriptor = try store.installArchive(at: archive)
+        XCTAssertEqual(descriptor.speechPatch?.skinMatch, skin)
+        XCTAssertEqual(store.loadInstalledDescriptors().first?.speechPatch?.skinMatch, skin)
+    }
+
+    func testMouthSkinMatchTypedByteCapStillRejectsWithinManifestCap() throws {
+        let archive = try shortestDoubleMouthSkinMatchArchive(vertices: 22)
+        let manifestData = try XCTUnwrap(
+            fixtureEntries(from: archive).first(where: { $0.path == "manifest.json" })?.data
+        )
+        let manifest = try JSONDecoder().decode(OpenClamAvatarPackageManifest.self, from: manifestData)
+        let skin = try XCTUnwrap(manifest.speechPatch?.skinMatch)
+        XCTAssertLessThanOrEqual(UInt64(manifestData.count), OpenClamAvatarPackageContract.maximumManifestByteCount)
+        XCTAssertGreaterThan(
+            try JSONEncoder().encode(skin).count,
+            OpenClamAvatarPackageContract.maximumMouthSkinMatchByteCount
+        )
+        try assertImportError(.invalidRig, archive: archive)
     }
 
     func testSpeechPatchIsRejectedByV2AndV3Manifests() throws {
@@ -1396,6 +1566,56 @@ final class OpenClamAvatarPackageTests: XCTestCase {
             "box": ["x": 400, "y": 680, "width": 240, "height": 150],
             "visemeXOffsets": offsets,
         ]
+    }
+
+    private func validMouthSkinMatchManifest(vertices: Int = 12) -> [String: Any] {
+        func polygon(shift: Double = 0) -> [[Double]] {
+            (0 ..< vertices).map { index in
+                let angle = Double(index) * 2 * Double.pi / Double(vertices)
+                return [(1e4 * (511 + shift + 42 * cos(angle))).rounded() / 1e4,
+                        (1e4 * (752 + 13 * sin(angle))).rounded() / 1e4]
+            }
+        }
+        let names = OpenClamAvatarViseme.allCases.map(\.rawValue)
+        let contours = Dictionary(uniqueKeysWithValues: names.enumerated().map {
+            ($0.element, polygon(shift: Double($0.offset) * 0.1))
+        })
+        let emotions = Dictionary(uniqueKeysWithValues: ["smile", "sorrow", "horror", "anger"].map { family in
+            (family, Dictionary(uniqueKeysWithValues: names.enumerated().map { index, name in
+                (name, (0 ..< (family == "smile" ? 5 : 4)).map {
+                    polygon(shift: Double(index) * 0.1 + Double($0) * 0.05)
+                })
+            }))
+        })
+        return ["v": 1, "space": "canonical-pixels", "contours": contours, "emotion_contours": emotions]
+    }
+
+    private func mouthSkinMatchArchive(
+        sourceMedium: String? = "3d render",
+        mutate: ((inout [String: Any]) throws -> Void)? = nil
+    ) throws -> URL {
+        try fullExpressionV4Archive { manifest in
+            manifest["sourceMedium"] = sourceMedium
+            var speech = self.validSpeechPatchManifest()
+            speech["visemeXOffsets"] = Dictionary(uniqueKeysWithValues: OpenClamAvatarViseme.allCases.map {
+                ($0.rawValue, 0.0)
+            })
+            var skin = self.validMouthSkinMatchManifest()
+            try mutate?(&skin)
+            speech["skinMatch"] = skin
+            manifest["speechPatch"] = speech
+        }
+    }
+
+    private func shortestDoubleMouthSkinMatchArchive(vertices: Int) throws -> URL {
+        let archive = try mouthSkinMatchArchive { skin in
+            skin = self.validMouthSkinMatchManifest(vertices: vertices)
+        }
+        var entries = try fixtureEntries(from: archive)
+        let index = try XCTUnwrap(entries.firstIndex(where: { $0.path == "manifest.json" }))
+        let manifest = try JSONDecoder().decode(OpenClamAvatarPackageManifest.self, from: entries[index].data)
+        entries[index].data = try JSONEncoder().encode(manifest)
+        return try makeArchive(entries)
     }
 
     private func temporaryDirectory() throws -> URL {

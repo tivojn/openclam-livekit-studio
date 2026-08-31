@@ -112,6 +112,20 @@ renderer uses this only with an explicit stylized `sourceMedium`; photo
 packages retain their legacy lower-face geometry and crossfade. Versions 2 and
 3 reject `speechPatch`.
 
+Explicit `3d render` packages may opt in to `speechPatch.skinMatch` without
+changing the v4 package version. This public-only v1 geometry contains
+`space: "canonical-pixels"`, all 15 `contours`, and complete
+`emotion_contours` banks (five smile states, four states each for sorrow,
+horror, and anger). Each polygon has 8–64 unique, finite, convex vertices in
+the canonical 1024-square face before the viseme's x offset; the offset is
+applied exactly once. Registered points must remain within 15% of the speech
+rectangle and registration within 35% of its width. Skin geometry is bounded
+to 112 KiB and the complete manifest remains bounded to 128 KiB. Import rejects
+malformed or incomplete geometry; it never treats missing lip contours as
+skin. Existing packages without this optional field use the legacy bounded
+tone-matching fallback. Photographic, 2D, and unknown-medium exports do not opt
+in. No authoring key hashes, diagnostic data, or changed artwork is exported.
+
 V4 permits 64 MiB archives, 96 MiB of expanded encoded assets, and a maximum
 single image dimension of 8,192 pixels while retaining the 16 MiB per-image
 and 16-megapixel decoded-pixel limits. A package

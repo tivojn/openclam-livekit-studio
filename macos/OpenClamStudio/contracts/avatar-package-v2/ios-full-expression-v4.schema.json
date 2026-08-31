@@ -5,6 +5,16 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "version", "variant", "id", "displayName", "rig", "expression", "assets"],
+  "allOf": [{
+    "if": {
+      "required": ["speechPatch"],
+      "properties": { "speechPatch": { "required": ["skinMatch"] } }
+    },
+    "then": {
+      "required": ["sourceMedium"],
+      "properties": { "sourceMedium": { "const": "3d render" } }
+    }
+  }],
   "properties": {
     "format": { "const": "openclam-avatar" },
     "version": { "const": 4 },
@@ -215,6 +225,7 @@
       "required": ["box", "visemeXOffsets"],
       "properties": {
         "box": { "$ref": "#/$defs/rect" },
+        "skinMatch": { "$ref": "#/$defs/mouthSkinMatch" },
         "visemeXOffsets": {
           "type": "object", "additionalProperties": false,
           "required": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"],
@@ -234,6 +245,57 @@
             "ih": { "type": "number", "minimum": -96, "maximum": 96 },
             "oh": { "type": "number", "minimum": -96, "maximum": 96 },
             "ou": { "type": "number", "minimum": -96, "maximum": 96 }
+          }
+        }
+      }
+    },
+    "mouthSkinPoint": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": { "type": "number", "minimum": 0, "maximum": 1024 }
+    },
+    "mouthSkinContour": {
+      "type": "array", "minItems": 8, "maxItems": 64,
+      "items": { "$ref": "#/$defs/mouthSkinPoint" }
+    },
+    "mouthSkinContourBank": {
+      "type": "object",
+      "required": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"],
+      "propertyNames": { "enum": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"] },
+      "additionalProperties": { "$ref": "#/$defs/mouthSkinContour" }
+    },
+    "mouthSkinSmileBank": {
+      "type": "object",
+      "required": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"],
+      "propertyNames": { "enum": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"] },
+      "additionalProperties": {
+        "type": "array", "minItems": 5, "maxItems": 5,
+        "items": { "$ref": "#/$defs/mouthSkinContour" }
+      }
+    },
+    "mouthSkinEmotionBank": {
+      "type": "object",
+      "required": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"],
+      "propertyNames": { "enum": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"] },
+      "additionalProperties": {
+        "type": "array", "minItems": 4, "maxItems": 4,
+        "items": { "$ref": "#/$defs/mouthSkinContour" }
+      }
+    },
+    "mouthSkinMatch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "space", "contours", "emotion_contours"],
+      "properties": {
+        "v": { "const": 1 },
+        "space": { "const": "canonical-pixels" },
+        "contours": { "$ref": "#/$defs/mouthSkinContourBank" },
+        "emotion_contours": {
+          "type": "object", "additionalProperties": false,
+          "required": ["smile", "sorrow", "horror", "anger"],
+          "properties": {
+            "smile": { "$ref": "#/$defs/mouthSkinSmileBank" },
+            "sorrow": { "$ref": "#/$defs/mouthSkinEmotionBank" },
+            "horror": { "$ref": "#/$defs/mouthSkinEmotionBank" },
+            "anger": { "$ref": "#/$defs/mouthSkinEmotionBank" }
           }
         }
       }

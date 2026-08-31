@@ -13,7 +13,7 @@ positions per eye and the two eyes can be driven independently.
 """
 import os, json, shutil, subprocess, tempfile
 import numpy as np, cv2
-from . import face, blink, expression, cutout, limbs, rig, motion, mouth_skin, build as reg
+from . import face, blink, compose, expression, cutout, limbs, rig, motion, mouth_skin, build as reg
 
 
 # The renderer version is not only an asset schema: it also tells the desktop
@@ -30,6 +30,36 @@ STYLIZED_HEAD_HANDOFF_VERSION = 4
 NAME_MAP = {"sil": "closed", "PP": "PP", "FF": "FF", "TH": "TH", "DD": "DD",
             "kk": "kk", "CH": "CH", "SS": "SS", "nn": "nn", "RR": "RR",
             "aa": "ah", "E": "eh", "ih": "ih", "oh": "oh", "ou": "oo"}
+
+
+def _canonical_mouth_registrations(directory, source_medium, manifest, key, bank):
+    """Admit only exact canonical/processed source files from a proven build."""
+    if not isinstance(source_medium, str) or source_medium not in {"illustration", "3d render"}:
+        return {}
+    rows = manifest.get("visemes") if isinstance(manifest, dict) else None
+    if not isinstance(rows, list) or len(rows) > 64:
+        return {}
+    by_shape, duplicated = {}, set()
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                or row["name"] not in set(NAME_MAP.values())):
+            continue
+        shape = row["name"]
+        if shape in by_shape:
+            duplicated.add(shape)
+        by_shape[shape] = row.get("registration")
+    result = {}
+    for runtime_name, image in bank:
+        shape = NAME_MAP.get(runtime_name)
+        if shape is None or shape in duplicated:
+            continue
+        registration = by_shape.get(shape)
+        if compose.canonical_mouth_registration_matches(
+                key, image, registration,
+                keyframe_path=os.path.join(directory, "keyframe.png"),
+                processed_path=os.path.join(directory, "visemes", f"v_{shape}.jpg")):
+            result[runtime_name] = registration
+    return result
 
 
 def _source_medium(manifest):
@@ -2069,7 +2099,11 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
         viseme_bank.append((rt, img))
 
     log("synthesising viseme-safe laughter mouth states")
-    smile = expression.build_smile(key, klm, viseme_bank, log=log)
+    canonical_registrations = _canonical_mouth_registrations(
+        d, source_medium, m, key, viseme_bank)
+    smile = expression.build_smile(
+        key, klm, viseme_bank, log=log, source_medium=source_medium,
+        canonical_registrations=canonical_registrations)
     smile_path = os.path.join(dest, "smile.png")
     cv2.imwrite(smile_path, np.vstack(smile["patches"]),
                 [cv2.IMWRITE_PNG_COMPRESSION, 9])
@@ -2078,7 +2112,7 @@ def export(slug, dest, quality=92, states=blink.N_STATES, log=print,
     log(f"  smile.png  {len(smile['patches'])} states, "
         f"{os.path.getsize(smile_path)/1024:.0f} KB")
     emotion_mouth = expression.build_emotion_mouths(
-        key, klm, viseme_bank, log=log)
+        key, klm, viseme_bank, log=log, source_medium=source_medium)
     emotion_mouth_path = os.path.join(dest, "emotion-mouth.png")
     cv2.imwrite(emotion_mouth_path, np.vstack(emotion_mouth["patches"]),
                 [cv2.IMWRITE_PNG_COMPRESSION, 9])

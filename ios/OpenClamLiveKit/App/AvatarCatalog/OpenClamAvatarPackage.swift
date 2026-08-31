@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreFoundation
 import CoreMedia
 import CryptoKit
 import Foundation
@@ -211,6 +212,7 @@ enum OpenClamAvatarPackageContract {
     static let legacyMaximumExpandedByteCount: UInt64 = 64 * 1_024 * 1_024
     static let maximumAssetByteCount: UInt64 = 16 * 1_024 * 1_024
     static let maximumManifestByteCount: UInt64 = 128 * 1_024
+    static let maximumMouthSkinMatchByteCount = 112 * 1_024
     static let maximumImageDimension = 8_192
     static let maximumExpressionTextureDimension = 8_192
     static let maximumDecodedPixelCount: UInt64 = 16 * 1_024 * 1_024
@@ -1353,7 +1355,9 @@ struct OpenClamAvatarPackageStore: Sendable {
                 guard let speechPatch = rawSpeechPatch as? [String: Any] else {
                     throw OpenClamAvatarPackageError.invalidManifest
                 }
-                try requireExactKeys(speechPatch, ["box", "visemeXOffsets"])
+                var speechKeys: Set<String> = ["box", "visemeXOffsets"]
+                if speechPatch["skinMatch"] != nil { speechKeys.insert("skinMatch") }
+                try requireExactKeys(speechPatch, speechKeys)
                 try requireExactKeys(
                     try object(speechPatch, "box"),
                     ["x", "y", "width", "height"]
@@ -1363,6 +1367,11 @@ struct OpenClamAvatarPackageStore: Sendable {
                     offsets,
                     Set(OpenClamAvatarViseme.allCases.map(\.rawValue))
                 )
+                if speechPatch["skinMatch"] != nil {
+                    try validateStrictMouthSkinMatchShape(
+                        try object(speechPatch, "skinMatch")
+                    )
+                }
             }
         }
     }
@@ -1419,7 +1428,7 @@ struct OpenClamAvatarPackageStore: Sendable {
             }
             try validateExpression(expression)
             if let speechPatch = manifest.speechPatch {
-                try validateSpeechPatch(speechPatch)
+                try validateSpeechPatch(speechPatch, sourceMedium: manifest.sourceMedium)
             }
         } else if manifest.expression != nil || manifest.speechPatch != nil {
             throw OpenClamAvatarPackageError.privateMetadataNotAllowed
@@ -1641,8 +1650,55 @@ struct OpenClamAvatarPackageStore: Sendable {
         }
     }
 
+    private func validateStrictMouthSkinMatchShape(_ metadata: [String: Any]) throws {
+        try requireExactKeys(metadata, ["v", "space", "contours", "emotion_contours"])
+        guard let version = metadata["v"] as? NSNumber,
+              CFGetTypeID(version) != CFBooleanGetTypeID(),
+              version.doubleValue == 1,
+              metadata["space"] as? String == "canonical-pixels" else {
+            throw OpenClamAvatarPackageError.invalidRig
+        }
+        let keys = Set(OpenClamAvatarViseme.allCases.map(\.rawValue))
+        let contours = try object(metadata, "contours")
+        let emotions = try object(metadata, "emotion_contours")
+        try requireExactKeys(contours, keys)
+        try requireExactKeys(emotions, ["smile", "sorrow", "horror", "anger"])
+
+        func validateNumbers(_ rawPolygon: Any) throws {
+            guard let points = rawPolygon as? [[Any]],
+                  (8 ... 64).contains(points.count) else {
+                throw OpenClamAvatarPackageError.invalidRig
+            }
+            for point in points {
+                guard point.count == 2,
+                      point.allSatisfy({ raw in
+                          guard let value = raw as? NSNumber else { return false }
+                          return CFGetTypeID(value) != CFBooleanGetTypeID()
+                              && value.doubleValue.isFinite
+                      }) else {
+                    throw OpenClamAvatarPackageError.invalidRig
+                }
+            }
+        }
+        for rawPolygon in contours.values { try validateNumbers(rawPolygon) }
+        for (family, rawBank) in emotions {
+            guard let bank = rawBank as? [String: Any] else {
+                throw OpenClamAvatarPackageError.invalidManifest
+            }
+            try requireExactKeys(bank, keys)
+            for rawStates in bank.values {
+                guard let states = rawStates as? [Any],
+                      states.count == (family == "smile" ? 5 : 4) else {
+                    throw OpenClamAvatarPackageError.invalidRig
+                }
+                for polygon in states { try validateNumbers(polygon) }
+            }
+        }
+    }
+
     private func validateSpeechPatch(
-        _ speechPatch: OpenClamAvatarSpeechPatchMetadata
+        _ speechPatch: OpenClamAvatarSpeechPatchMetadata,
+        sourceMedium: OpenClamAvatarSourceMedium?
     ) throws {
         let box = speechPatch.box
         guard [box.x, box.y, box.width, box.height].allSatisfy(\.isFinite),
@@ -1662,6 +1718,83 @@ struct OpenClamAvatarPackageStore: Sendable {
               }),
               speechPatch.visemeXOffsets[OpenClamAvatarViseme.silence.rawValue] == 0 else {
             throw OpenClamAvatarPackageError.invalidRig
+        }
+        guard let metadata = speechPatch.skinMatch else { return }
+        guard sourceMedium == .rendered3D,
+              metadata.version == 1,
+              metadata.space == "canonical-pixels",
+              Set(metadata.contours.keys) == canonicalKeys,
+              Set(metadata.emotionContours.keys) == ["smile", "sorrow", "horror", "anger"] else {
+            throw OpenClamAvatarPackageError.invalidRig
+        }
+        // JSONSerialization expands some four-decimal JSON numbers into long
+        // NSNumber decimal representations. Count the bounded, typed payload's
+        // shortest round-trippable Doubles, not that Foundation-only inflation.
+        // Strict raw number/shape checks and the wire manifest cap still apply.
+        let encoded = try JSONEncoder().encode(metadata)
+        guard encoded.count <= OpenClamAvatarPackageContract.maximumMouthSkinMatchByteCount else {
+            throw OpenClamAvatarPackageError.invalidRig
+        }
+
+        func validPolygon(_ points: [[Double]], offset: Double) -> Bool {
+            guard (8 ... 64).contains(points.count),
+                  abs(offset) <= 0.35 * box.width + 1e-6,
+                  points.allSatisfy({ point in
+                      point.count == 2
+                          && point.allSatisfy({ $0.isFinite && (0 ... 1_024).contains($0) })
+                          && (box.x - 0.15 * box.width ... box.x + 1.15 * box.width)
+                              .contains(point[0] + offset)
+                          && (box.y - 0.15 * box.height ... box.y + 1.15 * box.height)
+                              .contains(point[1])
+                  }),
+                  Set(points).count == points.count else { return false }
+            var winding = 0
+            var area = 0.0
+            for index in points.indices {
+                let a = points[index]
+                let b = points[(index + 1) % points.count]
+                let c = points[(index + 2) % points.count]
+                let cross = (b[0] - a[0]) * (c[1] - b[1])
+                    - (b[1] - a[1]) * (c[0] - b[0])
+                if abs(cross) > 1e-6 {
+                    let direction = cross > 0 ? 1 : -1
+                    if winding != 0 && direction != winding { return false }
+                    winding = direction
+                }
+                area += a[0] * b[1] - b[0] * a[1]
+            }
+            guard winding != 0 && abs(area) >= 4 else { return false }
+            // Equal adjacent turns can still describe a self-crossing star.
+            // All points of a measured convex hull must lie inside each edge.
+            for index in points.indices {
+                let a = points[index]
+                let b = points[(index + 1) % points.count]
+                for point in points {
+                    let cross = (b[0] - a[0]) * (point[1] - a[1])
+                        - (b[1] - a[1]) * (point[0] - a[0])
+                    if Double(winding) * cross < -1e-6 { return false }
+                }
+            }
+            return true
+        }
+        for name in canonicalKeys {
+            guard let points = metadata.contours[name],
+                  let offset = speechPatch.visemeXOffsets[name],
+                  validPolygon(points, offset: offset) else {
+                throw OpenClamAvatarPackageError.invalidRig
+            }
+        }
+        for (family, bank) in metadata.emotionContours {
+            guard Set(bank.keys) == canonicalKeys else {
+                throw OpenClamAvatarPackageError.invalidRig
+            }
+            for (name, states) in bank {
+                guard states.count == (family == "smile" ? 5 : 4),
+                      let offset = speechPatch.visemeXOffsets[name],
+                      states.allSatisfy({ validPolygon($0, offset: offset) }) else {
+                    throw OpenClamAvatarPackageError.invalidRig
+                }
+            }
         }
     }
 

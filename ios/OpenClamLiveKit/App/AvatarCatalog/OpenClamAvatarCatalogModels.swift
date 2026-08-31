@@ -186,9 +186,38 @@ struct OpenClamAvatarRect: Codable, Equatable, Hashable, Sendable {
 struct OpenClamAvatarSpeechPatchMetadata: Codable, Equatable, Sendable {
     let box: OpenClamAvatarRect
     let visemeXOffsets: [String: Double]
+    let skinMatch: OpenClamAvatarMouthSkinMatchMetadata?
+
+    init(
+        box: OpenClamAvatarRect,
+        visemeXOffsets: [String: Double],
+        skinMatch: OpenClamAvatarMouthSkinMatchMetadata? = nil
+    ) {
+        self.box = box
+        self.visemeXOffsets = visemeXOffsets
+        self.skinMatch = skinMatch
+    }
 
     func xOffset(for viseme: OpenClamAvatarViseme) -> Double {
         visemeXOffsets[viseme.rawValue] ?? 0
+    }
+}
+
+/// Optional, validated soft-3D lip contours. Points are canonical 1024-square
+/// pixels BEFORE the selected viseme's x registration; apply that offset once.
+/// The renderer protects these authored lips/teeth while matching donor skin.
+/// Absence preserves the legacy package's bounded colour-matching fallback.
+struct OpenClamAvatarMouthSkinMatchMetadata: Codable, Equatable, Hashable, Sendable {
+    let version: Int
+    let space: String
+    let contours: [String: [[Double]]]
+    let emotionContours: [String: [String: [[[Double]]]]]
+
+    enum CodingKeys: String, CodingKey {
+        case version = "v"
+        case space
+        case contours
+        case emotionContours = "emotion_contours"
     }
 }
 

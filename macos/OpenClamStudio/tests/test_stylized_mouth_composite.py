@@ -18,6 +18,25 @@ def _mouth_landmarks(center=(64.0, 72.0), radii=(16.0, 5.0)):
 
 
 class StylizedMouthCompositeTests(unittest.TestCase):
+    def test_authored_rest_corner_margin_is_fully_owned_not_crossfaded(self):
+        canonical = np.full((128, 128, 3), (84, 148, 214), np.uint8)
+        donor = canonical.copy()
+        # The human mesh is curved although this artwork's closed mouth is a
+        # straight line. Its high outer corners lie just beyond the lip hull.
+        cv2.line(canonical, (49, 69), (79, 69), (8, 8, 8), 1)
+        cv2.ellipse(donor, (64, 73), (8, 3), 0, 0, 360, (12, 12, 12), -1)
+        landmarks = _mouth_landmarks()
+        alpha = compose._stylized_mouth_alpha(
+            canonical.shape, landmarks, landmarks,
+            np.eye(2, 3, dtype=np.float32))
+        self.assertTrue(np.all(alpha[69, 49:80] == 1.0))
+        rendered = (canonical * (1.0 - alpha[..., None])
+                    + donor * alpha[..., None]).astype(np.uint8)
+        np.testing.assert_array_equal(rendered[69, 49:80], donor[69, 49:80])
+        self.assertEqual(0.0, float(alpha[40, 64]))
+        self.assertEqual(0.0, float(alpha[104, 64]))
+        self.assertTrue(np.any((alpha > 0.0) & (alpha < 1.0)))
+
     def test_transfer_is_lip_only_and_harmonizes_provider_skin(self):
         canonical = np.full((128, 128, 3), (84, 148, 214), np.uint8)
         donor = np.full((128, 128, 3), (124, 105, 164), np.uint8)
