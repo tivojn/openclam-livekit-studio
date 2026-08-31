@@ -1,4 +1,4 @@
-# OpenClam 1.0.15 / Avatar Store 1.0.6
+# OpenClam 1.0.15 / Avatar Store 1.0.7
 
 ## Avatar corrections
 
@@ -7,6 +7,8 @@
 - Rigid iris translation preserves pupil shape instead of deforming it with
   the surrounding eye. Photo, drawn cartoon, soft 3D, and button-eye 3D artwork
   retain their own masks, texture handling, and blink ownership.
+- Soft 3D blink ownership preserves canonical fringe and cheek markings outside
+  the eye instead of replacing them with the closing-eyelid plate.
 - Mouth-skin ownership, jaw-band removal, and registered head/body composition
   address rectangular mouth patches and doubled jaw/neck outlines without
   regenerating approved faces.
@@ -28,7 +30,7 @@
 
 ## Store publication
 
-Store 1.0.6 updates Ara, Luffy · 2D, and Luffy · 3D; adds Sarah and Celine;
+Store 1.0.7 updates Ara, Luffy · 2D, and Luffy · 3D; adds Sarah and Celine;
 and retains the existing Captain Ayer and Cleo entries. The five new packages
 include full-expression iPhone assets and Walk, Edge Idle, and Moves, plus
 separate full Mac authoring backups. The legacy `ios-light` profile name remains
@@ -42,6 +44,11 @@ disabling dynamic head tilt. New builds still pass the ordinary upright gate.
 Catalog and release URLs are immutable, with exact lengths and SHA-256 hashes.
 Client endpoint enablement follows public download verification; previous
 Store tags and packages remain available for rollback.
+
+The 1.0.6 source tag was an unpublished release candidate. Final visual checks
+caught Luffy · 3D blink ownership affecting his fringe and cheek scar; no 1.0.6
+release assets were published or enabled in the iOS client. The corrected
+candidate uses a new 1.0.7 tag rather than changing the existing source tag.
 
 ## Verification scope
 

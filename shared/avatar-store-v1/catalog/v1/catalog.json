@@ -32,7 +32,7 @@
         "height": 1024,
         "mime": "image/png",
         "sha256": "d7e7ca507994e8fc50221f5331afdfc91621a0f0e62fb6d90c9158703a1708c8",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.6/shared/avatar-store-v1/catalog/v1/ara-thumbnail.png",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/ara-thumbnail.png",
         "width": 1024
       },
       "variants": {
@@ -41,14 +41,14 @@
           "format": "openclam-avatar",
           "profile": "ios-light",
           "sha256": "a2f926c7eea15e193f4a2e6160858ab3ce06119a7c9de52742095929b21a12a6",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/ara-ios-light.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/ara-ios-light.avtr"
         },
         "macos-full": {
           "bytes": 373188649,
           "format": "openclam-avatar",
           "profile": "macos-full",
           "sha256": "b52af8e0bdfc9831d19512a9bf2efeec59ae6a5442feec89ec2a923a8ced7721",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/ara-macos-full.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/ara-macos-full.avtr"
         }
       },
       "version": 3
@@ -85,7 +85,7 @@
         "height": 1024,
         "mime": "image/png",
         "sha256": "921b7bbe683d52cb5fec03f7b66fe4a6e87cd34ab002c1e73f17747a9ec0c5a6",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.6/shared/avatar-store-v1/catalog/v1/luffy-2d-thumbnail.png",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/luffy-2d-thumbnail.png",
         "width": 1024
       },
       "variants": {
@@ -94,14 +94,14 @@
           "format": "openclam-avatar",
           "profile": "ios-light",
           "sha256": "171846c6b5764d71aa040cdaa0a3116f0e9437ef90b390c56da4622692a464c2",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/luffy-2d-ios-light.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/luffy-2d-ios-light.avtr"
         },
         "macos-full": {
           "bytes": 480830939,
           "format": "openclam-avatar",
           "profile": "macos-full",
           "sha256": "ff2c60371c1da70b4a75b3f6bcb1869e8f1b7c0ac68c948d83a134bcff829fdd",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/luffy-2d-macos-full.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/luffy-2d-macos-full.avtr"
         }
       },
       "version": 2
@@ -115,26 +115,26 @@
         "height": 1024,
         "mime": "image/png",
         "sha256": "26c291079aaae5939620e64aa06bd656fb98441d2e0758c51d64f934ebd757a8",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.6/shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/luffy-3d-thumbnail.png",
         "width": 1024
       },
       "variants": {
         "ios-light": {
-          "bytes": 32819584,
+          "bytes": 32799637,
           "format": "openclam-avatar",
           "profile": "ios-light",
-          "sha256": "74eac25e9e5e71acd30aefa32d6a9d732ffe07e6fe4b7dcb4618ad1a07282ff0",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/luffy-3d-ios-light.avtr"
+          "sha256": "43f172fe9c7d8136a1e4ff55d3bbfca77099cd4eb43a370a5ae02b607cb091e7",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/luffy-3d-ios-light.avtr"
         },
         "macos-full": {
           "bytes": 763131718,
           "format": "openclam-avatar",
           "profile": "macos-full",
           "sha256": "6ac378e24d7e0015995ab6842ca9d76823267eb393b032c2589d784189ab79f1",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/luffy-3d-macos-full.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/luffy-3d-macos-full.avtr"
         }
       },
-      "version": 4
+      "version": 5
     },
     {
       "author": "OpenClam",
@@ -145,7 +145,7 @@
         "height": 1024,
         "mime": "image/png",
         "sha256": "7eebbc725df05c915fade861a730addc36abd1401d91e75dc3971619b3834d9a",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.6/shared/avatar-store-v1/catalog/v1/sarah-thumbnail.png",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/sarah-thumbnail.png",
         "width": 1024
       },
       "variants": {
@@ -154,14 +154,14 @@
           "format": "openclam-avatar",
           "profile": "ios-light",
           "sha256": "9819627c40d348a990b24ff92f72bc5f570bdfd3eeff1a0d6714cbe832d19148",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/sarah-ios-light.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/sarah-ios-light.avtr"
         },
         "macos-full": {
           "bytes": 431339375,
           "format": "openclam-avatar",
           "profile": "macos-full",
           "sha256": "8f892dbd91e93fe6366d9cda4f1e923cd02b765422f7a26883acf5d49f88b234",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/sarah-macos-full.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/sarah-macos-full.avtr"
         }
       },
       "version": 1
@@ -175,7 +175,7 @@
         "height": 1024,
         "mime": "image/png",
         "sha256": "f623954687561020eed5da8eedf8644b465c3a90ba5d2fb2d6194ce288d54f46",
-        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.6/shared/avatar-store-v1/catalog/v1/celine-thumbnail.png",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/celine-thumbnail.png",
         "width": 1024
       },
       "variants": {
@@ -184,14 +184,14 @@
           "format": "openclam-avatar",
           "profile": "ios-light",
           "sha256": "f1545843422dcb74dce131c20c47accac7f95be1c89a4aacb0659a0fbd8a8fa2",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/celine-ios-light.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/celine-ios-light.avtr"
         },
         "macos-full": {
           "bytes": 296738478,
           "format": "openclam-avatar",
           "profile": "macos-full",
           "sha256": "7225054a025ddba634b3b3363c16d7f5d16f3a4d19d20adfd3860e744e130793",
-          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.6/celine-macos-full.avtr"
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/celine-macos-full.avtr"
         }
       },
       "version": 1

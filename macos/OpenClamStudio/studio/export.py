@@ -710,6 +710,70 @@ def _harmonic_stylized_skin(target, mask):
     return result
 
 
+def _soft3d_static_blink_art(neutral_patch, sclera_core):
+    """Protect canonical hair/markings, not the open eye's own ink.
+
+    The oversized soft-3D eye lane borrows the wide lash search used for
+    illustrations. That search is useful for finding the complete closed lid,
+    but it cannot also decide which *canonical* pixels the blink owns: a bang
+    or cheek scar in that band is not an eyelash. Classify full connected art
+    before restricting it to a publication mask. Hair enters from the crop
+    boundary; separate markings do not touch the actual open-eye rim. The
+    interior outline, pupil, and lashes connected to that rim remain dynamic.
+
+    This helper is deliberately not used for photographs, illustrations, or
+    the existing compact/glasses lane. Uncertain ownership fails closed
+    instead of preserving a pupil as if it were hair.
+    """
+    if (not isinstance(neutral_patch, np.ndarray)
+            or neutral_patch.ndim != 3 or neutral_patch.shape[2] != 3
+            or not isinstance(sclera_core, np.ndarray)
+            or sclera_core.shape != neutral_patch.shape[:2]
+            or not np.any(sclera_core)):
+        return None
+    gray = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2GRAY)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (gray < 100).astype(np.uint8))
+    core = sclera_core > 0
+    rim = cv2.dilate(
+        core.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))) > 0
+    border_labels = np.unique(np.concatenate((
+        labels[0], labels[-1], labels[:, 0], labels[:, -1])))
+    protected = np.zeros(core.shape, np.uint8)
+    for index in range(1, count):
+        if int(stats[index, cv2.CC_STAT_AREA]) < 3:
+            continue
+        component = labels == index
+        touches_border = bool(index in border_labels)
+        if not touches_border and np.any(component & rim):
+            continue
+        # Do not turn a pupil/lash connected to an ambiguous dark crop edge
+        # into permanent static art. A fringe may graze the convex sclera
+        # hull, but may never consume a meaningful part of the opening.
+        if np.count_nonzero(component & core) > max(
+                8, int(np.count_nonzero(core) * 0.035)):
+            return None
+        seed = component.astype(np.uint8) * 255
+        contours, _ = cv2.findContours(
+            seed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Preserve glossy highlights enclosed by the same hair silhouette,
+        # not only its darkest interior pixels.
+        cv2.drawContours(protected, contours, -1, 255, cv2.FILLED)
+    protected = cv2.dilate(
+        protected,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    # Antialiasing belongs to that exact authored art, but a dilation may not
+    # protect neighboring white eye pixels and leave an inset open-eye rim.
+    hsv = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2HSV)
+    open_white = (hsv[:, :, 1] < 85) & (hsv[:, :, 2] > 135) & core
+    protected[open_white] = 0
+    if np.count_nonzero((protected > 0) & core) > max(
+            16, int(np.count_nonzero(core) * 0.065)):
+        return None
+    return protected
+
+
 def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                                      source_medium, log=print):
     """Publish a seam-gated closed-eye plate for a reviewed cartoon.
@@ -1016,6 +1080,14 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
             log(f"  stylized blink source rejected: {side} canonical sclera was lost")
             return None
         sclera_core_fill = eye_fill.copy()
+        soft3d_static_art = None
+        if (not compact_eyes and str(source_medium).strip().lower()
+                in {"3d render", "3d-render", "soft-3d"}):
+            soft3d_static_art = _soft3d_static_blink_art(
+                neutral_patch, sclera_core_fill)
+            if soft3d_static_art is None:
+                log(f"  stylized blink source rejected: {side} static art ownership is ambiguous")
+                return None
         # Remove the complete thick illustrated outline, then protect every
         # unrelated canonical dark stroke outside a tighter sclera guard.  The
         # broader fill/feather no longer leaves a pale oval of the old eye, but
@@ -1164,6 +1236,13 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                 cleaned = corrected_source
                 provider_eye = True
 
+        if soft3d_static_art is not None:
+            # Neither the generous lash search nor provider-delta expansion
+            # may erase the canonical bang, brow, or scar. Remove ownership
+            # before skin reconstruction as well as before final feathering.
+            eye_fill[soft3d_static_art > 0] = 0
+            eye_mask = eye_fill > 0
+
         if cleaned is None:
             if compact_eyes:
                 # A natural 3-D lid needs its authored lighting gradient.
@@ -1270,6 +1349,8 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                 cleaned.astype(np.float32) * colour_weight
                 + neutral_patch.astype(np.float32) * (1.0 - colour_weight),
                 0, 255).astype(np.uint8)
+        if soft3d_static_art is not None:
+            cleaned[soft3d_static_art > 0] = neutral_patch[soft3d_static_art > 0]
         patch = cleaned
 
         # Publish alpha from the exact full sclera rather than the earlier
@@ -1281,6 +1362,10 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
         # outside the guarded sclera.  Otherwise the open oval remains faintly
         # visible through two successive partial-alpha blends.
         semantic_alpha[eye_fill > 0] = 255
+        if soft3d_static_art is not None:
+            # Gaussian feather may cross the protected silhouette; it must
+            # not re-acquire those pixels after the hard mask released them.
+            semantic_alpha[soft3d_static_art > 0] = 0
 
         # The plate is byte-identical to the canonical neutral throughout its
         # feather. Provider pixels reach only the semantic sclera interior;
