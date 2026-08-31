@@ -63,6 +63,11 @@ assert.equal(clampPetZoom(9, roamRange), 3);
 assert.equal(clampPetZoom(0.1, roamRange), 0.5);
 assert.equal(clampPetZoom('nope', roamRange), 1);
 assert.equal(clampPetZoom(1.33, { min: 0.25, max: 4 }), 1.33);
+for (const zoom of [.0001,.08,4,16,64,256]) assert.equal(clampPetZoom(zoom, {}), zoom);
+for (const bad of [NaN,Infinity,0,-1,Number.MAX_VALUE,Number.MIN_VALUE]) {
+  assert.equal(clampPetZoom(bad, {}, 12), 12,
+    'invalid or unrepresentable zoom keeps the last applied value, not an unseen overshoot');
+}
 
 // The stuck-companion scenario: a 4x pinch left the window at 2240x3040 on a
 // 1512x944 work area, unreachable under the Dock. The fitted zoom must bring

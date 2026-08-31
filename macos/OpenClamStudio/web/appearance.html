@@ -45,7 +45,7 @@
     <header><h1>Character Appearance</h1><span class="hint">Live</span></header>
     <section class="control">
       <div class="label"><label for="size">Size<em>Standing character</em></label><output id="sizeValue">100%</output></div>
-      <input id="size" type="range" min="25" max="400" step="1" value="100" aria-label="Character size">
+      <input id="size" type="range" min="25" max="400" step="any" value="100" aria-label="Character size">
     </section>
     <section class="control">
       <div class="label"><label for="opacity">Opacity</label><output id="opacityValue">50%</output></div>
@@ -70,7 +70,7 @@
     };
     const controls=[
       {input:document.getElementById('size'),out:document.getElementById('sizeValue'),
-        read:pet=>percent(pet.zoom,1),send:value=>api?.setSize(value/100)},
+        scalable:true,read:pet=>percent(pet.zoom,1),send:value=>api?.setSize(value/100)},
       {input:document.getElementById('opacity'),out:document.getElementById('opacityValue'),
         read:pet=>Math.max(0,Math.min(1,Number(pet.opacity)||0))*100,send:value=>api?.setOpacity(value/100)},
       {input:document.getElementById('motion'),out:document.getElementById('motionValue'),
@@ -88,10 +88,20 @@
       const min=Number(input.min),max=Number(input.max),value=Number(input.value);
       input.style.setProperty('--fill',`${(value-min)/(max-min)*100}%`);
     };
-    const show=control=>{control.out.value=`${control.input.value}%`;paint(control.input);};
+    const show=control=>{control.out.value=`${Number(Number(control.input.value).toFixed(2))}%`;paint(control.input);};
+    function sizeRange(control,value){
+      if(!control.scalable||!Number.isFinite(value)||value<=0)return;
+      // This is the slider's current editing window, never a size limit.
+      // A pinch beyond it adopts its exact size, and a drag to either edge
+      // opens more range for the next drag without moving an active thumb.
+      control.input.min=String(Math.min(25,value/2)||Number.MIN_VALUE);
+      control.input.max=String(Math.max(400,Number.isFinite(value*2)?value*2:value));
+    }
     function adopt(control,value){
       const input=control.input;
-      const next=String(Math.round(Math.max(Number(input.min),Math.min(Number(input.max),value))));
+      if(!engaged(input))sizeRange(control,value);
+      const next=String(control.scalable?value:
+        Math.round(Math.max(Number(input.min),Math.min(Number(input.max),value))));
       if(!engaged(input)&&input.value!==next)input.value=next;
       show(control);
     }
@@ -114,7 +124,10 @@
         cancelAnimationFrame(frames.get(input)||0);
         frames.set(input,requestAnimationFrame(()=>control.send(Number(input.value))));
       });
-      input.addEventListener('change',()=>{editedAt=performance.now();control.send(Number(input.value));});
+      input.addEventListener('change',()=>{
+        editedAt=performance.now();const value=Number(input.value);control.send(value);
+        sizeRange(control,value);show(control);
+      });
     }
     addEventListener('pointerup',()=>{holding=null;});
     addEventListener('pointercancel',()=>{holding=null;});

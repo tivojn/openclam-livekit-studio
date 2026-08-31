@@ -1,12 +1,19 @@
 'use strict';
 
-function clampPetZoom(zoom, range) {
+function clampPetZoom(zoom, range, fallback = 1) {
   const value = Number(zoom);
-  const safe = Number.isFinite(value) && value > 0 ? value : 1;
+  const previous = Number(fallback);
+  // Arithmetic representability only, not a user-facing size limit: leave
+  // room for pixel coordinates/percentages before a value reaches Infinity
+  // or underflows to zero. Reject it without accumulating hidden overshoot.
+  const usable = number => Number.isFinite(number) && number > 0
+    && Number.isFinite(number * Number.MAX_SAFE_INTEGER)
+    && number / Number.MAX_SAFE_INTEGER > 0;
+  const safe = usable(value) ? value : usable(previous) ? previous : 1;
   const minimum = Number(range && range.min);
   const maximum = Number(range && range.max);
-  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return safe;
-  return Math.max(minimum, Math.min(maximum, safe));
+  const lower = Number.isFinite(minimum) && minimum > 0 ? minimum : 0;
+  return Math.max(lower, Number.isFinite(maximum) && maximum > 0 ? Math.min(maximum, safe) : safe);
 }
 
 function petZoomSize(baseSize, minimumSize, zoom) {
@@ -82,7 +89,7 @@ function dockedPetBounds(size, area, margin = 0, side = 'right') {
 
 // Keep the native transparent canvas GPU/screen sized. The renderer retains
 // the requested zoom and applies any excess inside this bounded canvas, with
-// its anatomical crown/chin guard. This does not overwrite a saved zoom.
+// its anatomical crown guard. This does not overwrite a saved zoom.
 function fitPetWindowToArea(bounds, area) {
   const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   const left = finite(area && area.x, 0), top = finite(area && area.y, 0);

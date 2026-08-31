@@ -17,7 +17,7 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
         cls.source = (ROOT / "web" / "index.html").read_text()
         names = (
             "chatWorkspaceViewport", "chatAvatarSafeViewport",
-            "boundedChatAvatarOffset", "viewCrop", "chatCloseUpGeometry",
+            "boundedChatAvatarOffset", "viewCrop", "numericAvatarZoom", "chatCloseUpGeometry", "closeUpZoomOutGeometry",
             "chatCameraAlphaBounds", "chatCameraHeadSpan", "clampChatCameraFit", "cameraFor",
             "pinchZoomValue", "holdAvatarZoom",
         )
@@ -97,18 +97,29 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
               assert.ok(fit.scale > 0, 'positive rendered scale');
               assert.ok(fit.y + span.top * fit.scale >= viewport.y - 1e-7,
                 `crown above chat top: ${JSON.stringify({fit, viewport, span})}`);
-              assert.ok(fit.y + span.bottom * fit.scale <= viewport.bottom + 1e-7,
-                `chin below chat bottom: ${JSON.stringify({fit, viewport, span})}`);
+              const tolerance = Math.max(1e-7, Math.abs(span.top * fit.scale) * Number.EPSILON * 4);
+              // The user's invariant is crown visibility, not a head-size
+              // ceiling. An intentional huge close-up may clip the chin.
+              if ((span.bottom - span.top) * fit.scale <= viewport.bottom - viewport.y)
+                assert.ok(fit.y + span.bottom * fit.scale <= viewport.bottom + tolerance,
+                  `fitting chin below canvas: ${JSON.stringify({fit, viewport, span})}`);
+              else assert.ok(Math.abs(fit.y + span.top * fit.scale - viewport.y) <= tolerance,
+                'oversized head pins its crown without shrinking the requested scale');
               if (Number.isFinite(span.left) && Number.isFinite(span.right)) {
                 const mirror = avatarMirrored ? 2 * (workspaceRect.left + workspaceRect.width * .5) : null;
                 const displayLeft = mirror === null ? fit.x + span.left * fit.scale
                   : mirror - (fit.x + span.right * fit.scale);
                 const displayRight = mirror === null ? fit.x + span.right * fit.scale
                   : mirror - (fit.x + span.left * fit.scale);
-                assert.ok(displayLeft >= viewport.x - 1e-7,
-                  `head beyond chat left: ${JSON.stringify({fit, viewport, span})}`);
-                assert.ok(displayRight <= viewport.right + 1e-7,
-                  `head beyond chat right: ${JSON.stringify({fit, viewport, span})}`);
+                if ((span.right - span.left) * fit.scale <= viewport.right - viewport.x) {
+                  assert.ok(displayLeft >= viewport.x - tolerance,
+                    `fitting head beyond left: ${JSON.stringify({fit, viewport, span})}`);
+                  assert.ok(displayRight <= viewport.right + tolerance,
+                    `fitting head beyond right: ${JSON.stringify({fit, viewport, span})}`);
+                } else {
+                  assert.ok(displayLeft <= viewport.x + tolerance && displayRight >= viewport.right - tolerance,
+                    'oversized head remains across the canvas without a hidden horizontal zoom ceiling');
+                }
               }
             };
         """
@@ -140,7 +151,7 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             shellState.pet.zoom = 1.2;
             const larger = cameraFor(metadata,1086,1448);
             assert.ok(larger.scale > small.scale);
-            for (const zoom of [.25,.6,1.2,4]) for (const delta of [-1e6,0,1e6]) {
+            for (const zoom of [.08,.25,.6,1.2,4,12,64]) for (const delta of [-1e6,0,1e6]) {
               shellState.pet.zoom = zoom;
               desktopCloseUpOffset = {x:delta,y:delta};
               visible(cameraFor(metadata,1086,1448),viewport);
@@ -156,13 +167,78 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             innerWidth = 626; innerHeight = 850;
             shellState.pet.zoom = 1.12;
             const small = cameraFor(metadata,1086,1448);
-            shellState.pet.zoom = 4;
-            const large = cameraFor(metadata,1086,1448);
-            assert.ok(large.scale > small.scale,'native canvas bound must not swallow user zoom');
-            visible(large,{x:0,y:0,right:innerWidth,bottom:innerHeight});
-            assert.equal(shellState.pet.zoom,4);
-            assert.ok((metadata.bounds[1]+metadata.bounds[3])*large.scale+large.y > innerHeight,
-              'zoomed full body remains available below canvas, not converted to a bust asset');
+            let previous = small;
+            for (const zoom of [4,8,16,64,256]) {
+              shellState.pet.zoom = zoom;
+              const large = cameraFor(metadata,1086,1448);
+              assert.ok(large.scale > previous.scale,'native canvas bound must not swallow user zoom');
+              assert.ok(Math.abs(large.scale / small.scale - zoom / 1.12) < 1e-10,
+                'rendered zoom continues linearly beyond the former4x cap');
+              visible(large,{x:0,y:0,right:innerWidth,bottom:innerHeight});
+              assert.equal(shellState.pet.zoom,zoom);
+              assert.ok((metadata.bounds[1]+metadata.bounds[3])*large.scale+large.y > innerHeight,
+                'zoomed lower body remains drawable beyond canvas');
+              previous = large;
+            }
+        """)
+
+    def test_shrinking_closeup_reveals_real_fullbody_without_switching_to_standby(self):
+        self.run_js(r"""
+            for (const chat of [false,true]) {
+              inChat=chat; shellState.chatCloseUp=chat; shellState.desktopCloseUp=!chat;
+              chatAvatarOffset={x:0,y:0}; desktopCloseUpOffset={x:0,y:0};
+              shellState.pet.view='full';
+              for (const [width,height] of [[380,680],[700,820],[1440,900]]) {
+                innerWidth=chat?width+240:width; innerHeight=height;
+                workspaceRect=rect(240,0,width,height);
+                headerRect=rect(240,0,width,54);
+                railRect=rect(240+width-54,66,40,420);
+                composerRect=rect(260,height-120,width-40,100);
+                shellState.pet.zoom=.6;
+                const close=cameraFor(metadata,1086,1448);
+                const feet=metadata.bounds[1]+metadata.bounds[3];
+                assert.ok(close.y+feet*close.scale>height,
+                  'normal preset remains the approved close-up, not an accidental whole-body default');
+                let previous=close;
+                for (const zoom of [.59,.5,.4,.3,.250001,.25,.249999,.2,.1,.025]) {
+                  shellState.pet.zoom=zoom;
+                  const fit=cameraFor(metadata,1086,1448);
+                  assert.ok(fit.scale<previous.scale,'every zoom-out changes rendered size continuously');
+                  const viewport=chat?chatAvatarSafeViewport({reserveComposer:false,reserveRail:true})
+                    :{x:0,y:0,right:width,bottom:height};
+                  visible(fit,viewport);
+                  if(zoom<=.25) {
+                    const bodyViewport=chat?chatAvatarSafeViewport({reserveComposer:true,reserveRail:true}):viewport;
+                    assert.ok(fit.y+metadata.bounds[1]*fit.scale>=bodyViewport.y-1e-7);
+                    assert.ok(fit.y+feet*fit.scale<=bodyViewport.bottom+1e-7,
+                      'actual feet pixels must enter canvas, above composer in chat, while still Close-up');
+                    assert.ok(fit.x+metadata.bounds[0]*fit.scale>=bodyViewport.x-1e-7);
+                    assert.ok(fit.x+(metadata.bounds[0]+metadata.bounds[2])*fit.scale<=bodyViewport.right+1e-7);
+                  }
+                  assert.equal(shellState.chatCloseUp,chat);
+                  assert.equal(shellState.desktopCloseUp,!chat);
+                  assert.equal(shellState.pet.view,'full');
+                  previous=fit;
+                }
+                shellState.pet.zoom=.6;
+                assert.deepEqual(cameraFor(metadata,1086,1448),close,
+                  'zooming back restores the same approved close-up framing');
+              }
+            }
+        """)
+
+    def test_closeup_frame_transition_is_continuous_at_both_transition_sizes(self):
+        self.run_js(r"""
+            for(const chat of [false,true]) {
+              inChat=chat; shellState.chatCloseUp=chat; shellState.desktopCloseUp=!chat;
+              for(const boundary of [.25,.6]) {
+                shellState.pet.zoom=boundary-1e-8;const before=cameraFor(metadata,1086,1448);
+                shellState.pet.zoom=boundary+1e-8;const after=cameraFor(metadata,1086,1448);
+                assert.ok(after.scale>before.scale);
+                for(const key of ['x','y','scale']) assert.ok(Math.abs(after[key]-before[key])<1e-3,
+                  `camera jump at${boundary}: ${key}`);
+              }
+            }
         """)
 
     def test_desktop_companion_and_motion_keep_their_existing_native_fit(self):
@@ -201,7 +277,7 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             assert.deepEqual(clampChatCameraFit(fit, viewport, {vertical: false}), fit);
         """)
 
-    def test_head_only_scale_cap_preserves_zoom_intent_and_allows_large_body(self):
+    def test_oversized_head_translates_crown_without_a_hidden_rendered_scale_cap(self):
         self.run_js(r"""
             const viewport = {x: 20, y: 70, right: 900, bottom: 670};
             const fit = {x: -1e6, y: -1e6, scale: 80,
@@ -209,7 +285,10 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             const saved = structuredClone(fit);
             const actual = clampChatCameraFit(fit, viewport);
             visible(actual, viewport);
-            assert.equal(actual.scale, 600 / 160);
+            assert.equal(actual.scale, 80);
+            assert.equal(actual.y + 20 * actual.scale, viewport.y);
+            assert.ok(actual.y + 180 * actual.scale > viewport.bottom,
+              'chin may leave the lower edge when user deliberately enlarges it');
             assert.ok(actual.crop.h * actual.scale > 600 * 6);
             assert.deepEqual(fit, saved, 'never overwrite the saved zoom/drag');
         """)
@@ -296,9 +375,9 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
 
     def test_slider_and_live_pinch_share_the_same_head_clamped_camera(self):
         self.run_js(r"""
-            const range = {min: .25, max: 4};
+            const range = {};
             shellState.chatCloseUp = true;
-            for (const value of [.25, 1, 4]) {
+            for (const value of [.08,.25,1,4,12,64]) {
               shellState.pet.zoom = value; // persisted native slider update
               visible(cameraFor(metadata, 1086, 1448),
                 chatAvatarSafeViewport({reserveComposer: false, reserveRail: true}));
@@ -317,9 +396,44 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
             assert.equal(pinchZoomValue(1, {ctrlKey: false, deltaY: -30}, range, 800), 1);
             assert.ok(Number.isFinite(pinchZoomValue(1,
               {ctrlKey: true, deltaY: -30, deltaMode: 2}, range, Infinity)));
+            for (const current of [.08,.25,4,12,64]) {
+              shellState.pet.zoom = current;
+              const before = cameraFor(metadata,1086,1448);
+              const enlarged = pinchZoomValue(current,{ctrlKey:true,deltaY:-20},range,innerHeight);
+              holdAvatarZoom(enlarged);
+              const after = cameraFor(metadata,1086,1448);
+              assert.ok(enlarged > current && after.scale > before.scale,
+                'accepted pinch must change actual rendered size, not only saved intent');
+              const shrunk = pinchZoomValue(enlarged,{ctrlKey:true,deltaY:20},range,innerHeight);
+              holdAvatarZoom(shrunk);
+              const reversed = cameraFor(metadata,1086,1448);
+              assert.ok(reversed.scale < after.scale,'reverse gesture has no overshoot dead zone');
+              assert.ok(Math.abs(reversed.scale-before.scale) < 1e-9);
+            }
         """)
 
-    def test_sarah_and_celine_both_sidebars_keep_face_hair_and_breath_inside(self):
+    def test_zoom_arithmetic_rejects_unrepresentable_values_without_hidden_overshoot(self):
+        self.run_js(r"""
+            const {clampPetZoom}=require('./electron/pet-window-bounds.cjs');
+            for(const value of [.0001,.08,4,16,256,1e7]) {
+              assert.equal(numericAvatarZoom(value),value);
+              assert.equal(clampPetZoom(value,{}),value);
+            }
+            for(const bad of [NaN,Infinity,-Infinity,0,-2,Number.MAX_VALUE,Number.MIN_VALUE]) {
+              assert.equal(numericAvatarZoom(bad,12),12);
+              assert.equal(clampPetZoom(bad,{},12),12);
+            }
+            const last=Number.MAX_VALUE/Number.MAX_SAFE_INTEGER*.9;
+            assert.equal(pinchZoomValue(last,{ctrlKey:true,deltaY:-90},{},850),last,
+              'unrepresentable forward pinch is rejected, not saved as an invisible excess');
+            const reversed=pinchZoomValue(last,{ctrlKey:true,deltaY:20},{},850);
+            assert.ok(reversed<last && Number.isFinite(reversed));
+            const small=Number.MIN_VALUE*Number.MAX_SAFE_INTEGER*.6;
+            assert.equal(pinchZoomValue(small,{ctrlKey:true,deltaY:90},{},850),small);
+            assert.ok(pinchZoomValue(small,{ctrlKey:true,deltaY:-20},{},850)>small);
+        """)
+
+    def test_narrow_sidebar_head_guard_never_reintroduces_a_zoom_ceiling(self):
         self.run_js(r"""
             // Exact r2 metadata plus measured native-alpha head bounds. The
             // actual 921px CSS layout leaves a 431px chat column; its safe
@@ -345,7 +459,6 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
               headReplacementActive = true;
               headReplacementCanvas = alphaImage(1024,1024,[fixture.head]);
               shellState.chatCloseUp = true;
-              shellState.pet.zoom = 4;
               const projectedHeadX = [fixture.bodyHead[0], fixture.bodyHead[2]];
               for (const x of [fixture.head[0],fixture.head[2]])
                 for (const y of [fixture.head[1],fixture.head[3]])
@@ -356,24 +469,29 @@ class ChatAvatarHeadVisibilityTests(unittest.TestCase):
                 workspaceRect = rect(224,0,windowWidth-224-266,900);
                 headerRect = rect(224,0,workspaceRect.width,54);
                 railRect = rect(workspaceRect.right-54,66,40,420);
-                for (const offset of [-1e6,0,1e6]) {
+                for (const zoom of [.6,4,12]) for (const offset of [-1e6,0,1e6]) {
+                  shellState.pet.zoom = zoom;
                   chatAvatarOffset = {x: offset,y: 0};
                   const fit = cameraFor(body,1086,1448);
                   const viewport = chatAvatarSafeViewport({reserveComposer: false,reserveRail: true});
                   visible(fit,viewport);
-                  for (const breathe of [.9975,1,1.0025])
-                    for (const sourceX of projectedHeadX) {
-                      const x = fit.x + (pivot + (sourceX-pivot)*breathe) * fit.scale;
-                      assert.ok(x >= viewport.x - 1e-7 && x <= viewport.right + 1e-7,
-                        `${fixture.name} actual head/hair clipped: ${JSON.stringify({x,viewport,fit})}`);
-                    }
-                  assert.equal(shellState.pet.zoom,4);
+                  const expected=chatCloseUpGeometry(viewCrop(body,1086,1448,'bust'),
+                    viewport.width,viewport.height,zoom/.6);
+                  assert.equal(fit.scale,expected.scale,'narrow canvas cannot swallow user zoom');
+                  if ((fit.headSpan.right-fit.headSpan.left)*fit.scale <= viewport.width)
+                    for (const breathe of [.9975,1,1.0025])
+                      for (const sourceX of projectedHeadX) {
+                        const x = fit.x + (pivot + (sourceX-pivot)*breathe) * fit.scale;
+                        assert.ok(x >= viewport.x - 1e-7 && x <= viewport.right + 1e-7,
+                          `${fixture.name} fitting head/hair clipped: ${JSON.stringify({x,viewport,fit})}`);
+                      }
+                  assert.equal(shellState.pet.zoom,zoom);
                   assert.deepEqual(chatAvatarOffset,{x: offset,y: 0});
                   if (windowWidth === 921) {
                     assert.equal(viewport.x,232);
                     assert.equal(viewport.right,585);
-                    assert.ok(fit.crop.w * fit.scale > viewport.width,
-                      'fit the head, not the whole broad bust crop');
+                    if (zoom >= 4) assert.ok((fit.headSpan.right-fit.headSpan.left)*fit.scale > viewport.width,
+                      'deliberate enlarged head may crop laterally, not be silently shrunk');
                   }
                 }
               }

@@ -1,5 +1,7 @@
 'use strict';
 
+const { clampPetZoom } = require('./pet-window-bounds.cjs');
+
 const DISPLAY_ZOOM_DEFAULT = 0.6;
 const DISPLAY_ZOOM_KEYS = Object.freeze([
   'desktopStandby', 'desktopCloseUp', 'chatStandby', 'chatCloseUp',
@@ -11,8 +13,7 @@ function displayZoomKey(chat, closeUp) {
 
 function normalizeDisplayZooms(saved, legacyZoom = DISPLAY_ZOOM_DEFAULT) {
   const bounded = (value, fallback) => {
-    const n = Number(value);
-    return Number.isFinite(n) && n > 0 ? Math.max(.25, Math.min(4, n)) : fallback;
+    return clampPetZoom(value, null, fallback);
   };
   const standby = bounded(legacyZoom, DISPLAY_ZOOM_DEFAULT);
   return Object.fromEntries(DISPLAY_ZOOM_KEYS.map(key => [key,

@@ -17,7 +17,7 @@ class MacDisplayControlsTests(unittest.TestCase):
         names = ["rememberCurrentDisplayZoom", "restoreDisplayZoom", "standbyCompanionMode",
                  "restoreCompanionHold", "deskCompanionMode", "applyPetZoom", "applyPetZoomLive",
                  "petBoundsForZoom", "startupPetBounds", "activeAvatarWindow", "requestAvatarMotion",
-                 "applyPetRoam", "stopPetRoamMotion"]
+                 "applyPetRoam", "stopPetRoamMotion", "dockBuddy"]
         cls.helpers = "\n".join(re.search(
             rf"function {name}\([^\n]*\) \{{[\s\S]*?\n\}}", cls.main)[0] for name in names)
 
@@ -30,7 +30,7 @@ class MacDisplayControlsTests(unittest.TestCase):
             boundsForPetZoom,boundsForPetZoomAtAnchor,petZoomAnchor}
             =require('./electron/pet-window-bounds.cjs');
           const PET_BASE_SIZE={width:560,height:760}, PET_NORMAL_MINIMUM={width:140,height:190};
-          const PET_ZOOM_RANGE={min:.25,max:4}, PET_ROAM_ZOOM_RANGE={min:.5,max:3}, PET_DOCK_MARGIN=28;
+          const PET_ZOOM_RANGE={}, PET_ROAM_ZOOM_RANGE={min:.5,max:3}, PET_DOCK_MARGIN=28;
           let state={petZoom:.6,petDisplayZooms:normalizeDisplayZooms(null),petRoam:false,
             petOpacity:1,bounds:{x:100,y:150,width:336,height:456}};
           let chatMode=false,chatCloseUp=false,desktopCloseUp=false,chatCloseUpBaseZoom=.6;
@@ -41,6 +41,9 @@ class MacDisplayControlsTests(unittest.TestCase):
             setBounds:b=>{windowBounds={...b};windowChanges++;},showInactive:()=>{},webContents:{id:1},
             setResizable:()=>{},setMinimumSize:()=>{}};
           const chatWindow={isDestroyed:()=>false,webContents:{id:2}};
+          let buddyRoam=false;let buddyBounds={...windowBounds};
+          const buddyWindow={isDestroyed:()=>false,getBounds:()=>({...buddyBounds}),
+            setBounds:b=>{buddyBounds={...b};}};
           let area={x:0,y:25,width:1440,height:850};
           const screen={getDisplayMatching:()=>({workArea:area}),
             getDisplayNearestPoint:()=>({workArea:area}),getCursorScreenPoint:()=>({x:500,y:300})};
@@ -58,18 +61,24 @@ class MacDisplayControlsTests(unittest.TestCase):
                                 text=True, capture_output=True, cwd=ROOT, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_saved_zooms_are_finite_bounded_independent_and_migrate_legacy(self):
+    def test_saved_zooms_are_finite_positive_independent_and_have_no_four_times_limit(self):
         self.run_js(r"""
           assert.deepEqual(normalizeDisplayZooms(null,1.3),{
             desktopStandby:1.3,desktopCloseUp:.6,chatStandby:1.3,chatCloseUp:.6});
           const raw={desktopStandby:Infinity,desktopCloseUp:-2,chatStandby:.1,chatCloseUp:9};
           assert.deepEqual(normalizeDisplayZooms(raw),{
-            desktopStandby:.6,desktopCloseUp:.6,chatStandby:.25,chatCloseUp:4});
+            desktopStandby:.6,desktopCloseUp:.6,chatStandby:.1,chatCloseUp:9});
           const saved=normalizeDisplayZooms({desktopStandby:.8,desktopCloseUp:1.7,chatStandby:1.1,chatCloseUp:2.2});
           assert.deepEqual(normalizeDisplayZooms(JSON.parse(JSON.stringify(saved))),saved);
           assert.equal(displayZoomKey(true,false),'chatStandby');
           assert.equal(displayZoomKey(false,true),'desktopCloseUp');
+          for(const zoom of [.0001,.08,4,16,256]) {
+            const values=Object.fromEntries(['desktopStandby','desktopCloseUp','chatStandby','chatCloseUp']
+              .map(key=>[key,zoom]));
+            assert.deepEqual(normalizeDisplayZooms(JSON.parse(JSON.stringify(values))),values);
+          }
         """)
+        self.assertIn("const PET_ZOOM_RANGE = Object.freeze({});", self.main)
 
     def test_chat_shortcuts_keep_separate_sizes_reanchor_nine_and_survive_serialization(self):
         self.run_js(r"""
@@ -123,19 +132,57 @@ class MacDisplayControlsTests(unittest.TestCase):
           assert.equal(JSON.stringify(state.petDisplayZooms),saved);
         """)
 
+    def test_zero_nine_sequence_remembers_sizes_beyond_both_old_limits_in_each_canvas(self):
+        self.run_js(r"""
+          for(const chat of [false,true]) {
+            chatMode=chat;chatCloseUp=false;desktopCloseUp=false;companionHold=null;
+            standbyCompanionMode();
+            applyPetZoomLive({value:12,phase:'start'});
+            applyPetZoomLive({value:16,phase:'end'});
+            assert.equal(state.petZoom,16);
+            const standing={...windowBounds};
+            assert.ok(standing.width<=area.width&&standing.height<=area.height,
+              'native window stays bounded independently of rendered zoom');
+            deskCompanionMode();applyPetZoom(.08);
+            assert.equal(state.petZoom,.08);
+            standbyCompanionMode();assert.equal(state.petZoom,16);
+            if(!chat)assert.deepEqual(windowBounds,standing);
+            deskCompanionMode();assert.equal(state.petZoom,.08);
+            const anchor=closeUpAnchorRevision;
+            deskCompanionMode();assert.equal(state.petZoom,.08);
+            assert.equal(closeUpAnchorRevision,anchor+1);
+            const sizes=normalizeDisplayZooms(JSON.parse(JSON.stringify(state.petDisplayZooms)));
+            assert.equal(sizes[displayZoomKey(chat,false)],16);
+            assert.equal(sizes[displayZoomKey(chat,true)],.08);
+            for(const bad of [NaN,Infinity,-Infinity,0,-2,undefined,Number.MAX_VALUE,Number.MIN_VALUE]) {
+              applyPetZoomLive({value:bad,phase:'end'});assert.equal(state.petZoom,.08);
+              applyPetZoom(bad);assert.equal(state.petZoom,.08);
+            }
+          }
+        """)
+
     def test_native_bounds_are_finite_and_keep_requested_zoom_across_small_displays(self):
         self.run_js(r"""
           area={x:-1920,y:30,width:1280,height:720};
-          state.petDisplayZooms.desktopStandby=4;
+          state.petDisplayZooms.desktopStandby=64;
           state.bounds={x:-3000,y:-800,width:2200,height:3000};
           const fit=startupPetBounds();
-          assert.equal(state.petZoom,4);
+          assert.equal(state.petZoom,64);
           assert.ok(fit.x>=area.x&&fit.y>=area.y);
           assert.ok(fit.x+fit.width<=area.x+area.width&&fit.y+fit.height<=area.y+area.height);
           for(const bad of [NaN,Infinity,-Infinity,undefined]){
             const b=fitPetWindowToArea({x:bad,y:bad,width:bad,height:bad},area);
             assert.ok(Object.values(b).every(Number.isFinite));
           }
+        """)
+
+    def test_second_avatar_dock_keeps_native_canvas_bounded_without_limiting_zoom(self):
+        self.run_js(r"""
+          state.petZoom=64;dockBuddy();
+          assert.equal(state.petZoom,64);
+          assert.ok(buddyBounds.x>=area.x&&buddyBounds.y>=area.y);
+          assert.ok(buddyBounds.x+buddyBounds.width<=area.x+area.width);
+          assert.ok(buddyBounds.y+buddyBounds.height<=area.y+area.height);
         """)
 
     def test_motion_menu_dispatches_only_to_visible_owner_with_allowlisted_modes(self):
@@ -166,6 +213,7 @@ class MacDisplayControlsTests(unittest.TestCase):
         helpers = "\n".join([
             re.search(r"let holding=null,editedAt=[^;]+;", source)[0],
             re.search(r"const engaged=input=>[^;]+;", source)[0],
+            re.search(r"function sizeRange\(control,value\)\{[\s\S]*?\n    \}", source)[0],
             re.search(r"function adopt\(control,value\)\{[\s\S]*?\n    \}", source)[0],
         ])
         script = r"""
@@ -185,6 +233,44 @@ class MacDisplayControlsTests(unittest.TestCase):
                                 cwd=ROOT, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(source.count("holding=null;editedAt=-Infinity;"), 3)
+
+    def test_appearance_size_range_preserves_pinch_values_and_keeps_extending(self):
+        source=(ROOT / "web/appearance.html").read_text()
+        helpers="\n".join([
+            re.search(r"function sizeRange\(control,value\)\{[\s\S]*?\n    \}", source)[0],
+            re.search(r"function adopt\(control,value\)\{[\s\S]*?\n    \}", source)[0],
+        ])
+        script=r"""
+          const assert=require('node:assert/strict');
+          let editing=false;const engaged=()=>editing,show=()=>{};
+          const input={min:'25',max:'400',_value:'100'};
+          // Like a native range input, assigning outside min/max clamps it.
+          Object.defineProperty(input,'value',{
+            get(){return this._value;},
+            set(v){this._value=String(Math.max(Number(this.min),Math.min(Number(this.max),Number(v))));}
+          });
+          const control={input,scalable:true};
+        """+helpers+r"""
+          for(const percent of [8.125,25,60,400,1600.75,25600]) {
+            adopt(control,percent);
+            assert.equal(Number(input.value),percent,'opening appearance cannot roundtrip-clamp size');
+            assert.ok(Number(input.min)<percent && Number(input.max)>percent,
+              'editing window has room both directions');
+          }
+          for(let attempt=0;attempt<8;attempt++) {
+            const oldMax=Number(input.max);input.value=String(oldMax);
+            sizeRange(control,oldMax);
+            assert.ok(Number(input.max)>oldMax,'reaching slider end opens more range');
+            assert.equal(Number(input.value),oldMax);
+          }
+          const held=input.value;editing=true;adopt(control,60);
+          assert.equal(input.value,held,'external state never fights an active slider');
+          editing=false;adopt(control,8);assert.equal(input.value,'8');
+          assert.ok(Number(input.min)<8);
+        """
+        result=subprocess.run([NODE,"-"],input=script,text=True,capture_output=True,cwd=ROOT,timeout=20)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('id="size" type="range" min="25" max="400" step="any"',source)
 
     def test_shortcut_routes_and_text_popover_theme_are_consistent(self):
         self.assertRegex(self.main, r"globalShortcut\.register\(accelerator, standbyCompanionMode\)")

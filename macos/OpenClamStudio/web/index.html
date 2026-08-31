@@ -3730,12 +3730,20 @@
       return { x: full.x, y: full.y, w: full.w, h: Math.max(1, full.h * portion) };
     };
 
+    const numericAvatarZoom = (value, fallback = 1) => {
+      const usable = number => Number.isFinite(number) && number > 0
+        && Number.isFinite(number * Number.MAX_SAFE_INTEGER)
+        && number / Number.MAX_SAFE_INTEGER > 0;
+      const requested = Number(value), previous = Number(fallback);
+      return usable(requested) ? requested : usable(previous) ? previous : 1;
+    };
+
     const chatCloseUpGeometry = (crop, viewportWidth, viewportHeight, zoom = 1) => {
       const safeWidth = Math.max(1, Number(viewportWidth) || 1);
       const safeHeight = Math.max(1, Number(viewportHeight) || 1);
       const targetWidth = Math.max(240, safeWidth * .4);
       const targetHeight = Math.max(300, safeHeight * .72);
-      const adjustment = Math.max(.25 / .6, Math.min(4 / .6, Number(zoom) || 1));
+      const adjustment = numericAvatarZoom(zoom);
       const scale = Math.min(targetWidth / crop.w, targetHeight / crop.h) * adjustment;
       const rightOverflow = crop.w * scale * .035;
       const bottomOverflow = crop.h * scale * .08;
@@ -3744,6 +3752,50 @@
         x: safeWidth + rightOverflow - (crop.x + crop.w) * scale,
         y: safeHeight + bottomOverflow - (crop.y + crop.h) * scale,
         crop,
+      };
+    };
+
+    // Close-up is a camera preset over the SAME complete body, not a bust
+    // asset. Anchoring the bust bottom at every scale leaves the feet below
+    // the canvas forever. Below the default size, progressively move that
+    // anchor down the body; at 25% (and smaller) the whole figure can fit.
+    // Above the default, retain the approved head-and-shoulders framing.
+    const closeUpZoomOutGeometry = (crop, fullCrop, viewport, zoom, headSpan, fullViewport = viewport) => {
+      const adjustment = numericAvatarZoom(zoom);
+      const close = chatCloseUpGeometry(crop, viewport.width, viewport.height, adjustment);
+      if (adjustment >= 1) return close;
+      const finite = (value, fallback) => value !== null && value !== undefined
+        && Number.isFinite(Number(value)) ? Number(value) : fallback;
+      const left = Math.min(fullCrop.x - fullCrop.w * .00125 - .5,
+        finite(headSpan && headSpan.left, fullCrop.x));
+      const right = Math.max(fullCrop.x + fullCrop.w + fullCrop.w * .00125 + .5,
+        finite(headSpan && headSpan.right, fullCrop.x + fullCrop.w));
+      const top = Math.min(fullCrop.y, finite(headSpan && headSpan.top, fullCrop.y));
+      const full = { x: left, y: top, w: Math.max(1, right - left),
+        h: Math.max(1, fullCrop.y + fullCrop.h + .5 - top) };
+      const fullAt = .25 / .6;
+      const defaultScale = chatCloseUpGeometry(crop, viewport.width, viewport.height, 1).scale;
+      const fullScale = Math.min(defaultScale * fullAt,
+        fullViewport.width / full.w * .94, fullViewport.height / full.h * .94);
+      const amount = Math.max(0, (adjustment - fullAt) / (1 - fullAt));
+      const blend = amount * amount * (3 - 2 * amount);
+      const scale = adjustment <= fullAt ? fullScale * adjustment / fullAt
+        : fullScale + (defaultScale - fullScale) * amount;
+      const frame = {
+        x: full.x + (crop.x - full.x) * blend,
+        y: full.y + (crop.y - full.y) * blend,
+        w: full.w + (crop.w - full.w) * blend,
+        h: full.h + (crop.h - full.h) * blend,
+      };
+      // In chat, the full-body endpoint ends ABOVE the floating composer.
+      // Close-up itself keeps its original canvas-bottom shoulder crop.
+      const bottom = fullViewport.bottom - viewport.y
+        + (viewport.bottom - fullViewport.bottom) * blend;
+      return {
+        scale,
+        x: viewport.width + crop.w * scale * .035 * blend - (frame.x + frame.w) * scale,
+        y: bottom + crop.h * scale * .08 * blend - (frame.y + frame.h) * scale,
+        crop: frame,
       };
     };
 
@@ -3815,8 +3867,9 @@
 
     // A bust is a framing preference, not the avatar's real top. Hats and
     // replacement-head hair can extend above that crop (or the body plate).
-    // Keep the actual crown-to-chin span visible without fitting the whole
-    // body again when the user deliberately zooms into a close-up.
+    // Measure the actual crown-to-chin span without fitting the whole body
+    // again when the user deliberately zooms into a close-up. The final guard
+    // protects the crown even when an oversized chin must leave the canvas.
     const chatCameraHeadSpan = (meta, width, height, runtime = null, images = null) => {
       const validBox = box => Array.isArray(box) && box.length >= 4
         && box.slice(0, 4).every(value => Number.isFinite(Number(value)))
@@ -3906,19 +3959,13 @@
       const mirrorCentre = finite(viewport.headMirrorCentreX, NaN);
       const headGuardLeft = Number.isFinite(mirrorCentre) ? 2 * mirrorCentre - right : left;
       const headGuardRight = Number.isFinite(mirrorCentre) ? 2 * mirrorCentre - left : right;
-      const requestedScale = Number.isFinite(Number(fit.scale)) && Number(fit.scale) > 0
-        ? Number(fit.scale) : 1;
-      // When even the head cannot fit, limit only the rendered head scale;
-      // retain the saved zoom so enlarging the window restores user intent.
-      const scale = Math.min(requestedScale, (bottom - top) / (headBottom - headTop),
-        hasHeadWidth ? (right - left) / (headRight - headLeft) : Infinity);
+      const requestedScale = numericAvatarZoom(fit.scale);
+      // Zoom is not limited by the window or by fitting the whole head.
+      // Keep the crown inside the canvas by TRANSLATION; at a deliberate
+      // extreme close-up the chin and lower body may extend below it.
+      const scale = requestedScale;
       let x = finite(fit.x, left - crop.x * scale);
       let y = finite(fit.y, top - headTop * scale);
-      if (scale < requestedScale) {
-        const centre = crop.x + crop.w * .5;
-        x = finite(x + centre * requestedScale, (left + right) * .5) - centre * scale;
-        y = finite(y + headTop * requestedScale, top) - headTop * scale;
-      }
       const leftAligned = left - crop.x * scale;
       const rightAligned = right - (crop.x + crop.w) * scale;
       x = Math.max(Math.min(leftAligned, rightAligned),
@@ -3926,7 +3973,10 @@
       if (hasHeadWidth) {
         // The broad torso/bust crop is not a safe lateral head anchor when
         // both sidebars leave only a narrow chat column.
-        x = Math.max(headGuardLeft - headLeft * scale, Math.min(headGuardRight - headRight * scale, x));
+        const headLeftAligned = headGuardLeft - headLeft * scale;
+        const headRightAligned = headGuardRight - headRight * scale;
+        x = Math.max(Math.min(headLeftAligned, headRightAligned),
+          Math.min(Math.max(headLeftAligned, headRightAligned), x));
       }
       if (vertical) {
         const topAligned = top - crop.y * scale;
@@ -3957,7 +4007,7 @@
         const workspace = chatWorkspaceViewport();
         viewport.headMirrorCentreX = workspace.x + workspace.width * .5;
       }
-      const requestedZoom = Number(shellState.pet && shellState.pet.zoom);
+      const requestedZoom = numericAvatarZoom(shellState.pet && shellState.pet.zoom, .6);
       const headImages = (fullChat || safeDesktop) && manifest && meta === manifest.body
         ? { body: bodyImage, head: headReplacementActive ? headReplacementCanvas : headMask,
           headCacheKey: headMask }
@@ -3965,18 +4015,19 @@
       const headSpan = fullChat || safeDesktop ? chatCameraHeadSpan(meta, width, height, manifest, headImages) : null;
       if (fullChat && shellState.chatCloseUp) {
         const closeUpCrop = viewCrop(meta, width, height, 'bust');
-        const baseZoom = Number(shellState.chatCloseUpBaseZoom);
-        const closeUpZoom = Number.isFinite(requestedZoom) && Number.isFinite(baseZoom) && baseZoom > 0
-          ? requestedZoom / baseZoom : 1;
-        const fit = chatCloseUpGeometry(closeUpCrop, viewport.width, viewport.height, closeUpZoom);
+        const baseZoom = numericAvatarZoom(shellState.chatCloseUpBaseZoom, .6);
+        const closeUpZoom = numericAvatarZoom(requestedZoom / baseZoom);
+        const fit = closeUpZoomOutGeometry(closeUpCrop, viewCrop(meta, width, height, 'full'),
+          viewport, closeUpZoom, headSpan, chatAvatarSafeViewport({ reserveComposer: true, reserveRail: true }));
         const offset = boundedChatAvatarOffset(chatAvatarOffset);
         return clampChatCameraFit({ ...fit, headSpan, x: viewport.x + fit.x + offset.x,
           y: viewport.y + fit.y + offset.y }, viewport, { vertical: false });
       }
       if (safeDesktop && shellState.desktopCloseUp) {
         const closeUpCrop = viewCrop(meta, width, height, 'bust');
-        const closeUpZoom = Number.isFinite(requestedZoom) && requestedZoom > 0 ? requestedZoom / .6 : 1;
-        const fit = chatCloseUpGeometry(closeUpCrop, innerWidth, innerHeight, closeUpZoom);
+        const closeUpZoom = numericAvatarZoom(requestedZoom / .6);
+        const fit = closeUpZoomOutGeometry(closeUpCrop, viewCrop(meta, width, height, 'full'),
+          viewport, closeUpZoom, headSpan);
         const offset = boundedChatAvatarOffset(desktopCloseUpOffset);
         return clampChatCameraFit({ ...fit, headSpan, x: fit.x + offset.x,
           y: fit.y + offset.y }, viewport, { vertical: false });
@@ -3988,7 +4039,7 @@
       const availableHeight = Math.max(160, viewport.height - chatReserve);
       const margin = shellState.pet && shellState.pet.roam ? .995 : .94;
       const baseScale = Math.min(viewport.width / crop.w, availableHeight / crop.h) * margin;
-      const zoom = Math.max(.25, Math.min(4, Number.isFinite(requestedZoom) ? requestedZoom : .6));
+      const zoom = requestedZoom;
       const nativeBase = shellState.pet && shellState.pet.canvasBaseSize;
       const nativeCanvasZoom = nativeBase && Number(nativeBase.width) > 0 && Number(nativeBase.height) > 0
         ? Math.max(.001, Math.min(innerWidth / nativeBase.width, innerHeight / nativeBase.height)) : zoom;
@@ -9449,32 +9500,37 @@
       { passive: true, capture: true });
 
     const PET_ZOOM_RANGES = Object.freeze({
-      stand: Object.freeze({ min: .25, max: 4 }),
+      stand: Object.freeze({}),
       roam: Object.freeze({ min: .5, max: 3 }),
     });
     const AVATAR_ZOOM_SETTLE_MS = 140;
 
     const pinchZoomValue = (current, event, range, viewportHeight) => {
-      const value = Number(current);
-      const safe = Number.isFinite(value) && value > 0 ? value : 1;
+      const safe = numericAvatarZoom(current);
       if (!event || !event.ctrlKey) return safe;
+      const bounded = zoom => {
+        const minimum = Number(range && range.min), maximum = Number(range && range.max);
+        const lower = Number.isFinite(minimum) && minimum > 0 ? minimum : 0;
+        return Math.max(lower, Number.isFinite(maximum) && maximum > 0 ? Math.min(maximum, zoom) : zoom);
+      };
       const rawDelta = Number(event.deltaY);
-      if (!Number.isFinite(rawDelta)) return Math.max(range.min, Math.min(range.max, safe));
+      if (!Number.isFinite(rawDelta)) return bounded(safe);
       const pageHeight = Number.isFinite(Number(viewportHeight))
         ? Math.max(1, Number(viewportHeight)) : 1;
       const unit = event.deltaMode === 1 ? 16
         : event.deltaMode === 2 ? pageHeight : 1;
       const delta = Math.max(-90, Math.min(90, rawDelta * unit));
       const next = safe * Math.exp(-delta * .0075);
-      return Math.max(range.min, Math.min(range.max, next));
+      // Overflow/underflow is not a valid gesture, and must not poison the
+      // saved size or create a hidden overshoot that needs many reverse pinches.
+      return bounded(numericAvatarZoom(next, safe));
     };
 
     const activeAvatarZoom = () => {
       const pet = shellState.pet || {};
       const range = pet.roam ? PET_ZOOM_RANGES.roam : PET_ZOOM_RANGES.stand;
-      const value = Number(pet.roam ? pet.roamZoom : pet.zoom);
-      return Math.max(range.min, Math.min(range.max,
-        Number.isFinite(value) && value > 0 ? value : 1));
+      const safe = numericAvatarZoom(pet.roam ? pet.roamZoom : pet.zoom);
+      return pet.roam ? Math.max(range.min, Math.min(range.max, safe)) : safe;
     };
 
     const holdAvatarZoom = value => {

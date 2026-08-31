@@ -1800,6 +1800,9 @@ assert.equal(replayCalls, 0, 'the final decoded Move frame must not restart');
 // Each mode owns its avatar canvas. Close-Up is the same bottom-right camera
 // intent inside either the Chat/Talk window or the selected desktop display;
 // ten seconds of genuine Chat inactivity selects the nearest window edge.
+const numericAvatarZoomSource = inline[1].match(
+  /(const numericAvatarZoom = \(value, fallback = 1\) => \{[\s\S]*?\n    \};)/,
+);
 const chatCloseUpGeometrySource = inline[1].match(
   /(const chatCloseUpGeometry = \(crop, viewportWidth, viewportHeight, zoom = 1\) => \{[\s\S]*?\n    \};)/,
 );
@@ -1810,10 +1813,11 @@ const standbyIdleDelaySource = inline[1].match(
   /(const standbyIdleDelay = inChat =>[^;]+;)/,
 );
 assert.ok(chatCloseUpGeometrySource, 'Chat\/Talk close-up geometry must remain independently testable');
+assert.ok(numericAvatarZoomSource, 'numeric zoom validation must remain independently testable');
 assert.ok(chatStandbyEdgeSource, 'Chat\/Talk idle edge selection must remain independently testable');
 assert.ok(standbyIdleDelaySource, 'Chat\/Talk standby timing must remain independently testable');
 const chatCloseUpGeometry = new Function(
-  `'use strict'; ${chatCloseUpGeometrySource[1]}; return chatCloseUpGeometry;`,
+  `'use strict'; ${numericAvatarZoomSource[1]}; ${chatCloseUpGeometrySource[1]}; return chatCloseUpGeometry;`,
 )();
 const chatStandbyEdge = new Function(
   `'use strict'; ${chatStandbyEdgeSource[1]}; return chatStandbyEdge;`,
@@ -2585,19 +2589,20 @@ assert.match(source, /!erasedInBodySpace && headReplacementActive \? headReplace
 
 // Electron reports a macOS trackpad pinch as Ctrl+wheel. Only that modifier
 // path changes size; ordinary scrolling is left alone. Values use the same
-// canonical stand/roam bounds as the persisted main-process geometry.
+// canonical stand/roam policy as the persisted main-process geometry: no
+// user-facing Standby/Close-up ceiling, bounded animation zoom unchanged.
 const pinchZoomSource = inline[1].match(
   /(const pinchZoomValue = \(current, event, range, viewportHeight\) => \{[\s\S]*?\n    \};)/,
 );
 assert.ok(pinchZoomSource, 'pinch zoom transform must remain independently testable');
 const pinchZoomValue = new Function(
-  `'use strict'; ${pinchZoomSource[1]}; return pinchZoomValue;`,
+  `'use strict'; ${numericAvatarZoomSource[1]}; ${pinchZoomSource[1]}; return pinchZoomValue;`,
 )();
-assert.equal(pinchZoomValue(1, { ctrlKey: false, deltaY: -30 }, { min: .25, max: 4 }, 800), 1,
+assert.equal(pinchZoomValue(1, { ctrlKey: false, deltaY: -30 }, {}, 800), 1,
   'ordinary wheel input must never resize the avatar');
-assert.ok(pinchZoomValue(1, { ctrlKey: true, deltaY: -20, deltaMode: 0 }, { min: .25, max: 4 }, 800) > 1);
-assert.ok(pinchZoomValue(1, { ctrlKey: true, deltaY: 20, deltaMode: 0 }, { min: .25, max: 4 }, 800) < 1);
-assert.equal(pinchZoomValue(3, { ctrlKey: true, deltaY: -100, deltaMode: 2 }, { min: .25, max: 4 }, 800), 4);
+assert.ok(pinchZoomValue(16, { ctrlKey: true, deltaY: -20, deltaMode: 0 }, {}, 800) > 16);
+assert.ok(pinchZoomValue(.08, { ctrlKey: true, deltaY: 20, deltaMode: 0 }, {}, 800) < .08);
+assert.ok(pinchZoomValue(4, { ctrlKey: true, deltaY: -100, deltaMode: 2 }, {}, 800) > 4);
 assert.equal(pinchZoomValue(.6, { ctrlKey: true, deltaY: 100, deltaMode: 2 }, { min: .5, max: 3 }, 800), .5);
 assert.match(source, /if \(!event\.ctrlKey \|\| !shell \|\| typeof shell\.setPetZoomLive !== 'function'/,
   'the renderer must accept only Chromium\'s pinch-shaped modifier wheel');

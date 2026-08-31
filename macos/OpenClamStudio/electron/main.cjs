@@ -157,7 +157,9 @@ const PET_VIEWS = new Set(['full', 'three-quarter', 'half', 'bust', 'head', 'fac
 const PET_BASE_SIZE = Object.freeze({ width: 560, height: 760 });
 const PET_NORMAL_MINIMUM = Object.freeze({ width: 140, height: 190 });
 const CHAT_MODE_MINIMUM = Object.freeze({ width: 760, height: 600 });
-const PET_ZOOM_RANGE = Object.freeze({ min: 0.25, max: 4 });
+// Standing/close-up zoom is independent of the bounded native window. Only
+// invalid numeric inputs are rejected; animation size keeps its own range.
+const PET_ZOOM_RANGE = Object.freeze({});
 const PET_DOCK_MARGIN = 28;
 const PET_ROAM_SIZE = Object.freeze({ width: 250, height: 340 });
 const PET_ROAM_MINIMUM = Object.freeze({ width: 96, height: 130 });
@@ -1115,8 +1117,7 @@ function applyPetView(value) {
 
 function petBoundsForZoom(value) {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
-  const zoom = Math.max(PET_ZOOM_RANGE.min,
-    Math.min(PET_ZOOM_RANGE.max, Number(value) || 1));
+  const zoom = clampPetZoom(value, PET_ZOOM_RANGE, state.petZoom);
   const current = mainWindow.getBounds();
   return fitPetWindowToArea(boundsForPetZoom(
     current, PET_BASE_SIZE, PET_NORMAL_MINIMUM, zoom), screen.getDisplayMatching(current).workArea);
@@ -1136,7 +1137,7 @@ function restoreDisplayZoom(closeUp) {
 
 function applyPetZoom(value) {
   petZoomGesture = null;
-  state.petZoom = clampPetZoom(value, PET_ZOOM_RANGE);
+  state.petZoom = clampPetZoom(value, PET_ZOOM_RANGE, state.petZoom);
   rememberCurrentDisplayZoom();
   if (!state.petRoam && !chatMode && !desktopCloseUp) {
     const bounds = petBoundsForZoom(state.petZoom);
@@ -1200,7 +1201,7 @@ function applyPetZoomLive(payload) {
   const data = payload && typeof payload === 'object' ? payload : { value: payload };
   const phase = data.phase === 'start' || data.phase === 'end' ? data.phase : 'move';
   if (chatMode || desktopCloseUp) {
-    state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE);
+    state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE, state.petZoom);
   } else if (state.petRoam) {
     state.petRoamZoom = clampPetZoom(data.value, PET_ROAM_ZOOM_RANGE);
     resizePetRoamWindow(state.petRoamZoom);
@@ -1208,7 +1209,7 @@ function applyPetZoomLive(payload) {
     if (phase === 'start' || !petZoomGesture) {
       petZoomGesture = { anchor: petZoomAnchor(mainWindow.getBounds()) };
     }
-    state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE);
+    state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE, state.petZoom);
     const bounds = fitPetWindowToArea(boundsForPetZoomAtAnchor(
       petZoomGesture.anchor, PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom),
     screen.getDisplayMatching(mainWindow.getBounds()).workArea);
@@ -1650,7 +1651,7 @@ function dockBuddy() {
   if (!buddyWindow || buddyWindow.isDestroyed() || buddyRoam || state.petLocked) return;
   const area = screen.getDisplayMatching(buddyWindow.getBounds()).workArea;
   const size = petZoomSize(PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom);
-  buddyWindow.setBounds(dockedPetBounds(size, area, 0, 'left'), false);
+  buddyWindow.setBounds(fitPetWindowToArea(dockedPetBounds(size, area, 0, 'left'), area), false);
 }
 
 function buddyRoamDisplay() {
@@ -2324,7 +2325,7 @@ function showAppearanceWindow() {
 }
 
 // Restore the requested Standby size and position, but keep the native canvas
-// inside its display. The renderer fits the head without destroying the saved
+// inside its display. The renderer protects the crown without destroying the saved
 // zoom when the current display is smaller than the previous one.
 function startupPetBounds() {
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
