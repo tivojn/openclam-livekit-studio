@@ -126,10 +126,16 @@ class Soft3DBlinkOwnershipTests(unittest.TestCase):
                 stack.enter_context(mock.patch.object(
                     export, "_soft3d_static_blink_art",
                     side_effect=AssertionError("non-soft3D route changed")))
-            # Exercise the previously destructive harmonic fallback, not a
-            # fixture where identical provider art only hides mask overreach.
-            stack.enter_context(mock.patch.object(
-                export, "_stylized_flat_skin_registration", return_value=None))
+            # Illustrations retain their existing harmonic fallback. Shaded
+            # 3-D eyes now require registered authored skin: publishing a flat
+            # fallback oval is explicitly forbidden, even with a valid lid.
+            if medium == "illustration":
+                stack.enter_context(mock.patch.object(
+                    export, "_stylized_flat_skin_registration", return_value=None))
+            else:
+                stack.enter_context(mock.patch.object(
+                    export, "_harmonic_stylized_skin", side_effect=AssertionError(
+                        "shaded 3-D publication must not synthesize a flat oval")))
             logs = []
             result = export.preflight_stylized_blink(
                 directory, medium, neutral=key, eyes=eyes, log=logs.append)

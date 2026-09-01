@@ -25,6 +25,7 @@ models/
 # Local analysis records
 .learnings/
 .playwright-mcp/
+work/
 
 # Python
 .venv/

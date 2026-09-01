@@ -2900,14 +2900,14 @@
     };
 
     const boundedChatAvatarOffset = value => {
-      const viewport = chatWorkspaceViewport();
       const requestedX = Number(value && value.x);
       const requestedY = Number(value && value.y);
+      // Manual placement may cross the left, right and bottom edges. Only
+      // reject invalid coordinates here; the camera guards the actual crown
+      // against the top edge after applying the saved offset and zoom.
       return {
-        x: Math.max(-viewport.width * .55,
-          Math.min(viewport.width * .55, Number.isFinite(requestedX) ? requestedX : 0)),
-        y: Math.max(-viewport.height * .45,
-          Math.min(viewport.height * .45, Number.isFinite(requestedY) ? requestedY : 0)),
+        x: Number.isFinite(requestedX) ? requestedX : 0,
+        y: Number.isFinite(requestedY) ? requestedY : 0,
       };
     };
 
@@ -3936,7 +3936,7 @@
       return span;
     };
 
-    const clampChatCameraFit = (fit, viewport, { vertical = true } = {}) => {
+    const clampChatCameraFit = (fit, viewport) => {
       if (!fit || !fit.crop || !viewport) return fit;
       const finite = (value, fallback) => value !== null && value !== undefined
         && Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -3946,48 +3946,15 @@
       };
       const left = finite(viewport.x, 0);
       const top = finite(viewport.y, 0);
-      const right = Math.max(left + 1, finite(viewport.right,
-        left + Math.max(1, finite(viewport.width, 1))));
-      const bottom = Math.max(top + 1, finite(viewport.bottom,
-        top + Math.max(1, finite(viewport.height, 1))));
       const headTop = finite(fit.headSpan && fit.headSpan.top, crop.y);
-      const headBottom = Math.max(headTop + 1,
-        finite(fit.headSpan && fit.headSpan.bottom, crop.y + crop.h));
-      const headLeft = finite(fit.headSpan && fit.headSpan.left, NaN);
-      const headRight = finite(fit.headSpan && fit.headSpan.right, NaN);
-      const hasHeadWidth = Number.isFinite(headLeft) && Number.isFinite(headRight) && headRight > headLeft;
-      const mirrorCentre = finite(viewport.headMirrorCentreX, NaN);
-      const headGuardLeft = Number.isFinite(mirrorCentre) ? 2 * mirrorCentre - right : left;
-      const headGuardRight = Number.isFinite(mirrorCentre) ? 2 * mirrorCentre - left : right;
-      const requestedScale = numericAvatarZoom(fit.scale);
-      // Zoom is not limited by the window or by fitting the whole head.
-      // Keep the crown inside the canvas by TRANSLATION; at a deliberate
-      // extreme close-up the chin and lower body may extend below it.
-      const scale = requestedScale;
-      let x = finite(fit.x, left - crop.x * scale);
-      let y = finite(fit.y, top - headTop * scale);
-      const leftAligned = left - crop.x * scale;
-      const rightAligned = right - (crop.x + crop.w) * scale;
-      x = Math.max(Math.min(leftAligned, rightAligned),
-        Math.min(Math.max(leftAligned, rightAligned), x));
-      if (hasHeadWidth) {
-        // The broad torso/bust crop is not a safe lateral head anchor when
-        // both sidebars leave only a narrow chat column.
-        const headLeftAligned = headGuardLeft - headLeft * scale;
-        const headRightAligned = headGuardRight - headRight * scale;
-        x = Math.max(Math.min(headLeftAligned, headRightAligned),
-          Math.min(Math.max(headLeftAligned, headRightAligned), x));
-      }
-      if (vertical) {
-        const topAligned = top - crop.y * scale;
-        const bottomAligned = bottom - (crop.y + crop.h) * scale;
-        y = Math.max(Math.min(topAligned, bottomAligned),
-          Math.min(Math.max(topAligned, bottomAligned), y));
-      }
-      // This must be LAST: a feet/bottom correction must never push the
-      // crown above the header again. Close-up also obeys this head limit,
-      // while all lower-body pixels remain drawable beyond the lower edge.
-      y = Math.max(top - headTop * scale, Math.min(bottom - headBottom * scale, y));
+      const scale = numericAvatarZoom(fit.scale);
+      // The top is the ONLY placement boundary, in both desktop and chat.
+      // Keep the crown/hat below it by translation, never by shrinking. Do
+      // not pull an intentionally cropped head/body back from either side
+      // or the bottom, including when the avatar is mirrored.
+      const x = finite(fit.x, left - crop.x * scale);
+      const y = Math.max(top - headTop * scale,
+        finite(fit.y, top - headTop * scale));
       return { ...fit, crop, scale, x, y };
     };
 
@@ -4000,13 +3967,6 @@
       })
         : { x: 0, y: 0, width: innerWidth, height: innerHeight,
           right: innerWidth, bottom: innerHeight };
-      if (fullChat && root.classList.contains('avatar-mirrored')) {
-        // CSS reflects the canvas about the workspace centre, not the
-        // narrower/asymmetric control-safe interval. Invert only the final
-        // head guard; leave saved placement, framing and motion paths alone.
-        const workspace = chatWorkspaceViewport();
-        viewport.headMirrorCentreX = workspace.x + workspace.width * .5;
-      }
       const requestedZoom = numericAvatarZoom(shellState.pet && shellState.pet.zoom, .6);
       const headImages = (fullChat || safeDesktop) && manifest && meta === manifest.body
         ? { body: bodyImage, head: headReplacementActive ? headReplacementCanvas : headMask,
@@ -4021,7 +3981,7 @@
           viewport, closeUpZoom, headSpan, chatAvatarSafeViewport({ reserveComposer: true, reserveRail: true }));
         const offset = boundedChatAvatarOffset(chatAvatarOffset);
         return clampChatCameraFit({ ...fit, headSpan, x: viewport.x + fit.x + offset.x,
-          y: viewport.y + fit.y + offset.y }, viewport, { vertical: false });
+          y: viewport.y + fit.y + offset.y }, viewport);
       }
       if (safeDesktop && shellState.desktopCloseUp) {
         const closeUpCrop = viewCrop(meta, width, height, 'bust');
@@ -4030,7 +3990,7 @@
           viewport, closeUpZoom, headSpan);
         const offset = boundedChatAvatarOffset(desktopCloseUpOffset);
         return clampChatCameraFit({ ...fit, headSpan, x: fit.x + offset.x,
-          y: fit.y + offset.y }, viewport, { vertical: false });
+          y: fit.y + offset.y }, viewport);
       }
       const crop = viewCrop(meta, width, height, forcedView);
       const chatReserve = root.classList.contains('chat-open') && !fullChat
@@ -4043,8 +4003,9 @@
       const nativeBase = shellState.pet && shellState.pet.canvasBaseSize;
       const nativeCanvasZoom = nativeBase && Number(nativeBase.width) > 0 && Number(nativeBase.height) > 0
         ? Math.max(.001, Math.min(innerWidth / nativeBase.width, innerHeight / nativeBase.height)) : zoom;
-      // The desktop window grows only to its work area. Any remaining zoom
-      // is a camera transform, never an oversized/offscreen native window.
+      // Limit the desktop backing canvas size, not the avatar's size or
+      // placement. Any remaining zoom is a camera transform; native dragging
+      // may still move the window beyond the screen's sides or bottom.
       const chatZoom = fullChat ? zoom / .6 : safeDesktop ? zoom / nativeCanvasZoom : 1;
       const scale = baseScale * chatZoom;
       const offset = fullChat ? boundedChatAvatarOffset(chatAvatarOffset) : { x: 0, y: 0 };

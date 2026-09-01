@@ -787,17 +787,6 @@ function saveStateSoon() {
   }, 180);
 }
 
-function visibleBounds(bounds) {
-  if (!bounds || !Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) return bounds;
-  const display = screen.getDisplayMatching(bounds);
-  const area = display.workArea;
-  const intersects = bounds.x < area.x + area.width
-    && bounds.x + bounds.width > area.x
-    && bounds.y < area.y + area.height
-    && bounds.y + bounds.height > area.y;
-  return intersects ? bounds : { width: bounds.width, height: bounds.height };
-}
-
 function shellState() {
   let onBattery = false;
   try { onBattery = powerMonitor.isOnBattery(); } catch {}
@@ -1120,7 +1109,8 @@ function petBoundsForZoom(value) {
   const zoom = clampPetZoom(value, PET_ZOOM_RANGE, state.petZoom);
   const current = mainWindow.getBounds();
   return fitPetWindowToArea(boundsForPetZoom(
-    current, PET_BASE_SIZE, PET_NORMAL_MINIMUM, zoom), screen.getDisplayMatching(current).workArea);
+    current, PET_BASE_SIZE, PET_NORMAL_MINIMUM, zoom), screen.getDisplayMatching(current).workArea,
+  { placement: 'top-only', anchor: petZoomAnchor(current) });
 }
 
 function rememberCurrentDisplayZoom() {
@@ -1212,7 +1202,8 @@ function applyPetZoomLive(payload) {
     state.petZoom = clampPetZoom(data.value, PET_ZOOM_RANGE, state.petZoom);
     const bounds = fitPetWindowToArea(boundsForPetZoomAtAnchor(
       petZoomGesture.anchor, PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom),
-    screen.getDisplayMatching(mainWindow.getBounds()).workArea);
+    screen.getDisplayMatching(mainWindow.getBounds()).workArea,
+    { placement: 'top-only', anchor: petZoomGesture.anchor });
     mainWindow.setBounds(bounds, false);
     state.bounds = { ...bounds };
   }
@@ -1471,7 +1462,9 @@ function stopPetRoamMotion(restore = true) {
   mainWindow.setResizable(true);
   mainWindow.setMinimumSize(PET_NORMAL_MINIMUM.width, PET_NORMAL_MINIMUM.height);
   if (restore) {
-    const remembered = visibleBounds(state.petHomeBounds || state.bounds) || {};
+    // Offscreen left/right/bottom placement is intentional. Returning from a
+    // transient motion must not discard it or redock the saved Standby pose.
+    const remembered = state.petHomeBounds || state.bounds || {};
     const width = Math.max(PET_NORMAL_MINIMUM.width, Number(remembered.width) || 560);
     const height = Math.max(PET_NORMAL_MINIMUM.height, Number(remembered.height) || 760);
     let x = Number(remembered.x);
@@ -1481,7 +1474,9 @@ function stopPetRoamMotion(restore = true) {
       x = area.x + area.width - width - 28;
       y = area.y + area.height - height - 28;
     }
-    mainWindow.setBounds({ x: Math.round(x), y: Math.round(y), width, height }, false);
+    const requested = { x: Math.round(x), y: Math.round(y), width, height };
+    const area = screen.getDisplayMatching(requested).workArea;
+    mainWindow.setBounds(fitPetWindowToArea(requested, area, { placement: 'top-only' }), false);
     state.bounds = mainWindow.getBounds();
   }
   applyPetWindowLevel(mainWindow, false);
@@ -1923,6 +1918,28 @@ function showBuddyMenu() {
   ]);
 }
 
+// Native border resizing and macOS window movement do not necessarily pass
+// through renderer drag IPC. Enforce the same top-only rule there, without
+// moving an intentionally offscreen avatar back inside the other three edges.
+function guardManualPetBounds(window, isManual) {
+  let correcting = false;
+  const constrain = (requested, resizeEvent = null) => {
+    if (correcting || window.isDestroyed() || !isManual()) return;
+    const bounds = requested || window.getBounds();
+    const safe = fitPetWindowToArea(bounds, screen.getDisplayMatching(bounds).workArea,
+      { placement: 'top-only' });
+    if (['x', 'y', 'width', 'height'].every(key => bounds[key] === safe[key])) return;
+    // will-resize can prevent an oversized GPU backing before it is allocated.
+    // macOS cannot cancel will-move, so move applies the top floor afterward.
+    resizeEvent?.preventDefault();
+    correcting = true;
+    try { window.setBounds(safe, false); } finally { correcting = false; }
+  };
+  window.on('will-resize', (event, bounds) => constrain(bounds, event));
+  window.on('move', () => constrain());
+  window.on('resize', () => constrain());
+}
+
 function createBuddyWindow(slug) {
   if (buddyWindow && !buddyWindow.isDestroyed()) {
     if (buddySlug === slug) {
@@ -1964,6 +1981,7 @@ function createBuddyWindow(slug) {
       spellcheck: false,
     },
   });
+  guardManualPetBounds(buddyWindow, () => !chatMode && !buddyRoam);
   buddyWindow.on('page-title-updated', event => event.preventDefault());
   buddyWindow.setOpacity(buddyOpacityValue() > 0 ? buddyOpacityValue() : 0.5);
   setBuddyHit(false);
@@ -2324,18 +2342,23 @@ function showAppearanceWindow() {
   pushAppearanceState(true);
 }
 
-// Restore the requested Standby size and position, but keep the native canvas
-// inside its display. The renderer protects the crown without destroying the saved
-// zoom when the current display is smaller than the previous one.
+// Restore the requested Standby size and position. Only the native canvas SIZE
+// is display-bounded: manual x/bottom overflow survives reopening. The renderer
+// protects the crown without destroying the saved zoom on a smaller display.
 function startupPetBounds() {
   const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   restoreDisplayZoom(false);
   const size = petZoomSize(PET_BASE_SIZE, PET_NORMAL_MINIMUM, state.petZoom);
   const saved = state.bounds;
-  const requested = saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
-    ? { x: saved.x, y: saved.y, ...size }
-    : dockedPetBounds(size, area, PET_DOCK_MARGIN);
-  return fitPetWindowToArea(requested, area);
+  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    return fitPetWindowToArea({ x: saved.x, y: saved.y, ...size }, area,
+      { placement: 'top-only' });
+  }
+  // First launch still has a sensible corner default, even at a huge zoom;
+  // compute that anchor from the fitted canvas rather than the raw pixel size.
+  const fitted = fitPetWindowToArea(size, area);
+  return fitPetWindowToArea(dockedPetBounds(fitted, area, PET_DOCK_MARGIN), area,
+    { placement: 'top-only' });
 }
 
 function createChatWindow() {
@@ -2396,15 +2419,14 @@ function createMainWindow() {
     show: false,
     frame: false,
     transparent: true,
-    // Zooming the overlay legitimately grows the window taller than the
-    // display (the lower body hangs off-screen); without this macOS
-    // silently clamps every resize to the screen and re-frames her.
+    // Do not ask AppKit to fit the whole rectangle back onto the screen when
+    // it is manually placed offscreen. Our own guard bounds the backing SIZE;
+    // the renderer owns uncapped avatar zoom inside that canvas.
     enableLargerThanScreen: true,
     backgroundColor: '#00000000',
     roundedCorners: false,
     hasShadow: false,
     resizable: true,
-    enableLargerThanScreen: true,
     fullscreenable: false,
     skipTaskbar: true,
     acceptFirstMouse: true,
@@ -2421,6 +2443,8 @@ function createMainWindow() {
       spellcheck: false,
     },
   });
+  guardManualPetBounds(mainWindow,
+    () => !state.petRoam && !chatMode && !desktopCloseUp && !preDockBounds);
   mainWindow.on('page-title-updated', event => event.preventDefault());
   mainWindow.setOpacity(state.petOpacity > 0 ? state.petOpacity : 0.5);
   petPointerInteractive = null;
@@ -2583,7 +2607,8 @@ function restoreCompanionHold() {
   companionHold = null;
   desktopCloseUp = false;
   state.petZoom = hold.zoom;
-  const bounds = fitPetWindowToArea(hold.bounds, screen.getDisplayMatching(hold.bounds).workArea);
+  const bounds = fitPetWindowToArea(hold.bounds, screen.getDisplayMatching(hold.bounds).workArea,
+    { placement: 'top-only' });
   mainWindow.setBounds(bounds, false);
   state.bounds = { ...bounds };
   return true;
@@ -2608,7 +2633,8 @@ function deskCompanionMode() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (state.petRoam) applyPetRoam(false);
   if (preDockBounds) {
-    mainWindow.setBounds(preDockBounds, false);
+    mainWindow.setBounds(fitPetWindowToArea(preDockBounds,
+      screen.getDisplayMatching(preDockBounds).workArea, { placement: 'top-only' }), false);
     preDockBounds = null;
   }
   if (!desktopCloseUp) {
@@ -3041,7 +3067,8 @@ function installIpc() {
   ipcMain.on('openclam:pet-undock', (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return;
     if (!preDockBounds) return;
-    const bounds = preDockBounds;
+    const bounds = fitPetWindowToArea(preDockBounds,
+      screen.getDisplayMatching(preDockBounds).workArea, { placement: 'top-only' });
     preDockBounds = null;
     if (state.petRoam || state.petLocked) return;
     mainWindow.setMinimumSize(PET_NORMAL_MINIMUM.width, PET_NORMAL_MINIMUM.height);
@@ -3096,7 +3123,14 @@ function installIpc() {
       const x = dragCoord(buddyDrag.bounds.x, cursor.x, buddyDrag.x);
       const y = dragCoord(buddyDrag.bounds.y, cursor.y, buddyDrag.y);
       if (x !== null && y !== null) {
-        try { buddyWindow.setPosition(x, y, false); } catch {}
+        const safe = fitPetWindowToArea({ ...buddyDrag.bounds, x, y },
+          screen.getDisplayNearestPoint(cursor).workArea, { placement: 'top-only' });
+        try {
+          const current = buddyWindow.getBounds();
+          if (current.width !== safe.width || current.height !== safe.height) {
+            buddyWindow.setBounds(safe, false);
+          } else buddyWindow.setPosition(safe.x, safe.y, false);
+        } catch {}
       }
       return;
     }
@@ -3106,7 +3140,7 @@ function installIpc() {
     const y = dragCoord(petDrag.bounds.y, cursor.y, petDrag.y);
     if (x !== null && y !== null) {
       const safe = fitPetWindowToArea({ ...petDrag.bounds, x, y },
-        screen.getDisplayNearestPoint(cursor).workArea);
+        screen.getDisplayNearestPoint(cursor).workArea, { placement: 'top-only' });
       try {
         const current = mainWindow.getBounds();
         if (current.width !== safe.width || current.height !== safe.height) {

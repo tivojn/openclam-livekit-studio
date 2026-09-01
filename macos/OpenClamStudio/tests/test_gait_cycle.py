@@ -94,6 +94,45 @@ class SourceGaitProfileTests(unittest.TestCase):
         self.assertIsNotNone(profile)
         self.assertIsNone(profile["period"])
 
+    def test_finite_overlap_energy_does_not_double_the_true_period(self):
+        # These phase/crop pairs give the old whole-take-variance estimator
+        # a coefficient >1 at the SECOND repeat, even for a plain sinusoid.
+        # A 90-frame estimate wrongly excludes the usable 45-frame cycle.
+        for count, phase in ((140, 6), (145, 3), (150, 2), (175, 0)):
+            with self.subTest(count=count, phase=phase):
+                poses = gait_poses(count + phase, 45)[phase:]
+                profile = motion._source_gait_profile(poses)
+                self.assertEqual(45, profile["period"])
+                self.assertGreater(profile["period_confidence"], 0.98)
+                self.assertLessEqual(profile["period_confidence"], 1.0)
+                self.assertEqual(
+                    motion.GAIT_PERIOD_ESTIMATOR,
+                    profile["period_estimator"],
+                )
+
+    def test_asymmetric_stride_does_not_become_its_half_period(self):
+        period = 90
+        poses = gait_poses(150, period)
+        for index, pose in enumerate(poses):
+            phase = 2 * math.pi * index / period
+            swing = 40.0 * (math.sin(phase) + 0.65 * math.sin(2 * phase))
+            for name, origin, factor in (
+                    ("left_wrist", 180.0, 1.0),
+                    ("right_wrist", 220.0, -1.0),
+                    ("left_ankle", 185.0, -1.5),
+                    ("right_ankle", 215.0, 1.5)):
+                pose["joints"][name]["x"] = origin + factor * swing
+        profile = motion._source_gait_profile(poses)
+        self.assertLessEqual(abs(period - profile["period"]), 1)
+        quality = motion._pose_cycle_metrics(poses, 0, period // 2)
+        self.assertFalse(quality["valid"])
+        self.assertIn("one full gait cycle", quality["reason"])
+
+    def test_stationary_source_has_no_invented_period(self):
+        profile = motion._source_gait_profile(gait_poses(145, 45, amplitude=0))
+        self.assertIsNone(profile["period"])
+        self.assertIsNone(profile["period_confidence"])
+
 
 class CycleGateTests(unittest.TestCase):
     def test_full_cycle_window_passes(self):
@@ -217,6 +256,48 @@ class LoopSelectionTests(unittest.TestCase):
         self.assertEqual(72, len(selected))
         self.assertEqual([], alternates)
         self.assertEqual("first-half fallback", method)
+
+    def test_phase_cropped_short_gait_does_not_use_first_half_fallback(self):
+        period, phase, count = 45, 3, 145
+        poses = gait_poses(count + phase, period)[phase:]
+        frames = periodic_silhouette_frames(count + phase, period)[phase:]
+        selected, start, end, _alternates, method = (
+            motion._relaxed_walk_selection(
+                frames, poses, 24,
+                {"target": 1.05, "minimum": 0.85, "maximum": 3.4},
+                "office-gait",
+            )
+        )
+        self.assertEqual("closed full-gait selection", method)
+        self.assertLessEqual(abs(end - start - period), 3)
+        quality = motion._pose_cycle_metrics(poses, start, end)
+        self.assertTrue(quality["valid"], quality["reason"])
+        self.assertEqual(period, quality["gait_period"])
+        self.assertEqual(
+            motion.GAIT_PERIOD_ESTIMATOR, quality["gait_period_estimator"])
+        self.assertTrue(motion._silhouette_closure_quality(selected)["valid"])
+
+    def test_phase_cropped_gait_keeps_missing_arm_observation(self):
+        period, phase, count = 45, 3, 145
+        poses = gait_poses(count + phase, period)[phase:]
+        frames = periodic_silhouette_frames(count + phase, period)[phase:]
+        for pose in poses:
+            pose["joints"]["left_wrist"]["confidence"] = 0.0
+        selected, start, end, _alternates, method = (
+            motion._relaxed_walk_selection(
+                frames, poses, 24,
+                {"target": 1.05, "minimum": 0.85, "maximum": 3.4},
+                "office-gait",
+            )
+        )
+        self.assertEqual(
+            "closed full-gait selection; one far arm untrackable", method)
+        quality = motion._pose_cycle_metrics(poses, start, end)
+        self.assertFalse(quality["valid"])
+        self.assertIn("left arm tracking unavailable", quality["reason"])
+        self.assertTrue(motion._pose_cycle_valid_except_single_untracked_arm(quality))
+        self.assertEqual(period, quality["gait_period"])
+        self.assertTrue(motion._silhouette_closure_quality(selected)["valid"])
 
     def test_relaxed_shipping_uses_closed_full_gait_when_far_arm_untrackable(self):
         period = 48

@@ -60,8 +60,8 @@ class StylizedHeadCompositeTests(unittest.TestCase):
         self.assertEqual(0, int(mask[137, 90]))      # body owns the neck
         self.assertEqual(0, int(mask[178, 90]))      # source bust/clothing
 
-    def test_soft_3d_handoff_drops_rendered_neck_tail_but_keeps_head_silhouette(self):
-        """A soft-3-D source neck must not become a second shaded chin."""
+    def test_soft_3d_handoff_keeps_hair_but_hands_central_neck_to_body(self):
+        """Soft 3-D keeps lateral hair while the generated body owns the neck."""
         portrait = _stylized_portrait()
         landmarks = _oval_landmarks()
         body_rgba = np.full((220, 180, 4), (190, 30, 20, 255), np.uint8)
@@ -100,17 +100,61 @@ class StylizedHeadCompositeTests(unittest.TestCase):
             self.assertEqual(
                 int(illustration_mask[y, x]), int(soft_3d_mask[y, x]))
             self.assertGreater(int(soft_3d_mask[y, x]), 250)
-        # The source portrait deliberately contains a long neck.  The 2-D lane
-        # keeps its established ink-safe overlap, while soft 3-D has already
-        # handed this central row back to the generated body.
+        # The source portrait deliberately contains a narrow long neck.  It
+        # must not override the wider generated-body neck below the jaw: doing
+        # so creates a visible width step when the portrait layer fades out.
         self.assertGreater(int(illustration_mask[133, 90]), 64)
         self.assertEqual(0, int(soft_3d_mask[133, 90]))
         self.assertTrue(np.array_equal(
             body_rgba[133, 90], preview[133, 90]))
+        # The source bust/clothing remains excluded below the handoff too.
+        self.assertLess(int(soft_3d_mask[150, 90]), 8)
+        self.assertEqual(0, int(soft_3d_mask[151, 90]))
+        self.assertTrue(np.array_equal(
+            body_rgba[151, 90], preview[151, 90]))
         self.assertEqual("soft-3d-jaw-v1", receipt["handoff_profile"])
         self.assertEqual("3d render", receipt["source_medium"])
         self.assertGreaterEqual(receipt["handoff_feather_px"], 6.0)
         self.assertLessEqual(receipt["handoff_feather_px"], 12.0)
+
+    def test_soft_3d_long_hair_does_not_collapse_at_the_ear_handoff(self):
+        portrait = np.zeros((200, 180, 4), np.uint8)
+        color = (35, 80, 120, 255)
+        cv2.ellipse(portrait, (90, 82), (44, 47), 0, 0, 360, color, -1)
+        # Source-supported long hair continues well below both ears.
+        cv2.rectangle(portrait, (30, 35), (54, 165), color, -1)
+        cv2.rectangle(portrait, (126, 35), (150, 165), color, -1)
+        cv2.rectangle(portrait, (75, 124), (105, 154), color, -1)
+        landmarks = _oval_landmarks()
+        body_rgba = np.full((220, 180, 4), (190, 30, 20, 255), np.uint8)
+        transform = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+
+        with tempfile.TemporaryDirectory() as directory:
+            mask_path = os.path.join(directory, "head-mask.png")
+            clear_path = os.path.join(directory, "head-clear-mask.png")
+            body._stylized_head_mask(
+                portrait, landmarks, mask_path, transform=transform,
+                source_medium="3d render")
+            receipt = body._stylized_head_clear_mask(
+                body_rgba, mask_path, transform, landmarks,
+                [52, 43, 76, 84], clear_path,
+                source_medium="3d render")
+            mask = cv2.imread(
+                mask_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+            clear = cv2.imread(
+                clear_path, cv2.IMREAD_UNCHANGED)[:, :, 3]
+
+        # Both lateral hair lobes remain continuous below the facial jaw; the
+        # previous jaw-only field cut both columns to zero near eye/ear level.
+        for x in (42, 138):
+            self.assertGreater(int(mask[135, x]), 240)
+            self.assertGreater(int(mask[145, x]), 128)
+            self.assertGreater(int(clear[135, x]), 240)
+        self.assertEqual(
+            "erasure-only-short-hair-taper",
+            receipt["hair_bridge"]["method"])
+        self.assertFalse(receipt["hair_bridge"]["applied"])
 
     def test_illustration_handoff_retains_existing_luffy_safe_overlap(self):
         portrait = _stylized_portrait()

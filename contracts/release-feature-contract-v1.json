@@ -3,7 +3,7 @@
   "ios": {
     "avatar_store": {
       "enabled": true,
-      "catalog_tag": "avatar-store-v1.0.8"
+      "catalog_tag": "avatar-store-v1.0.9"
     },
     "push_to_talk": {
       "apple": {

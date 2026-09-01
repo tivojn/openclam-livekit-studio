@@ -678,7 +678,8 @@ class RigProfileTests(unittest.TestCase):
         source = open(
             os.path.join(ROOT, "studio", "build.py"), encoding="utf-8").read()
         marker = source.index("def recompose_avatar")
-        window = source[marker:marker + 5600]
+        next_function = source.index("\ndef ", marker + 1)
+        window = source[marker:next_function]
         self.assertIn("- published with this ", window)
         # A near miss remains advisory, while a clearly broken bank keeps the
         # current published avatar, first applies calculated safe sliders

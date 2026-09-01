@@ -1007,7 +1007,8 @@ def recompose_avatar(slug, profile, log=print, progress=None):
     gaps = raw_render_gaps(slug)
     directory = adir(slug)
     source_report = manifest.get("source_metrics") or manifest.get("metrics") or {}
-    allow_stylized = _source_medium(source_report) != "photograph"
+    source_medium = _source_medium(source_report)
+    allow_stylized = source_medium != "photograph"
     recorded_repairs = dict(manifest.get("local_viseme_repairs") or {})
     unrecoverable_gaps = []
     for name in gaps:
@@ -1049,7 +1050,8 @@ def recompose_avatar(slug, profile, log=print, progress=None):
         report, key_metrics = compose.compose_all(
             stage_keyframe, stage_raw,
             stage_visemes, diag_dir=stage_diag, log=emit,
-            profile=profile, allow_stylized=allow_stylized)
+            profile=profile, allow_stylized=allow_stylized,
+            source_medium=source_medium)
         expected = len(visemes.ORDER)
         if len(report) != expected:
             raise AssertionError(
@@ -1073,7 +1075,7 @@ def recompose_avatar(slug, profile, log=print, progress=None):
             report, key_metrics = compose.compose_all(
                 stage_keyframe, stage_raw, stage_visemes,
                 diag_dir=stage_diag, log=emit, profile=profile,
-                allow_stylized=allow_stylized)
+                allow_stylized=allow_stylized, source_medium=source_medium)
             aperture, over = measure.audit(
                 stage_keyframe, stage_visemes, log=emit,
                 names=visemes.SPEECH_ORDER,
@@ -1087,7 +1089,7 @@ def recompose_avatar(slug, profile, log=print, progress=None):
                     report, key_metrics = compose.compose_all(
                         stage_keyframe, stage_raw, stage_visemes,
                         diag_dir=stage_diag, log=emit, profile=profile,
-                        allow_stylized=allow_stylized)
+                        allow_stylized=allow_stylized, source_medium=source_medium)
                     aperture, over = measure.audit(
                         stage_keyframe, stage_visemes, log=emit,
                         names=visemes.SPEECH_ORDER,
@@ -1840,7 +1842,8 @@ def _build_avatar_under_lock(
         profile = rig.from_manifest(m)
         report, kmet = compose.compose_all(
             key, raw, out, diag_dir=diag, log=emit, profile=profile,
-            allow_stylized=(source_medium != "photograph"))
+            allow_stylized=(source_medium != "photograph"),
+            source_medium=source_medium)
 
         emit("checking mouth amplitude...")
         aperture, over = measure.audit(
@@ -1863,7 +1866,8 @@ def _build_avatar_under_lock(
             profile = repair["profile"]
             report, kmet = compose.compose_all(
                 key, raw, out, diag_dir=diag, log=emit, profile=profile,
-                allow_stylized=(source_medium != "photograph"))
+                allow_stylized=(source_medium != "photograph"),
+                source_medium=source_medium)
             aperture, over = measure.audit(
                 key, out, log=emit, names=visemes.SPEECH_ORDER,
                 allow_stylized=(source_medium != "photograph"))
@@ -1891,7 +1895,8 @@ def _build_avatar_under_lock(
                     report, kmet = compose.compose_all(
                         key, safe_raw, out, diag_dir=diag, log=emit,
                         profile=profile,
-                        allow_stylized=(source_medium != "photograph"))
+                        allow_stylized=(source_medium != "photograph"),
+                        source_medium=source_medium)
                     aperture, over = measure.audit(
                         key, out, log=emit, names=visemes.SPEECH_ORDER,
                         allow_stylized=(source_medium != "photograph"))

@@ -693,6 +693,120 @@ def _stylized_patch_harmonize(key, donor, alpha):
     return np.clip(donor.astype(np.float32) + correction, 0.0, 255.0)
 
 
+def _soft3d_smile_fold_alpha(key, donor, alpha, key_landmarks,
+                            source_landmarks, transform, source_medium):
+    """Own a contracting smile's connected shaded folds, not extra face art.
+
+    The tight illustrated-mouth mask is normally sufficient.  A strongly
+    smiling, shaded 3D source also has a soft crease outside each raised
+    corner.  Clipping that crease halfway when a viseme lowers/narrows the
+    mouth leaves a visible crescent in the processed plate.  Extend only into
+    a measured, low-frequency difference connected to the existing mouth
+    ownership, within a small old-corner neighborhood.  This is not a general
+    cheek transfer: the nose, silhouette and unshared sharp artwork remain
+    canonical, as do all photo/2D/unknown/ordinary-neutral paths.
+
+    ``donor`` is the already registered and harmonized float RGB/BGR image.
+    The existing opaque lip core and its donor RGB are never changed here.
+    """
+    if not isinstance(source_medium, str) or source_medium != "3d render":
+        return alpha
+    if (not isinstance(key, np.ndarray) or not isinstance(donor, np.ndarray)
+            or not isinstance(alpha, np.ndarray) or key.ndim != 3
+            or key.shape[-1] != 3 or donor.shape != key.shape
+            or alpha.shape != key.shape[:2]):
+        return alpha
+    try:
+        canonical = np.asarray(key_landmarks, np.float32)
+        generated = np.asarray(source_landmarks, np.float32)
+        affine = np.asarray(transform, np.float32)
+        if (canonical.ndim != 2 or generated.ndim != 2
+                or canonical.shape[0] < 468 or generated.shape[0] < 468
+                or canonical.shape[1] != 2 or generated.shape[1] != 2
+                or affine.shape != (2, 3)
+                or not np.isfinite(canonical).all()
+                or not np.isfinite(generated).all()
+                or not np.isfinite(affine).all()):
+            return alpha
+        projected = generated @ affine[:, :2].T + affine[:, 2]
+        if not np.isfinite(projected).all() or not np.isfinite(alpha).all():
+            return alpha
+        mouth_width = float(np.ptp(canonical[face.OUTER_LIP, 0]))
+        new_width = float(np.ptp(projected[face.OUTER_LIP, 0]))
+        height, width = key.shape[:2]
+        if not 12.0 <= mouth_width <= min(height, width) * 0.55:
+            return alpha
+        corners = canonical[[face.MOUTH_L, face.MOUTH_R]]
+        old_raise = float((canonical[0, 1] - corners[:, 1].mean()) / mouth_width)
+        new_raise = float((projected[0, 1] - projected[
+            [face.MOUTH_L, face.MOUTH_R], 1].mean()) / mouth_width)
+        # Ordinary neutral faces and an unchanged/wider smile keep exactly
+        # the existing pipeline. Both observations are geometry, not skin or
+        # lip color, avatar name, or an asset-specific coordinate exception.
+        if (old_raise < 0.06 or old_raise - new_raise < 0.04
+                or new_width > mouth_width * 0.98
+                or canonical[152, 1] - corners[:, 1].max() < mouth_width * 0.25):
+            return alpha
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return alpha
+
+    yy, xx = np.indices(alpha.shape, dtype=np.float32)
+    region = np.zeros(alpha.shape, np.float32)
+    for cx, cy in corners:
+        radius = np.sqrt(
+            ((xx - cx) / (mouth_width * 0.26)) ** 2
+            + ((yy - cy - mouth_width * 0.035) / (mouth_width * 0.26)) ** 2)
+        progress = np.clip((radius - 0.8) / 0.2, 0.0, 1.0)
+        region = np.maximum(region, 1.0 - progress * progress * (3.0 - 2.0 * progress))
+
+    # A small, soft collar inside the literal source silhouette prevents any
+    # corner extension from importing jaw/background/hair boundaries.
+    face_mask = face.hull_mask(key.shape, canonical, face.FACE_OVAL)
+    face_distance = cv2.distanceTransform(
+        (face_mask > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    safety_margin = max(2.0, mouth_width * 0.035)
+    interior = np.clip((face_distance - safety_margin) / safety_margin, 0.0, 1.0)
+    nose_mask = face.hull_mask(
+        key.shape, canonical, face.NOSE_CORE + [2, 98, 327])
+    nose_distance = cv2.distanceTransform(
+        (nose_mask == 0).astype(np.uint8), cv2.DIST_L2, 5)
+    nose_guard = np.clip((nose_distance - safety_margin) / safety_margin, 0.0, 1.0)
+    region *= interior * nose_guard
+
+    kf, df = key.astype(np.float32), donor.astype(np.float32)
+    if not np.isfinite(kf).all() or not np.isfinite(df).all():
+        return alpha
+    sigma = max(1.5, mouth_width * 0.012)
+    canonical_low = cv2.GaussianBlur(kf, (0, 0), sigma)
+    donor_low = cv2.GaussianBlur(df, (0, 0), sigma)
+    strength = np.max(np.abs(donor_low - canonical_low), axis=2)
+    # The extension is for smooth fold shading, never a scar, beauty mark,
+    # outline or a new sharp donor feature. Only the extra collar is guarded;
+    # approved old/new lip ownership remains opaque and unchanged.
+    detail = np.maximum(np.max(np.abs(kf - canonical_low), axis=2),
+                        np.max(np.abs(df - donor_low), axis=2))
+    foreign_art = (detail > 20.0) & (np.max(np.abs(df - kf), axis=2) > 24.0)
+    art_distance = cv2.distanceTransform(
+        (~foreign_art).astype(np.uint8), cv2.DIST_L2, 5)
+    art_guard = np.clip((art_distance - 1.0) / max(1.0, mouth_width * 0.012), 0.0, 1.0)
+    region *= art_guard
+
+    allowed = (region > 0.0) & (strength > 4.0)
+    _count, labels, _stats, _centers = cv2.connectedComponentsWithStats(
+        allowed.astype(np.uint8))
+    connected = np.unique(labels[allowed & (alpha >= 0.98)])
+    connected = connected[connected != 0]
+    if not connected.size:
+        return alpha
+    support = np.isin(labels, connected).astype(np.uint8)
+    dilation = max(1, int(round(mouth_width * 0.016)))
+    support = cv2.dilate(support, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (dilation * 2 + 1, dilation * 2 + 1)))
+    extension = cv2.GaussianBlur(
+        support.astype(np.float32), (0, 0), max(1.1, mouth_width * 0.008)) * region
+    return np.maximum(alpha, extension).astype(np.float32)
+
+
 def _finish_viseme_bank(viseme_dir, diag_dir, log, profile,
                         allow_stylized=False):
     """Apply photographic dental/shadow correction only to photographs.
@@ -732,7 +846,7 @@ def _detect_composition_face(image, allow_stylized=False):
 
 
 def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
-                profile=None, allow_stylized=False):
+                profile=None, allow_stylized=False, source_medium=None):
     key = cv2.imread(keyframe_path)
     H, W = key.shape[:2]
     scale = max(H, W) / 1024.0
@@ -795,11 +909,6 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
         if allow_stylized and name not in visemes.EYE_SHAPES:
             alpha = _stylized_mouth_alpha(
                 key.shape, klm, slm, M)
-            if diag_dir and name in {"closed", "ah"}:
-                cv2.imwrite(
-                    os.path.join(
-                        diag_dir, f"02_mask_mouth_stylized_{name}.png"),
-                    np.round(alpha * 255.0).astype(np.uint8))
             # Keep the legacy report useful: measure the surrounding canonical
             # difference even though the stylized compositor now performs a
             # spatial low-frequency match rather than applying this scalar.
@@ -811,6 +920,13 @@ def compose_all(keyframe_path, raw_dir, out_dir, diag_dir=None, log=print,
             off = (kl[ring].mean(axis=0) - wl[ring].mean(axis=0)
                    if np.any(ring) else np.zeros(3, np.float32))
             wl = _stylized_patch_harmonize(kl, wl, alpha)
+            alpha = _soft3d_smile_fold_alpha(
+                key, wl, alpha, klm, slm, M, source_medium)
+            if diag_dir and name in {"closed", "ah"}:
+                cv2.imwrite(
+                    os.path.join(
+                        diag_dir, f"02_mask_mouth_stylized_{name}.png"),
+                    np.round(alpha * 255.0).astype(np.uint8))
         else:
             alpha, ring = prepared[
                 "eyes" if name in visemes.EYE_SHAPES else "mouth"]

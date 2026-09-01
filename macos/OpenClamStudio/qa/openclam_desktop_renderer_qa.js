@@ -165,13 +165,13 @@ assert.match(source, /\.pending-attachment \{[^}]*border:\s*1px solid var\(--cod
   'attachment chips must have sufficient light- and dark-theme contrast');
 assert.match(source, /const chatWorkspaceViewport = \(\) => \{/);
 assert.match(source, /const chatAvatarSafeViewport = \(\{ reserveComposer = true, reserveRail = true \} = \{\}\) => \{/,
-  'avatar fitting must derive a central-pane safe area instead of painting under controls');
+  'default framing and automatic motion must derive a central-pane safe area');
 assert.match(source, /right = Math\.min\(right, railRect\.left - 16\)/,
-  'the avatar safe area must stop before the visible rail');
+  'default framing and automatic motion must reserve the visible rail');
 assert.match(source, /bottom = Math\.min\(bottom, composerRect\.top - 16\)/,
-  'full-body and motion feet must stop above the floating composer');
+  'default full-body and motion feet must stop above the floating composer');
 assert.match(source, /return fullChat \|\| safeDesktop \? clampChatCameraFit\(fit, viewport\) : fit;/,
-  'saved Standby placement must keep the head inside the usable chat or static desktop canvas');
+  'saved Standby placement must keep the crown below the chat or desktop top edge');
 assert.match(source, /chatAvatarSafeViewport\(\{ reserveComposer: true, reserveRail: true \}\)/,
   'chat Walk and Edge Idle must share the same rail/composer-safe canvas');
 assert.match(source, /if \(chatScoped && kind === 'idle'\) \{[\s\S]{0,420}const viewport = chatAvatarSafeViewport\(\{ reserveComposer: true, reserveRail: true \}\);/,
@@ -1825,6 +1825,47 @@ const chatStandbyEdge = new Function(
 const standbyIdleDelay = new Function(
   `'use strict'; ${standbyIdleDelaySource[1]}; return standbyIdleDelay;`,
 )();
+// Manual placement has precisely one boundary. Exercise production helpers,
+// not just source patterns, so lateral/bottom containment cannot sneak back
+// into saved offsets, mirrored rendering, or high-zoom camera fitting.
+const avatarOffsetSource = inline[1].match(
+  /(const boundedChatAvatarOffset = value => \{[\s\S]*?\n    \};)/,
+);
+const avatarCameraGuardSource = inline[1].match(
+  /(const clampChatCameraFit = \(fit, viewport\) => \{[\s\S]*?\n    \};)/,
+);
+assert.ok(avatarOffsetSource, 'manual offset validation must remain independently testable');
+assert.ok(avatarCameraGuardSource, 'the top-only camera guard must remain independently testable');
+const manualAvatarGeometry = new Function(
+  `'use strict'; ${numericAvatarZoomSource[1]}; ${avatarOffsetSource[1]};
+    ${avatarCameraGuardSource[1]}; return { boundedChatAvatarOffset, clampChatCameraFit };`,
+)();
+const manualViewport = { x: 270, y: 54, width: 800, height: 620 };
+for (const scale of [.05, .6, 4, 16, 256]) {
+  for (const x of [-100000, 300, 100000]) {
+    for (const y of [-100000, 250, 100000]) {
+      const offset = { x, y };
+      assert.deepEqual(manualAvatarGeometry.boundedChatAvatarOffset(offset), offset,
+        'saving placement must not constrain any finite drag offset');
+      const fit = { x, y, scale, crop: { x: 30, y: 40, w: 650, h: 1400 },
+        headSpan: { top: 17, bottom: 380, left: 45, right: 610 } };
+      const result = manualAvatarGeometry.clampChatCameraFit(fit, manualViewport);
+      assert.equal(result.x, x, 'left/right overflow must not reposition the avatar');
+      assert.equal(result.y, Math.max(manualViewport.y - 17 * scale, y),
+        'only crossing the upper edge may change vertical placement');
+      assert.equal(result.scale, scale, 'the top guard must never shrink a requested zoom');
+      assert.deepEqual(manualAvatarGeometry.clampChatCameraFit(fit,
+        { ...manualViewport, headMirrorCentreX: 670 }), result,
+      'mirroring must not introduce a horizontal containment rule');
+      assert.deepEqual(manualAvatarGeometry.clampChatCameraFit(result, manualViewport), result,
+        'reapplying the guard must be stable');
+      assert.equal(fit.x, x);
+      assert.equal(fit.y, y);
+    }
+  }
+}
+assert.deepEqual(manualAvatarGeometry.boundedChatAvatarOffset({ x: Infinity, y: NaN }),
+  { x: 0, y: 0 }, 'non-finite positions must not reach rendering or storage');
 const closeUp = chatCloseUpGeometry({x: 100, y: 50, w: 600, h: 900}, 1180, 860, 1);
 const closeUpTop = closeUp.y + 50 * closeUp.scale;
 const closeUpRight = closeUp.x + 700 * closeUp.scale;

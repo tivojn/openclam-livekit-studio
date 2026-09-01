@@ -216,7 +216,7 @@ enum OpenClamAvatarPackageContract {
     static let maximumImageDimension = 8_192
     static let maximumExpressionTextureDimension = 8_192
     static let maximumDecodedPixelCount: UInt64 = 16 * 1_024 * 1_024
-    static let maximumAggregateDecodedPixelCount: UInt64 = 48 * 1_024 * 1_024
+    static let maximumAggregateDecodedPixelCount: UInt64 = 54_000_000
     static let baseFileCount = 19
     static let fullExpressionFileCount = 33
     static let maximumFileCount = fullExpressionFileCount

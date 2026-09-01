@@ -46,7 +46,7 @@ _MIN_GENERATED_FACE_AXIS_FRACTION = 0.90
 # lateral fields for the portrait and body. V4 authors both in face geometry.
 # Every newly authored stylized body gets this explicit current marker.
 STYLIZED_HEAD_HANDOFF_VERSION = 4
-SOFT_3D_NECK_REGISTRATION_VERSION = 1
+SOFT_3D_NECK_REGISTRATION_VERSION = 3
 SOFT_3D_JAW_BAND_REPAIR_VERSION = 1
 DEFAULT_BODY_PROMPT = (
     "Create a photorealistic couture-level full-body wardrobe with tailored "
@@ -1454,12 +1454,92 @@ def _stylized_head_mask(
         feather_px = projected_feather / max(scale, 1e-6)
     support, _head_side, _handoff = _stylized_jaw_handoff(
         alpha.shape, oval, feather_px=feather_px)
+    support, _extended_handoff = _soft_3d_hair_and_neck_support(
+        support, oval, source_medium=source_medium)
     mask = np.clip(alpha * support, 0.0, 1.0)
     rgba = np.full((*mask.shape, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = np.round(mask * 255).astype(np.uint8)
     if not cv2.imwrite(destination, rgba):
         raise RuntimeError("the stylized identity overlay mask could not be written")
     return "full-silhouette"
+
+
+def _soft_3d_hair_and_neck_support(
+        jaw_support, oval, *, source_medium=None):
+    """Keep long soft-3D hair past the facial jaw without owning the neck.
+
+    The shared jaw field is intentionally conservative for a bust portrait: it
+    rejects source clothing below the chin.  Applying that same field to the
+    *entire* source matte, however, also cuts long side hair at the ear hinges
+    and collapses the source neck to a ten-pixel point.  At runtime that made a
+    horizontal hair shelf and a visibly pinched head/body neck on Ola.
+
+    Preserve one anatomy-relative region from the validated source matte:
+    lateral hair outside the neck corridor, with a long
+    vertical dissolve.  The generated body remains authoritative for the
+    central neck.  Extending the portrait neck made a narrow portrait contour
+    visibly widen into the body neck a few rows below the jaw.
+
+    This function returns support only.  The caller still multiplies it by the
+    locally validated cutout alpha, so it cannot invent hair, skin, clothing,
+    or background pixels.  Photographs and flat illustrations retain their
+    established, byte-identical jaw handoff.
+    """
+    receipt = {
+        "method": "source-supported-soft-3d-lateral-hair-v2",
+        "source_medium": _normalise_source_medium(source_medium),
+        "applied": False,
+    }
+    if receipt["source_medium"] != "3d render":
+        receipt["reason"] = "not-soft-3d"
+        return jaw_support, receipt
+    if (jaw_support is None or jaw_support.ndim != 2
+            or not np.issubdtype(jaw_support.dtype, np.floating)):
+        raise RuntimeError("soft-3D head handoff support is invalid")
+    points = np.asarray(oval, dtype=np.float32).reshape(-1, 2)
+    if (len(points) < 3 or not np.all(np.isfinite(points))):
+        raise RuntimeError("soft-3D head handoff geometry is invalid")
+
+    height, width = jaw_support.shape
+    face_left = float(np.min(points[:, 0]))
+    face_right = float(np.max(points[:, 0]))
+    face_top = float(np.min(points[:, 1]))
+    chin = float(np.max(points[:, 1]))
+    face_width = max(1.0, face_right - face_left)
+    face_height = max(1.0, chin - face_top)
+    centre = (face_left + face_right) * 0.5
+    xs = np.arange(width, dtype=np.float32)[None, :]
+    ys = np.arange(height, dtype=np.float32)[:, None]
+
+    def smoothstep(value):
+        value = np.clip(value, 0.0, 1.0)
+        return value * value * (3.0 - 2.0 * value)
+
+    # Long side hair is identity-owned.  Start the lateral support well inside
+    # the outer hair lobes, but outside an ordinary neck, then dissolve it near
+    # the lower portrait/collar instead of slicing it at eye height.
+    lateral_start = face_width * 0.27
+    lateral_end = face_width * 0.35
+    lateral = smoothstep(
+        (np.abs(xs - centre) - lateral_start)
+        / max(1.0, lateral_end - lateral_start))
+    hair_fade_start = chin + face_height * 0.10
+    hair_fade_end = chin + face_height * 0.36
+    hair_vertical = 1.0 - smoothstep(
+        (ys - hair_fade_start)
+        / max(1.0, hair_fade_end - hair_fade_start))
+    hair_support = lateral * hair_vertical
+
+    result = np.maximum(jaw_support, hair_support).astype(np.float32)
+    receipt.update({
+        "applied": True,
+        "face_width": round(face_width, 3),
+        "hair_fade_rows": [
+            round(hair_fade_start, 3), round(hair_fade_end, 3)],
+        "neck_owner": "generated-body",
+        "changed_support_pixels": int(np.sum(result > jaw_support + 1e-4)),
+    })
+    return result, receipt
 
 
 def _neck_row_edge(image, row, left, right):
@@ -1589,9 +1669,28 @@ def _register_soft_3d_neck_seam(
             edge_receipt["reason"] = "ambiguous-offset"
             continue
         first_row, last_row = samples[0][0], samples[-1][0]
-        # Keep this local to the jaw-to-neck junction, not the collar or chest.
-        # Below the overlap, smoothly restore the authored body in a few rows.
-        final_row = max(last_row + 5.0, chin + face_width * .02)
+        # A four-pixel lateral correction cannot return in only four rows:
+        # that makes a second, visible shoulder in the neck contour directly
+        # below an otherwise aligned jaw (Ola, 2026-09-01). Spread its return
+        # over a bounded neck-length field, never as far as the chest. Require
+        # the same donor neck/hair edge to continue through the added rows;
+        # an approaching collar or ambiguous contour ends the field early.
+        original_end = max(last_row + 5.0, chin + face_width * .02)
+        final_row = max(
+            last_row + max(24.0, abs(offset) * 6.0),
+            chin + face_width * .18)
+        reference_gradient = np.median(np.asarray([
+            _neck_row_edge(body_image, sample[0], left, right)[2]
+            for sample in samples]), axis=0)
+        for row in range(last_row + 1, min(height - 1, int(np.ceil(final_row))) + 1):
+            _position, strength, gradient = _neck_row_edge(
+                body_image, row, left, right)
+            agreement = float(np.dot(reference_gradient, gradient) / max(
+                1e-5, np.linalg.norm(reference_gradient)
+                * np.linalg.norm(gradient)))
+            if strength < 12.0 or agreement < .92:
+                final_row = max(original_end, min(final_row, float(row)))
+                break
         vertical = smoothstep((rows - (first_row - 4)) / 4) * (
             1.0 - smoothstep(
                 (rows - (last_row + 1)) / (final_row - (last_row + 1))))
@@ -1619,6 +1718,7 @@ def _register_soft_3d_neck_seam(
             "donor_edge_x": round(donor_x, 6),
             "matching_row_bounds": [first_row, last_row],
             "correction_row_bounds": [first_row - 4, round(final_row, 6)],
+            "return_profile": "contour-supported-smoothstep",
         })
     affected = np.abs(displacement) > .001
     if not np.any(affected):
@@ -1819,6 +1919,470 @@ def _repair_soft_3d_jaw_band(
     return result, receipt
 
 
+def _taper_short_stylized_hair_protrusions(
+        clear_alpha, donor_alpha, warped_alpha, projected,
+        *, source_medium=None, maximum_gap=4,
+        maximum_disconnected_rows=4, maximum_taper_rows=12,
+        minimum_hold_rows=5):
+    """Erase a detached soft-3D hair shelf with a smooth outer taper.
+
+    A generated-body hair lobe can begin a few pixels outside the canonical
+    portrait hair before the silhouettes touch. Filling the intervening slit
+    only replaces it with an opaque donor-colour shelf. The correct ownership
+    transition is erasure-only: remove the short detached lobe, keep the
+    canonical contour authoritative through a few adjacent rows, then release
+    the donor contour by no more than one pixel per row until its natural edge
+    is reached.  The short hold avoids revealing a differently coloured donor
+    wedge at the first high-contrast reconnection row.
+
+    An eligible event must be source-supported, no wider than four pixels,
+    last only a few rows, and reconnect immediately below. Long gaps, hats,
+    clothing and ordinary silhouette changes therefore remain untouched.
+    Photographs and flat illustrations are exact no-ops, and inputs are never
+    mutated.
+    """
+    receipt = {
+        "method": "erasure-only-short-hair-taper",
+        "source_medium": _normalise_source_medium(source_medium),
+        "applied": False,
+        "changed_pixels": 0,
+        "maximum_gap": int(maximum_gap),
+        "maximum_disconnected_rows": int(maximum_disconnected_rows),
+        "maximum_taper_rows": int(maximum_taper_rows),
+        "minimum_hold_rows": int(minimum_hold_rows),
+    }
+    if receipt["source_medium"] != "3d render":
+        receipt["reason"] = "not-soft-3d"
+        return clear_alpha, receipt
+    if (clear_alpha is None or donor_alpha is None or warped_alpha is None
+            or clear_alpha.ndim != 2 or donor_alpha.ndim != 2
+            or warped_alpha.ndim != 2
+            or clear_alpha.shape != donor_alpha.shape
+            or clear_alpha.shape != warped_alpha.shape
+            or clear_alpha.dtype != np.uint8
+            or donor_alpha.dtype != np.uint8
+            or warped_alpha.dtype != np.uint8):
+        raise RuntimeError("stylized hair-taper inputs are invalid")
+    oval = np.asarray(projected, dtype=np.float32)
+    if (oval.ndim != 2 or oval.shape[1] != 2
+            or not np.all(np.isfinite(oval))
+            or not 1 <= maximum_gap <= 6
+            or not 1 <= maximum_disconnected_rows <= 8
+            or not 1 <= maximum_taper_rows <= 24
+            or not 1 <= minimum_hold_rows <= 12):
+        raise RuntimeError("stylized hair-taper geometry is invalid")
+
+    result = clear_alpha.copy()
+    canonical = warped_alpha > 4
+    donor = donor_alpha > 8
+    top = max(0, int(np.floor(np.min(oval[:, 1]))))
+    bottom = min(
+        clear_alpha.shape[0],
+        int(np.ceil(np.min(oval[:, 1]) + np.ptp(oval[:, 1]) * .56)))
+    changed = set()
+    events = []
+
+    def row_geometry(row, direction):
+        canonical_x = np.flatnonzero(canonical[row])
+        if len(canonical_x) < 8:
+            return None
+        retained = donor[row] & (result[row] < 5)
+        edge = int(canonical_x[0] if direction < 0 else canonical_x[-1])
+        if direction < 0:
+            candidates = np.flatnonzero(retained[:edge])
+            if not len(candidates):
+                return None
+            nearest = int(candidates[-1])
+            start, stop = nearest + 1, edge
+            natural = int(candidates[0])
+        else:
+            candidates = np.flatnonzero(retained[edge + 1:])
+            if not len(candidates):
+                return None
+            candidates = candidates + edge + 1
+            nearest = int(candidates[0])
+            start, stop = edge + 1, nearest
+            natural = int(candidates[-1])
+        return {
+            "edge": edge,
+            "natural": natural,
+            "component_contiguous": bool(np.all(
+                retained[min(nearest, natural):max(nearest, natural) + 1])),
+            "gap_start": start,
+            "gap_stop": stop,
+            "gap": stop - start,
+        }
+
+    def erase_outboard(row, direction, desired, natural):
+        if direction < 0:
+            start, stop = max(0, natural), desired
+        else:
+            start, stop = desired + 1, min(result.shape[1], natural + 1)
+        columns = np.flatnonzero(
+            donor[row, start:stop] & ~canonical[row, start:stop]) + start
+        for column in columns:
+            column = int(column)
+            if result[row, column] < 255:
+                result[row, column] = 255
+                changed.add((row, column))
+
+    for direction in (-1, 1):
+        group = []
+        for row in range(top, bottom):
+            geometry = row_geometry(row, direction)
+            qualifies = bool(
+                geometry
+                and 1 <= geometry["gap"] <= maximum_gap
+                and geometry["component_contiguous"]
+                and np.all(donor[
+                    row, geometry["gap_start"]:geometry["gap_stop"]])
+                and np.any(result[
+                    row, geometry["gap_start"]:geometry["gap_stop"]] > 4))
+            if qualifies:
+                if group and row != group[-1][0] + 1:
+                    group = []
+                group.append((row, geometry))
+                continue
+            if not group:
+                continue
+            first_row, last_row = group[0][0], group[-1][0]
+            eligible = bool(
+                len(group) <= maximum_disconnected_rows
+                and row == last_row + 1
+                and geometry is not None
+                and geometry["gap"] <= 0)
+            if eligible:
+                desired = int(group[-1][1]["edge"])
+                changed_before = len(changed)
+                for event_row, event_geometry in group:
+                    erase_outboard(
+                        event_row, direction, int(event_geometry["edge"]),
+                        int(event_geometry["natural"]))
+                taper_end = last_row
+                for taper_row in range(
+                        last_row + 1,
+                        min(result.shape[0], last_row + minimum_hold_rows
+                            + maximum_taper_rows + 1)):
+                    taper = row_geometry(taper_row, direction)
+                    if taper is None:
+                        break
+                    natural = int(taper["natural"])
+                    if taper_row > last_row + minimum_hold_rows:
+                        desired = (max(natural, desired - 1)
+                                   if direction < 0
+                                   else min(natural, desired + 1))
+                    erase_outboard(taper_row, direction, desired, natural)
+                    taper_end = taper_row
+                    if desired == natural:
+                        break
+                if len(changed) > changed_before:
+                    events.append({
+                        "side": "viewer-left" if direction < 0
+                        else "viewer-right",
+                        "gap_rows": [first_row, last_row],
+                        "taper_rows": [last_row + 1, taper_end],
+                    })
+            group = []
+        # A group reaching the lower edge of the eligible band is ignored:
+        # there is no proven immediate reconnection to taper into.
+    if changed:
+        ys = np.asarray([point[0] for point in changed])
+        xs = np.asarray([point[1] for point in changed])
+        receipt.update({
+            "applied": True,
+            "changed_pixels": int(len(changed)),
+            "events": events,
+            "changed_bounds": [
+                int(xs.min()), int(ys.min()),
+                int(xs.max() - xs.min() + 1),
+                int(ys.max() - ys.min() + 1)],
+        })
+    else:
+        receipt["reason"] = "no-short-reconnecting-hair-protrusion"
+    return result, receipt
+
+
+def _release_soft_3d_lateral_donor_hair(
+        clear_alpha, donor_alpha, warped_alpha, projected, hair_bridge,
+        *, source_medium=None):
+    """Release a proven donor-hair shelf by the source's row alpha.
+
+    The short-hair detector above proves the side and first row of a genuine
+    reconnecting donor lobe. Keep the canonical hair contour authoritative
+    while its side alpha is opaque, then reveal the donor's natural contour as
+    that authored alpha fades. Only donor pixels strictly outside the current
+    canonical row are changed, so the central generated neck and the opaque
+    backing beneath the antialiased source edge remain byte-identical.
+
+    This intentionally does not dilate or blur the two-dimensional source
+    mask.  Soft-3D donor support does receive one native-pixel erasure guard:
+    Canvas scales the body and clear mask separately, so matching binary edges
+    otherwise interpolate into a visible outer halo at non-integral zooms.
+    The guard is clipped to the proven side and never crosses canonical art or
+    the central neck ownership boundary.
+    """
+    receipt = {
+        "method": "source-alpha-lateral-donor-hair-release-v1",
+        "source_medium": _normalise_source_medium(source_medium),
+        "applied": False,
+        "changed_pixels": 0,
+        "central_neck_owner": "generated-body",
+    }
+    if receipt["source_medium"] != "3d render":
+        receipt["reason"] = "not-soft-3d"
+        return clear_alpha, receipt
+
+    bridge_events = hair_bridge.get("events") \
+        if isinstance(hair_bridge, dict) and hair_bridge.get("applied") else None
+    event_starts = {}
+    for event in bridge_events or ():
+        if not isinstance(event, dict):
+            continue
+        side = event.get("side")
+        rows = event.get("gap_rows")
+        if (side not in {"viewer-left", "viewer-right"}
+                or not isinstance(rows, (list, tuple)) or len(rows) != 2):
+            continue
+        try:
+            start = int(rows[0])
+        except (TypeError, ValueError):
+            continue
+        event_starts[side] = min(start, event_starts.get(side, start))
+    if not event_starts:
+        receipt["reason"] = "no-proven-short-hair-event"
+        return clear_alpha, receipt
+
+    if (clear_alpha is None or donor_alpha is None or warped_alpha is None
+            or clear_alpha.ndim != 2 or donor_alpha.ndim != 2
+            or warped_alpha.ndim != 2
+            or clear_alpha.shape != donor_alpha.shape
+            or clear_alpha.shape != warped_alpha.shape
+            or clear_alpha.dtype != np.uint8
+            or donor_alpha.dtype != np.uint8
+            or warped_alpha.dtype != np.uint8):
+        raise RuntimeError("soft-3D lateral hair-release inputs are invalid")
+    oval = np.asarray(projected, dtype=np.float32)
+    if (oval.ndim != 2 or oval.shape[1] != 2 or len(oval) < 3
+            or not np.all(np.isfinite(oval))):
+        raise RuntimeError("soft-3D lateral hair-release geometry is invalid")
+
+    height, width = clear_alpha.shape
+    face_width = max(1.0, float(np.ptp(oval[:, 0])))
+    edge_strip = max(3, int(round(face_width * .10)))
+    canonical = warped_alpha > 4
+    donor_core = donor_alpha > 8
+    donor_present = donor_alpha > 0
+    donor_guard = cv2.dilate(
+        donor_present.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    result = clear_alpha.copy()
+    event_receipts = []
+
+    for side, start in sorted(event_starts.items()):
+        direction = -1 if side == "viewer-left" else 1
+        event_changed = 0
+        last_row = None
+        previous_target = None
+        for row in range(max(0, start), height):
+            canonical_x = np.flatnonzero(canonical[row])
+            if len(canonical_x) < 8:
+                break
+            left, right = int(canonical_x[0]), int(canonical_x[-1])
+            edge = left if direction < 0 else right
+            if direction < 0:
+                strip = warped_alpha[
+                    row, edge:min(right + 1, edge + edge_strip)]
+                candidates = np.flatnonzero(donor_core[row, :edge])
+            else:
+                strip = warped_alpha[
+                    row, max(left, edge - edge_strip + 1):edge + 1]
+                candidates = (
+                    np.flatnonzero(donor_core[row, edge + 1:]) + edge + 1)
+            if not len(strip):
+                break
+            owner = float(np.clip(
+                (float(np.max(strip)) - 4.0) / 251.0, 0.0, 1.0))
+            if owner <= 0.0:
+                break
+            last_row = row
+            if not len(candidates):
+                continue
+
+            nearest = int(candidates[-1] if direction < 0 else candidates[0])
+            natural = nearest
+            if direction < 0:
+                while natural > 0 and donor_present[row, natural - 1]:
+                    natural -= 1
+                guarded_natural = max(0, natural - 1)
+                raw_target = (
+                    edge - (1.0 - owner) * (edge - guarded_natural))
+                target = raw_target if previous_target is None else min(
+                    previous_target,
+                    max(raw_target, previous_target - 1.0))
+                columns = np.arange(guarded_natural, edge, dtype=np.int32)
+                strength = np.round(
+                    255.0 * np.clip(target - columns, 0.0, 1.0))
+            else:
+                while (natural + 1 < width
+                       and donor_present[row, natural + 1]):
+                    natural += 1
+                guarded_natural = min(width - 1, natural + 1)
+                raw_target = (
+                    edge + (1.0 - owner) * (guarded_natural - edge))
+                target = raw_target if previous_target is None else max(
+                    previous_target,
+                    min(raw_target, previous_target + 1.0))
+                columns = np.arange(
+                    edge + 1, guarded_natural + 1, dtype=np.int32)
+                strength = np.round(
+                    255.0 * np.clip(columns - target, 0.0, 1.0))
+            # Once a proven side starts releasing, its erasure boundary can
+            # move only outward and by at most one native pixel per row.  This
+            # absorbs ordinary raster jitter in both the source and donor
+            # edges without ever crossing canonical art.
+            previous_target = target
+            if not len(columns):
+                continue
+            eligible = donor_guard[row, columns] & ~canonical[row, columns]
+            if not np.any(eligible):
+                continue
+            columns = columns[eligible]
+            strength = strength[eligible].astype(np.uint8)
+            # A guard-only pixel has no native donor coverage.  Fade it by the
+            # same row owner rather than letting the geometric ramp hold it at
+            # full strength while the source hair is already releasing.
+            guard_only = ~donor_present[row, columns]
+            if np.any(guard_only):
+                strength[guard_only] = np.minimum(
+                    strength[guard_only],
+                    np.uint8(round(255.0 * owner)))
+            updated = np.maximum(result[row, columns], strength)
+            event_changed += int(np.count_nonzero(
+                updated != result[row, columns]))
+            result[row, columns] = updated
+
+        event_receipts.append({
+            "side": side,
+            "start_row": max(0, start),
+            "last_source_row": last_row,
+            "changed_pixels": event_changed,
+        })
+
+    changed_y, changed_x = np.nonzero(result != clear_alpha)
+    if not len(changed_y):
+        receipt["reason"] = "already-cleared-or-no-outboard-donor"
+        return clear_alpha, receipt
+    added_alpha = np.maximum(
+        result.astype(np.int16) - clear_alpha.astype(np.int16), 0)
+    receipt.update({
+        "applied": True,
+        "changed_pixels": int(len(changed_y)),
+        "changed_alpha_mass": round(float(np.sum(added_alpha)) / 255.0, 3),
+        "changed_bounds": [
+            int(changed_x.min()), int(changed_y.min()),
+            int(changed_x.max() - changed_x.min() + 1),
+            int(changed_y.max() - changed_y.min() + 1),
+        ],
+        "edge_strip_px": edge_strip,
+        "events": event_receipts,
+    })
+    return result, receipt
+
+
+def _stylized_donor_head_erase_support(
+        donor_alpha, head_side, canonical, *, source_medium=None):
+    """Return donor pixels owned by the canonical head replacement.
+
+    Soft-3D avatars need a one-native-pixel guard around every non-zero donor
+    pixel.  At runtime Canvas resamples the donor and destination-out mask
+    independently; without this guard their mathematically matching edges can
+    leave a pale duplicate contour after a non-integral scale.  The guard is
+    applied to donor support only and then clipped back to the exact head-side
+    and non-canonical ownership fields, so it cannot consume the shared neck or
+    source-supported head art.  Other media retain the legacy >8 threshold
+    byte-for-byte.
+    """
+    if (donor_alpha is None or head_side is None or canonical is None
+            or donor_alpha.ndim != 2 or head_side.ndim != 2
+            or canonical.ndim != 2
+            or donor_alpha.shape != head_side.shape
+            or donor_alpha.shape != canonical.shape
+            or donor_alpha.dtype != np.uint8):
+        raise RuntimeError("stylized donor-head erasure inputs are invalid")
+    donor_core = donor_alpha > 8
+    donor_silhouette = head_side & donor_core & ~canonical
+    if _normalise_source_medium(source_medium) != "3d render":
+        return donor_silhouette, donor_silhouette, 0
+    donor_present = donor_alpha > 0
+    sampled_support = cv2.dilate(
+        donor_present.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    donor_erase = head_side & sampled_support & ~canonical
+    sampling_guard_pixels = int(np.sum(donor_erase & ~donor_silhouette))
+    return donor_silhouette, donor_erase, sampling_guard_pixels
+
+
+def _soft_3d_upper_head_erase_support(
+        donor_alpha, warped_alpha, projected, handoff_feather,
+        *, source_medium=None):
+    """Own the complete soft-3D donor head above the jaw feather.
+
+    The curved jaw field intentionally preserves the generated neck, but its
+    side boundary can leave a one-pixel island between a fragmented canonical
+    hair row and the donor hair.  Above the start of the jaw feather, every
+    donor pixel in the bounded head ROI is unambiguously old head anatomy and
+    must be erased.  Rows inside and below the feather remain untouched so the
+    generated neck keeps its existing ownership.
+    """
+    if _normalise_source_medium(source_medium) != "3d render":
+        return np.zeros_like(donor_alpha, dtype=bool)
+    if (donor_alpha is None or warped_alpha is None
+            or donor_alpha.ndim != 2 or warped_alpha.ndim != 2
+            or donor_alpha.shape != warped_alpha.shape
+            or donor_alpha.dtype != np.uint8
+            or warped_alpha.dtype != np.uint8):
+        raise RuntimeError("soft-3D upper-head erasure inputs are invalid")
+    oval = np.asarray(projected, dtype=np.float32)
+    if (oval.ndim != 2 or oval.shape[1] != 2 or len(oval) < 3
+            or not np.all(np.isfinite(oval))
+            or not np.isfinite(handoff_feather)
+            or float(handoff_feather) <= 0.0):
+        raise RuntimeError("soft-3D upper-head erasure geometry is invalid")
+
+    height, width = donor_alpha.shape
+    face_width = max(1.0, float(np.ptp(oval[:, 0])))
+    margin = face_width * .35
+    left = max(0, int(np.floor(float(np.min(oval[:, 0])) - margin)))
+    right = min(
+        width - 1, int(np.ceil(float(np.max(oval[:, 0])) + margin)))
+    bottom = min(
+        height - 1,
+        int(np.floor(float(np.max(oval[:, 1])) - float(handoff_feather))))
+    if right < left or bottom < 0:
+        return np.zeros_like(donor_alpha, dtype=bool)
+
+    donor_present = donor_alpha > 0
+    sampled_support = cv2.dilate(
+        donor_present.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    canonical = warped_alpha > 4
+    solid = warped_alpha > 8
+    # Low-alpha pixels outside the first and last solid source pixel are the
+    # resampled outer fringe, not an opaque backing-ownership claim.  Let the
+    # authored source draw that fringe by itself so a one-pixel island cannot
+    # preserve an opaque donor tick.  Keep every low-alpha pixel inside the row
+    # envelope: those include real antialiasing and the central neck handoff.
+    for row in range(bottom + 1):
+        solid_x = np.flatnonzero(solid[row, left:right + 1])
+        if not len(solid_x):
+            canonical[row, left:right + 1] = False
+            continue
+        first = left + int(solid_x[0])
+        last = left + int(solid_x[-1])
+        canonical[row, left:first] = False
+        canonical[row, last + 1:right + 1] = False
+    roi = np.zeros_like(sampled_support)
+    roi[:bottom + 1, left:right + 1] = True
+    return roi & sampled_support & ~canonical
+
+
 def _stylized_head_clear_mask(
         body_image, mask_path, transform, key_landmarks, face_bounds,
         destination, source_medium=None):
@@ -1850,7 +2414,12 @@ def _stylized_head_clear_mask(
         max(1.0, float(np.ptp(projected[:, 0]))), source_medium)
     handoff, head_side, handoff_quality = _stylized_jaw_handoff(
         (height, width), projected, feather_px=handoff_feather)
-    canonical = (warped > 4) & head_side
+    # ``warped`` is the authoritative, source-supported replacement geometry.
+    # Soft-3D masks deliberately retain long side hair and the real source neck
+    # below the facial jaw field; intersecting it with ``head_side`` here used
+    # to cut those regions off a second time and recreate the eye-level shelf
+    # and pinched neck that the portrait-space author had removed.
+    canonical = warped > 4
     anatomy = np.zeros((height, width), dtype=np.uint8)
     cv2.fillConvexPoly(
         anatomy, cv2.convexHull(np.round(projected).astype(np.int32)), 255)
@@ -1866,8 +2435,16 @@ def _stylized_head_clear_mask(
     # second head. Full-silhouette replacement therefore clears donor alpha on
     # the solid head side of the shared jaw field. Photographic soft blending
     # never authors or consumes this clear mask.
-    donor_silhouette = (
-        head_side & (body_image[:, :, 3] > 8) & ~canonical)
+    donor_silhouette, donor_erase, sampling_guard_pixels = (
+        _stylized_donor_head_erase_support(
+            body_image[:, :, 3], head_side, canonical,
+            source_medium=source_medium))
+    upper_head_erase = _soft_3d_upper_head_erase_support(
+        body_image[:, :, 3], warped, projected, handoff_feather,
+        source_medium=source_medium)
+    complete_donor_erase = donor_erase | upper_head_erase
+    sampling_guard_pixels = int(np.sum(
+        complete_donor_erase & ~donor_silhouette))
     donor_anatomy = (
         (anatomy > 0) & head_side & (body_image[:, :, 3] > 8)
         & ~canonical)
@@ -1878,10 +2455,33 @@ def _stylized_head_clear_mask(
     source_gate = np.clip(
         (warped.astype(np.float32) - 252.0) / 3.0, 0.0, 1.0)
     source_gate = source_gate * source_gate * (3.0 - 2.0 * source_gate)
-    protrusion = donor_silhouette | donor_anatomy
+    protrusion = donor_erase | donor_anatomy
     clear_strength = np.maximum(
-        protrusion.astype(np.float32), source_gate * head_side)
+        protrusion.astype(np.float32), source_gate)
     clear_alpha = np.round(clear_strength * 255.0).astype(np.uint8)
+    # A short retained donor-hair lobe can start a few pixels outside the
+    # canonical contour before reconnecting below. Erase that detached shelf,
+    # then release it at one pixel per row; never fill the intervening slit.
+    clear_alpha, hair_bridge = _taper_short_stylized_hair_protrusions(
+        clear_alpha,
+        body_image[:, :, 3],
+        warped,
+        projected,
+        source_medium=source_medium,
+    )
+    # Detect the short reconnecting shelf on the bounded jaw-side eraser above.
+    # The broad upper owner deliberately hides that shelf once applied, so add
+    # it only after preserving the detector's event receipt for the row-wise
+    # lateral release below.
+    clear_alpha[upper_head_erase] = 255
+    clear_alpha, lateral_hair_release = _release_soft_3d_lateral_donor_hair(
+        clear_alpha,
+        body_image[:, :, 3],
+        warped,
+        projected,
+        hair_bridge,
+        source_medium=source_medium,
+    )
     rgba = np.full((height, width, 4), 255, dtype=np.uint8)
     rgba[:, :, 3] = clear_alpha
     if not cv2.imwrite(destination, rgba):
@@ -1901,7 +2501,11 @@ def _stylized_head_clear_mask(
     return {
         "canonical_pixels": int(np.sum(clear_alpha > 4)),
         "silhouette_pixels": int(np.sum(donor_silhouette)),
+        "sampling_guard_pixels": sampling_guard_pixels,
+        "upper_head_owner_pixels": int(np.sum(upper_head_erase)),
         "anatomy_pixels": int(np.sum(donor_anatomy)),
+        "hair_bridge": hair_bridge,
+        "lateral_hair_release": lateral_hair_release,
         "handoff_row_range": handoff_row_range,
         "handoff_pixels_preserved": int(np.sum(
             feather & (body_image[:, :, 3] > 8) & (clear_alpha < 5))),

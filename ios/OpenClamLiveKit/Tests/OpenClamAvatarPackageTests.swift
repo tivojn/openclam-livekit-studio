@@ -485,15 +485,25 @@ final class OpenClamAvatarPackageTests: XCTestCase {
         XCTAssertEqual(Set(descriptor.assets.keys), fullExpressionAssetRoles)
     }
 
-    func testFullExpressionV4RejectsAggregateDecodedPixelBudget() throws {
+    func testFullExpressionV4RejectsAggregateDecodedPixelBudgetAbove54Million() throws {
+        XCTAssertEqual(
+            OpenClamAvatarPackageContract.maximumAggregateDecodedPixelCount,
+            54_000_000
+        )
         let archive = try fullExpressionV4Archive { manifest in
             var assets = try XCTUnwrap(manifest["assets"] as? [String: Any])
-            for role in ["viseme-sil", "viseme-PP", "viseme-FF", "viseme-TH"] {
+            for role in ["viseme-sil", "viseme-PP", "viseme-FF"] {
                 var record = try XCTUnwrap(assets[role] as? [String: Any])
                 record["width"] = 4_096
                 record["height"] = 4_096
                 assets[role] = record
             }
+            var fourthRecord = try XCTUnwrap(
+                assets["viseme-TH"] as? [String: Any]
+            )
+            fourthRecord["width"] = 4_096
+            fourthRecord["height"] = 896
+            assets["viseme-TH"] = fourthRecord
             manifest["assets"] = assets
         }
         try assertImportError(.packageContentsTooLarge, archive: archive)

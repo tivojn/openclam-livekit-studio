@@ -4572,6 +4572,7 @@ GAIT_PERIOD_MIN_CONFIDENCE = 0.30
 GAIT_PERIOD_FIT = 0.85
 GAIT_COVERAGE_MINIMUM = 0.60
 GAIT_COVERAGE_FLOOR = 0.04
+GAIT_PERIOD_ESTIMATOR = "overlap-energy-autocorrelation-v1"
 
 
 def _source_gait_profile(poses):
@@ -4600,11 +4601,22 @@ def _source_gait_profile(poses):
     centered = smoothed - np.mean(smoothed)
     if float(np.std(centered)) > 1e-6:
         correlation = np.correlate(centered, centered, "full")[count - 1:]
-        # Unbiased per-lag normalisation: without it a long period (under two
-        # cycles in the take) shrinks with its overlap and slips beneath the
-        # confidence floor, which is exactly the slow footage that needs it.
-        correlation /= np.maximum(1, count - np.arange(count))
-        correlation /= correlation[0]
+        # Compare the actual overlapping segments at each lag. Dividing by
+        # (count - lag) and the WHOLE take's variance can exceed 1 and favour
+        # a second repeat merely because its shorter overlap has more energy.
+        # That turned a measured 45-frame gait into a 90-frame "period" and
+        # sent a perfectly usable take to the first-half fallback. Per-lag
+        # energy normalisation keeps slow, short-overlap repeats measurable
+        # without that harmonic bias. All cycle/stride/arm gates stay intact.
+        energy = np.concatenate(([0.0], np.cumsum(centered * centered)))
+        lags = np.arange(count)
+        denominator = np.sqrt(
+            np.maximum(0.0, energy[count - lags]) *
+            np.maximum(0.0, energy[count] - energy[lags]))
+        correlation = np.divide(
+            correlation, denominator, out=np.zeros_like(correlation),
+            where=denominator > 1e-12)
+        correlation = np.clip(correlation, -1.0, 1.0)
         negative = np.flatnonzero(correlation < 0)
         search_end = count * 2 // 3
         if negative.size and negative[0] + 1 < search_end:
@@ -4617,6 +4629,7 @@ def _source_gait_profile(poses):
     return {
         "period": period,
         "period_confidence": confidence,
+        "period_estimator": GAIT_PERIOD_ESTIMATOR,
         "leg_range": _robust_range(separation),
         "arm_range": arm_ranges,
     }
@@ -4809,6 +4822,7 @@ def _pose_cycle_metrics(
         "gait_period": gait_period,
         "gait_period_confidence": (source_gait or {}).get(
             "period_confidence"),
+        "gait_period_estimator": (source_gait or {}).get("period_estimator"),
         "cycle_coverage": cycle_coverage,
         "stride_coverage": stride_coverage,
         "style_penalty": round(style_penalty, 4),
@@ -5190,7 +5204,7 @@ def _resize_rgba_premultiplied(image, size):
     return output
 
 
-def _normalise_frames(frames, include_scale=False):
+def _normalise_frames(frames, include_scale=False, transform_receipt=None):
     left, top, right, bottom = _alpha_union(frames)
     crop_width = right - left
     crop_height = bottom - top
@@ -5205,6 +5219,18 @@ def _normalise_frames(frames, include_scale=False):
     output_height = max(1, round(crop_height * scale))
     offset_x = (TARGET_WIDTH - output_width) // 2
     offset_y = TARGET_HEIGHT - output_height - round(TARGET_HEIGHT * 0.012)
+    if transform_receipt is not None:
+        # Record the actual crop/rounding used below, not a later estimated
+        # image registration.  This does not change the bake or return value.
+        transform_receipt.update({
+            "v": 1,
+            "source_size": [frames[0].shape[1], frames[0].shape[0]],
+            "crop_xyxy": [left, top, right, bottom],
+            "resize": [output_width, output_height],
+            "offset": [offset_x, offset_y],
+            "canvas_size": [TARGET_WIDTH, TARGET_HEIGHT],
+            "filter": "INTER_AREA",
+        })
     normalised = []
     for frame in frames:
         crop = frame[top:bottom, left:right]
@@ -5698,6 +5724,201 @@ def _silhouette_closure_quality(
     }
 
 
+def _idle_source_plate_exterior(source):
+    """Observed exterior only; never infer plate ownership from bake padding."""
+    hsv = cv2.cvtColor(source[:, :, :3], cv2.COLOR_BGR2HSV)
+    border = np.concatenate((
+        hsv[0, :, :], hsv[-1, :, :], hsv[:, 0, :], hsv[:, -1, :],
+    ))
+    white_border = np.mean((border[:, 1] <= 35) & (border[:, 2] >= 235))
+    if white_border < 0.55:
+        return None
+    plate = ((hsv[:, :, 1] <= 36) & (hsv[:, :, 2] >= 200)).astype(np.uint8)
+    _, labels = cv2.connectedComponents(plate, connectivity=8)
+    border_labels = np.unique(np.concatenate((
+        labels[0], labels[-1], labels[:, 0], labels[:, -1],
+    )))
+    return np.isin(labels, border_labels[border_labels > 0])
+
+
+def _remove_idle_plate_speckles(source, rgba, *, source_exterior=None):
+    """Remove only tiny, detached fragments of an observed white-plate echo.
+
+    This is not a general component filter or an erosion.  The complete alpha
+    component containing the body (including alpha=1 hair/heel connections),
+    every opaque fragment, head/feet bands, and non-neutral source pixels are
+    immutable.  Candidates must be bright neutral pixels connected through
+    the decoded source to its white outer plate, immediately LEFT of the
+    body's torso, as required by the authored Edge Idle wall convention.
+
+    The source cast-shadow gate still runs afterwards on the original video.
+    Large or attached shadows remain that gate's job; this helper cannot make
+    a defective source take pass by erasing its anatomy or its shadow report.
+    """
+    receipt = {
+        "available": False,
+        "removed_components": 0,
+        "removed_pixels": 0,
+        "removed_alpha_mass": 0.0,
+    }
+    if (not isinstance(source, np.ndarray)
+            or not isinstance(rgba, np.ndarray)
+            or source.dtype != np.uint8 or rgba.dtype != np.uint8
+            or source.ndim != 3 or source.shape[2] < 3
+            or rgba.ndim != 3 or rgba.shape[2] != 4
+            or source.shape[:2] != rgba.shape[:2]
+            or min(source.shape[:2]) < 2):
+        return rgba, {**receipt, "reason": "source/alpha geometry unavailable"}
+
+    exterior = source_exterior
+    if exterior is None:
+        exterior = _idle_source_plate_exterior(source)
+    if exterior is None:
+        return rgba, {**receipt, "reason": "not a measurable white plate"}
+    if (not isinstance(exterior, np.ndarray) or exterior.dtype != np.bool_
+            or exterior.shape != source.shape[:2]):
+        raise RuntimeError("idle plate exterior geometry differs from source")
+
+    alpha = rgba[:, :, 3]
+    count, labels, statistics, _ = cv2.connectedComponentsWithStats(
+        (alpha > 0).astype(np.uint8), connectivity=8)
+    if count <= 1:
+        return rgba, {**receipt, "reason": "no alpha subject"}
+    main = 1 + int(np.argmax(statistics[1:, cv2.CC_STAT_AREA]))
+    _x, y, body_width, body_height, body_area = (
+        int(value) for value in statistics[main])
+    if body_area < 64 or body_width < 20 or body_height < 40:
+        return rgba, {**receipt, "reason": "subject too small to separate detail"}
+
+    # Source connectivity, not the imperfect semantic matte, distinguishes a
+    # pale exterior wall fragment from enclosed eyes, glasses, or white trim.
+    corridor = np.zeros(alpha.shape, dtype=bool)
+    margin = max(10, round(body_width * 0.14))
+    for row in range(y + round(body_height * 0.20),
+                     y + round(body_height * 0.80)):
+        columns = np.flatnonzero(labels[row] == main)
+        if columns.size:
+            left = int(columns[0])
+            corridor[row, max(0, left - margin):left] = True
+
+    # At native plate scale these are compression/matting particles, not an
+    # authored garment, heel, or hair island.  Larger uncertain pieces remain
+    # untouched even if they happen to be grey and semitransparent.
+    maximum_area = min(32, max(12, round(body_area * 0.0002)))
+    remove = np.zeros(alpha.shape, dtype=bool)
+    components = 0
+    for label in range(1, count):
+        if label == main:
+            continue
+        x, cy, width, height, area = (int(v) for v in statistics[label])
+        if area > maximum_area:
+            continue
+        region = np.s_[cy:cy + height, x:x + width]
+        pixels = labels[region] == label
+        if (np.max(alpha[region][pixels]) >= WHITE_PLATE_DETAIL_CORE_ALPHA
+                or not np.all(corridor[region][pixels])
+                or not np.all(exterior[region][pixels])):
+            continue
+        remove[region] |= pixels
+        components += 1
+
+    receipt.update({
+        "available": True,
+        "reason": "only source-neutral detached wall particles are eligible",
+        "removed_components": components,
+        "removed_pixels": int(np.count_nonzero(remove)),
+        "removed_alpha_mass": round(float(np.sum(
+            alpha[remove], dtype=np.uint64)) / 255, 6),
+        "connected_subject_rgba_unchanged": True,
+        "opaque_rgba_unchanged": True,
+    })
+    if not components:
+        return rgba, receipt
+    output = rgba.copy()
+    output[remove] = 0
+    return output, receipt
+
+
+def _refine_idle_plate_speckles(
+        source_frames, alpha_frames, kind, source_medium, idle_validation,
+        normalisation=None):
+    # Shaded 3D Edge Idle is the reviewed lane.  Do not alter photo, flat 2D,
+    # unknown media, walking/moves, or an idle with no authored left wall.
+    if (kind != "idle" or idle_validation == "free"
+            or normalise_source_medium(source_medium) != "3d render"):
+        return alpha_frames, None
+    if len(source_frames) != len(alpha_frames):
+        raise RuntimeError("idle plate cleanup source/alpha frame counts differ")
+    processed, records = [], []
+    for index, (source, rgba) in enumerate(zip(source_frames, alpha_frames)):
+        if normalisation is None:
+            frame, record = _remove_idle_plate_speckles(source, rgba)
+        else:
+            # The ordinary bake discards alpha<8.  That can detach particles
+            # which were connected to the native matte by alpha=1 bridges.
+            # Recheck only those final disconnected particles against the
+            # EXACT original source mapping.  Exterior ownership is measured
+            # before cropping: white bake padding cannot make an enclosed
+            # source feature into background evidence.
+            mapped, exterior = _normalised_idle_plate_source(source, normalisation)
+            if exterior is None:
+                frame, record = rgba, {
+                    "available": False, "removed_components": 0,
+                    "removed_pixels": 0, "removed_alpha_mass": 0.0,
+                    "reason": "original source is not a measurable white plate",
+                }
+            else:
+                frame, record = _remove_idle_plate_speckles(
+                    mapped, rgba, source_exterior=exterior)
+        processed.append(frame)
+        records.append({"frame": index + 1, **record})
+    return processed, {
+        "v": 1,
+        "method": "source-connected-detached-idle-plate-v1",
+        "source_medium": "3d render",
+        "measured_frames": sum(record["available"] for record in records),
+        "removed_components": sum(record["removed_components"] for record in records),
+        "removed_pixels": sum(record["removed_pixels"] for record in records),
+        "frames": records,
+        **({"normalisation": normalisation} if normalisation is not None else {}),
+    }
+
+
+def _normalised_idle_plate_source(source, transform):
+    """Map source RGB and conservative exterior support with the actual bake."""
+    if (source.dtype != np.uint8 or source.ndim != 3 or source.shape[2] < 3
+            or transform.get("v") != 1 or transform.get("filter") != "INTER_AREA"
+            or transform.get("source_size") != [source.shape[1], source.shape[0]]):
+        raise RuntimeError("idle packed cleanup source/normalisation mismatch")
+    left, top, right, bottom = transform["crop_xyxy"]
+    width, height = transform["resize"]
+    offset_x, offset_y = transform["offset"]
+    canvas_width, canvas_height = transform["canvas_size"]
+    values = (left, top, right, bottom, width, height, offset_x, offset_y,
+              canvas_width, canvas_height)
+    if (not all(isinstance(value, (int, np.integer)) and not isinstance(value, bool)
+                for value in values)
+            or not (0 <= left < right <= source.shape[1]
+                    and 0 <= top < bottom <= source.shape[0]
+                    and width > 0 and height > 0
+                    and 0 <= offset_x <= canvas_width - width
+                    and 0 <= offset_y <= canvas_height - height)):
+        raise RuntimeError("idle packed cleanup invalid normalisation bounds")
+    mapped = np.full((canvas_height, canvas_width, 3), 255, np.uint8)
+    mapped[offset_y:offset_y + height, offset_x:offset_x + width] = cv2.resize(
+        source[top:bottom, left:right, :3], (width, height), interpolation=cv2.INTER_AREA)
+    support = _idle_source_plate_exterior(source)
+    if support is None:
+        return mapped, None
+    exterior = np.zeros((canvas_height, canvas_width), dtype=bool)
+    # Mixed foreground/background samples are NOT exterior.  In
+    # particular a pale skin, rim, or clothing antialias cannot qualify.
+    resized = cv2.resize(support[top:bottom, left:right].astype(np.float32),
+                         (width, height), interpolation=cv2.INTER_AREA)
+    exterior[offset_y:offset_y + height, offset_x:offset_x + width] = resized >= 1.0 - 1e-6
+    return mapped, exterior
+
+
 def _motion_cast_shadow_quality(
         source_frames, alpha_frames, kind, idle_validation="back-heel"):
     """Reject persistent cast shadows without trying to erase anatomy.
@@ -6017,6 +6238,13 @@ def _process_clip(
             frames, workspace, log,
             allow_stylized=(
                 normalise_source_medium(source_medium) != "photograph"))
+    alpha_frames, plate_speckle_refinement = _refine_idle_plate_speckles(
+        frames, alpha_frames, kind, source_medium, idle_validation)
+    if plate_speckle_refinement and plate_speckle_refinement["removed_pixels"]:
+        log(
+            "source-supported Idle plate cleanup: removed "
+            f"{plate_speckle_refinement['removed_pixels']} detached particle pixels; "
+            "connected subject and opaque RGBA unchanged")
     alpha_integrity_quality = color_quality.pop("alpha_integrity_quality", None) or {
         "available": False,
         "valid": False,
@@ -6186,7 +6414,23 @@ def _process_clip(
         else:
             raise RuntimeError(
                 f"{kind} clip contains a disappearing hand or heel; regenerate it")
-    normalised, bounds, scale = _normalise_frames(selected, include_scale=True)
+    normalisation = {} if plate_speckle_refinement is not None else None
+    normalised, bounds, scale = _normalise_frames(
+        selected, include_scale=True, transform_receipt=normalisation)
+    packed_plate_refinement = None
+    if normalisation is not None:
+        normalised, packed_plate_refinement = _refine_idle_plate_speckles(
+            frames[loop_start:loop_end], normalised, kind, source_medium,
+            idle_validation, normalisation=normalisation)
+        if packed_plate_refinement["removed_pixels"]:
+            log(
+                "packed Idle plate cleanup: removed "
+                f"{packed_plate_refinement['removed_pixels']} detached particle pixels; "
+                "connected packed subject and opaque RGBA unchanged")
+            points = cv2.findNonZero(np.maximum.reduce([
+                (frame[:, :, 3] > 8).astype(np.uint8) for frame in normalised]))
+            if points is not None:
+                bounds = [int(value) for value in cv2.boundingRect(points)]
     wall_contact_quality = None
     if kind == "idle":
         wall_contact_quality = _idle_contact_quality(
@@ -6261,6 +6505,10 @@ def _process_clip(
             "alpha_integrity_quality": alpha_integrity_quality,
             "cast_shadow_quality": cast_shadow_quality,
         }
+    if plate_speckle_refinement is not None:
+        metrics["source_plate_speckle_refinement"] = plate_speckle_refinement
+    if packed_plate_refinement is not None:
+        metrics["packed_plate_speckle_refinement"] = packed_plate_refinement
     metrics["source_framing_quality"] = framing_quality
     return {
         "fps": fps,

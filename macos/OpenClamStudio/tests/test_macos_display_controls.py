@@ -161,18 +161,82 @@ class MacDisplayControlsTests(unittest.TestCase):
           }
         """)
 
-    def test_native_bounds_are_finite_and_keep_requested_zoom_across_small_displays(self):
+    def test_native_startup_preserves_side_bottom_placement_and_zoom_on_small_displays(self):
         self.run_js(r"""
           area={x:-1920,y:30,width:1280,height:720};
           state.petDisplayZooms.desktopStandby=64;
           state.bounds={x:-3000,y:-800,width:2200,height:3000};
           const fit=startupPetBounds();
           assert.equal(state.petZoom,64);
-          assert.ok(fit.x>=area.x&&fit.y>=area.y);
-          assert.ok(fit.x+fit.width<=area.x+area.width&&fit.y+fit.height<=area.y+area.height);
+          assert.equal(fit.x,-3000,'reopening does not redock an intentionally offscreen avatar');
+          assert.equal(fit.y,area.y,'only the native top edge constrains placement');
+          assert.ok(fit.width<=area.width&&fit.height<=area.height,
+            'GPU backing size stays bounded independently of placement and rendered zoom');
+          state.bounds={x:5000,y:4500,width:2200,height:3000};
+          const below=startupPetBounds();
+          assert.equal(below.x,5000);assert.equal(below.y,4500);
+          assert.equal(state.petZoom,64);
+          assert.ok(below.y>area.y+area.height,'the entire native canvas may be below the screen');
           for(const bad of [NaN,Infinity,-Infinity,undefined]){
             const b=fitPetWindowToArea({x:bad,y:bad,width:bad,height:bad},area);
             assert.ok(Object.values(b).every(Number.isFinite));
+          }
+        """)
+
+    def test_manual_native_zoom_preserves_offscreen_anchor_without_side_or_bottom_cap(self):
+        self.run_js(r"""
+          for(const x of [-1e6,1e6]) for(const y of [-1e6,1e6]) {
+            const original={x,y,width:336,height:456};
+            windowBounds={...original};state.bounds={...original};state.petZoom=.6;
+            state.petDisplayZooms=normalizeDisplayZooms(null,.6);
+            const anchor=petZoomAnchor(original);
+            applyPetZoomLive({value:12,phase:'start'});
+            const enlarged={...windowBounds};
+            assert.equal(state.petZoom,12,'native fitting does not cap the requested zoom');
+            assert.ok(enlarged.width<=area.width&&enlarged.height<=area.height);
+            assert.ok(Math.abs(enlarged.x+enlarged.width/2-anchor.x)<=.5,
+              'fit the backing canvas around the saved gesture anchor, not a clamped screen edge');
+            assert.equal(enlarged.y,Math.round(Math.max(area.y,anchor.y-enlarged.height/2)));
+            if(x<0)assert.ok(enlarged.x+enlarged.width<area.x,'left overflow is deliberate');
+            else assert.ok(enlarged.x>area.x+area.width,'right overflow is deliberate');
+            if(y>0)assert.ok(enlarged.y>area.y+area.height,'bottom overflow is deliberate');
+            applyPetZoomLive({value:6,phase:'move'});
+            assert.equal(state.petZoom,6,'reverse pinch changes rendered zoom immediately beyond4x');
+            assert.deepEqual(windowBounds,enlarged,'large zooms share a bounded native backing canvas');
+            applyPetZoomLive({value:.6,phase:'end'});
+            assert.equal(state.petZoom,.6);
+            assert.deepEqual(windowBounds,{...original,y:Math.max(area.y,y)},
+              'reversing the same gesture recovers position, except forbidden upward overflow');
+            const memory=normalizeDisplayZooms(JSON.parse(JSON.stringify(state.petDisplayZooms)));
+            assert.equal(memory.desktopStandby,.6);
+            assert.equal(memory.desktopCloseUp,.6);
+            assert.equal(memory.chatStandby,.6);
+            assert.equal(memory.chatCloseUp,.6);
+          }
+        """)
+
+    def test_closeup_and_temporary_motion_restore_intentional_offscreen_standby(self):
+        self.run_js(r"""
+          for(const x of [-1e6,1e6]) {
+            const remembered={x,y:1e6,width:336,height:456};
+            windowBounds={...remembered};state.bounds={...remembered};state.petZoom=.6;
+            state.petDisplayZooms=normalizeDisplayZooms(null,.6);
+            standbyCompanionMode();deskCompanionMode();
+            assert.deepEqual(windowBounds,area,'Close-up keeps its normal display-sized canvas');
+            applyPetZoom(16);
+            standbyCompanionMode();
+            assert.deepEqual(windowBounds,remembered,
+              'returning from Close-up must not redock saved side/bottom overflow');
+            assert.equal(state.petZoom,.6);
+            assert.equal(state.petDisplayZooms.desktopCloseUp,16);
+            applyPetRoam(true);
+            assert.notDeepEqual(windowBounds,remembered);
+            standbyCompanionMode();
+            assert.deepEqual(windowBounds,remembered,
+              'returning from an automatic motion must restore the manual offscreen pose');
+            assert.equal(state.petZoom,.6);
+            assert.equal(state.petDisplayZooms.desktopCloseUp,16);
+            assert.equal(state.petHomeBounds,null);
           }
         """)
 

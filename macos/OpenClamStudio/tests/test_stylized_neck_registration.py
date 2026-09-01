@@ -55,7 +55,7 @@ class StylizedNeckRegistrationTests(unittest.TestCase):
             donor, canonical, mask, affine, landmarks,
             source_medium="3d render")
         self.assertTrue(receipt["applied"])
-        self.assertEqual(receipt["version"], 1)
+        self.assertEqual(receipt["version"], 3)
         self.assertEqual([edge["side"] for edge in receipt["edges"]
                           if edge["applied"]], ["viewer-right"])
         right = receipt["edges"][1]
@@ -91,6 +91,31 @@ class StylizedNeckRegistrationTests(unittest.TestCase):
             once, canonical, mask, affine, landmarks, source_medium="3d render")
         self.assertTrue(np.array_equal(once, twice))
         self.assertFalse(receipt["applied"])
+
+    def test_registered_edge_returns_without_a_second_step_below_the_jaw(self):
+        donor, canonical, mask, affine, landmarks = _fixture()
+        corrected, receipt = body._register_soft_3d_neck_seam(
+            donor, canonical, mask, affine, landmarks,
+            source_medium="3d render")
+        composite = _composite(corrected, canonical, mask)
+        positions = [body._neck_row_edge(
+            composite, row, 116, 138)[0] for row in range(144, 160)]
+        self.assertLess(max(abs(np.diff(positions))), .60)
+        self.assertGreater(positions[-1] - positions[0], 2.5)
+        self.assertEqual(receipt["edges"][1]["return_profile"],
+                         "contour-supported-smoothstep")
+        self.assertTrue(np.array_equal(corrected[160:], donor[160:]))
+
+    def test_extended_return_stops_at_the_end_of_the_neck_contour(self):
+        donor, canonical, mask, affine, landmarks = _fixture()
+        donor[153:, :, :3] = (92, 26, 192)
+        corrected, receipt = body._register_soft_3d_neck_seam(
+            donor, canonical, mask, affine, landmarks,
+            source_medium="3d render")
+        right = receipt["edges"][1]
+        self.assertTrue(right["applied"])
+        self.assertLessEqual(right["correction_row_bounds"][1], 153)
+        self.assertTrue(np.array_equal(corrected[153:], donor[153:]))
 
     def test_photograph_and_ink_routes_are_byte_identical_without_inspection(self):
         donor, canonical, mask, affine, landmarks = _fixture()

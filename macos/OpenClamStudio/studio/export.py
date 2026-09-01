@@ -238,7 +238,7 @@ def _stylized_sclera_hull(binary, minimum_area, expected_width,
     return solid
 
 
-def _stylized_eye_alpha(neutral, geometry):
+def _stylized_eye_alpha(neutral, geometry, *, source_sclera=None):
     """Return a feathered alpha around a drawn sclera, not a human mesh oval."""
     try:
         x, y, width, height = [int(round(float(value)))
@@ -248,7 +248,15 @@ def _stylized_eye_alpha(neutral, geometry):
     if width <= 0 or height <= 0:
         return None
     image_height, image_width = neutral.shape[:2]
-    pad_x = max(16, int(round(width * 0.28)))
+    if source_sclera is not None and (
+            not isinstance(source_sclera, np.ndarray)
+            or source_sclera.dtype != np.uint8
+            or source_sclera.shape != neutral.shape[:2]):
+        return None
+    # Only the last-resort source-crescent route needs more travel space:
+    # a warm, narrow sclera can have an outer lash beyond the old search crop.
+    # The actual eye mask still comes from source pixels, not this rectangle.
+    pad_x = max(16, int(round(width * (0.45 if source_sclera is not None else 0.28))))
     pad_y = max(20, int(round(height * 0.75)))
     x0 = max(0, x - pad_x)
     y0 = max(0, y - pad_y)
@@ -258,8 +266,11 @@ def _stylized_eye_alpha(neutral, geometry):
     if not crop.size:
         return None
 
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    white = ((hsv[:, :, 1] < 85) & (hsv[:, :, 2] > 135)).astype(np.uint8) * 255
+    if source_sclera is None:
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        white = ((hsv[:, :, 1] < 85) & (hsv[:, :, 2] > 135)).astype(np.uint8) * 255
+    else:
+        white = source_sclera[y0:y1, x0:x1].copy()
     guard = np.zeros_like(white)
     centre = (int(round(x + width * 0.5 - x0)),
               int(round(y + height * 0.65 - y0)))
@@ -267,7 +278,8 @@ def _stylized_eye_alpha(neutral, geometry):
              max(12, int(round(height * 0.95))))
     cv2.ellipse(guard, centre, radii, 0, 0, 360, 255, -1)
     white = cv2.bitwise_and(white, guard)
-    opening = max(3, min(13, int(round(min(width, height) * 0.12)))) | 1
+    opening = (3 if source_sclera is not None else
+               max(3, min(13, int(round(min(width, height) * 0.12)))) | 1)
     white = cv2.morphologyEx(
         white, cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (opening, opening)))
@@ -399,6 +411,119 @@ def _soft3d_compact_eye_masks(neutral, landmarks):
     return masks
 
 
+def _soft3d_source_sclera(neutral, landmarks, side):
+    """Find connected warm sclera crescents from the original 3-D pixels.
+
+    This is not a synthetic aperture or a replacement for a working mask.
+    Landmarks seed both bright crescents outside a conservatively excluded
+    iris. Their measured colour must differ from the neighbouring dry skin;
+    only source-connected components qualify. Ambiguity fails closed.
+    """
+    if (not isinstance(neutral, np.ndarray) or neutral.dtype != np.uint8
+            or neutral.ndim != 3 or neutral.shape[2] != 3 or not neutral.size
+            or not isinstance(landmarks, np.ndarray)
+            or landmarks.shape != (478, 2) or landmarks.dtype.kind not in "fiu"
+            or not np.isfinite(landmarks).all() or side not in blink.SIDES):
+        return None
+    image_height, image_width = neutral.shape[:2]
+    iris_index = 468 if side == "r" else 473
+    iris = landmarks[iris_index:iris_index + 5]
+    contour = landmarks[blink.EYE[side]]
+    points = np.concatenate((iris, contour))
+    if ((points < 0).any()
+            or (points >= [image_width, image_height]).any()):
+        return None
+    centre = iris[0]
+    radius = float(np.linalg.norm(iris[1:] - centre, axis=1).mean())
+    minimum, maximum = contour.min(0), contour.max(0)
+    width, height = maximum - minimum
+    if (width < 16 or height < 8 or not 0.18 <= height / width <= 0.75
+            or not 4 <= radius <= width * 0.45
+            or (centre < minimum).any()
+            or (centre > maximum + [0, height * 0.1]).any()):
+        return None
+    x0, y0 = np.maximum(
+        0, np.floor(minimum - [width * 0.65, height * 0.65])).astype(int)
+    x1, y1 = np.minimum(
+        [image_width, image_height],
+        np.ceil(maximum + [width * 0.65, height * 1.3])).astype(int)
+    crop = neutral[y0:y1, x0:x1]
+    if not crop.size:
+        return None
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    contour_mask = np.zeros(crop.shape[:2], np.uint8)
+    cv2.fillConvexPoly(
+        contour_mask, np.round(contour - [x0, y0]).astype(np.int32), 255)
+    seed = ((contour_mask > 0)
+            & (np.hypot(xx - centre[0], yy - centre[1]) > radius * 1.6)
+            & (gray > 100))
+    dry = ((yy > centre[1] + radius * 1.85)
+           & (yy < centre[1] + radius * 2.2)
+           & (abs(xx - centre[0]) < radius * 0.7))
+    if (np.count_nonzero(seed) < 24 or np.count_nonzero(dry) < 24
+            or np.count_nonzero(seed & (xx < centre[0])) < 8
+            or np.count_nonzero(seed & (xx > centre[0])) < 8):
+        return None
+    paint = crop.astype(np.float32)
+    score = ((paint[:, :, 2] - paint[:, :, 0])
+             / np.maximum(paint[:, :, 2] + paint[:, :, 0], 1))
+    wet_score = float(np.percentile(score[seed], 75))
+    dry_score = float(np.median(score[dry]))
+    if dry_score - wet_score < 0.18:
+        return None
+    threshold = wet_score + 0.45 * (dry_score - wet_score)
+    white = ((score < threshold)
+             & (gray > max(50, float(np.median(gray[seed])) * 0.32)))
+    count, labels, _, _ = cv2.connectedComponentsWithStats(
+        white.astype(np.uint8), 8)
+    chosen = [index for index in range(1, count)
+              if np.count_nonzero((labels == index) & seed) >= 8]
+    observed = np.isin(labels, chosen).astype(np.uint8) * 255
+    # Background leaking into a seed is not an isolated sclera. This route
+    # cannot turn a missing face boundary into a large white eye mask.
+    if (not chosen or observed[0].any() or observed[-1].any()
+            or observed[:, 0].any() or observed[:, -1].any()):
+        return None
+    result = np.zeros(neutral.shape[:2], np.uint8)
+    result[y0:y1, x0:x1] = observed
+    return result
+
+
+def _soft3d_source_crescent_masks(neutral, landmarks):
+    """Last-resort bilateral masks plus their measured, canonical sclera."""
+    masks, observations, widths = {}, {}, []
+    for side in blink.SIDES:
+        observed = _soft3d_source_sclera(neutral, landmarks, side)
+        if observed is None:
+            return None
+        points = landmarks[blink.EYE[side]]
+        minimum, maximum = points.min(0), points.max(0)
+        width, height = maximum - minimum
+        centre = (minimum + maximum) * 0.5
+        geometry = {"box": [float(minimum[0]),
+                             float(centre[1] - height * 0.65),
+                             float(width), float(height)]}
+        mask = _stylized_eye_alpha(neutral, geometry, source_sclera=observed)
+        if mask is None:
+            return None
+        box, alpha = mask
+        x, y, patch_width, patch_height = box
+        white = ((observed[y:y + patch_height, x:x + patch_width] > 0)
+                 & (alpha > 96))
+        rows, columns = np.nonzero(white)
+        if (len(rows) < max(32, width * height * 0.04)
+                or columns.min() + x > centre[0] - width * 0.20
+                or columns.max() + x < centre[0] + width * 0.20
+                or rows.max() - rows.min() + 1 < height * 0.40):
+            return None
+        masks[side], observations[side] = mask, observed
+        widths.append(float(width))
+    if min(widths) / max(widths) < 0.65:
+        return None
+    return masks, observations
+
+
 def _compact_static_eye_art(neutral_patch, closed_patch, sclera_guard):
     """Keep shared neutral-black glasses/hair, never brown open-eye shadow."""
     canonical_max = neutral_patch.max(2).astype(np.int16)
@@ -427,7 +552,8 @@ def _compact_static_eye_art(neutral_patch, closed_patch, sclera_guard):
     return stable_art
 
 
-def _stylized_lid_topology(patch, alpha, *, compact_eye=False):
+def _stylized_lid_topology(patch, alpha, *, compact_eye=False,
+                         _ink_threshold=None):
     """Return one clean authored closed-lid component, or ``None``.
 
     Registration and topology are deliberately separate.  A locally aligned
@@ -472,7 +598,8 @@ def _stylized_lid_topology(patch, alpha, *, compact_eye=False):
     # Natural-sized soft-3-D eyes have dark *skin shadows* under their frames.
     # Those are not eyelash ink. Keep this narrower threshold exclusive to
     # the bilateral, canonical-contour fallback above.
-    dark = ((gray < (50 if compact_eye else 100))
+    ink_threshold = (50 if compact_eye else 100) if _ink_threshold is None else _ink_threshold
+    dark = ((gray < ink_threshold)
             & analysis_guard).astype(np.uint8) * 255
     dark = cv2.morphologyEx(
         dark, cv2.MORPH_CLOSE,
@@ -550,6 +677,63 @@ def _stylized_lid_topology(patch, alpha, *, compact_eye=False):
         "centres": centres,
         "lid_index": lid_index,
     }
+
+
+def _soft3d_lid_topology(patch, alpha, *, compact_eye=False):
+    """Separate a full authored lid from connected warm 3-D skin shadow.
+
+    Keep every existing successful fit, including compact eyes behind glasses.
+    On large warm/brown 3-D faces the ordinary cutoff can join thin lid ink to
+    the nose/eye-socket shadow. Retry only that failed measurement with a
+    darker ink cutoff, and require a near-full-width sparse, shallow stroke.
+    This does not edit pixels or relax closure, registration, foreign-art,
+    coverage or seam validation in the publisher. Illustrations and photos
+    never enter this fallback.
+    """
+    original = _stylized_lid_topology(patch, alpha, compact_eye=compact_eye)
+    if original is not None or compact_eye:
+        return original
+    result = _stylized_lid_topology(patch, alpha, _ink_threshold=70)
+    if result is None:
+        return None
+    row = result["stats"][result["lid_index"]]
+    width = int(row[cv2.CC_STAT_WIDTH])
+    height = int(row[cv2.CC_STAT_HEIGHT])
+    area = int(row[cv2.CC_STAT_AREA])
+    if (not result["core_width"] * 0.82 <= width <= result["core_width"] * 1.20
+            or height > max(3, result["core_height"] * 0.30)
+            or area / max(1, width * height) > 0.58):
+        return None
+    # The lower cutoff measures only lid ink. It must not make an unrelated
+    # grey/brown provider mark invisible to the existing foreign-art gate.
+    # Repeat that gate at the ordinary cutoff, excluding just the original
+    # component containing the selected ink (the connected socket shadow).
+    core = result["core"]
+    x0, y0 = result["core_x0"], result["core_y0"]
+    cw, ch = result["core_width"], result["core_height"]
+    guard = np.zeros(alpha.shape, bool)
+    guard[max(0, int(round(y0 + ch * .35))):min(alpha.shape[0], int(round(y0 + ch * 1.28))),
+          max(0, int(round(x0 - cw * .08))):min(alpha.shape[1], int(round(x0 + cw + cw * .08)))] = True
+    ordinary = ((cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY) < 100)
+                & guard).astype(np.uint8) * 255
+    ordinary = cv2.morphologyEx(ordinary, cv2.MORPH_CLOSE,
+                               cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3)))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(ordinary)
+    selected = result["labels"] == result["lid_index"]
+    connected = set(int(v) for v in np.unique(labels[selected]) if v)
+    foreign_limit = max(48, int(np.count_nonzero(core) * .012))
+    for index in range(1, count):
+        if index in connected:
+            continue
+        component = labels == index
+        component_area = int(stats[index, cv2.CC_STAT_AREA])
+        if (component_area > foreign_limit
+                and np.count_nonzero(component & core) / component_area >= .35
+                and (stats[index, cv2.CC_STAT_HEIGHT] > ch * .25
+                     or stats[index, cv2.CC_STAT_WIDTH] > cw * .25)):
+            return None
+    result["ink_threshold"] = 70
+    return result
 
 
 def _stylized_flat_skin_registration(neutral_patch, source_patch, alpha,
@@ -632,6 +816,81 @@ def _stylized_flat_skin_registration(neutral_patch, source_patch, alpha,
         "p95": float(np.percentile(delta[flat_skin], 95)),
         "median": float(np.median(delta[flat_skin])),
     }
+
+
+def _soft3d_skin_field(shape, coefficients, centre, extent):
+    """Evaluate a colour correction, never a blur of authored eyelid RGB."""
+    yy, xx = np.indices(shape[:2], dtype=np.float32)
+    xx = (xx - centre[0]) / extent[0]
+    yy = (yy - centre[1]) / extent[1]
+    basis = np.stack((np.ones_like(xx), xx, yy, xx * yy,
+                      xx * xx, yy * yy), axis=-1)
+    return basis @ coefficients
+
+
+def _soft3d_authored_skin_registration(neutral_patch, source_patch, alpha,
+                                        topology):
+    """Match a shaded closed eye to quiet canonical skin, held-out first.
+
+    Constant colour correction cannot follow warm eye-socket illumination.
+    Fit only same-skin samples outside both the open eye and authored lid;
+    never train on sclera, lashes or the different open/closed eye interior.
+    Spatially held-out blocks retain the existing 18-level registration gate.
+    A bounded smooth correction preserves provider shading and texture rather
+    than synthesizing the flat harmonic oval used by the illustration path.
+    """
+    original = _stylized_flat_skin_registration(
+        neutral_patch, source_patch, alpha, topology)
+    if original is None:
+        return None
+    # Preserve already effectively exact matches without numerical resampling.
+    if original["p95"] <= 2.0:
+        return original
+    mask = original["flat_skin"]
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 96:
+        return original if original["p95"] <= 18 else None
+    centre = (topology["core_x0"] + topology["core_width"] * .5,
+              topology["core_y0"] + topology["core_height"] * .5)
+    extent = (max(1, topology["core_width"]), max(1, topology["core_height"]))
+    x = (xs.astype(np.float64) - centre[0]) / extent[0]
+    y = (ys.astype(np.float64) - centre[1]) / extent[1]
+    # Harmonic basis avoids the unconstrained radial x²+y² term: on a thin
+    # annulus that term fits the ring but can invent a huge colour disk inside.
+    basis = np.column_stack((np.ones_like(x), x, y, x*y, x*x-y*y))
+    target = (neutral_patch[mask].astype(np.float64)
+              - source_patch[mask].astype(np.float64))
+    validation = ((xs // 5 + ys // 5) % 4) == 0
+    if min(np.count_nonzero(validation), np.count_nonzero(~validation)) < 24:
+        return original if original["p95"] <= 18 else None
+    # Prefer a plane; permit gentle curvature only when independently useful.
+    for columns in (3, 5):
+        train = basis[~validation, :columns]
+        if np.linalg.matrix_rank(train) != columns or np.linalg.cond(train) > 100:
+            continue
+        coefficients = np.linalg.lstsq(train, target[~validation], rcond=None)[0]
+        error = np.abs(basis[validation, :columns] @ coefficients
+                       - target[validation]).max(1)
+        p95 = float(np.percentile(error, 95))
+        if p95 > 18 or p95 > original["p95"]:
+            continue
+        full_coefficients = np.zeros((6, 3), np.float32)
+        fit = np.linalg.lstsq(basis[:, :columns], target, rcond=None)[0]
+        full_coefficients[:min(columns, 4)] = fit[:min(columns, 4)]
+        if columns == 5:
+            full_coefficients[4] = fit[4]
+            full_coefficients[5] = -fit[4]
+        field = _soft3d_skin_field(alpha.shape, full_coefficients, centre, extent)
+        # Do not accept an unconstrained/extrapolated colour solution at the eye.
+        support = cv2.dilate((alpha > 96).astype(np.uint8),
+                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))) > 0
+        if (not np.isfinite(field).all()
+                or float(np.max(np.abs(field[support]))) > 40):
+            continue
+        return {**original, "p95": p95,
+                "skin_field": {"coefficients": full_coefficients,
+                               "centre": centre, "extent": extent}}
+    return original if original["p95"] <= 18 else None
 
 
 def _harmonic_stylized_skin(target, mask):
@@ -740,7 +999,7 @@ def _harmonic_stylized_skin(target, mask):
     return result
 
 
-def _soft3d_static_blink_art(neutral_patch, sclera_core):
+def _soft3d_static_blink_art(neutral_patch, sclera_core, *, registered_source=None):
     """Protect canonical hair/markings, not the open eye's own ink.
 
     The oversized soft-3D eye lane borrows the wide lash search used for
@@ -762,6 +1021,30 @@ def _soft3d_static_blink_art(neutral_patch, sclera_core):
             or not np.any(sclera_core)):
         return None
     gray = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2GRAY)
+    registered_skin = None
+    if (isinstance(registered_source, np.ndarray)
+            and registered_source.shape == neutral_patch.shape):
+        # An accepted, registered closed source distinguishes warm socket
+        # shading from ink. A threshold crossing in a smooth brown skin
+        # gradient is not a scar; nor is the open upper-lid crease which the
+        # same authored source replaces with quiet closed-eyelid skin.
+        source_gray = cv2.cvtColor(registered_source, cv2.COLOR_BGR2GRAY)
+        neutral_hsv = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2HSV)
+        source_hsv = cv2.cvtColor(registered_source, cv2.COLOR_BGR2HSV)
+        hue_delta = np.abs(neutral_hsv[:, :, 0].astype(np.int16)
+                           - source_hsv[:, :, 0].astype(np.int16))
+        hue_delta = np.minimum(hue_delta, 180 - hue_delta)
+        gradients = []
+        for image in (gray, source_gray):
+            gradients.append(np.maximum(
+                np.abs(cv2.Sobel(image, cv2.CV_32F, 1, 0, ksize=3)),
+                np.abs(cv2.Sobel(image, cv2.CV_32F, 0, 1, ksize=3))))
+        registered_skin = (
+            (gray >= 70) & (neutral_hsv[:, :, 1] >= 40)
+            & (neutral_hsv[:, :, 2] >= 120)
+            & (source_hsv[:, :, 1] >= 40) & (hue_delta <= 8),
+            gradients[0], gradients[1],
+        )
     count, labels, stats, _ = cv2.connectedComponentsWithStats(
         (gray < 100).astype(np.uint8))
     core = sclera_core > 0
@@ -771,6 +1054,9 @@ def _soft3d_static_blink_art(neutral_patch, sclera_core):
     border_labels = np.unique(np.concatenate((
         labels[0], labels[-1], labels[:, 0], labels[:, -1])))
     protected = np.zeros(core.shape, np.uint8)
+    cy, cx = np.nonzero(core)
+    sx0, sx1, sy0, sy1 = int(cx.min()), int(cx.max()), int(cy.min()), int(cy.max())
+    sw, sh = sx1 - sx0 + 1, sy1 - sy0 + 1
     for index in range(1, count):
         if int(stats[index, cv2.CC_STAT_AREA]) < 3:
             continue
@@ -778,6 +1064,20 @@ def _soft3d_static_blink_art(neutral_patch, sclera_core):
         touches_border = bool(index in border_labels)
         if not touches_border and np.any(component & rim):
             continue
+        if not touches_border and registered_skin is not None:
+            material, neutral_gradient, source_gradient = registered_skin
+            if float(np.mean(material[component])) >= .95:
+                quiet_source = float(np.percentile(source_gradient[component], 95)) < 12
+                quiet_neutral = float(np.percentile(neutral_gradient[component], 95)) < 12
+                bx, by, bw, bh, _ = (int(v) for v in stats[index])
+                upper_crease = (
+                    sx0 <= bx and bx + bw <= sx1 + 1
+                    and sy0 - sh * .22 <= by
+                    and by + bh <= sy0 + sh * .05
+                    and bw <= sw * .70 and bh <= sh * .15
+                )
+                if quiet_source and (quiet_neutral or upper_crease):
+                    continue
         # Do not turn a pupil/lash connected to an ambiguous dark crop edge
         # into permanent static art. A fringe may graze the convex sclera
         # hull, but may never consume a meaningful part of the opening.
@@ -877,6 +1177,7 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
         geometry = eyes.get(side) if isinstance(eyes.get(side), dict) else {}
         eye_masks[side] = _stylized_eye_alpha(neutral, geometry)
     compact_eyes = False
+    source_crescents = None
     if (any(mask is None for mask in eye_masks.values())
             and str(source_medium).strip().lower()
             in {"3d render", "3d-render", "soft-3d"}):
@@ -885,6 +1186,12 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
             eye_masks = compact_masks
             compact_eyes = True
             log("  stylized blink source: using bilateral compact-eye contours")
+        else:
+            source_masks = _soft3d_source_crescent_masks(neutral, key_landmarks)
+            if source_masks is not None:
+                eye_masks, source_crescents = source_masks
+                compact_eyes = True
+                log("  stylized blink source: using bilateral source-coloured sclera")
     for side in blink.SIDES:
         mask = eye_masks[side]
         if mask is None:
@@ -948,7 +1255,12 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
             candidate_patch = candidate_image[
                 y0:y0 + patch_height, x0:x0 + patch_width
             ].copy()
-            candidate_topology = _stylized_lid_topology(
+            topology_measure = (
+                _soft3d_lid_topology
+                if str(source_medium).strip().lower()
+                in {"3d render", "3d-render", "soft-3d"}
+                else _stylized_lid_topology)
+            candidate_topology = topology_measure(
                 candidate_patch, alpha, compact_eye=compact_eyes
             )
             if candidate_topology is None:
@@ -972,7 +1284,12 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                     alpha,
                     cv2.getStructuringElement(
                         cv2.MORPH_ELLIPSE, (diameter, diameter)))
-            registration = _stylized_flat_skin_registration(
+            skin_registration = (
+                _soft3d_authored_skin_registration
+                if not compact_eyes and str(source_medium).strip().lower()
+                in {"3d render", "3d-render", "soft-3d"}
+                else _stylized_flat_skin_registration)
+            registration = skin_registration(
                 neutral_candidate_patch,
                 candidate_patch,
                 registration_alpha,
@@ -1077,11 +1394,9 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
         # eyebrow), then restore only the reviewed closed-lid component. The
         # neutral sclera underneath is therefore completely covered instead
         # of receiving a smaller inset blink patch.
-        # Reconstruct skin from the canonical face, not the provider's blink
-        # image. Provider lighting/pose differences made the old plate read as
-        # a circular skin-colour sticker even though its alpha covered the
-        # correct full eye. The canonical boundary supplies identical tone and
-        # texture; only the reviewed lid stroke is borrowed from the provider.
+        # Prefer registered authored closed-eye skin. Canonical-boundary
+        # reconstruction remains an illustration-only fallback; a shaded 3-D
+        # eye must retain its authored lighting rather than receive a flat oval.
         # Re-isolate the exact canonical sclera inside the generous semantic
         # crop.  The crop/alpha intentionally extends below the open eye so it
         # can contain a provider-painted low lid, but using that whole area as
@@ -1089,11 +1404,18 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
         # hair.  Filling the outer sclera contour also fills its pupil hole, so
         # every original eye pixel is removed while surrounding art remains
         # byte-identical to the canonical head.
-        neutral_hsv = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2HSV)
-        neutral_white = (
-            (neutral_hsv[:, :, 1] < 85)
-            & (neutral_hsv[:, :, 2] > 135)
-        ).astype(np.uint8) * 255
+        if source_crescents is None:
+            neutral_hsv = cv2.cvtColor(neutral_patch, cv2.COLOR_BGR2HSV)
+            neutral_white = (
+                (neutral_hsv[:, :, 1] < 85)
+                & (neutral_hsv[:, :, 2] > 135)
+            ).astype(np.uint8) * 255
+        else:
+            # Use the same observed warm crescents throughout publication.
+            # Applying the old fixed-white cutoff again here loses the inner
+            # crescent and resurrects a partial/open eye under the closed lid.
+            neutral_white = source_crescents[side][
+                y0:y0 + patch_height, x0:x0 + patch_width].copy()
         neutral_white = cv2.morphologyEx(
             neutral_white,
             cv2.MORPH_OPEN,
@@ -1114,7 +1436,8 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
         if (not compact_eyes and str(source_medium).strip().lower()
                 in {"3d render", "3d-render", "soft-3d"}):
             soft3d_static_art = _soft3d_static_blink_art(
-                neutral_patch, sclera_core_fill)
+                neutral_patch, sclera_core_fill,
+                registered_source=patch if provider_registration is not None else None)
             if soft3d_static_art is None:
                 log(f"  stylized blink source rejected: {side} static art ownership is ambiguous")
                 return None
@@ -1209,20 +1532,34 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
         # the natural eyelid gradient and the complete authored lash instead
         # of synthesizing a visibly flat peach oval.  This lane is strict: the
         # source must contain no remaining sclera and its colour-corrected skin
-        # boundary must match the canonical ring.  A provider with changed
-        # lighting or geometry falls back to the harmonic canonical fill.
+        # boundary must match the canonical ring. A shaded 3-D provider without
+        # that evidence is rejected; only illustrations may use harmonic fill.
         eye_mask = eye_fill > 0
         provider_eye = False
         cleaned = None
         if provider_registration is not None:
             correction = provider_registration["correction"]
+            if provider_registration.get("skin_field") is not None:
+                field = provider_registration["skin_field"]
+                correction = _soft3d_skin_field(
+                    patch.shape, field["coefficients"], field["centre"], field["extent"])
+            else:
+                correction = correction[None, None, :]
             corrected_source = np.clip(
-                patch.astype(np.float32) + correction[None, None, :],
+                patch.astype(np.float32) + correction,
                 0, 255,
             ).astype(np.uint8)
-            corrected_hsv = cv2.cvtColor(
-                corrected_source, cv2.COLOR_BGR2HSV
-            )
+            # Sclera is geometry in the authored closed frame, not a colour
+            # introduced by matching its skin illumination. A bounded additive
+            # fit can reduce a warm 3-D highlight from saturation 78 to 68 and
+            # incorrectly label that same closed eyelid as white eye paint.
+            # Recheck the *full* canonical eye on original provider RGB here;
+            # it already passed bilateral closure and full-lid topology. This
+            # also prevents a tint correction from concealing actual source
+            # sclera. Compact/illustrated lanes keep their prior exact gate.
+            sclera_source = (patch if soft3d_static_art is not None
+                             else corrected_source)
+            corrected_hsv = cv2.cvtColor(sclera_source, cv2.COLOR_BGR2HSV)
             source_white = (
                 (corrected_hsv[:, :, 1] < 72)
                 & (corrected_hsv[:, :, 2] > 155)
@@ -1274,11 +1611,12 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
             eye_mask = eye_fill > 0
 
         if cleaned is None:
-            if compact_eyes:
+            if compact_eyes or soft3d_static_art is not None:
                 # A natural 3-D lid needs its authored lighting gradient.
                 # A flat harmonic skin fill can technically hide the sclera
                 # while looking like a pasted oval behind spectacles. Do not
-                # silently publish that degraded fallback for a fresh face.
+                # silently publish that degraded fallback for a fresh face,
+                # including a large shaded 3-D eye without spectacles.
                 log(f"  stylized blink source rejected: {side} closed-eye skin is not registered")
                 return None
             cleaned = _harmonic_stylized_skin(
@@ -1379,6 +1717,49 @@ def _publish_stylized_blink_source(neutral, avatar_home, eyes, destination,
                 cleaned.astype(np.float32) * colour_weight
                 + neutral_patch.astype(np.float32) * (1.0 - colour_weight),
                 0, 255).astype(np.uint8)
+        elif (soft3d_static_art is not None
+              and provider_registration is not None
+              and (provider_registration.get("skin_field") is not None
+                   or provider_registration["p95"] > 2)):
+            # Blend *inside* a real skin collar, not merely outside an opaque
+            # mask whose RGB was replaced by neutral for the old seam test.
+            # Every old sclera/lash and the complete new lid stays fully owned;
+            # only surrounding skin transitions, so there is no smaller eye or
+            # translucent iris. The complete authored 3-D shading is retained.
+            # Already matching skin needs no expanded collar: keeping that
+            # path exact also avoids growing a small eye to its crop boundary.
+            required = cv2.max(sclera_art_guard, open_eye_ink)
+            required = cv2.max(required, canonical_eye_fill)
+            required = cv2.max(required, provider_lid_fill)
+            required[soft3d_static_art > 0] = 0
+            collar = max(8, min(24, int(round(core_width * .12))))
+            collar_mask = cv2.dilate(required, cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (collar * 2 + 1, collar * 2 + 1)))
+            eye_fill = cv2.max(eye_fill, collar_mask)
+            eye_fill[soft3d_static_art > 0] = 0
+            distance = cv2.distanceTransform(
+                (eye_fill > 0).astype(np.uint8), cv2.DIST_L2, 5)
+            weight = np.minimum(distance / collar, 1.)
+            # Zero slope at the canonical boundary avoids a thin dark join
+            # where warm socket shading changes more than a uniform tint.
+            weight = weight * weight * (3. - 2. * weight)
+            weight[required > 0] = 1.
+            weight = weight[:, :, None]
+            cleaned = np.clip(cleaned.astype(np.float32) * weight
+                              + neutral_patch.astype(np.float32) * (1. - weight),
+                              0, 255).astype(np.uint8)
+            # Check the *inside* of the opaque skin join. Checking only the
+            # exterior feather (which is neutral by construction) missed the
+            # visible rounded rectangle on warm 3-D faces.
+            skin_join = ((distance > 0) & (distance <= 1.5)
+                         & (required == 0)
+                         & (cv2.dilate(soft3d_static_art,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) == 0))
+            join_delta = np.abs(cleaned.astype(np.int16)
+                                - neutral_patch.astype(np.int16)).max(2)
+            if np.any(skin_join) and float(np.percentile(join_delta[skin_join], 99)) > 3:
+                log(f"  stylized blink source rejected: {side} inner skin seam")
+                return None
         if soft3d_static_art is not None:
             cleaned[soft3d_static_art > 0] = neutral_patch[soft3d_static_art > 0]
         patch = cleaned

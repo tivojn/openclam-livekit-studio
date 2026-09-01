@@ -140,7 +140,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertFalse(
             OpenClamAvatarStoreURLPolicy.allowsCatalogURL(
                 try XCTUnwrap(URL(string:
-                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.8/shared/avatar-store-v1/catalog/v1/catalog.json?changed=1"
+                    "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.9/shared/avatar-store-v1/catalog/v1/catalog.json?changed=1"
                 ))
             )
         )
@@ -155,10 +155,10 @@ final class OpenClamAvatarStoreTests: XCTestCase {
 
     func testNewCatalogPinRejectsPreviousCatalogButKeepsImmutablePackageDownloads() throws {
         let previousCatalog = try XCTUnwrap(URL(string:
-            "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.7/shared/avatar-store-v1/catalog/v1/catalog.json"
+            "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.8/shared/avatar-store-v1/catalog/v1/catalog.json"
         ))
         let retainedPackage = try XCTUnwrap(URL(string:
-            "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.7/fixture-avatar-ios-light.avtr"
+            "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.8/fixture-avatar-ios-light.avtr"
         ))
 
         XCTAssertFalse(OpenClamAvatarStoreURLPolicy.allowsCatalogURL(previousCatalog))
@@ -376,7 +376,7 @@ final class OpenClamAvatarStoreTests: XCTestCase {
         XCTAssertTrue(OpenClamAvatarStoreReleasePolicy.isAvailable)
         XCTAssertEqual(
             OpenClamAvatarStoreReleasePolicy.productionCatalogURL.absoluteString,
-            "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.8/shared/avatar-store-v1/catalog/v1/catalog.json"
+            "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.9/shared/avatar-store-v1/catalog/v1/catalog.json"
         )
         XCTAssertEqual(
             OpenClamAvatarStoreReleasePolicy.catalogURL,

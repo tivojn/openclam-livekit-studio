@@ -89,8 +89,10 @@ function dockedPetBounds(size, area, margin = 0, side = 'right') {
 
 // Keep the native transparent canvas GPU/screen sized. The renderer retains
 // the requested zoom and applies any excess inside this bounded canvas, with
-// its anatomical crown guard. This does not overwrite a saved zoom.
-function fitPetWindowToArea(bounds, area) {
+// its anatomical crown guard. This does not overwrite a saved zoom. Automatic
+// docking retains four-edge containment; manually placed avatars only have a
+// top floor and may leave the left, right, or bottom of the work area.
+function fitPetWindowToArea(bounds, area, options = {}) {
   const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   const left = finite(area && area.x, 0), top = finite(area && area.y, 0);
   const availableWidth = Math.max(1, finite(area && area.width, 1));
@@ -100,6 +102,26 @@ function fitPetWindowToArea(bounds, area) {
   const factor = Math.min(1, availableWidth / wantedWidth, availableHeight / wantedHeight);
   const width = Math.max(1, Math.min(availableWidth, Math.round(wantedWidth * factor)));
   const height = Math.max(1, Math.min(availableHeight, Math.round(wantedHeight * factor)));
+  if (options && options.placement === 'top-only') {
+    const anchor = options.anchor;
+    // Fit the GPU canvas BEFORE placing it around the gesture's fixed centre.
+    // Using the unbounded requested size's x/y here makes large pinches fling
+    // the now-small backing window offscreen instead of zooming in place.
+    const x = anchor && Number.isFinite(anchor.x)
+      ? anchor.x - width / 2 : finite(bounds && bounds.x, left);
+    const y = anchor && Number.isFinite(anchor.y)
+      ? anchor.y - height / 2 : finite(bounds && bounds.y, top);
+    // Reject only coordinates a native signed-int rectangle cannot represent;
+    // this is not a display-edge clamp or an avatar zoom limit.
+    const nativeLimit = 0x7fffffff - Math.max(width, height);
+    const coordinate = (value, fallback) => Number.isFinite(value)
+      && Math.abs(value) <= nativeLimit ? value : fallback;
+    return {
+      x: Math.round(coordinate(x, left)),
+      y: Math.max(Math.ceil(top), Math.round(coordinate(y, top))),
+      width, height,
+    };
+  }
   return {
     x: Math.round(Math.max(left, Math.min(left + availableWidth - width,
       finite(bounds && bounds.x, left)))),

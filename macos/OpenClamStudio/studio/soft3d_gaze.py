@@ -138,6 +138,253 @@ def _source_lower_aperture(base, lm, side, box, scale, aperture, ellipse):
     return result.astype(np.float32), changed
 
 
+def _source_brown_aperture(image, lm, side, box, scale, ellipse):
+    """Resolve a brown 3D eye whose human lower lid crosses visible iris paint.
+
+    Brown iris and warm skin can have almost the same chroma, so the small
+    green/skin separation band above is deliberately not made more permissive.
+    This fallback instead observes the source sclera. A completely enclosed
+    iris uses that actual cavity. A partly occluded iris additionally requires
+    bilateral white crescents and a bounded continuous source lash boundary;
+    its missing cap is not sampled from the dark lash. No photographic or
+    illustrated caller uses this helper, and ambiguous eyes fail closed.
+    """
+    x, y, width, height = box
+    (ex, ey), axes, angle = ellipse
+    cx, cy = ex + x, ey + y
+    radius = min(axes) * .5
+    x0, y0 = max(0, int(np.floor(cx - radius * 2.5))), max(0, int(np.floor(cy - radius * 2.1)))
+    x1 = min(image.shape[1], int(np.ceil(cx + radius * 2.5)) + 1)
+    y1 = min(image.shape[0], int(np.ceil(cy + radius * 2.3)) + 1)
+    observation_box = (x0, y0, x1 - x0, y1 - y0)
+    base = image[y0:y1, x0:x1].copy()
+    rows, columns = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    canonical_ellipse = ((cx, cy), axes, angle)
+    distance = _ellipse_distance(columns, rows, canonical_ellipse)
+    geometric = _aperture(lm, side, observation_box, scale)
+    paint = base.astype(np.float32)
+    gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    brown = ((paint[..., 2] > paint[..., 1] + 12)
+             & (paint[..., 1] > paint[..., 0] + 6) & (gray < 110))
+    core = distance < -max(3 * scale, 1.5)
+    visible_core = core & (geometric > .99)
+    if (int(visible_core.sum()) < 24
+            or float(brown[visible_core].mean()) < .15):
+        return None  # Not this source-material policy; never infer a new style.
+    below = core & (rows > cy) & (geometric == 0) & brown
+    if int(below.sum()) < max(12, .025 * int(core.sum())):
+        return None  # No source-supported lower undercoverage to repair.
+
+    seed = (geometric > .99) & (distance > 3 * scale) & (gray > 100)
+    dry = ((rows > cy + radius * 1.85) & (rows < cy + radius * 2.2)
+           & (abs(columns - cx) < radius * .7))
+    if int(seed.sum()) < 24 or int(dry.sum()) < 24:
+        raise UnsupportedSoft3DIris("brown 3D eye has no reliable source sclera/skin boundary")
+    # Normalized red/blue separation tolerates the native sclera's lighting;
+    # thresholds are learned from this eye and the adjacent lower skin.
+    score = (paint[..., 2] - paint[..., 0]) / np.maximum(paint[..., 2] + paint[..., 0], 1)
+    wet_score = float(np.percentile(score[seed], 75))
+    dry_score = float(np.median(score[dry]))
+    if dry_score - wet_score < .18:
+        raise UnsupportedSoft3DIris("brown 3D lower eyelid materials cannot be separated safely")
+    threshold = wet_score + (dry_score - wet_score) * .45
+    white = (score < threshold) & (gray > max(50, float(np.median(gray[seed])) * .32))
+    count, labels, _stats, _centres = cv2.connectedComponentsWithStats(white.astype(np.uint8), 8)
+    selected = [label for label in range(1, count)
+                if int(((labels == label) & seed).sum()) >= max(8, int(8 * scale * scale))]
+    if not selected or len(selected) > 2:
+        raise UnsupportedSoft3DIris("brown 3D sclera is disconnected or ambiguous")
+    sclera = np.isin(labels, selected)
+    opening = np.zeros(sclera.shape, np.uint8)
+    contours, _ = cv2.findContours(sclera.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(opening, contours, -1, 1, cv2.FILLED)
+    local_ellipse = ((cx - x0, cy - y0), axes, angle)
+    evidence = dict(brown_iris_lower_undercoverage_pixels=int(below.sum()),
+                    brown_aperture_source_box=list(observation_box))
+    interior = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
+    # A measured iris AND its native glossy rim must lie entirely inside the
+    # source cavity. Testing only its inner core can still leave a stationary
+    # outer limbus, or pull a painted lash along with the iris.
+    footprint = distance <= 6 * scale
+    if (not np.any(footprint) or np.any(interior[footprint] < max(1.5 * scale, 1))
+            or opening[0].any() or opening[-1].any()
+            or opening[:, 0].any() or opening[:, -1].any()):
+        aperture, local_ellipse, lower, partial_evidence = _occluded_brown_aperture(
+            base, sclera, local_ellipse, scale)
+        evidence.update(partial_evidence)
+        evidence['brown_aperture_method'] = 'source-occluded-sclera'
+        evidence['source_lower_border_columns'] = int(np.any(aperture != geometric, axis=0).sum())
+        return observation_box, base, aperture, local_ellipse, evidence, lower
+    # Source edges, not the too-small human landmarks, own the fixed lid.
+    aperture = _smoothstep(max(.5 * scale, .35), max(1.5 * scale, 1), interior)
+    # The first fit may only have seen the upper iris arc through the incorrect
+    # human opening. Refit against the recovered source cavity before deciding
+    # which pixels belong to sclera. Otherwise the previously clipped lower
+    # limbus can sit outside the old ellipse and pollute the reconstructed fill.
+    local_ellipse, refined_fit = _measure_ellipse(
+        base, aperture, np.asarray(local_ellipse[0], np.float32), radius / 1.25, scale)
+    local_y, local_x = np.mgrid[:base.shape[0], :base.shape[1]].astype(np.float32)
+    refined_footprint = _ellipse_distance(local_x, local_y, local_ellipse) <= 6 * scale
+    if np.any(interior[refined_footprint] < max(1.5 * scale, 1)):
+        raise UnsupportedSoft3DIris("remeasured brown 3D iris reaches an uncertain source eyelid")
+    evidence['brown_aperture_method'] = 'source-enclosed-sclera'
+    evidence['source_iris_refit'] = refined_fit
+    evidence['source_lower_border_columns'] = int(np.any(aperture != geometric, axis=0).sum())
+    return observation_box, base, aperture.astype(np.float32), local_ellipse, evidence, None
+
+
+def _occluded_brown_aperture(base, sclera, ellipse, scale):
+    """Use two observed scleral crescents and a continuous local lash trough.
+
+    White pixels below the iris centre cannot be evidence for an upper lid.
+    Fit those borders separately, then refine the lower border within a small
+    source-supported band. A smooth, globally connected path keeps the real
+    dry lash fixed instead of following unrelated per-column dark minima.
+    This is preparation only; there is no fitting in the tile/render loop.
+    """
+    from scipy.interpolate import UnivariateSpline
+
+    height, width = sclera.shape
+    yy, _xx = np.mgrid[:height, :width].astype(np.float32)
+    cols = np.arange(width)
+    (cx, cy), axes, _ = ellipse
+    radius = min(axes) * .5
+    low = np.full(width, np.nan)
+    high = low.copy()
+    for col in cols:
+        wet_rows = np.flatnonzero(sclera[:, col])
+        if len(wet_rows) >= max(3, int(3 * scale)):
+            high[col], low[col] = wet_rows[0], wet_rows[-1]
+    support = np.isfinite(low) & (abs(cols - cx) < radius * 1.85)
+    normalized_x = (cols - cx) / radius
+    curves, counts = {}, {}
+    for name, points in (('lower', low), ('upper', high)):
+        actual = support & ((points > cy) if name == 'lower' else (points < cy))
+        # A sloping upper lid may expose only a very thin inner white crescent;
+        # it still must have an actual observation on both sides, not a fit
+        # through lower-eye observations substituted for missing upper ones.
+        side_samples = 4 if name == 'lower' else 1
+        if (int(actual.sum()) < 12
+                or int((actual & (cols < cx - radius * .4)).sum()) < side_samples
+                or int((actual & (cols > cx + radius * .4)).sum()) < side_samples):
+            raise UnsupportedSoft3DIris("occluded brown iris needs two source-supported scleral crescents")
+        keep = actual.copy()
+        for _ in range(3):
+            if int(keep.sum()) < 8:
+                raise UnsupportedSoft3DIris("occluded brown eyelid has insufficient stable source observations")
+            coefficients = np.polyfit(normalized_x[keep], points[keep], 4)
+            predicted = np.polyval(coefficients, normalized_x)
+            residual = abs(predicted - points)
+            keep = actual & (residual < max(1.5 * scale, float(np.percentile(residual[actual], 80))))
+        curves[name] = predicted.astype(np.float32)
+        counts[name] = int(actual.sum())
+    available = cols[np.isfinite(low)]
+    if not len(available):
+        raise UnsupportedSoft3DIris("occluded brown iris has no measured canthi")
+    left, right = int(available.min()), int(available.max())
+    if (right - left < radius * 1.5 or left == 0 or right == width - 1
+            or not np.isfinite([*curves['upper'], *curves['lower']]).all()):
+        raise UnsupportedSoft3DIris("occluded brown eyelid does not have a bounded source opening")
+
+    gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.GaussianBlur(gray, (0, 0), max(.6 * scale, .3))
+    possible = abs(yy - curves['lower'][None, :]) <= max(5 * scale, 2.5)
+    costs = np.full((height, width), 1e9, np.float32)
+    for col in range(left, right + 1):
+        band = possible[:, col]
+        if int(band.sum()) < 3:
+            raise UnsupportedSoft3DIris("occluded brown lower lid leaves the source crop")
+        values = gray[band, col]
+        lo, hi = np.percentile(values, [5, 85])
+        costs[band, col] = ((values - lo) / max(hi - lo, 15)
+                            + .015 * ((np.flatnonzero(band) - curves['lower'][col]) / scale) ** 2)
+    dp, parents = costs[:, left].copy(), {}
+    reach = max(1, int(round(2 * scale)))
+    steps = np.arange(-reach, reach + 1)
+    for col in range(left + 1, right + 1):
+        choices = []
+        for step in steps:
+            value = np.roll(dp, step) + .08 * (step / scale) ** 2
+            if step > 0:
+                value[:step] = 1e9
+            elif step < 0:
+                value[step:] = 1e9
+            choices.append(value)
+        choices = np.stack(choices)
+        picked = choices.argmin(axis=0)
+        parents[col] = steps[picked]
+        dp = choices[picked, np.arange(height)] + costs[:, col]
+    if not np.isfinite(dp).all() or float(dp.min()) >= 1e8:
+        raise UnsupportedSoft3DIris("occluded brown lower lid has no continuous source border")
+    row, path = int(dp.argmin()), np.full(width, np.nan)
+    for col in range(right, left, -1):
+        path[col] = row
+        row -= int(parents[col][row])
+    path[left] = row
+    stable = np.arange(left, right + 1)
+    lower = UnivariateSpline(stable, path[stable], s=len(stable) * .18 * scale * scale,
+                             k=3)(cols).astype(np.float32)
+    if (not np.isfinite(lower).all()
+            or np.max(abs(lower[stable] - curves['lower'][stable])) > max(6 * scale, 3)
+            or np.any(lower[stable] - curves['upper'][stable] < -2 * scale)):
+        raise UnsupportedSoft3DIris("occluded brown lower border is inconsistent with visible sclera")
+    aperture = _smoothstep(.3 * scale, 1.25 * scale,
+                           np.minimum(yy - curves['upper'], lower - yy))
+    aperture[:, (cols < left) | (cols > right)] = 0
+    ellipse, fit = _measure_ellipse(base, aperture, np.array(ellipse[0]), radius / 1.25, scale)
+    return aperture.astype(np.float32), ellipse, lower, dict(
+        source_iris_refit=fit, source_sclera_border_samples=counts,
+        source_lower_lid_method='bounded-continuous-source-spline')
+
+
+def _complete_occluded_iris_cap(base, observed, unknown, ellipse, texture, iris_alpha):
+    """Complete only unseen caps from equal-radius native iris paint.
+
+    Nearest-pixel filling would drag a horizontal lash shadow into a round
+    moving cap. Sampling the two closest visible angles at the SAME authored
+    radius preserves its ring shading without stretching known iris/glints.
+    The original observed pixels are never modified. Ambiguous rings reject.
+    """
+    angles = np.arange(720, dtype=np.float32) * (2 * np.pi / 720)
+    centre = np.array(ellipse[0])
+    rx, ry = np.array(ellipse[1]) * .5
+    theta = np.deg2rad(ellipse[2])
+    source_mask = observed.astype(np.float32)
+    completed, fade_pixels, widest_gap = 0, 0, 0.
+    for uy, ux in np.argwhere(unknown):
+        px = (ux - centre[0]) * np.cos(theta) + (uy - centre[1]) * np.sin(theta)
+        py = -(ux - centre[0]) * np.sin(theta) + (uy - centre[1]) * np.cos(theta)
+        rho, own_angle = np.hypot(px / rx, py / ry), np.arctan2(py / ry, px / rx)
+        qx, qy = rho * rx * np.cos(angles), rho * ry * np.sin(angles)
+        mx = (centre[0] + qx * np.cos(theta) - qy * np.sin(theta)).astype(np.float32)[None, :]
+        my = (centre[1] + qx * np.sin(theta) + qy * np.cos(theta)).astype(np.float32)[None, :]
+        valid = cv2.remap(source_mask, mx, my, cv2.INTER_LINEAR)[0] > .99
+        delta = (angles - own_angle + np.pi) % (2 * np.pi) - np.pi
+        before, after = valid & (delta <= 0), valid & (delta >= 0)
+        if not before.any() or not after.any():
+            # At the last quantized <2% fade pixels the 0.5-degree angular
+            # sample grid can miss a sliver. Keep the existing nearest native
+            # colour there only; this is never allowed for the actual iris.
+            if rho > 1 and iris_alpha[uy, ux] < .02:
+                fade_pixels += 1
+                continue
+            raise UnsupportedSoft3DIris("occluded iris cap has no source paint at its own radius")
+        left = np.where(before, -delta, np.inf).argmin()
+        right = np.where(after, delta, np.inf).argmin()
+        dl, dr = -delta[left], delta[right]
+        if dl + dr > np.pi * 1.25:
+            raise UnsupportedSoft3DIris("too much occluded iris texture would have to be inferred")
+        colors = cv2.remap(base, mx, my, cv2.INTER_LINEAR)[0].astype(float)
+        texture[uy, ux] = np.rint((colors[left] * dr + colors[right] * dl)
+                                 / max(dl + dr, 1e-5)).clip(0, 255).astype(np.uint8)
+        completed += 1
+        widest_gap = max(widest_gap, float(dl + dr))
+    if fade_pixels > max(16, .01 * int((iris_alpha > .001).sum())):
+        raise UnsupportedSoft3DIris("occluded iris has too many unobserved outer fade pixels")
+    return dict(occluded_cap_pixels=completed, occluded_cap_outer_fade_pixels=fade_pixels,
+                occluded_cap_max_arc_degrees=float(np.rad2deg(widest_gap)))
+
+
 def _measure_ellipse(base, aperture, centre, radius, scale):
     """Require actual sclera contrast, not a pupil/glint edge or human radius.
 
@@ -210,11 +457,11 @@ def _measure_ellipse(base, aperture, centre, radius, scale):
                          residual_p95_px=float(np.percentile(residual, 95)))
 
 
-def _sclera(base, aperture, distance, scale):
+def _sclera(base, aperture, distance, scale, *, rim_source_pixels=1.5):
     """Reconstruct only the old iris footprint on the isolated wet-eye graph."""
     height, width = aperture.shape
     rows, columns = np.mgrid[:height, :width].astype(np.float32)
-    rim = max(1.5 * scale, 1)
+    rim = max(rim_source_pixels * scale, 1)
     known = (aperture > .99) & (distance > rim)
     if int(known.sum()) < 12:
         raise UnsupportedSoft3DIris("soft-3D gaze needs exposed sclera beside its iris")
@@ -293,10 +540,37 @@ def prepare(key, landmarks, side, box):
     aperture, refined_columns = _source_lower_aperture(
         base, lm, side, (x, y, width, height), scale, aperture, ellipse)
     evidence['source_lower_border_columns'] = refined_columns
+    source_lower = None
+    if not refined_columns:
+        resolved = _source_brown_aperture(image, lm, side, (x, y, width, height), scale, ellipse)
+        if resolved is not None:
+            (x, y, width, height), base, aperture, ellipse, source_evidence, source_lower = resolved
+            evidence.update(source_evidence)
+            refined_columns = evidence['source_lower_border_columns']
     grid_y, grid_x = np.mgrid[:height, :width].astype(np.float32)
     distance = _ellipse_distance(grid_x, grid_y, ellipse)
     iris_alpha = (1 - _smoothstep(-max(.4 * scale, .25), max(.8 * scale, .5), distance)).astype(np.float32)
+    brown_source_aperture = 'brown_aperture_method' in evidence
+    occluded_brown_aperture = evidence.get('brown_aperture_method') == 'source-occluded-sclera'
+    if brown_source_aperture:
+        # The native glossy rim belongs to the translated iris too; including
+        # it in the old-sclera fill would leave a stationary pale second disc.
+        iris_alpha = (1 - _smoothstep(2 * scale, 4.5 * scale, distance)).astype(np.float32)
+        evidence.update(iris_rim_full_ownership_source_px=2,
+                        iris_rim_fade_end_source_px=4.5,
+                        sclera_rim_exclusion_source_px=6)
+    if occluded_brown_aperture:
+        # A lower lid partly hides this source iris; a glossy enclosed-eye rim
+        # would include the fixed lash. Use the measured limbus and a small
+        # native transition instead, excluding the lower shadow from texture.
+        iris_alpha = (1 - _smoothstep(scale, 2.5 * scale, distance)).astype(np.float32)
+        evidence.update(iris_rim_full_ownership_source_px=1,
+                        iris_rim_fade_end_source_px=2.5,
+                        sclera_rim_exclusion_source_px=5,
+                        source_texture_lower_lid_inset_px=4 * scale)
     observed = (aperture > .99) & (iris_alpha > .001)
+    if occluded_brown_aperture:
+        observed &= grid_y < source_lower[None, :] - 4 * scale
     if int(observed.sum()) < 32:
         raise UnsupportedSoft3DIris("soft-3D iris paint is not visible")
     texture = base.copy()
@@ -306,6 +580,8 @@ def prepare(key, landmarks, side, box):
     coordinates = np.argwhere(observed)
     nearest = coordinates[np.clip(labels[unknown] - 1, 0, len(coordinates) - 1)]
     texture[unknown] = texture[nearest[:, 0], nearest[:, 1]]
+    if occluded_brown_aperture:
+        evidence.update(_complete_occluded_iris_cap(base, observed, unknown, ellipse, texture, iris_alpha))
     # Boundary source pixels already mix wet-eye paint and dry lash/skin.
     # Retain that stationary dry contribution when replacing the wet one;
     # source-over with the aperture again would leave a second old iris rim.
@@ -327,6 +603,8 @@ def prepare(key, landmarks, side, box):
             (~dry).astype(np.uint8), cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
         dry_coordinates = np.argwhere(dry)
         lower_fringe = fringe & (grid_y > ellipse[0][1]) & (distance <= max(1.5 * scale, 1))
+        if occluded_brown_aperture:
+            lower_fringe = fringe & (grid_y > ellipse[0][1]) & (distance < 5 * scale)
         nearest_dry = dry_coordinates[np.clip(dry_labels[lower_fringe] - 1, 0, len(dry_coordinates) - 1)]
         dry_paint = base[nearest_dry[:, 0], nearest_dry[:, 1]].astype(np.float32)
         coverage = aperture[lower_fringe, None]
@@ -338,7 +616,9 @@ def prepare(key, landmarks, side, box):
     limits = (min(.35 * small_radius, .2 * (wet_x.max() - wet_x.min())),
               min(.18 * small_radius, .2 * (wet_y.max() - wet_y.min())))
     return PreparedIris((x, y, width, height), base, texture, neutral_wet,
-                        _sclera(base, aperture, distance, scale), aperture, iris_alpha,
+                        _sclera(base, aperture, distance, scale,
+                                rim_source_pixels=5 if occluded_brown_aperture else
+                                (6 if brown_source_aperture else 1.5)), aperture, iris_alpha,
                         grid_x, grid_y, ellipse, limits, evidence)
 
 
