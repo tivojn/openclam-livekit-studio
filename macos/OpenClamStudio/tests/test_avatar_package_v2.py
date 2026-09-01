@@ -939,6 +939,7 @@ class IOSLightAvatarPackageTests(unittest.TestCase):
             validator.validate(bad_states)
 
     def test_v22_rejects_noncanonical_state_bank_and_decoded_pixel_overage(self):
+        self.assertEqual(package.MAX_IOS_TOTAL_PIXELS, 54_000_000)
         add_full_expression_runtime(self.runtime)
         manifest_path = self.runtime / "manifest.json"
         manifest = json.loads(manifest_path.read_text())

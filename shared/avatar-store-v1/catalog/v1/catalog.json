@@ -195,6 +195,66 @@
         }
       },
       "version": 2
+    },
+    {
+      "author": "OpenClam",
+      "id": "leo",
+      "name": "Leo",
+      "thumbnail": {
+        "bytes": 1127395,
+        "height": 1024,
+        "mime": "image/png",
+        "sha256": "2ff824fca884cf6532f823b39ac4287abdacc5e2dba67e751b6bca2cc909c901",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.9/shared/avatar-store-v1/catalog/v1/leo-thumbnail.png",
+        "width": 1024
+      },
+      "variants": {
+        "ios-light": {
+          "bytes": 32202635,
+          "format": "openclam-avatar",
+          "profile": "ios-light",
+          "sha256": "a083a65ce4554bfdf7d3a33b4d4c336dc0e915c58a2a937f6a4c69b2b1388aa5",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.9/leo-ios-light.avtr"
+        },
+        "macos-full": {
+          "bytes": 423043016,
+          "format": "openclam-avatar",
+          "profile": "macos-full",
+          "sha256": "975588c50a9bdadef99b9ca96f7780259ca2378cfc1f4ef12ade94edb6fe7222",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.9/leo-macos-full.avtr"
+        }
+      },
+      "version": 1
+    },
+    {
+      "author": "OpenClam",
+      "id": "ola",
+      "name": "Ola",
+      "thumbnail": {
+        "bytes": 1121579,
+        "height": 1024,
+        "mime": "image/png",
+        "sha256": "eb48d27904cb3a86a0ab90216c1e79ce64ba5db800a92a09fe4316863bc1f8eb",
+        "url": "https://raw.githubusercontent.com/tivojn/openclam-livekit-studio/avatar-store-v1.0.9/shared/avatar-store-v1/catalog/v1/ola-thumbnail.png",
+        "width": 1024
+      },
+      "variants": {
+        "ios-light": {
+          "bytes": 33041617,
+          "format": "openclam-avatar",
+          "profile": "ios-light",
+          "sha256": "fc82e8cb6dae25b6042c305688a697c06ccf45d5c3d13a0e606a85454017976b",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.9/ola-ios-light.avtr"
+        },
+        "macos-full": {
+          "bytes": 454842133,
+          "format": "openclam-avatar",
+          "profile": "macos-full",
+          "sha256": "5c649707bc0e07ef13c561e5645b095d1a75d73cfed9fafb8c5f9f2bff46cd57",
+          "url": "https://github.com/tivojn/openclam-livekit-studio/releases/download/avatar-store-v1.0.9/ola-macos-full.avtr"
+        }
+      },
+      "version": 1
     }
   ],
   "schemaVersion": 1

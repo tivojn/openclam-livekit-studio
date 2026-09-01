@@ -65,6 +65,13 @@ compositor and metadata validator ship together. Native package import/reload
 and visual mouth-frame checks qualify the changed archives before client
 enablement. Earlier published catalogs and archives are not overwritten.
 
+The immutable `avatar-store-v1.0.9` catalog adds Leo (1) and Ola (1). Both
+entries publish full-expression iOS v4 packages with Walk, Edge Idle, and
+Moves, alongside matching full Mac authoring backups. The seven existing
+catalog rows retain their exact preceding metadata and immutable download
+URLs. Leo and Ola were exported reproducibly from their approved current Mac
+projects; earlier catalog tags and release assets remain unchanged.
+
 The `avatar-store-v1.0.6` source tag remains an unpublished candidate: its release
 assets were not uploaded or enabled in iOS. A final visual check found that the
 3D Luffy blink plate covered some fringe and cheek-scar artwork. Version 1.0.7
