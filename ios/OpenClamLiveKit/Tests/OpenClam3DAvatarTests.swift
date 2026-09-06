@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GLTFKit2
 import SceneKit
 import UIKit
 import XCTest
@@ -42,6 +43,50 @@ final class OpenClam3DAvatarTests: XCTestCase {
         XCTAssertEqual(mask.blendMode, .replace)
         XCTAssertEqual(mask.shaderModifiers?[.fragment], cutoff)
         XCTAssertFalse(mask.isDoubleSided)
+    }
+
+    func testTransmissionFallbackUsesAuthoredValuesWithoutNameHeuristics() {
+        let material = GLTFMaterial()
+        material.name = "Any material name"
+        let pbr = GLTFPBRMetallicRoughnessParams()
+        pbr.baseColorFactor = SIMD4<Float>(1, 0.8, 0.6, 0.5)
+        material.metallicRoughness = pbr
+        let originalColor = pbr.baseColorFactor
+        OpenClam3DAvatarRig.applyTransmissionFallback(material, factor: 0, indexOfRefraction: 1.5)
+        XCTAssertEqual(pbr.baseColorFactor, originalColor)
+        XCTAssertEqual(material.alphaMode, .opaque)
+        OpenClam3DAvatarRig.applyTransmissionFallback(material, factor: 1, indexOfRefraction: 1.5)
+        XCTAssertEqual(pbr.baseColorFactor.w, originalColor.w * 0.04, accuracy: 0.00001)
+        XCTAssertEqual(pbr.baseColorFactor.x, originalColor.x)
+        XCTAssertEqual(pbr.baseColorFactor.y, originalColor.y)
+        XCTAssertEqual(pbr.baseColorFactor.z, originalColor.z)
+        XCTAssertEqual(material.alphaMode, .blend)
+        XCTAssertFalse(material.isDoubleSided)
+    }
+
+    func testInstalledModelRenderingWhenRequested() async throws {
+        guard let id = ProcessInfo.processInfo.environment["OPENCLAM_QA_3D_AVATAR_ID"] else {
+            throw XCTSkip("Opt-in local model render check")
+        }
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                   appropriateFor: nil, create: false)
+        let url = support.appendingPathComponent("OpenClam/Avatars/v2/\(id)/assets/model.glb")
+        let data = try Data(contentsOf: url)
+        let summary = try OpenClam3DGLBReader.summary(of: data)
+        let rig = try await OpenClam3DAvatarRig.load(modelURL: url, frame: CGSize(width: 1024, height: 1536),
+                                                   targetNames: summary.targetNames)
+        let renderer = SCNRenderer(device: nil, options: nil)
+        renderer.scene = rig.scene
+        renderer.pointOfView = rig.cameraNode
+        let image = renderer.snapshot(atTime: 0, with: CGSize(width: 512, height: 768), antialiasingMode: .multisampling4X)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Imported 3D avatar"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if let directory = ProcessInfo.processInfo.environment["OPENCLAM_QA_3D_OUTPUT"] {
+            try image.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("loaded-model.png"))
+
+        }
     }
 
     // MARK: GLB reader

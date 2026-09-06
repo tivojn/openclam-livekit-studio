@@ -1,4 +1,4 @@
-# OpenClam Studio 1.0.18 / iOS 1.0.3 (59)
+# OpenClam Studio 1.0.18 / iOS 1.0.3 (60)
 
 Import rigged GLB avatars on Mac and export an iPhone 3D AVTR for explicit
 import on iOS. Both renderers drive speech, blinking and gaze from named
@@ -17,3 +17,7 @@ not bundled with this release. iOS packages remain limited to 64 MiB; prepare
 a mobile-sized model before exporting. Offline Blender lighting, subsurface
 scattering and unsupported SceneKit material extensions can differ from the
 real-time renderers.
+
+iOS approximates transmissive surfaces using the material’s declared
+transmission and index of refraction, so glass eye surfaces reveal the iris
+instead of becoming opaque. This fallback does not provide refractive distortion.

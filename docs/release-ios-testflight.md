@@ -1,7 +1,7 @@
 # iOS TestFlight runbook
 
 Builds 56 and 57 were archived by hand in Xcode. This is the same flow written
-down so it can be audited before an upload, current release build 59 (1.0.3,
+down so it can be audited before an upload, current release build 60 (1.0.3,
 3D avatars).
 
 ## 1. Version
@@ -70,9 +70,9 @@ Manual checks on a simulator or device before archiving:
 cd ios/OpenClamLiveKit
 xcodebuild -project OpenClamLiveKit.xcodeproj -scheme OpenClamLiveKit \
   -configuration Release -destination 'generic/platform=iOS' \
-  -archivePath build/OpenClam-1.0.3-59.xcarchive archive
-xcodebuild -exportArchive -archivePath build/OpenClam-1.0.3-59.xcarchive \
-  -exportOptionsPlist ExportOptions-AppStore.plist -exportPath build/export-59
+  -archivePath build/OpenClam-1.0.3-60.xcarchive archive
+xcodebuild -exportArchive -archivePath build/OpenClam-1.0.3-60.xcarchive \
+  -exportOptionsPlist ExportOptions-AppStore.plist -exportPath build/export-60
 ```
 
 `ExportOptions-AppStore.plist` has `destination: upload`, so the second
@@ -83,6 +83,6 @@ out of the repository (`*.xcarchive/` is ignored).
 
 ## 4. After upload
 
-- Note the build in the release commit (`release(ios): ship build 59`).
+- Note the build in the release commit (`release(ios): ship build 60`).
 - Keep `contracts/release-feature-contract-v1.json` in step with any catalog
   tag change (none for 3D avatars; the Store still lists sprite packages).

@@ -51,6 +51,14 @@ final class OpenClam3DAvatarRig {
                 }
             }
         }
+        // Convert unsupported transmission before SceneKit constructs skinning
+        // geometry, so every geometry receives the same transparent material.
+        for material in asset.materials {
+            if let transmission = material.transmission {
+                applyTransmissionFallback(material, factor: transmission.transmissionFactor,
+                                          indexOfRefraction: material.indexOfRefraction?.floatValue ?? 1.5)
+            }
+        }
         let scene = SCNScene(gltfAsset: asset)
         return OpenClam3DAvatarRig(scene: scene, frame: frame, targetNames: targetNames)
     }
@@ -77,6 +85,22 @@ final class OpenClam3DAvatarRig {
         measure()
         addLights()
         frameCamera()
+    }
+
+    static func applyTransmissionFallback(
+        _ material: GLTFMaterial, factor: Float, indexOfRefraction: Float
+    ) {
+        guard factor.isFinite, factor > 0 else { return }
+        let transmission = min(1, factor)
+        let ior = indexOfRefraction.isFinite ? max(1, indexOfRefraction) : 1.5
+        let reflectance = pow((ior - 1) / (ior + 1), 2)
+        let opacity = 1 - transmission + transmission * reflectance
+        let pbr = material.metallicRoughness ?? GLTFPBRMetallicRoughnessParams()
+        var color = pbr.baseColorFactor
+        color.w *= opacity
+        pbr.baseColorFactor = color
+        material.metallicRoughness = pbr
+        material.alphaMode = .blend
     }
 
     // MARK: Loading
