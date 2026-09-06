@@ -4,7 +4,7 @@ A 3D avatar can include selectable outfits, props, and saved body/hand poses.
 On macOS, open the avatar display menu and expand **Wardrobe & poses**;
 in Avatar mode, right-click the character and choose **Wardrobe & poses…**.
 On iOS, open **3D view controls → Wardrobe & Poses**.
-The menu appears when the installed GLB includes an options library.
+The entry stays visible for every 3D avatar. When its package has no options library, it explains how to import an updated package. The iOS sheet can replace the selected avatar directly from Files, validating its identity before installation.
 
 Choices are saved per avatar. Body pose choices clear hand overrides. A prop
 can select its matching grip/body pose; hands can then be adjusted separately.
@@ -46,4 +46,4 @@ fidelity and interaction checks cover model appearance, projection, gaze,
 rotate/move/pinch controls, and resource packaging. iOS includes saved-selection
 unit coverage and an optional UI test against an installed private 3D fixture.
 
-Pose playback and cursor following start enabled. “Play transitions” cycles upright standing/heart poses every four seconds; an optional `extras.openclamAvatar.playback` ID list can define the sequence. Choosing a body/hand pose or prop pauses playback. Reset restores the original appearance and pauses playback. Both switches remember an explicit opt-out per avatar and remain available in chat, desktop avatar mode and the iOS wardrobe sheet. Reduce Motion suspends automatic playback. iOS follows a tap or connected pointer without taking over rotate/move/pinch gestures.
+Pose playback and cursor following start enabled. “Play transitions” cycles upright standing/heart poses every four seconds; an optional `extras.openclamAvatar.playback` ID list can define the sequence. Choosing a body/hand pose pauses playback. Props and playback are independent: equipping a prop keeps the playback preference, and turning playback on keeps the prop attached throughout the sequence. Reset restores the original appearance and pauses playback. Both switches remember an explicit opt-out per avatar and remain available in chat, desktop avatar mode and the iOS wardrobe sheet. Reduce Motion suspends automatic playback. iOS follows a tap or connected pointer without taking over rotate/move/pinch gestures.

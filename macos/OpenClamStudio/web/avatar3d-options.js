@@ -160,7 +160,7 @@ export class Avatar3DOptions {
   }
 
   update(now, reduce=false) {
-    if (reduce || !this.enabled('playTransitions') || this.selection.prop) {
+    if (reduce || !this.enabled('playTransitions')) {
       this.nextPlaybackAt = now + 4000;
     } else if (this.nextPlaybackAt === null) {
       this.nextPlaybackAt = now + 4000;
@@ -196,11 +196,21 @@ export class Avatar3DOptions {
 
 // Native mobile menus use catalogue()/select(); desktop uses the same data
 // with accessible HTML controls and per-avatar preferences shared by windows.
-export function mountAvatar3DOptions(container, library, key, onBodyPose = () => {}) {
+export function mountAvatar3DOptions(container, library, key, onBodyPose = () => {}, onImport = null) {
   container.replaceChildren();
-  if (!library) return () => {};
   const details = document.createElement('details'), summary = document.createElement('summary');
   summary.textContent = 'Wardrobe & poses'; details.append(summary);
+  if (!library) {
+    const message = document.createElement('p');
+    message.textContent = 'This avatar package has no wardrobe or poses. Import an updated avatar package to add them.';
+    details.append(message);
+    if (onImport) {
+      const button = document.createElement('button');button.type = 'button';button.textContent = 'Import avatar package…';
+      button.addEventListener('click', onImport);details.append(button);
+    }
+    container.append(details);
+    return () => {};
+  }
   const catalogue = library.catalogue(), selects = new Map(), toggles = new Map();
   const groups = [
     ['outfit','Outfit',catalogue.outfits,'Original appearance'],
@@ -226,7 +236,7 @@ export function mountAvatar3DOptions(container, library, key, onBodyPose = () =>
     for(const item of [{id:'',label:fallback},...choices]){const option=document.createElement('option');option.value=item.id;option.textContent=item.label;select.append(option);}
     select.addEventListener('change',()=>{
       const next={...library.selection,[group]:select.value};
-      if(['body','hands','leftHand','rightHand','prop'].includes(group))next.playTransitions='false';
+      if(['body','hands','leftHand','rightHand'].includes(group))next.playTransitions='false';
       if(group==='body'){delete next.hands;delete next.leftHand;delete next.rightHand;}
       if(group==='prop'&&select.value){next.body=choices.find(p=>p.id===select.value).pose;delete next.hands;delete next.leftHand;delete next.rightHand;}
       apply(next,true);if(group==='body'||group==='prop')onBodyPose();
@@ -238,7 +248,7 @@ export function mountAvatar3DOptions(container, library, key, onBodyPose = () =>
     text.textContent=label;input.type='checkbox';input.setAttribute('aria-label',label);toggles.set(key,input);
     input.addEventListener('change',()=>{
       const next={...library.selection,[key]:String(input.checked)};
-      if(key==='playTransitions'&&input.checked){delete next.prop;onBodyPose();}
+      if(key==='playTransitions'&&input.checked)onBodyPose();
       apply(next,true);
     });
     row.append(text,input);details.append(row);

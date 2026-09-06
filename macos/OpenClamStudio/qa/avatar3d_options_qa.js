@@ -33,6 +33,22 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
  assert(Math.abs(shoulder.matrixWorld.elements[0]-1)<1e-9,'paused playback stays neutral');
  lib.select({},31000);lib.update(36000,true);assert(!lib.transition,'Reduce Motion prevents autoplay');
  lib.update(40100);assert(lib.transition,'playback resumes after Reduce Motion');
+ // A prop remains attached during playback, including between-keyframe
+ // transforms, and equipping it does not implicitly disable either switch.
+ lib.select({prop:'prop'},41000);lib.update(41700);
+ const attachment=prop.matrix.clone(),worldBefore=prop.matrixWorld.clone();
+ let moved=false;
+ for(const time of [45100,45425,45800,49100,49425,49800]) {
+  lib.select({prop:'prop'},time);lib.update(time);
+  assert(prop.visible&&lib.selection.prop==='prop'&&lib.enabled('playTransitions'));
+  const relative=hand.matrixWorld.clone().invert().multiply(prop.matrixWorld);
+  assert(Math.max(...relative.elements.map((v,i)=>Math.abs(v-attachment.elements[i])))<1e-10,'the prop must move with its hand');
+  moved ||= Math.max(...worldBefore.elements.map((v,i)=>Math.abs(v-prop.matrixWorld.elements[i])))>0.01;
+ }
+ assert(moved,'the prop must move through automatic pose transitions');
+ lib.select({prop:'prop',playTransitions:'false'},50000);lib.update(50700);lib.update(55000);
+ assert(prop.visible&&!lib.transition&&!lib.enabled('playTransitions'),'pausing keeps the prop');
+ lib.select({prop:'prop'},56000);lib.update(60100);assert(prop.visible&&lib.transition,'resuming keeps the prop');
  assert.throws(()=>new sandbox.Library({model,root}, {version:2,rest,poses:[]}));
  console.log('3D options: authored affine poses, layered hands, wardrobe/props, reduced motion and repeated reset verified.');
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -1779,13 +1779,11 @@ struct CaptainAyerAvatarOverlay: View {
 
     private var modelControlsMenu: some View {
         Menu {
-            if let library = modelOptions.catalogues[avatar.id], !library.poses.isEmpty {
-                Button("Wardrobe & Poses", systemImage: "person.crop.rectangle") {
-                    showsModelWardrobe = true
-                    enableModelControls()
-                }
-                Divider()
+            Button("Wardrobe & Poses", systemImage: "person.crop.rectangle") {
+                showsModelWardrobe = true
+                enableModelControls()
             }
+            Divider()
             Button { dragMoves3D = false; enableModelControls() } label: {
                 Label("Rotate with One Finger", systemImage: dragMoves3D ? "rotate.3d" : "checkmark")
             }
@@ -1814,7 +1812,9 @@ struct CaptainAyerAvatarOverlay: View {
         .accessibilityIdentifier("openclam-3d-controls")
         .simultaneousGesture(TapGesture().onEnded { wakeRail() })
         .sheet(isPresented: $showsModelWardrobe) {
-            OpenClam3DWardrobeSheet(avatarID: avatar.id, name: avatar.displayName) {
+            OpenClam3DWardrobeSheet(avatarID: avatar.id, name: avatar.displayName,
+                allowsImport: LiveTalkAvatarSwitchPolicy.allowsSwitch(during: liveTalkPhase),
+                onImport: onSelectAvatar) {
                 selectAvatarMode(.standby)
                 enableModelControls()
             }

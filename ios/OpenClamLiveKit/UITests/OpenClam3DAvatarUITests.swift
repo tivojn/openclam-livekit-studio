@@ -65,13 +65,52 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         choose("body", "Standing · 3")
         capture("wardrobe-dress-standing")
         choose("prop", "FN SCAR 20S")
+        playbackSwitch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertEqual(playbackSwitch.value as? String, "1")
+        XCTAssertEqual(app.buttons["openclam-3d-choice-prop"].value as? String, "FN SCAR 20S")
+        sleep(5)
+        XCTAssertEqual(app.buttons["openclam-3d-choice-prop"].value as? String, "FN SCAR 20S", "A transition must keep the prop equipped")
         capture("wardrobe-rifle")
+        choose("prop", "Unica 6")
+        XCTAssertEqual(playbackSwitch.value as? String, "1", "Selecting another prop must keep playback on")
+        app.buttons["Done"].tap()
+        unfoldAvatarRail()
+        app.buttons["openclam-3d-controls"].tap()
+        app.buttons["Wardrobe & Poses"].tap()
+        XCTAssertTrue(playbackSwitch.waitForExistence(timeout: 8))
+        XCTAssertEqual(playbackSwitch.value as? String, "1")
+        XCTAssertEqual(app.buttons["openclam-3d-choice-prop"].value as? String, "Unica 6")
         let reset = app.buttons["openclam-3d-appearance-reset"]
         XCTAssertTrue(reset.waitForExistence(timeout: 8))
         reset.tap()
         app.buttons["Done"].tap()
         sleep(2)
         capture("wardrobe-original-reset")
+    }
+
+    /// Run against a private 3D fixture without extras.openclamAvatar.
+    func testWardrobeEntryForLegacyPackage() throws {
+        app.terminate()
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        XCTAssertTrue(app.buttons["openclam-3d-controls"].waitForExistence(timeout: 12))
+        sleep(5)
+        unfoldAvatarRail()
+        app.buttons["openclam-3d-controls"].tap()
+        XCTAssertTrue(app.buttons["Wardrobe & Poses"].waitForExistence(timeout: 8))
+        app.buttons["Wardrobe & Poses"].tap()
+        guard app.staticTexts["openclam-3d-library-missing"].waitForExistence(timeout: 8) else {
+            throw XCTSkip("Install a legacy 3D avatar without a wardrobe library for this test.")
+        }
+        let importer = app.buttons["openclam-3d-import-wardrobe"]
+        XCTAssertTrue(importer.exists && importer.isEnabled)
+        capture("wardrobe-legacy-import")
+        importer.tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 8), "The import action must open Files")
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(importer.waitForExistence(timeout: 8))
+        app.buttons["Done"].tap()
     }
 
     func testInstalledModelAvatarRendersAndLipSyncs() throws {

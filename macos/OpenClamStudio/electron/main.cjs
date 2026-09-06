@@ -2794,7 +2794,13 @@ function requestAvatarMotion(mode) {
 
 function showAvatarOptionsMenu(owner) {
   const library = avatarOptionCatalogues.get(owner.webContents);
-  if (!library) return;
+  if (!library || ![...library.poses, ...library.outfits, ...library.props].length) {
+    showMenuWindow([
+      { name: 'This avatar package has no wardrobe or poses', enabled: false },
+      { name: 'Import updated avatar package…', click: openSettings },
+    ]);
+    return;
+  }
   const choose = (group, id) => {
     if (!owner.isDestroyed()) post(owner, 'openclam:avatar-options-request', { group, id });
   };
@@ -2825,8 +2831,7 @@ function showPetMenu() {
   // Name on the left, the gesture that does the same thing on the right.
   showMenuWindow([
     ...(avatarRendererKinds.get(owner.webContents) === '3d' ? [
-      ...(avatarOptionCatalogues.get(owner.webContents)?.poses.length ? [{ name: 'Wardrobe & poses…',
-        click: () => showAvatarOptionsMenu(owner) }] : []),
+      { name: 'Wardrobe & poses…', click: () => showAvatarOptionsMenu(owner) },
       { name: 'Rotate 3D view', hint: 'two-finger swipe · ⌥ drag',
         click: () => requestAvatarMotion('rotate-3d') },
       { name: 'Reset 3D view', hint: 'front · default size and position',

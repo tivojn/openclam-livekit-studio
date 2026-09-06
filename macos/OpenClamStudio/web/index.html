@@ -2373,7 +2373,8 @@
         const container = document.getElementById('avatarOptions3D');
         if (avatar3d) disposeAvatarOptions = window.OpenClamAvatar3D.mountOptions(
           container, avatar3d.options, `openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,
-          () => { void selectStandbyMode(); lastFrame = 0; });
+          () => { void selectStandbyMode(); lastFrame = 0; },
+          () => { if (shell) void shell.openSettings(); else location.href = '/settings.html'; });
         else container.replaceChildren();
       }
       document.getElementById('rotate3DButton').setAttribute('aria-checked', String(avatar3dRotateMode));
@@ -10394,8 +10395,8 @@
         const next = group === 'reset'
           ? {playTransitions:'false',followCursor:avatar3d.options.selection.followCursor}
           : {...avatar3d.options.selection, [group]: id};
-        if (['body','hands','leftHand','rightHand','prop'].includes(group)) next.playTransitions = 'false';
-        if (group === 'playTransitions' && id === 'true') { delete next.prop; void selectStandbyMode(); }
+        if (['body','hands','leftHand','rightHand'].includes(group)) next.playTransitions = 'false';
+        if (group === 'playTransitions' && id === 'true') void selectStandbyMode();
         if (group === 'body' || (group === 'prop' && id)) {
           delete next.hands; delete next.leftHand; delete next.rightHand;
           if (group === 'prop') next.body = avatar3d.options.props.find(p => p.id === id)?.pose;

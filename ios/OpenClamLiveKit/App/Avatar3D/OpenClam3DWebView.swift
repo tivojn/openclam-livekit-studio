@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import UniformTypeIdentifiers
 
 /// An adapter around the same renderer sources used by macOS. UIKit owns
 /// touch gestures; WebKit receives only presentation and expression values.
@@ -185,6 +186,7 @@ struct OpenClam3DCatalogue: Codable, Equatable {
     var poses: [OpenClam3DChoice] = []
     var outfits: [OpenClam3DChoice] = []
     var props: [OpenClam3DChoice] = []
+    var hasChoices: Bool { !poses.isEmpty || !outfits.isEmpty || !props.isEmpty }
 }
 
 @MainActor
@@ -230,7 +232,6 @@ final class OpenClam3DOptionsStore: ObservableObject {
         guard ["playTransitions", "followCursor"].contains(key) else { return }
         var next = selection(for: avatarID)
         next[key] = enabled ? nil : "false"
-        if key == "playTransitions", enabled { next["prop"] = nil }
         if key == "followCursor", !enabled { pointers[avatarID] = nil }
         selections[avatarID] = next
         save()
@@ -243,7 +244,7 @@ final class OpenClam3DOptionsStore: ObservableObject {
         guard id.isEmpty || choices.contains(where: { $0.id == id }) else { return }
         var next = selection(for: avatarID)
         next[group] = id.isEmpty ? nil : id
-        if ["body", "hands", "leftHand", "rightHand", "prop"].contains(group) {
+        if ["body", "hands", "leftHand", "rightHand"].contains(group) {
             next["playTransitions"] = "false"
         }
         if group == "body" || (group == "prop" && !id.isEmpty) {
@@ -268,14 +269,20 @@ final class OpenClam3DOptionsStore: ObservableObject {
 struct OpenClam3DWardrobeSheet: View {
     let avatarID: String
     let name: String
+    let allowsImport: Bool
+    let onImport: (String, String) -> Void
     let onBodyPose: () -> Void
     @ObservedObject private var options = OpenClam3DOptionsStore.shared
+    @ObservedObject private var avatarLibrary = OpenClamAvatarLibrary.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var showsImporter = false
+    @State private var isImporting = false
+    @State private var importError: String?
 
     var body: some View {
         NavigationStack {
             Form {
-                if let library = options.catalogues[avatarID] {
+                if let library = options.catalogues[avatarID], library.hasChoices {
                     choices("Outfit", group: "outfit", items: library.outfits, fallback: "Original appearance")
                     choices("Body Pose", group: "body", items: library.poses.filter { $0.group == "body" }, fallback: "Relaxed standing")
                     choices("Both Hands", group: "hands", items: library.poses.filter { $0.group == "hands" }, fallback: "From body pose")
@@ -286,11 +293,51 @@ struct OpenClam3DWardrobeSheet: View {
                     behavior("Follow cursor", key: "followCursor")
                     Button("Reset Appearance & Pose") { options.reset(avatarID) }
                         .accessibilityIdentifier("openclam-3d-appearance-reset")
+                } else {
+                    Section {
+                        Text("This avatar package has no wardrobe or poses. Import its updated .avtr package to add clothing, props, and poses.")
+                            .accessibilityIdentifier("openclam-3d-library-missing")
+                    }
+                }
+                Section {
+                    Button("Import Wardrobe Package…", systemImage: "square.and.arrow.down") { showsImporter = true }
+                        .disabled(isImporting || avatarLibrary.isMutating || !allowsImport || avatarLibrary.isProtected(id: avatarID))
+                        .accessibilityIdentifier("openclam-3d-import-wardrobe")
+                    if isImporting { ProgressView("Importing wardrobe…") }
+                } footer: {
+                    Text("Choose a package for \(name). It updates this avatar on your iPhone. Updating the app alone does not add clothing or poses.")
                 }
             }
             .navigationTitle("\(name) · Wardrobe & Poses")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isImporting) } }
+        }
+        .interactiveDismissDisabled(isImporting)
+        .fileImporter(isPresented: $showsImporter, allowedContentTypes: [.openClamAvatarPackage],
+                      allowsMultipleSelection: false, onCompletion: importWardrobe)
+        .alert("Couldn’t import wardrobe", isPresented: Binding(
+            get: { importError != nil }, set: { if !$0 { importError = nil } }
+        )) { Button("OK", role: .cancel) { importError = nil } }
+        message: { Text(importError ?? "") }
+    }
+
+    private func importWardrobe(_ result: Result<[URL], Error>) {
+        guard allowsImport, !isImporting else { return }
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            isImporting = true
+            Task { @MainActor in
+                defer { isImporting = false }
+                do {
+                    let avatar = try await avatarLibrary.importAvatar(
+                        from: url, expectedID: avatarID, replacingExisting: true)
+                    onImport(avatar.id, avatar.displayName)
+                    dismiss()
+                } catch { importError = error.localizedDescription }
+            }
+        case .failure(let error):
+            if (error as NSError).code != NSUserCancelledError { importError = error.localizedDescription }
         }
     }
 
