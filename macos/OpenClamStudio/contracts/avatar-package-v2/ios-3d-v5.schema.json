@@ -20,7 +20,7 @@
       "properties": {
         "path": { "const": "assets/model.glb" },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "byteCount": { "type": "integer", "minimum": 20, "maximum": 67108864 },
+        "byteCount": { "type": "integer", "minimum": 20, "maximum": 268435456 },
         "mediaType": { "const": "model/gltf-binary" },
         "frame": { "$ref": "#/$defs/size" },
         "bounds": { "$ref": "#/$defs/rect" },
