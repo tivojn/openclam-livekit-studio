@@ -540,3 +540,27 @@ final class OpenClam3DAvatarTests: XCTestCase {
         return url
     }
 }
+
+extension OpenClam3DAvatarTests {
+    func testWardrobeChoicesPersistPerAvatarAndBodyPosesClearHandOverrides() throws {
+        let name = "OpenClam3DOptionsTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OpenClam3DOptionsStore(defaults: defaults)
+        store.receive(["poses": [["id": "heart", "label": "Heart", "group": "body"],
+                                  ["id": "fist", "label": "Fist", "group": "rightHand"]],
+                       "outfits": [["id": "casual", "label": "Casual"]],
+                       "props": [["id": "prop", "label": "Prop", "pose": "heart"]]], for: "character")
+        store.select("casual", group: "outfit", for: "character")
+        store.select("fist", group: "rightHand", for: "character")
+        store.select("heart", group: "body", for: "character")
+        XCTAssertNil(store.selection(for: "character")["rightHand"])
+        XCTAssertEqual(store.selection(for: "character")["outfit"], "casual")
+        XCTAssertEqual(OpenClam3DOptionsStore(defaults: defaults).selection(for: "character")["body"], "heart")
+        XCTAssertTrue(store.selection(for: "another").isEmpty)
+        store.select("unknown", group: "body", for: "character")
+        XCTAssertEqual(store.selection(for: "character")["body"], "heart")
+        store.reset("character")
+        XCTAssertTrue(store.selection(for: "character").isEmpty)
+    }
+}

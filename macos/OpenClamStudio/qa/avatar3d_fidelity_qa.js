@@ -30,6 +30,7 @@ const vm = require('node:vm');
     document: { createElement: () => ({}) }, console };
   const source = fs.readFileSync(path.join(__dirname, '../web/avatar3d.js'), 'utf8')
     .replace(/^import .*;$/gm, '');
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../web/avatar3d-options.js'), 'utf8').replace(/^import .*;$/gm, '').replace(/export /g, ''), sandbox);
   vm.runInNewContext(source + '\nAvatar3D.prototype.lights = function() {};', sandbox);
   const avatar = sandbox.window.OpenClamAvatar3D.create();
   await avatar.load('synthetic.glb', { pose: 'rest' });

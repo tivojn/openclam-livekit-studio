@@ -13,6 +13,7 @@ window.updateAvatar = frame => {
 async function load(frame) {
   avatar = window.OpenClamAvatar3D.create(frame.frame);
   await avatar.load('/model.glb');
+  report({event:'catalogue', catalogue:avatar.options?.catalogue() || {poses:[],outfits:[],props:[]}});
   document.body.append(avatar.canvas);
   requestAnimationFrame(draw);
 }
@@ -33,6 +34,7 @@ function draw(now) {
   const state = latest.state, interval = state.reduce ? 250 : state.speaking ? 16 : 33;
   if (now - previous < interval) return;
   previous = now;
+  avatar.options?.select(latest.options || {}, now);
   avatar.setOrbit(latest.orbit);
   const surface = avatar.canvas.getBoundingClientRect();
   if (!(surface.width > 0 && surface.height > 0)) return;

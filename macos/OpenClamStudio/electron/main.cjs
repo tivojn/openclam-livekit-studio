@@ -117,6 +117,7 @@ let petZoomGesture = null;
 let appearancePushAt = 0;
 let petMotionReady = false;
 const avatarRendererKinds = new WeakMap();
+const avatarOptionCatalogues = new WeakMap();
 let liveTalkActive = false;
 let chatMode = false;
 let chatCloseUp = false;
@@ -2791,12 +2792,35 @@ function requestAvatarMotion(mode) {
   if (owner && !owner.isDestroyed()) post(owner, 'openclam:display-mode-request', mode);
 }
 
+function showAvatarOptionsMenu(owner) {
+  const library = avatarOptionCatalogues.get(owner.webContents);
+  if (!library) return;
+  const choose = (group, id) => {
+    if (!owner.isDestroyed()) post(owner, 'openclam:avatar-options-request', { group, id });
+  };
+  const groups = [['outfit', 'Outfit', library.outfits, 'Original appearance'],
+    ...[['body', 'Body pose', 'Relaxed standing'], ['hands', 'Both hands', 'From body pose'],
+      ['leftHand', 'Left hand', 'From body pose'], ['rightHand', 'Right hand', 'From body pose']]
+      .map(([group, label, fallback]) => [group, label, library.poses.filter(p => p.group === group), fallback]),
+    ['prop', 'Prop', library.props, 'None']];
+  showMenuWindow([
+    ...groups.filter(([, , choices]) => choices.length).map(([group, name, choices, fallback]) => ({
+      name, submenu: [{ name: fallback, click: () => choose(group, '') },
+        ...choices.map(choice => ({ name: choice.label, click: () => choose(group, choice.id) }))],
+    })),
+    { type: 'separator' },
+    { name: 'Reset appearance & pose', click: () => choose('reset', '') },
+  ]);
+}
+
 function showPetMenu() {
   const owner = activeAvatarWindow();
   if (!owner || owner.isDestroyed()) return;
   // Name on the left, the gesture that does the same thing on the right.
   showMenuWindow([
     ...(avatarRendererKinds.get(owner.webContents) === '3d' ? [
+      ...(avatarOptionCatalogues.get(owner.webContents)?.poses.length ? [{ name: 'Wardrobe & poses…',
+        click: () => showAvatarOptionsMenu(owner) }] : []),
       { name: 'Rotate 3D view', hint: 'two-finger swipe · ⌥ drag',
         click: () => requestAvatarMotion('rotate-3d') },
       { name: 'Reset 3D view', hint: 'front · default size and position',
@@ -2954,6 +2978,12 @@ function installIpc() {
     if (isBuddySender(event) || event.sender === mainWindow?.webContents
         || event.sender === chatWindow?.webContents) {
       avatarRendererKinds.set(event.sender, value?.renderer === '3d' ? '3d' : '2d');
+      const clean = items => Array.isArray(items) ? items.slice(0, 256)
+        .filter(p => p && typeof p.id === 'string' && p.id.length <= 100 && typeof p.label === 'string')
+        .map(p => ({ id: p.id, label: p.label.slice(0, 80), group: String(p.group || '').slice(0, 20) })) : [];
+      const options = value?.options;
+      avatarOptionCatalogues.set(event.sender, { poses: clean(options?.poses),
+        outfits: clean(options?.outfits), props: clean(options?.props) });
     }
     if (isBuddySender(event)) setBuddyMotionReady(value);
     else if ((mainWindow && event.sender === mainWindow.webContents)

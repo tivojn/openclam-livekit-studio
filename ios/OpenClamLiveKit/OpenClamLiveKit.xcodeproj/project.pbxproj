@@ -184,6 +184,7 @@
 		FAA810FDC0314F33C181CBC1 /* MailComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DA90F40D3C0A945B22FBFB /* MailComposeView.swift */; };
 		FED5E9C3CB4613E05D0FA327 /* ScreenContextInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */; };
 		AFFC2E3DA6C718401B891AB5 /* avatar3d.js in Resources */ = {isa = PBXBuildFile; fileRef = 7F866FF01CCFFF202E008C68; };
+		AC00123456789ABCDE000001 /* avatar3d-options.js in Resources */ = {isa = PBXBuildFile; fileRef = AC00123456789ABCDE000002; };
 		9F0D351A35FC27FB9E40E2CD /* three.module.js in Resources */ = {isa = PBXBuildFile; fileRef = F01B474F4E81EE8C62AA194D; };
 		58C6C345B6F865D8EE3ED20D /* three.core.js in Resources */ = {isa = PBXBuildFile; fileRef = EFAD9BBC5AD8C4918173E827; };
 		547A8FFE7D895A4B8E8675AE /* GLTFLoader.js in Resources */ = {isa = PBXBuildFile; fileRef = 34F1149EBEA8CE1C5BDBADCB; };
@@ -427,6 +428,7 @@
 		FD54C9DD4A4979F5A6147815 /* ContactEmailToolService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactEmailToolService.swift; sourceTree = "<group>"; };
 		FED0299EB8F29F000CAB6B56 /* AgentCommandCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCommandCatalogTests.swift; sourceTree = "<group>"; };
 		7F866FF01CCFFF202E008C68 /* avatar3d.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "avatar3d.js"; path = "../../macos/OpenClamStudio/web/avatar3d.js"; sourceTree = SOURCE_ROOT; };
+		AC00123456789ABCDE000002 /* avatar3d-options.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "avatar3d-options.js"; path = "../../macos/OpenClamStudio/web/avatar3d-options.js"; sourceTree = SOURCE_ROOT; };
 		F01B474F4E81EE8C62AA194D /* three.module.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "three.module.js"; path = "../../macos/OpenClamStudio/web/vendor/three/three.module.js"; sourceTree = SOURCE_ROOT; };
 		EFAD9BBC5AD8C4918173E827 /* three.core.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "three.core.js"; path = "../../macos/OpenClamStudio/web/vendor/three/three.core.js"; sourceTree = SOURCE_ROOT; };
 		34F1149EBEA8CE1C5BDBADCB /* GLTFLoader.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "GLTFLoader.js"; path = "../../macos/OpenClamStudio/web/vendor/three/GLTFLoader.js"; sourceTree = SOURCE_ROOT; };
@@ -872,6 +874,7 @@
 				498591DB2F33B824E3598FE3 /* OpenClam3DAvatarModel.swift */,
 				2B00D2E46F533E88A6F5440E /* OpenClam3DAvatarRig.swift */,
 				7F866FF01CCFFF202E008C68 /* avatar3d.js */,
+				AC00123456789ABCDE000002 /* avatar3d-options.js */,
 				F01B474F4E81EE8C62AA194D /* three.module.js */,
 				EFAD9BBC5AD8C4918173E827 /* three.core.js */,
 				34F1149EBEA8CE1C5BDBADCB /* GLTFLoader.js */,
@@ -1087,6 +1090,7 @@
 				58C6C345B6F865D8EE3ED20D /* three.core.js in Resources */,
 				9F0D351A35FC27FB9E40E2CD /* three.module.js in Resources */,
 				AFFC2E3DA6C718401B891AB5 /* avatar3d.js in Resources */,
+				AC00123456789ABCDE000001 /* avatar3d-options.js in Resources */,
 				D06AB37E1F1CAA07D795C6F6 /* AvatarCatalogAssets.bundle in Resources */,
 				28AEF61C9FDC4C1AB5940351 /* PrivacyInfo.xcprivacy in Resources */,
 			);
@@ -1354,7 +1358,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1438,7 +1442,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1456,7 +1460,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1527,7 +1531,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1548,7 +1552,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1586,7 +1590,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1673,7 +1677,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1697,7 +1701,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

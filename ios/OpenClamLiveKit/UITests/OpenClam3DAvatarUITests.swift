@@ -23,6 +23,43 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         app = nil
     }
 
+    func testWardrobeAndAuthoredPoses() throws {
+        app.terminate()
+        app.launchArguments += ["-OpenClamUITestMacRenderer",
+            "-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby",
+            "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        XCTAssertTrue(app.buttons["openclam-3d-controls"].waitForExistence(timeout: 12))
+        sleep(5)
+        func choose(_ group: String, _ choice: String) {
+            unfoldAvatarRail()
+            app.buttons["openclam-3d-controls"].tap()
+            XCTAssertTrue(app.buttons["Wardrobe & Poses"].waitForExistence(timeout: 8))
+            app.buttons["Wardrobe & Poses"].tap()
+            app.buttons[group].tap()
+            app.buttons[choice].tap()
+            sleep(2)
+        }
+        choose("Outfit", "Casual · T-shirt & jeans")
+        choose("Body Pose", "Heart")
+        capture("wardrobe-casual-heart")
+        choose("Outfit", "Dress & heels")
+        choose("Body Pose", "Standing · 3")
+        capture("wardrobe-dress-standing")
+        choose("Prop", "FN SCAR 20S")
+        capture("wardrobe-rifle")
+        unfoldAvatarRail()
+        app.buttons["openclam-3d-controls"].tap()
+        app.buttons["Wardrobe & Poses"].tap()
+        let reset = app.buttons["Reset Appearance & Pose"]
+        XCTAssertTrue(reset.waitForExistence(timeout: 8))
+        reset.tap()
+        sleep(2)
+        capture("wardrobe-original-reset")
+    }
+
     func testInstalledModelAvatarRendersAndLipSyncs() throws {
         let carousel = app.buttons["Close avatar carousel"]
         unfoldAvatarRail()

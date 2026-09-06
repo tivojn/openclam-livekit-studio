@@ -33,6 +33,8 @@ targets:
       - path: App
       - path: KeyboardExtension/Shared
       - path: KeyboardExtension/Host
+      - path: ../../macos/OpenClamStudio/web/avatar3d-options.js
+        buildPhase: resources
       - path: ../../macos/OpenClamStudio/web/avatar3d.js
         buildPhase: resources
       - path: ../../macos/OpenClamStudio/web/vendor/three/three.module.js
@@ -63,7 +65,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot
-        CURRENT_PROJECT_VERSION: 63
+        CURRENT_PROJECT_VERSION: 64
         MARKETING_VERSION: 1.0.3
         CODE_SIGN_ENTITLEMENTS: App/OpenClamLiveKit.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -135,7 +137,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-context-share
         PRODUCT_NAME: OpenClamLiveKitShareExtension
-        CURRENT_PROJECT_VERSION: 63
+        CURRENT_PROJECT_VERSION: 64
         MARKETING_VERSION: 1.0.3
         INFOPLIST_FILE: ShareExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
@@ -152,7 +154,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.screen-voice-ptt-widget
         PRODUCT_NAME: OpenClamLiveKitScreenVoiceWidget
-        CURRENT_PROJECT_VERSION: 63
+        CURRENT_PROJECT_VERSION: 64
         MARKETING_VERSION: 1.0.3
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
@@ -177,7 +179,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lionheart.openclam.livekitpilot.keyboard
         PRODUCT_NAME: OpenClamLiveKitKeyboard
-        CURRENT_PROJECT_VERSION: 63
+        CURRENT_PROJECT_VERSION: 64
         MARKETING_VERSION: 1.0.3
         INFOPLIST_FILE: KeyboardExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: KeyboardExtension/OpenClamKeyboard.entitlements

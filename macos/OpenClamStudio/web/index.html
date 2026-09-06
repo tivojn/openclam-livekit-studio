@@ -511,6 +511,12 @@
     }
 
     #avatar3DControls { border-top: 1px solid var(--codex-border, #8884); margin-top: 6px; padding-top: 6px; }
+    #avatarOptions3D button { display: block; padding: 8px; }
+    #avatarOptions3D details { padding: 10px; }
+    #avatarOptions3D summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+    #avatarOptions3D label { display: grid; gap: 4px; margin: 10px 0; font-size: 12px; }
+    #avatarOptions3D select { width: 100%; padding: 7px; border: 1px solid var(--codex-border, #8884); border-radius: 7px; background: var(--codex-surface, #262626); color: inherit; }
+    #motionPicker:has(#avatarOptions3D details[open]) { width: 280px; max-height: calc(100vh - 145px); overflow-y: auto; }
     .avatar-3d-help { font-size: 11px; line-height: 1.5; opacity: .7; margin: 8px 10px; }
     html.avatar-rotating #stage { cursor: crosshair; }
     @media (prefers-reduced-motion: reduce) {
@@ -2056,6 +2062,7 @@
       <span class="sf-symbol symbol-moves" aria-hidden="true"></span><span class="rail-picker-label">Moves</span><span class="sf-symbol symbol-checkmark rail-picker-check" aria-hidden="true"></span>
     </button>
     <div id="avatar3DControls" hidden>
+      <div id="avatarOptions3D"></div>
       <button id="rotate3DButton" type="button" role="menuitemcheckbox" aria-checked="false">Rotate 3D view</button>
       <button id="reset3DButton" type="button" role="menuitem">Reset 3D view</button>
       <p class="avatar-3d-help">Drag to move · Pinch to resize<br>Two-finger swipe or ⌥ drag to rotate</p>
@@ -2336,6 +2343,8 @@
        canvas through the same camera, zoom, mirror and hit-test paths. */
     let avatar3d = null;
     let avatar3dRefresh = null;
+    let avatar3dOptionsMounted = null;
+    let disposeAvatarOptions = () => {};
     let avatar3dRotateMode = false;
     let avatar3dOrbitUntil = 0;
     let avatarOrbitGesture = false;
@@ -2358,6 +2367,15 @@
     };
     const syncAvatar3DControls = () => {
       document.getElementById('avatar3DControls').hidden = !avatar3d;
+      if (avatar3dOptionsMounted !== avatar3d) {
+        disposeAvatarOptions();
+        avatar3dOptionsMounted = avatar3d;
+        const container = document.getElementById('avatarOptions3D');
+        if (avatar3d) disposeAvatarOptions = window.OpenClamAvatar3D.mountOptions(
+          container, avatar3d.options, `openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,
+          () => { void selectStandbyMode(); lastFrame = 0; });
+        else container.replaceChildren();
+      }
       document.getElementById('rotate3DButton').setAttribute('aria-checked', String(avatar3dRotateMode));
       canvas.title = avatar3d ? 'Drag to move · Pinch to resize · Two-finger swipe or Option-drag to rotate' : '';
       root.classList.toggle('avatar-3d', Boolean(avatar3d));
@@ -3442,7 +3460,7 @@
     const publishMotionReadiness = () => {
       if (!shell || typeof shell.setPetMotionReady !== 'function') return;
       shell.setPetMotionReady({ ...(motion.walk ? motionPlaybackProfile() : { ready: false }),
-        renderer: avatar3d ? '3d' : '2d' });
+        renderer: avatar3d ? '3d' : '2d', options: avatar3d?.options?.catalogue() });
     };
 
     const STYLIZED_SOURCE_MEDIA = new Set([
@@ -3704,6 +3722,7 @@
           avatar3dGazeState = { x: 0, y: 0, at: 0 };
           lastFrame = 0;
           syncAvatar3DControls();
+          publishMotionReadiness();
         } catch (_) { /* retain the complete current model; retry on next show */ }
         finally {
           if (replacement) replacement.dispose();
@@ -10370,6 +10389,18 @@
         roamState = nextRoamState;
       });
       if (typeof shell.onPetMoves === 'function') shell.onPetMoves(() => { void selectMoveMode(); });
+      if (typeof shell.onAvatarOptionsRequest === 'function') shell.onAvatarOptionsRequest(({group, id} = {}) => {
+        if (!avatar3d?.options || !['outfit','body','hands','leftHand','rightHand','prop','reset'].includes(group)) return;
+        const next = group === 'reset' ? {} : {...avatar3d.options.selection, [group]: id};
+        if (group === 'body' || (group === 'prop' && id)) {
+          delete next.hands; delete next.leftHand; delete next.rightHand;
+          if (group === 'prop') next.body = avatar3d.options.props.find(p => p.id === id)?.pose;
+          void selectStandbyMode();
+        }
+        avatar3d.options.select(next);
+        localStorage.setItem(`openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`, JSON.stringify(avatar3d.options.selection));
+        avatar3dOptionsMounted = null; syncAvatar3DControls(); lastFrame = 0;
+      });
       if (typeof shell.onDisplayModeRequest === 'function') shell.onDisplayModeRequest(mode => {
         if (mode === 'walk') void selectWalkMode();
         else if (mode === 'idle') void selectEdgeIdleMode();

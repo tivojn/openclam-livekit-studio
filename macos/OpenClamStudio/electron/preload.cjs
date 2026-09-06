@@ -71,6 +71,7 @@ const api = Object.freeze({
   onPetPointer: (callback) => subscribe('openclam:pet-pointer', callback),
   onPetRoamMotion: (callback) => subscribe('openclam:pet-roam-motion', callback),
   onPetMoves: (callback) => subscribe('openclam:pet-moves', callback),
+  onAvatarOptionsRequest: (callback) => subscribe('openclam:avatar-options-request', callback),
   onDisplayModeRequest: (callback) => subscribe('openclam:display-mode-request', callback),
   onLiveToggle: (callback) => subscribe('openclam:live-toggle', callback),
   onAvatarStoreProgress: (callback) => subscribe('openclam:avatar-store-progress', callback),

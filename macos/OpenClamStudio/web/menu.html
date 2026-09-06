@@ -24,7 +24,7 @@ html,body{margin:0;background:transparent;overflow:hidden;
    while the window is still at its pre-measure size - inline-block alone
    clamps to the viewport, rows overflow the border, and the right radius
    and last row get clipped off. */
-#menu{display:inline-block;width:max-content;min-width:172px;margin:8px;padding:5px;
+#menu{max-height:calc(100vh - 28px);overflow-y:auto;display:inline-block;width:max-content;min-width:172px;margin:8px;padding:5px;
   border-radius:10px;border:1px solid var(--line);
   background:var(--bg);box-shadow:var(--shadow);
   font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;

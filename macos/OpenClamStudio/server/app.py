@@ -3054,7 +3054,7 @@ async def api_avatar_export(
         descriptor, temporary = tempfile.mkstemp(prefix=".openclam-ios-3d-", suffix=".avtr")
         os.close(descriptor)
         try:
-            await asyncio.to_thread(AVATAR3D.export_ios_3d, slug, temporary)
+            await asyncio.to_thread(AVATAR3D.export_ios_3d, slug, temporary, preserve_source=True)
         except AVTR.AvatarPackageError as error:
             _discard_temporary(temporary)
             raise HTTPException(422, str(error)) from error
@@ -4213,6 +4213,12 @@ async def avatar3d_script():
     if not os.path.isfile(path):
         raise HTTPException(404, "3D avatar renderer is not installed")
     return FileResponse(path, media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/avatar3d-options.js")
+async def avatar3d_options_script():
+    return FileResponse(os.path.join(WEB, "avatar3d-options.js"), media_type="application/javascript",
                         headers={"Cache-Control": "no-store"})
 
 

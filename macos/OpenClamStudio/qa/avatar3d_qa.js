@@ -24,8 +24,8 @@ assert.equal((index.match(/<script type="module" src="\/avatar3d\.js"><\/script>
 assert.doesNotMatch(index, /type="importmap"/);
 assert.doesNotMatch(moduleSource, /https?:\/\//);
 for (const specifier of moduleSource.matchAll(/from\s+'([^']+)'/g)) {
-  assert.match(specifier[1], /^\/vendor\/three\/[A-Za-z.]+\.js$/,
-    `avatar3d.js may only import staged three.js modules, saw ${specifier[1]}`);
+  assert.match(specifier[1], /^\/(?:vendor\/three\/[A-Za-z.]+|avatar3d-options)\.js$/,
+    `avatar3d.js may only import bundled 3D modules, saw ${specifier[1]}`);
 }
 execFileSync(process.execPath, ['--input-type=module', '--check'], { input: moduleSource });
 
@@ -104,6 +104,8 @@ for (const script of ['prestart', 'predev', 'pretest', 'pack']) {
 }
 const web = pkg.build.extraResources.find(entry => entry.from === 'web');
 assert.ok(web.filter.includes('avatar3d.js'));
+assert.ok(web.filter.includes('avatar3d-options.js'));
+assert.ok(app.includes('@app.get("/avatar3d-options.js")'));
 assert.ok(web.filter.includes('vendor/three/*.js'));
 assert.match(pkg.devDependencies.three, /^\d+\.\d+\.\d+$/, 'three must be pinned exactly');
 const stager = read('scripts/stage-three-assets.mjs');

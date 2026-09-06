@@ -9,6 +9,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
     let pose: OpenClam3DAvatarPose
     let orbit: OpenClam3DOrbit
     let visibleRect: CGRect
+    @ObservedObject private var options = OpenClam3DOptionsStore.shared
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -35,6 +36,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {
         guard case let .installedFile(url)? = avatar.asset(.model) else { return }
         let coordinator = context.coordinator
+        coordinator.avatarID = avatar.id
         let now = ProcessInfo.processInfo.systemUptime
         var revision = coordinator.modelRevision
         if coordinator.modelURL != url || now - coordinator.lastRevisionCheck > 1 {
@@ -56,6 +58,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
                      "w": visibleRect.width, "h": visibleRect.height],
             "orbit": ["yaw": orbit.yaw, "pitch": orbit.pitch],
             "state": pose.webState,
+            "options": options.selection(for: avatar.id),
         ]
         coordinator.flush(view)
     }
@@ -69,6 +72,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let assets = OpenClam3DWebAssets()
+        var avatarID = ""
         var modelURL: URL?
         var modelRevision = ""
         var lastRevisionCheck: TimeInterval = 0
@@ -90,12 +94,14 @@ struct OpenClam3DWebView: UIViewRepresentable {
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.frameInfo.isMainFrame, let body = message.body as? [String: String] else { return }
-            if body["event"] == "page-ready" {
+            guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
+            if body["event"] as? String == "page-ready" {
                 pageReady = true
                 if let view = message.webView { flush(view) }
             }
-            print("3D renderer: \(body)")
+            if body["event"] as? String == "catalogue", let catalogue = body["catalogue"] {
+                OpenClam3DOptionsStore.shared.receive(catalogue, for: avatarID)
+            } else { print("3D renderer: \(body)") }
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
@@ -120,6 +126,7 @@ final class OpenClam3DWebAssets: NSObject, WKURLSchemeHandler {
     static let resources: [String: String] = [
         "/index.html": "avatar-ios.html", "/avatar-ios.js": "avatar-ios.js",
         "/avatar3d.js": "avatar3d.js",
+        "/avatar3d-options.js": "avatar3d-options.js",
         "/vendor/three/three.module.js": "three.module.js",
         "/vendor/three/three.core.js": "three.core.js",
         "/vendor/three/GLTFLoader.js": "GLTFLoader.js",
@@ -164,4 +171,61 @@ extension OpenClam3DAvatarPose {
          "head": ["yaw": headYaw, "pitch": headPitch, "roll": headRoll],
          "speaking": speaking, "reduce": reduceMotion]
     }
+}
+
+struct OpenClam3DChoice: Codable, Identifiable, Equatable {
+    let id: String
+    let label: String
+    var group: String?
+    var pose: String?
+}
+
+struct OpenClam3DCatalogue: Codable, Equatable {
+    var poses: [OpenClam3DChoice] = []
+    var outfits: [OpenClam3DChoice] = []
+    var props: [OpenClam3DChoice] = []
+}
+
+@MainActor
+final class OpenClam3DOptionsStore: ObservableObject {
+    static let shared = OpenClam3DOptionsStore()
+    @Published private(set) var catalogues: [String: OpenClam3DCatalogue] = [:]
+    @Published private var selections: [String: [String: String]]
+    private let defaults: UserDefaults
+    private let key = "openclam.3d.appearanceSelections"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        selections = (defaults.data(forKey: key)).flatMap {
+            try? JSONDecoder().decode([String: [String: String]].self, from: $0)
+        } ?? [:]
+    }
+
+    func selection(for avatarID: String) -> [String: String] { selections[avatarID] ?? [:] }
+
+    func receive(_ value: Any, for avatarID: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: value), data.count < 100_000,
+              let catalogue = try? JSONDecoder().decode(OpenClam3DCatalogue.self, from: data),
+              catalogue.poses.count <= 256, catalogue.outfits.count <= 64, catalogue.props.count <= 64
+        else { return }
+        if catalogues[avatarID] != catalogue { catalogues[avatarID] = catalogue }
+    }
+
+    func select(_ id: String, group: String, for avatarID: String) {
+        guard let catalogue = catalogues[avatarID] else { return }
+        let choices = group == "outfit" ? catalogue.outfits : group == "prop" ? catalogue.props
+            : catalogue.poses.filter { $0.group == group }
+        guard id.isEmpty || choices.contains(where: { $0.id == id }) else { return }
+        var next = selection(for: avatarID)
+        next[group] = id.isEmpty ? nil : id
+        if group == "body" || (group == "prop" && !id.isEmpty) {
+            for hand in ["hands", "leftHand", "rightHand"] { next[hand] = nil }
+        }
+        if group == "prop", !id.isEmpty { next["body"] = choices.first(where: { $0.id == id })?.pose }
+        selections[avatarID] = next
+        save()
+    }
+
+    func reset(_ avatarID: String) { selections[avatarID] = [:]; save() }
+    private func save() { if let data = try? JSONEncoder().encode(selections) { defaults.set(data, forKey: key) } }
 }

@@ -13,6 +13,7 @@
 import * as THREE from '/vendor/three/three.module.js';
 import { GLTFLoader } from '/vendor/three/GLTFLoader.js';
 import { RoomEnvironment } from '/vendor/three/RoomEnvironment.js';
+import { Avatar3DOptions, mountAvatar3DOptions } from '/avatar3d-options.js';
 
 const VISEMES = ['sil', 'PP', 'FF', 'TH', 'DD', 'kk', 'CH', 'SS',
   'nn', 'RR', 'aa', 'E', 'ih', 'oh', 'ou'];
@@ -225,10 +226,21 @@ class Avatar3D {
       }
     }
     this.model.updateMatrixWorld(true);
+    const library = gltf.parser?.json?.extras?.openclamAvatar;
+    if (library) {
+      try { this.options = new Avatar3DOptions(this, library); }
+      catch (error) { console.warn('3D options:', error.message); }
+    }
     if (options.pose !== 'rest') this.relaxArms();
+    this.options?.captureIdle();
     this.normalise();
     this.frame();
+    if (this.options) this.options.restBounds = this.bounds.clone();
     this.model.updateMatrixWorld(true);
+    if (this.bones.head && this.headCenter) {
+      this.headReferencePoint = this.headCenter.clone()
+        .applyMatrix4(this.bones.head.matrixWorld.clone().invert());
+    }
     const front = new THREE.Vector3(0, 0, 1)
       .applyQuaternion(this.model.getWorldQuaternion(new THREE.Quaternion()));
     for (const side of ['l', 'r']) {
@@ -386,15 +398,24 @@ class Avatar3D {
   }
 
   // Sit the model on y=0, centred on x/z, and measure its extents.
+  modelBounds() {
+    if (!this.options) return new THREE.Box3().setFromObject(this.model, true);
+    const box = new THREE.Box3();
+    this.model.traverseVisible(node => {
+      if (node.isMesh) box.union(new THREE.Box3().setFromObject(node, true));
+    });
+    return box;
+  }
+
   normalise() {
     this.model.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(this.model, true);
+    const box = this.modelBounds();
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     this.root.position.set(-center.x, -box.min.y, -center.z);
     this.root.updateMatrixWorld(true);
-    this.bounds = new THREE.Box3().setFromObject(this.model, true);
+    this.bounds = this.modelBounds();
     const height = Math.max(1e-4, size.y);
     const head = this.bones.head;
     if (head) {
@@ -579,6 +600,7 @@ class Avatar3D {
 
   render(now, state = {}, view = null) {
     if (this.disposed || !this.model) return this.canvas;
+    this.options?.update(now, Boolean(state.reduce));
     this.applyView(view);
     const elapsed = this.lastFrameAt > 0 ? clamp(now - this.lastFrameAt, 1, 120) : 16;
     this.lastFrameAt = now;
@@ -844,6 +866,7 @@ const supported = () => {
 };
 
 window.OpenClamAvatar3D = Object.freeze({
+  mountOptions: mountAvatar3DOptions,
   VISEMES: VISEMES.slice(),
   supported,
   create: options => new Avatar3D(options),
