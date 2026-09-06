@@ -54,6 +54,13 @@ weights. Material color/scalar arithmetic is baked to textures; the exporter no
 longer chooses an arbitrary input image from a mix graph. Glass is exported as
 transmission, using the shader connected to the source render output.
 
+Rigid `Child Of` bone attachments are preserved as glTF hierarchy links,
+including hairstyles with their own skeletons. The entire accessory rig follows
+the head, while its bind pose, skin weights and internal joints stay intact.
+Controllers omitted by deform-only export resolve only to a unique coincident
+deform child. Partial or ambiguous constraints stop preparation for explicit
+conversion instead of silently leaving an accessory behind.
+
 For the supplied **Tia-001.1 Blender scene**, use:
 
 ```bash

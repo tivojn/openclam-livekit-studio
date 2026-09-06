@@ -36,7 +36,8 @@ import sys
 
 import bpy
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from prepare_3d_fidelity import source_objects, apply_surface_modifiers, preserve_materials
+from prepare_3d_fidelity import (source_objects, apply_surface_modifiers, preserve_materials,
+                                 bone_attachments, attach_exported_rigs)
 
 ARKIT_52 = {
     "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft",
@@ -525,6 +526,7 @@ def main():
     parent_to_bones(args.parent_to_bone)
     # Explicit bone parenting may introduce another skeleton dependency.
     objects = source_objects()
+    attachments = bone_attachments(objects)
     assign_materials(args.assign_material)
     wire_base_colors(args.base_color)
     if args.legacy_simplify or args.no_simplify:
@@ -558,6 +560,7 @@ def main():
         export_yup=True,
         use_selection=True,
     )
+    attach_exported_rigs(output, attachments)
     log(f"wrote {output} ({os.path.getsize(output) / 1e6:.1f} MB)")
 
 

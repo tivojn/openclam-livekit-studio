@@ -3,8 +3,14 @@
 Run in Blender, through prepare-3d-avatar.py. Never execute embedded scripts.
 Material arithmetic is evaluated by Cycles, not guessed from node names.
 """
+import json
+import os
+import struct
+from pathlib import Path
+
 import bpy
 import numpy as np
+from mathutils import Matrix, Quaternion, Vector
 
 
 def source_objects():
@@ -24,11 +30,125 @@ def source_objects():
         obj = pending.pop()
         dependencies = [obj.parent] + [m.object for m in obj.modifiers
                                       if m.type == 'ARMATURE']
+        dependencies += [c.target for c in obj.constraints
+                         if c.type == 'CHILD_OF' and not c.mute and c.influence > 0]
         for dependency in dependencies:
             if dependency and dependency not in objects:
                 objects.add(dependency)
                 pending.append(dependency)
     return objects
+
+
+def bone_attachments(objects):
+    """Resolve rigid Child Of links that glTF cannot export as constraints.
+
+    Deform-only export removes controllers. A controller's single coincident
+    deform child can carry its attachment (e.g. a separately skinned hairstyle).
+    Ambiguous or partial constraints require explicit conversion, not a guess
+    based on names like 'hair'.
+    """
+    attachments = []
+    axes = [f'use_{kind}_{axis}' for kind in ('location', 'rotation', 'scale')
+            for axis in 'xyz']
+    for obj in sorted(objects, key=lambda o: o.name):
+        active = [c for c in obj.constraints if not c.mute and c.influence > 0]
+        links = [c for c in active if c.type == 'CHILD_OF']
+        if not links:
+            continue
+        link = links[0]
+        if (len(active) != 1 or abs(link.influence - 1) > 1e-6
+                or not all(getattr(link, axis) for axis in axes)
+                or not link.target or link.target.type != 'ARMATURE'
+                or not link.subtarget):
+            raise ValueError(f'{obj.name}: Child Of attachment needs explicit rigid-bone conversion')
+        target = link.target
+        bone = target.pose.bones.get(link.subtarget)
+        if not bone:
+            raise ValueError(f'{obj.name}: attachment bone {link.subtarget} is missing')
+        if not bone.bone.use_deform:
+            candidates = [child for child in bone.children if child.bone.use_deform
+                          and np.allclose(np.array(child.matrix), np.array(bone.matrix), atol=1e-5)]
+            if len(candidates) != 1:
+                raise ValueError(f'{obj.name}: {bone.name} has no unique coincident deform child')
+            bone = candidates[0]
+        attachments.append((obj.name, target.name, bone.name))
+    return attachments
+
+
+def attach_exported_rigs(filepath, attachments):
+    """Restore rigid bone attachments, preserving bind-pose world transforms.
+
+    The entire accessory rig moves with the head, including its joints and
+    skinned meshes. Keep the binary geometry, textures and inverse bind matrices
+    untouched. Parenting only the mesh would leave its skin's joints behind.
+    """
+    if not attachments:
+        return
+    path = Path(filepath)
+    original = path.read_bytes()
+    magic, version, length, json_length, kind = struct.unpack_from('<5I', original)
+    if (magic, version, length, kind) != (0x46546C67, 2, len(original), 0x4E4F534A):
+        raise ValueError('Expected an exported GLB 2.0 document')
+    document = json.loads(original[20:20 + json_length])
+    nodes = document['nodes']
+    parents = {child: index for index, node in enumerate(nodes)
+               for child in node.get('children', [])}
+
+    def unique(name, within=None):
+        candidates = [i for i, node in enumerate(nodes) if node.get('name') == name
+                      and (within is None or descendant(i, within))]
+        if len(candidates) != 1:
+            raise ValueError(f'Attachment node {name!r} is missing or ambiguous')
+        return candidates[0]
+
+    def descendant(index, ancestor):
+        while index in parents:
+            index = parents[index]
+            if index == ancestor:
+                return True
+        return False
+
+    def world(index):
+        node = nodes[index]
+        if 'matrix' in node:
+            values = node['matrix']
+            local = Matrix([values[i::4] for i in range(4)])
+        else:
+            x, y, z, w = node.get('rotation', [0, 0, 0, 1])
+            local = Matrix.LocRotScale(Vector(node.get('translation', [0, 0, 0])),
+                Quaternion((w, x, y, z)), Vector(node.get('scale', [1, 1, 1])))
+        return world(parents[index]) @ local if index in parents else local
+
+    for object_name, armature_name, bone_name in attachments:
+        accessory = unique(object_name)
+        bone = unique(bone_name, unique(armature_name))
+        if accessory == bone or descendant(bone, accessory):
+            raise ValueError(f'{object_name}: attachment would create a hierarchy cycle')
+        if parents.get(accessory) == bone:
+            continue
+        local = world(bone).inverted() @ world(accessory)
+        if accessory in parents:
+            nodes[parents[accessory]]['children'].remove(accessory)
+        for scene in document.get('scenes', []):
+            scene['nodes'] = [i for i in scene.get('nodes', []) if i != accessory]
+        nodes[bone].setdefault('children', []).append(accessory)
+        parents[accessory] = bone
+        node = nodes[accessory]
+        for key in ('translation', 'rotation', 'scale'):
+            node.pop(key, None)
+        node['matrix'] = [local[row][column] for column in range(4) for row in range(4)]
+        print(f'[fidelity] attached {object_name} to {armature_name}:{bone_name}', flush=True)
+    encoded = json.dumps(document, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+    encoded += b' ' * (-len(encoded) % 4)
+    binary = original[20 + json_length:]
+    output = struct.pack('<5I', magic, version, 20 + len(encoded) + len(binary),
+                         len(encoded), kind) + encoded + binary
+    temporary = path.with_name(path.name + '.attachments.tmp')
+    try:
+        temporary.write_bytes(output)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def apply_surface_modifiers(obj):
