@@ -28,6 +28,8 @@ final class OpenClamAvatarLibrary: ObservableObject {
     @Published private(set) var importedAvatars: [OpenClamAvatarDescriptor]
     @Published private(set) var skippedInvalidInstallCount = 0
     @Published private(set) var mutation: OpenClamAvatarLibraryMutation?
+    @Published private(set) var updatingAvatarID: String?
+    @Published private(set) var bundledUpdateErrors: [String: String] = [:]
     @Published private(set) var pendingCommittedDeletionIDs: Set<String>
 
     private let packageStore: OpenClamAvatarPackageStore
@@ -147,13 +149,48 @@ final class OpenClamAvatarLibrary: ObservableObject {
                 allowsBundledStoreUpdate: allowsBundledStoreUpdate
             )
         }.value
+        recordInstalledAvatar(descriptor)
+        return descriptor
+    }
+
+    private func recordInstalledAvatar(_ descriptor: OpenClamAvatarDescriptor) {
         importedAvatars.removeAll(where: { $0.id == descriptor.id })
         importedAvatars.append(descriptor)
         importedAvatars.sort {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
         OpenClamAvatarAssetStore.shared.removeCachedImages()
-        return descriptor
+    }
+
+    /// Runs offline after an app update, using only packages inside its signed
+    /// bundle. Hold the normal library mutation lock through matching and install.
+    func applyBundledUpdates(at root: URL? = OpenClamBundledAvatarUpdate.resourceRoot) async {
+        guard let root, mutation == nil else { return }
+        let updates: [OpenClamBundledAvatarUpdate]
+        do { updates = try OpenClamBundledAvatarUpdate.load(at: root) }
+        catch {
+            for avatar in importedAvatars where avatar.compatibility.rendersModel {
+                bundledUpdateErrors[avatar.id] = error.localizedDescription
+            }
+            return
+        }
+        guard !updates.isEmpty else { return }
+        mutation = .importing
+        defer { mutation = nil; updatingAvatarID = nil }
+        let store = packageStore
+        for update in updates {
+            guard let avatar = importedAvatars.first(where: { $0.id == update.id }),
+                  !isProtected(id: avatar.id),
+                  case let .installedFile(modelURL)? = avatar.asset(.model) else { continue }
+            updatingAvatarID = avatar.id
+            bundledUpdateErrors[avatar.id] = nil
+            do {
+                let descriptor = try await Task.detached(priority: .userInitiated) {
+                    try update.installIfMatching(modelURL: modelURL, resourceRoot: root, store: store)
+                }.value
+                if let descriptor { recordInstalledAvatar(descriptor) }
+            } catch { bundledUpdateErrors[avatar.id] = error.localizedDescription }
+        }
     }
 
     func deleteImportedAvatar(id: String) async throws {

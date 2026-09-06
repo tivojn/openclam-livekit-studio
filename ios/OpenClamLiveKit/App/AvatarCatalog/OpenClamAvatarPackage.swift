@@ -2404,7 +2404,8 @@ struct OpenClamAvatarPackageStore: Sendable {
                 let addition = byteCount.addingReportingOverflow(UInt64(chunk.count))
                 guard !addition.overflow,
                       addition.partialValue
-                        <= OpenClamAvatarPackageContract.maximumArchiveByteCount else {
+                        <= max(OpenClamAvatarPackageContract.maximumArchiveByteCount,
+                               OpenClamAvatarPackageContract.maximumModelArchiveByteCount) else {
                     throw OpenClamAvatarPackageError.archiveTooLarge
                 }
                 try output.write(contentsOf: chunk)

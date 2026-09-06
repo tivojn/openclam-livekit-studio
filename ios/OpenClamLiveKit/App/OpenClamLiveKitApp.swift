@@ -45,6 +45,10 @@ struct OpenClamLiveKitApp: App {
                         model.stage(url: url)
                     }
                 }
+                .task {
+                    await avatarLibrary.applyBundledUpdates()
+                    aiConfiguration.reconcileAvatarCatalog(avatarLibrary.identities)
+                }
                 .onAppear {
                     avatarLibrary.reconcileCommittedDeletions(
                         configuration: aiConfiguration

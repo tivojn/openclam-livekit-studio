@@ -456,10 +456,9 @@ final class OpenClam3DAvatarTests: XCTestCase {
         return document
     }
 
-    private static func makeGLB(_ document: [String: Any]) -> Data {
+    private static func makeGLB(_ document: [String: Any], binary: Data = Data(repeating: 0, count: 4)) -> Data {
         var payload = try! JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
         while payload.count % 4 != 0 { payload.append(0x20) }
-        let binary = Data(repeating: 0, count: 4)
         var body = Data()
         func append(_ value: UInt32) { var little = value.littleEndian; body.append(Data(bytes: &little, count: 4)) }
         append(UInt32(payload.count)); append(0x4E4F_534A); body.append(payload)
@@ -564,6 +563,103 @@ final class OpenClam3DAvatarTests: XCTestCase {
 }
 
 extension OpenClam3DAvatarTests {
+    func testModelArchiveAboveSpriteLimitImportsThroughSnapshot() throws {
+        let archive = try makeModelArchive { _, model in
+            var document = Self.document(targets: Self.oculusTargets)
+            let binary = Data(repeating: 0, count: 65 * 1024 * 1024)
+            document["buffers"] = [["byteLength": binary.count]]
+            model = Self.makeGLB(document, binary: binary)
+        }
+        let size = try XCTUnwrap(archive.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+        XCTAssertGreaterThan(UInt64(size), OpenClamAvatarPackageContract.maximumArchiveByteCount)
+        let store = OpenClamAvatarPackageStore(storageRoot: try temporaryDirectory())
+        let installed = try store.installArchive(at: archive)
+        XCTAssertEqual(installed.id, "tia-test")
+        XCTAssertTrue(installed.compatibility.rendersModel)
+    }
+
+    func testBundledWardrobeUpgradesExistingModelOnceAndDoesNotRestoreDeletedAvatar() async throws {
+        let root = try temporaryDirectory()
+        let library = OpenClamAvatarLibrary(storageRoot: root)
+        let original = try await library.importAvatar(from: makeModelArchive())
+        let modelURL = try installedModelURL(original)
+        let before = try OpenClamBundledAvatarUpdate.sha256(at: modelURL)
+        let resources = try bundledUpdateFixture(sourceHash: before)
+        await library.applyBundledUpdates(at: resources)
+        XCTAssertTrue(library.bundledUpdateErrors.isEmpty)
+        XCTAssertEqual(library.importedAvatars.map(\.id), [original.id])
+        XCTAssertNotEqual(try OpenClamBundledAvatarUpdate.sha256(at: modelURL), before)
+        let modified = try modelURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        // An already applied update must not even need its archive again.
+        try FileManager.default.removeItem(at: resources.appendingPathComponent("tia-test.avtr"))
+        await library.applyBundledUpdates(at: resources)
+        XCTAssertTrue(library.bundledUpdateErrors.isEmpty)
+        XCTAssertEqual(try modelURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
+        try await library.deleteImportedAvatar(id: original.id)
+        await library.applyBundledUpdates(at: resources)
+        XCTAssertTrue(library.importedAvatars.isEmpty)
+        XCTAssertNil(library.mutation)
+    }
+
+    func testBundledWardrobePreservesCustomModelsAndMissingAvatars() async throws {
+        let library = OpenClamAvatarLibrary(storageRoot: try temporaryDirectory())
+        let resources = try bundledUpdateFixture(sourceHash: String(repeating: "1", count: 64))
+        await library.applyBundledUpdates(at: resources)
+        XCTAssertTrue(library.importedAvatars.isEmpty)
+        let original = try await library.importAvatar(from: makeModelArchive())
+        let modelURL = try installedModelURL(original)
+        let before = try Data(contentsOf: modelURL)
+        await library.applyBundledUpdates(at: resources)
+        XCTAssertEqual(try Data(contentsOf: modelURL), before)
+        XCTAssertTrue(library.bundledUpdateErrors.isEmpty)
+    }
+
+    func testInvalidBundledWardrobePreservesOldModelAndCanRetry() async throws {
+        let library = OpenClamAvatarLibrary(storageRoot: try temporaryDirectory())
+        let original = try await library.importAvatar(from: makeModelArchive())
+        let modelURL = try installedModelURL(original)
+        let before = try Data(contentsOf: modelURL)
+        let resources = try bundledUpdateFixture(sourceHash: sha256(before))
+        let archive = resources.appendingPathComponent("tia-test.avtr")
+        let valid = try Data(contentsOf: archive)
+        try Data("broken".utf8).write(to: archive)
+        await library.applyBundledUpdates(at: resources)
+        XCTAssertNotNil(library.bundledUpdateErrors[original.id])
+        XCTAssertEqual(try Data(contentsOf: modelURL), before)
+        XCTAssertNil(library.mutation)
+        try valid.write(to: archive)
+        await library.applyBundledUpdates(at: resources)
+        XCTAssertNil(library.bundledUpdateErrors[original.id])
+        XCTAssertNotEqual(try Data(contentsOf: modelURL), before)
+    }
+
+    private func installedModelURL(_ avatar: OpenClamAvatarDescriptor) throws -> URL {
+        guard case let .installedFile(url)? = avatar.asset(.model) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return url
+    }
+
+    private func bundledUpdateFixture(sourceHash: String) throws -> URL {
+        let root = try temporaryDirectory()
+        let archive = try makeModelArchive { _, model in
+            var document = Self.document(targets: Self.oculusTargets)
+            document["extras"] = ["wardrobe-test": true]
+            model = Self.makeGLB(document)
+        }
+        let targetStore = OpenClamAvatarPackageStore(storageRoot: try temporaryDirectory())
+        let target = try targetStore.installArchive(at: archive)
+        let targetURL = try installedModelURL(target)
+        let update = OpenClamBundledAvatarUpdate(
+            id: "tia-test", file: "tia-test.avtr",
+            packageSHA256: try OpenClamBundledAvatarUpdate.sha256(at: archive),
+            sourceModelSHA256: [sourceHash],
+            targetModelSHA256: try OpenClamBundledAvatarUpdate.sha256(at: targetURL))
+        try FileManager.default.copyItem(at: archive, to: root.appendingPathComponent(update.file))
+        try JSONEncoder().encode([update]).write(to: root.appendingPathComponent("updates.json"))
+        return root
+    }
+
     func testWardrobeChoicesPersistPerAvatarAndBodyPosesClearHandOverrides() throws {
         let name = "OpenClam3DOptionsTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))

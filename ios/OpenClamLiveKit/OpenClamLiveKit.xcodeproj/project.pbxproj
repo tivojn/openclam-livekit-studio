@@ -10,6 +10,7 @@
 		03F4BB914198040E5590A90B /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A287448E84ACD6A8C56415B /* RootView.swift */; };
 		047A15CD57090ED21F384DA4 /* ScreenVoicePTTIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70C3729E5828F58D957F3EC5 /* ScreenVoicePTTIntent.swift */; };
 		07AD04BBD10E31E2D081C3CA /* LiveTalkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A301263A30EE57A7807848 /* LiveTalkTests.swift */; };
+		088931E5EF7D46181DCCE6C0 /* ThreeJS-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8BB7576A7C4853DC47B07920 /* ThreeJS-LICENSE.txt */; };
 		08F4B6DD43E9CDC48D2FAEB7 /* AgentConnectorArtifactService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EC2FB5E00BA1AA0283FC730 /* AgentConnectorArtifactService.swift */; };
 		090B896C110C954C9CA9BB35 /* AgentCommandCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FED0299EB8F29F000CAB6B56 /* AgentCommandCatalogTests.swift */; };
 		0A317EAA718906B62BFAF413 /* CaptainAyerAvatarStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04FDE776990744B476BF9B2 /* CaptainAyerAvatarStage.swift */; };
@@ -38,6 +39,7 @@
 		28AEF61C9FDC4C1AB5940351 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 8025DE69359413496387B2EF /* PrivacyInfo.xcprivacy */; };
 		2930D3D2FC2054D60C46FCEF /* OpenClamKeyboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC85D1AE02F02FED6BE21805 /* OpenClamKeyboardTests.swift */; };
 		2BB0416300F719CE5FA2C1D4 /* ScreenCaptureKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DF0A4129CF4ECF3DDD8F483 /* ScreenCaptureKitManager.swift */; };
+		2C4075A001ACD272884F8B27 /* three.core.js in Resources */ = {isa = PBXBuildFile; fileRef = DCADDF509619612C53B30185 /* three.core.js */; };
 		2F4B5BC8672BDA9F10A15500 /* ios-light-motion-v3-golden.avtr in Resources */ = {isa = PBXBuildFile; fileRef = 53D3ED610B0CB895D16F11D3 /* ios-light-motion-v3-golden.avtr */; };
 		2FBBEE406D5698B04ED6DD73 /* AppHandoffSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = E468F72BFC872F2D4C64402B /* AppHandoffSession.swift */; };
 		2FE147F78966EC8C6B5C5B42 /* OpenClamAvatarCatalogModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02BD1E83198EE525E84F53D5 /* OpenClamAvatarCatalogModels.swift */; };
@@ -50,6 +52,7 @@
 		35F99E6E73A4370750DF622C /* OpenClamKeyboardBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE8F1B7B53C7E0B02192D6E /* OpenClamKeyboardBridge.swift */; };
 		36E3E3C92E23099706722653 /* ScreenVoicePTTRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97775F1DB95CF29E688971FF /* ScreenVoicePTTRuntime.swift */; };
 		380EE81523C09FB8AE8C3831 /* OpenClamAvatarCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E2E116113A9C52CB23BD57 /* OpenClamAvatarCatalog.swift */; };
+		387838EC29B0AFC58392C520 /* three.module.js in Resources */ = {isa = PBXBuildFile; fileRef = F4DE483DA72ECECC0E8E321D /* three.module.js */; };
 		39243A36BFBC687C5865E02F /* AgentConnectorTokenVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6461BFFBB95B6DDA7C661EBE /* AgentConnectorTokenVault.swift */; };
 		394719A540385081B1808896 /* CloudVoiceServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F84B37DE1C6BB0AB1FC248C /* CloudVoiceServiceTests.swift */; };
 		3B9D0E1CB71447B5F9348CE8 /* ScreenVoicePTTModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9C4AD3022E2F0311264A57 /* ScreenVoicePTTModels.swift */; };
@@ -83,9 +86,11 @@
 		5CCD94870F2BB52102DF68F4 /* ScreenVoicePTTActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B53FBD982C5947AD5E2BF74B /* ScreenVoicePTTActivityAttributes.swift */; };
 		5DBA0373F02623BF5C60ECA2 /* ProviderAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40CD059FB38A43FA0162C372 /* ProviderAPIClientTests.swift */; };
 		5E0DEB632BBC5CE90162768B /* AvatarAgentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EC2DB7B0F3AC71C99F05F7D /* AvatarAgentSettingsView.swift */; };
+		5F689DA1DCE4B629A1E7C372 /* avatar-ios.html in Resources */ = {isa = PBXBuildFile; fileRef = 49F08146186E07EFDCF15249 /* avatar-ios.html */; };
 		6009B7763B7EE280A4734DDC /* EventKitAgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AC1FBC855509F81EA638F06 /* EventKitAgentModels.swift */; };
 		609779AFBB764DC82CF01668 /* OpenClamConversationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBCC79F5B012AA08CDE90DE /* OpenClamConversationUITests.swift */; };
 		61B14A5EF1A619E59D40AF9C /* AIConfigurationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D4CB9DBE807DB1068E1002 /* AIConfigurationModel.swift */; };
+		624820881B00A7786A6BB4E4 /* GLTFLoader.js in Resources */ = {isa = PBXBuildFile; fileRef = 55617072AA7EACA67EDD4BEF /* GLTFLoader.js */; };
 		628A942218A48398BFB7CEFB /* AgentConnectorModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D0341D4975EFF707D9E4814 /* AgentConnectorModels.swift */; };
 		64C297258A3E97398CE012FA /* ScreenVoicePTTProgressReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C3DC59E1C5FD604BD183C8B /* ScreenVoicePTTProgressReporter.swift */; };
 		6857063EC89743A064CBFCC0 /* AgentConnectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5BB8E2B3919C647558ACD47 /* AgentConnectorTests.swift */; };
@@ -107,6 +112,7 @@
 		847B07F5719B724AE2CF251D /* LocalContactsFoundation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F6D84F2EB6981AC0C5217B6 /* LocalContactsFoundation.swift */; };
 		854EC7F6090FCE4138480F95 /* ProviderAgentClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33DDC7CB83CC5DF26894CCB2 /* ProviderAgentClientTests.swift */; };
 		8739F2A07469F45FDAEF9501 /* CaptainAyerAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DE92840A8216A19696B4EDB /* CaptainAyerAvatarTests.swift */; };
+		8778B1703E0AB9CD21EDF91A /* SkeletonUtils.js in Resources */ = {isa = PBXBuildFile; fileRef = AEB61999FAB7583AD47BAAF2 /* SkeletonUtils.js */; };
 		886E808D004C82AA525416B8 /* ScreenVoicePTTLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 594F4D2C63FDCF31BC8E2863 /* ScreenVoicePTTLiveActivityWidget.swift */; };
 		88E536DC8C6F113841EC935B /* OpenClamAvatarPackage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D453FE069B2EEDD7F76D2B96 /* OpenClamAvatarPackage.swift */; };
 		8A84D45A2A516931A0CB5CAA /* LiveTalkConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59A68A3ADB8C776A669E793 /* LiveTalkConfiguration.swift */; };
@@ -121,6 +127,7 @@
 		9E3FAEC40A44B7D98034C67A /* EventKitAgentFoundationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E29188508E6DDBA678D81BF /* EventKitAgentFoundationTests.swift */; };
 		A08012C3FAE229B07F0FAF0D /* ContactAgentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B594FF8B05E358FB39B710C /* ContactAgentCard.swift */; };
 		A08395BD036649EEF5AD3FE3 /* CaptainAyerLipSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AC8C791434A48EF275BC9C1 /* CaptainAyerLipSync.swift */; };
+		A22A92B9A67388308DDD5EF6 /* avatar-ios.js in Resources */ = {isa = PBXBuildFile; fileRef = 8DDD91B91C0B93988938586B /* avatar-ios.js */; };
 		A2BD5B599D35767227936A9C /* CloudVoiceServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A9B779E8333D83A18C9F948 /* CloudVoiceServices.swift */; };
 		A4EAE6D5A2914A7A2682B275 /* ContextRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1335C17C1314ACF2879401F /* ContextRootView.swift */; };
 		A5AB3F461DC30FB0341BF693 /* OpenClam3DAvatarUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A421670F9FC98590668CA8DB /* OpenClam3DAvatarUITests.swift */; };
@@ -130,10 +137,12 @@
 		AB6956AEC85FC2E79FDFAE35 /* ActivityRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FC28AB4A5774A9C00E46718 /* ActivityRecord.swift */; };
 		AD50D2A2C2F1B90226DEDB07 /* OpenClamAvatarStoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6344279813D7A311A671526A /* OpenClamAvatarStoreView.swift */; };
 		AEC336CA5CD9AD3EA0697FAF /* ScreenVoicePTTActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD8627F755D0194756B81B5 /* ScreenVoicePTTActivityController.swift */; };
+		AEFE9A6C5DBE5782BD7D00A2 /* RoomEnvironment.js in Resources */ = {isa = PBXBuildFile; fileRef = 90125C1561CAC6E40AF79553 /* RoomEnvironment.js */; };
 		AF839A67A84AB08D8601FDBB /* ios-light-golden.avtr in Resources */ = {isa = PBXBuildFile; fileRef = 4541B07D729A7DE8BCD101B2 /* ios-light-golden.avtr */; };
 		B10068B960C9722594E12F33 /* ConversationHistoryController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 771E89724142FF994674FA08 /* ConversationHistoryController.swift */; };
 		B17ADDFE9986DA3BFBB3C4DF /* OpenClam3DAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB801903204B53B30312DF82 /* OpenClam3DAvatarTests.swift */; };
 		B182E687BB87FAE0F87832E1 /* OpenClamLiveKitKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 566FB21D029B2E574646E9AB /* OpenClamLiveKitKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B33380D3E16F5CA21A5C58F0 /* BufferGeometryUtils.js in Resources */ = {isa = PBXBuildFile; fileRef = F8D7C39A3A6F5E802D3A675B /* BufferGeometryUtils.js */; };
 		B5A17B7BB425A9D6BD07CE81 /* CaptainAyerFaceMirrorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 328ECEC97FAB8877379A8A06 /* CaptainAyerFaceMirrorController.swift */; };
 		B78CE33BA127630416B58DC8 /* ProviderAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A6B6E08BB2DEDCA5B756740 /* ProviderAPIClient.swift */; };
 		B83336B08D7998BC94F668BD /* OpenAIResponsesTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF0D82C2F3EC33A8DFE1C8E /* OpenAIResponsesTypes.swift */; };
@@ -146,6 +155,7 @@
 		C5DBCCF48B24D58064F725C3 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CADCC38BF0349487F5C67D45 /* KeyboardViewController.swift */; };
 		C667ECA0A5BEDA5641117E59 /* OpenClamAvatarAssetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BB08C2624C1E2C228E85FA0 /* OpenClamAvatarAssetStore.swift */; };
 		C6D50687AB2C649FFB086EE8 /* ScreenPTTIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA48E262CA3FB14525DBE15 /* ScreenPTTIntents.swift */; };
+		C74FE627891B634A0D79B3F6 /* AvatarUpdates.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 44866215EF0CEF34F408C0C2 /* AvatarUpdates.bundle */; };
 		C84CCB7B6B51D6F767547BA6 /* ScreenVoicePTTVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6601B958F0E45D033058BAC /* ScreenVoicePTTVAD.swift */; };
 		CAC03FB525F7E3F306BA4232 /* OpenClamAvatarCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 607B13A865C3D8527BA492DA /* OpenClamAvatarCatalogTests.swift */; };
 		CACBA54A6A56DD4162676796 /* AvatarAgentProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6938EB6F48FCE169BACF27A /* AvatarAgentProfileTests.swift */; };
@@ -161,11 +171,14 @@
 		D6F2763B5919C3C412AC781C /* CapabilitiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E8C3A7126F7FDF4796B888 /* CapabilitiesView.swift */; };
 		D75EABF4C76B91F53F350B49 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 537938234F1C1C22840F3CFA /* ZIPFoundation */; };
 		D7A0A2FB1AD3033B4478129E /* AttachmentPreparationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C017C2C540B23E8D12F1A71 /* AttachmentPreparationService.swift */; };
+		D8390BA1FAFE359B52DE2827 /* avatar3d.js in Resources */ = {isa = PBXBuildFile; fileRef = 83956255E86F3A833CFE0249 /* avatar3d.js */; };
 		DA46080BAC607C92F38F81BC /* AgentToolDTOs.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFE95DFE5A6A749B8F7877E7 /* AgentToolDTOs.swift */; };
+		DFCC4E188E77B37E95826E6F /* OpenClam3DWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCEBEB1B8DA5942E32FEFED /* OpenClam3DWebView.swift */; };
 		E100B0DD7F8D928B2B33463C /* OpenClamAvatarLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3054355C14179FA7475846AA /* OpenClamAvatarLibrary.swift */; };
 		E2E33456ABC9E3C2ECF8973A /* OpenClamCatalogAvatarStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58DD4CCEA8C8BBA467F90FA7 /* OpenClamCatalogAvatarStage.swift */; };
 		E3F6C57E50F6FB0D0CD6CD6F /* AvatarAgentProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FFD81C7CA9C44E1F50E3682 /* AvatarAgentProfile.swift */; };
 		E42990B657E6CDA70036DCF1 /* ScreenContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0AC9D181F3A871AB81DA66B /* ScreenContextModels.swift */; };
+		E429F03140041B94ED2F259F /* OpenClamBundledAvatarUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95EB729D4C7EA37D308DA766 /* OpenClamBundledAvatarUpdate.swift */; };
 		E4FEE83A1B95A03266C2F7E7 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F01385E52A0F212F0CE089D1 /* ShareViewController.swift */; };
 		E7377B6805539CCA51A35338 /* LLMAgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF82F64B65FEC2A014678CBE /* LLMAgentClient.swift */; };
 		E74F1C415B55EA95C7C7F7B8 /* ScreenContextReviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7038B3FFB3912A7B9DD440ED /* ScreenContextReviewSession.swift */; };
@@ -179,22 +192,11 @@
 		F370B6A50C541AA39AA48CCF /* ContactAgentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25EBB6E3936052DF20F1930 /* ContactAgentSession.swift */; };
 		F388C6464E6760A053F17D46 /* OpenClamKeyboardDictationHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74361CA754EBBB02CA5E1291 /* OpenClamKeyboardDictationHost.swift */; };
 		F3B2E22685E8FA4F77BD72F7 /* ScreenPTTServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6785DFB5385377F9DB65D0B5 /* ScreenPTTServiceTests.swift */; };
+		F54EC1E06307D7056CA0B99B /* avatar3d-options.js in Resources */ = {isa = PBXBuildFile; fileRef = 1502D8A89DDED694B66BC952 /* avatar3d-options.js */; };
 		F5C6A2C1337DD425522FDB26 /* OpenClamSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D663B5E7DC24DE324579622 /* OpenClamSettingsView.swift */; };
 		F8987C234CD0492CA3AEED5D /* AgentToolLocalDataParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6D9FBA1E233281E1BC3F41 /* AgentToolLocalDataParser.swift */; };
 		FAA810FDC0314F33C181CBC1 /* MailComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DA90F40D3C0A945B22FBFB /* MailComposeView.swift */; };
 		FED5E9C3CB4613E05D0FA327 /* ScreenContextInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */; };
-		AFFC2E3DA6C718401B891AB5 /* avatar3d.js in Resources */ = {isa = PBXBuildFile; fileRef = 7F866FF01CCFFF202E008C68; };
-		AC00123456789ABCDE000001 /* avatar3d-options.js in Resources */ = {isa = PBXBuildFile; fileRef = AC00123456789ABCDE000002; };
-		9F0D351A35FC27FB9E40E2CD /* three.module.js in Resources */ = {isa = PBXBuildFile; fileRef = F01B474F4E81EE8C62AA194D; };
-		58C6C345B6F865D8EE3ED20D /* three.core.js in Resources */ = {isa = PBXBuildFile; fileRef = EFAD9BBC5AD8C4918173E827; };
-		547A8FFE7D895A4B8E8675AE /* GLTFLoader.js in Resources */ = {isa = PBXBuildFile; fileRef = 34F1149EBEA8CE1C5BDBADCB; };
-		3B20FD52B14A5232D6067E69 /* RoomEnvironment.js in Resources */ = {isa = PBXBuildFile; fileRef = FF6D11EBD93044EDF4B48F5D; };
-		65C2C24DC3EC15392463B03B /* BufferGeometryUtils.js in Resources */ = {isa = PBXBuildFile; fileRef = 9FEF79734BFF9D3BCBB291F2; };
-		0C29AB9403EA4B1CC4263366 /* SkeletonUtils.js in Resources */ = {isa = PBXBuildFile; fileRef = 4BD37EFF894E398D1DC87C49; };
-		1053BEC1A85D3A157F3890F9 /* avatar-ios.html in Resources */ = {isa = PBXBuildFile; fileRef = CA03FFC7E8A07997B303A169; };
-		D07865B32F9383679F5698DE /* avatar-ios.js in Resources */ = {isa = PBXBuildFile; fileRef = 6FCFCEFA59966876E3EFB1CB; };
-		30F73E94B6ADC73933CBA310 /* OpenClam3DWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1EB07F60CA17588DB2CD73D; };
-		DD2D305B0FEC45E72EFB684E /* ThreeJS-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = D3CB6AD843DA35F56CF63D61; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -264,8 +266,10 @@
 		0C3AA4F557654DA917775DD7 /* AgentConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnector.swift; sourceTree = "<group>"; };
 		0DC4D8AD6C6BCDE9E14BBEE4 /* ContactAgentSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactAgentSessionTests.swift; sourceTree = "<group>"; };
 		0E90A2A96A2C59CFBFAF31E9 /* AssistantModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantModel.swift; sourceTree = "<group>"; };
+		1502D8A89DDED694B66BC952 /* avatar3d-options.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "avatar3d-options.js"; sourceTree = "<group>"; };
 		178F26711C3AE985F5F3B1E5 /* OpenClamAvatarCarouselLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarCarouselLayout.swift; sourceTree = "<group>"; };
 		1842548A5FB5AA08340ABA12 /* CaptainAyerAvatarOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerAvatarOverlay.swift; sourceTree = "<group>"; };
+		1DCEBEB1B8DA5942E32FEFED /* OpenClam3DWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClam3DWebView.swift; sourceTree = "<group>"; };
 		2025AFD7B2B27503543384F1 /* ConversationHistoryIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryIntegrationTests.swift; sourceTree = "<group>"; };
 		206E2122750A8CAEC6E037D6 /* ProviderCredentialVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderCredentialVault.swift; sourceTree = "<group>"; };
 		20B259D0CDEF48344924AD57 /* AgentConnectorOutboxVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnectorOutboxVault.swift; sourceTree = "<group>"; };
@@ -293,16 +297,19 @@
 		40CD059FB38A43FA0162C372 /* ProviderAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAPIClientTests.swift; sourceTree = "<group>"; };
 		40FF8C2ED54A3B4E23F09FF5 /* AvatarAgentSaveDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAgentSaveDismissUITests.swift; sourceTree = "<group>"; };
 		418712F0FFB181B068F92B0F /* ScreenContextReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextReviewView.swift; sourceTree = "<group>"; };
+		44866215EF0CEF34F408C0C2 /* AvatarUpdates.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = AvatarUpdates.bundle; sourceTree = "<group>"; };
 		44E30497D59C3CAC6878FDAF /* OpenClamLiveKit.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenClamLiveKit.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4541B07D729A7DE8BCD101B2 /* ios-light-golden.avtr */ = {isa = PBXFileReference; path = "ios-light-golden.avtr"; sourceTree = "<group>"; };
 		45D1FD93733AB5A6ECE6E9E7 /* LocalAssistantServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAssistantServices.swift; sourceTree = "<group>"; };
 		498591DB2F33B824E3598FE3 /* OpenClam3DAvatarModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClam3DAvatarModel.swift; sourceTree = "<group>"; };
 		49CA509152FDA5696D564CBB /* ConversationHistoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryStoreTests.swift; sourceTree = "<group>"; };
+		49F08146186E07EFDCF15249 /* avatar-ios.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = "avatar-ios.html"; sourceTree = "<group>"; };
 		4B7A3363D91B5B68239C3EE5 /* MarkdownAndReplyDeliveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownAndReplyDeliveryTests.swift; sourceTree = "<group>"; };
 		4D6D9FBA1E233281E1BC3F41 /* AgentToolLocalDataParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentToolLocalDataParser.swift; sourceTree = "<group>"; };
 		51DA90F40D3C0A945B22FBFB /* MailComposeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailComposeView.swift; sourceTree = "<group>"; };
 		534AACE56CD13C5605E4F4F6 /* AgentConnectorPairingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnectorPairingClient.swift; sourceTree = "<group>"; };
 		53D3ED610B0CB895D16F11D3 /* ios-light-motion-v3-golden.avtr */ = {isa = PBXFileReference; path = "ios-light-motion-v3-golden.avtr"; sourceTree = "<group>"; };
+		55617072AA7EACA67EDD4BEF /* GLTFLoader.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = GLTFLoader.js; sourceTree = "<group>"; };
 		566FB21D029B2E574646E9AB /* OpenClamLiveKitKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OpenClamLiveKitKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		56771DF87CDA6E299F270B9A /* OpenClamAvatarPackageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarPackageTests.swift; sourceTree = "<group>"; };
 		56C38FD1B3FD3E10C4089804 /* Capability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Capability.swift; sourceTree = "<group>"; };
@@ -348,19 +355,24 @@
 		7FFD81C7CA9C44E1F50E3682 /* AvatarAgentProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAgentProfile.swift; sourceTree = "<group>"; };
 		8025DE69359413496387B2EF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		8123C212D2C1C1E040810126 /* ScreenContextFeatureModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextFeatureModel.swift; sourceTree = "<group>"; };
+		83956255E86F3A833CFE0249 /* avatar3d.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = avatar3d.js; sourceTree = "<group>"; };
 		852C01D4023AD4E851441E47 /* OpenClamLiveKitScreenVoiceWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OpenClamLiveKitScreenVoiceWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		8A16020C3B3500AC12EA51D1 /* ScreenContextInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextInbox.swift; sourceTree = "<group>"; };
 		8A9C4AD3022E2F0311264A57 /* ScreenVoicePTTModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTModels.swift; sourceTree = "<group>"; };
 		8AF0D82C2F3EC33A8DFE1C8E /* OpenAIResponsesTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesTypes.swift; sourceTree = "<group>"; };
 		8B7DCAC2BFE7279AF19E5531 /* OpenClamAvatarUITestFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarUITestFixture.swift; sourceTree = "<group>"; };
 		8BB08C2624C1E2C228E85FA0 /* OpenClamAvatarAssetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarAssetStore.swift; sourceTree = "<group>"; };
+		8BB7576A7C4853DC47B07920 /* ThreeJS-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "ThreeJS-LICENSE.txt"; sourceTree = "<group>"; };
 		8BBC3FC29D1197887EF291B0 /* DeviceActionShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceActionShortcut.swift; sourceTree = "<group>"; };
 		8C7A2546723B5A45015AF9E7 /* CaptainAyerFaceReactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceReactionTests.swift; sourceTree = "<group>"; };
+		8DDD91B91C0B93988938586B /* avatar-ios.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "avatar-ios.js"; sourceTree = "<group>"; };
 		8E235549721689AFF0399FD9 /* AIProviderSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIProviderSettingsTests.swift; sourceTree = "<group>"; };
 		8EC2FB5E00BA1AA0283FC730 /* AgentConnectorArtifactService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnectorArtifactService.swift; sourceTree = "<group>"; };
+		90125C1561CAC6E40AF79553 /* RoomEnvironment.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = RoomEnvironment.js; sourceTree = "<group>"; };
 		9243F96877E4D994612FDA3A /* ScreenPTTService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPTTService.swift; sourceTree = "<group>"; };
 		928586A0D5C3E8C89AF5EC3D /* CaptainAyerFaceReactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceReactions.swift; sourceTree = "<group>"; };
 		9430AE28E95E970B2EE12B5D /* AppAliasSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAliasSettingsView.swift; sourceTree = "<group>"; };
+		95EB729D4C7EA37D308DA766 /* OpenClamBundledAvatarUpdate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamBundledAvatarUpdate.swift; sourceTree = "<group>"; };
 		96E48871FB651E8586E76914 /* OpenClawPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawPairingView.swift; sourceTree = "<group>"; };
 		96E9F2B04C41E10042D45C8A /* EventKitAgentSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentSessionTests.swift; sourceTree = "<group>"; };
 		97775F1DB95CF29E688971FF /* ScreenVoicePTTRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTRuntime.swift; sourceTree = "<group>"; };
@@ -379,6 +391,7 @@
 		ABC0D65F8B5C9F548E41341A /* OpenClamLiveKit.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenClamLiveKit.entitlements; sourceTree = "<group>"; };
 		AD1763CCCA49D31B5F810279 /* GoogleMapsURLBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleMapsURLBuilderTests.swift; sourceTree = "<group>"; };
 		AEAD505B1AE9590E13BE595B /* OpenClamLiveKitApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamLiveKitApp.swift; sourceTree = "<group>"; };
+		AEB61999FAB7583AD47BAAF2 /* SkeletonUtils.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = SkeletonUtils.js; sourceTree = "<group>"; };
 		AEC54D5FACC436133FD615F3 /* AnthropicMessagesAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnthropicMessagesAgentClient.swift; sourceTree = "<group>"; };
 		AF82F64B65FEC2A014678CBE /* LLMAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMAgentClient.swift; sourceTree = "<group>"; };
 		B1CEE9EAB4A4137CC0396ED8 /* ScreenContextQuestionInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextQuestionInbox.swift; sourceTree = "<group>"; };
@@ -412,6 +425,7 @@
 		D6A8127BFA3BF490416A34C7 /* ScreenCaptureSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureSessionView.swift; sourceTree = "<group>"; };
 		DB801903204B53B30312DF82 /* OpenClam3DAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClam3DAvatarTests.swift; sourceTree = "<group>"; };
 		DC85D1AE02F02FED6BE21805 /* OpenClamKeyboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamKeyboardTests.swift; sourceTree = "<group>"; };
+		DCADDF509619612C53B30185 /* three.core.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = three.core.js; sourceTree = "<group>"; };
 		DFE95DFE5A6A749B8F7877E7 /* AgentToolDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentToolDTOs.swift; sourceTree = "<group>"; };
 		E04FDE776990744B476BF9B2 /* CaptainAyerAvatarStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerAvatarStage.swift; sourceTree = "<group>"; };
 		E2153C9971249BF69F3F6A0E /* LiveTalkSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTalkSessionController.swift; sourceTree = "<group>"; };
@@ -422,23 +436,13 @@
 		E6601B958F0E45D033058BAC /* ScreenVoicePTTVAD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTVAD.swift; sourceTree = "<group>"; };
 		F01385E52A0F212F0CE089D1 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		F12F93E793FF5A134183C528 /* CaptainAyerFaceMirrorModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceMirrorModels.swift; sourceTree = "<group>"; };
+		F4DE483DA72ECECC0E8E321D /* three.module.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = three.module.js; sourceTree = "<group>"; };
 		F6537729B850E38DBAB57D8F /* AgentConnectorArtifactThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnectorArtifactThumbnailCache.swift; sourceTree = "<group>"; };
+		F8D7C39A3A6F5E802D3A675B /* BufferGeometryUtils.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = BufferGeometryUtils.js; sourceTree = "<group>"; };
 		F9100BE4F25B68FD044463A9 /* EventKitAgentMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAgentMapper.swift; sourceTree = "<group>"; };
 		FA66D491F291D7F5D177966D /* OpenAIResponsesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesClient.swift; sourceTree = "<group>"; };
 		FD54C9DD4A4979F5A6147815 /* ContactEmailToolService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactEmailToolService.swift; sourceTree = "<group>"; };
 		FED0299EB8F29F000CAB6B56 /* AgentCommandCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCommandCatalogTests.swift; sourceTree = "<group>"; };
-		7F866FF01CCFFF202E008C68 /* avatar3d.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "avatar3d.js"; path = "../../macos/OpenClamStudio/web/avatar3d.js"; sourceTree = SOURCE_ROOT; };
-		AC00123456789ABCDE000002 /* avatar3d-options.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "avatar3d-options.js"; path = "../../macos/OpenClamStudio/web/avatar3d-options.js"; sourceTree = SOURCE_ROOT; };
-		F01B474F4E81EE8C62AA194D /* three.module.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "three.module.js"; path = "../../macos/OpenClamStudio/web/vendor/three/three.module.js"; sourceTree = SOURCE_ROOT; };
-		EFAD9BBC5AD8C4918173E827 /* three.core.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "three.core.js"; path = "../../macos/OpenClamStudio/web/vendor/three/three.core.js"; sourceTree = SOURCE_ROOT; };
-		34F1149EBEA8CE1C5BDBADCB /* GLTFLoader.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "GLTFLoader.js"; path = "../../macos/OpenClamStudio/web/vendor/three/GLTFLoader.js"; sourceTree = SOURCE_ROOT; };
-		FF6D11EBD93044EDF4B48F5D /* RoomEnvironment.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "RoomEnvironment.js"; path = "../../macos/OpenClamStudio/web/vendor/three/RoomEnvironment.js"; sourceTree = SOURCE_ROOT; };
-		9FEF79734BFF9D3BCBB291F2 /* BufferGeometryUtils.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "BufferGeometryUtils.js"; path = "../../macos/OpenClamStudio/web/vendor/three/BufferGeometryUtils.js"; sourceTree = SOURCE_ROOT; };
-		4BD37EFF894E398D1DC87C49 /* SkeletonUtils.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "SkeletonUtils.js"; path = "../../macos/OpenClamStudio/web/vendor/three/SkeletonUtils.js"; sourceTree = SOURCE_ROOT; };
-		CA03FFC7E8A07997B303A169 /* avatar-ios.html */ = {isa = PBXFileReference; lastKnownFileType = text; name = "avatar-ios.html"; path = "App/Avatar3D/avatar-ios.html"; sourceTree = SOURCE_ROOT; };
-		6FCFCEFA59966876E3EFB1CB /* avatar-ios.js */ = {isa = PBXFileReference; lastKnownFileType = text; name = "avatar-ios.js"; path = "App/Avatar3D/avatar-ios.js"; sourceTree = SOURCE_ROOT; };
-		A1EB07F60CA17588DB2CD73D /* OpenClam3DWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "OpenClam3DWebView.swift"; path = "App/Avatar3D/OpenClam3DWebView.swift"; sourceTree = SOURCE_ROOT; };
-		D3CB6AD843DA35F56CF63D61 /* ThreeJS-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "App/Avatar3D/ThreeJS-LICENSE.txt"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -517,6 +521,7 @@
 		1E5DD672AAFFBAD139FB9C71 /* openclam-livekit-studio */ = {
 			isa = PBXGroup;
 			children = (
+				54099FDF30C0E2E981664DB5 /* macos */,
 				9C66D2455EA28A245FD5EF06 /* shared */,
 			);
 			name = "openclam-livekit-studio";
@@ -588,12 +593,34 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
+		3564E6F947FEF6116ADFE811 /* three */ = {
+			isa = PBXGroup;
+			children = (
+				F8D7C39A3A6F5E802D3A675B /* BufferGeometryUtils.js */,
+				55617072AA7EACA67EDD4BEF /* GLTFLoader.js */,
+				90125C1561CAC6E40AF79553 /* RoomEnvironment.js */,
+				AEB61999FAB7583AD47BAAF2 /* SkeletonUtils.js */,
+				DCADDF509619612C53B30185 /* three.core.js */,
+				F4DE483DA72ECECC0E8E321D /* three.module.js */,
+			);
+			path = three;
+			sourceTree = "<group>";
+		};
 		4124A32A3274A523DD5F386B /* Resources */ = {
 			isa = PBXGroup;
 			children = (
 				095D9EDF0B55A131EC40D28F /* AvatarCatalogAssets.bundle */,
+				44866215EF0CEF34F408C0C2 /* AvatarUpdates.bundle */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		46DFAFB4D49E260451670892 /* vendor */ = {
+			isa = PBXGroup;
+			children = (
+				3564E6F947FEF6116ADFE811 /* three */,
+			);
+			path = vendor;
 			sourceTree = "<group>";
 		};
 		4CCDB8A3AD45910A30DB6630 /* Extension */ = {
@@ -619,6 +646,14 @@
 				0BE8F1B7B53C7E0B02192D6E /* OpenClamKeyboardBridge.swift */,
 			);
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		54099FDF30C0E2E981664DB5 /* macos */ = {
+			isa = PBXGroup;
+			children = (
+				96D347B7D0715E35FB617885 /* OpenClamStudio */,
+			);
+			path = macos;
 			sourceTree = "<group>";
 		};
 		5AC56A22C563DD96AADAF30B /* ScreenVoicePTTWidget */ = {
@@ -730,6 +765,7 @@
 				D453FE069B2EEDD7F76D2B96 /* OpenClamAvatarPackage.swift */,
 				6EAAB33AAD7BE3F3FBC14557 /* OpenClamAvatarStore.swift */,
 				8B7DCAC2BFE7279AF19E5531 /* OpenClamAvatarUITestFixture.swift */,
+				95EB729D4C7EA37D308DA766 /* OpenClamBundledAvatarUpdate.swift */,
 				58DD4CCEA8C8BBA467F90FA7 /* OpenClamCatalogAvatarStage.swift */,
 				4124A32A3274A523DD5F386B /* Resources */,
 			);
@@ -770,6 +806,14 @@
 				53D3ED610B0CB895D16F11D3 /* ios-light-motion-v3-golden.avtr */,
 			);
 			path = fixtures;
+			sourceTree = "<group>";
+		};
+		96D347B7D0715E35FB617885 /* OpenClamStudio */ = {
+			isa = PBXGroup;
+			children = (
+				EF48FBF26DFD7D7D223F49E6 /* web */,
+			);
+			path = OpenClamStudio;
 			sourceTree = "<group>";
 		};
 		9C66D2455EA28A245FD5EF06 /* shared */ = {
@@ -854,6 +898,16 @@
 			);
 			sourceTree = "<group>";
 		};
+		EF48FBF26DFD7D7D223F49E6 /* web */ = {
+			isa = PBXGroup;
+			children = (
+				1502D8A89DDED694B66BC952 /* avatar3d-options.js */,
+				83956255E86F3A833CFE0249 /* avatar3d.js */,
+				46DFAFB4D49E260451670892 /* vendor */,
+			);
+			path = web;
+			sourceTree = "<group>";
+		};
 		FB52E08625E27AABA0D75E37 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -870,21 +924,13 @@
 		FDFF43A8B974BEC6957AA76B /* Avatar3D */ = {
 			isa = PBXGroup;
 			children = (
+				49F08146186E07EFDCF15249 /* avatar-ios.html */,
+				8DDD91B91C0B93988938586B /* avatar-ios.js */,
 				E4D4D0309DDD5B4EACDBF62E /* OpenClam3DAvatarArtwork.swift */,
 				498591DB2F33B824E3598FE3 /* OpenClam3DAvatarModel.swift */,
 				2B00D2E46F533E88A6F5440E /* OpenClam3DAvatarRig.swift */,
-				7F866FF01CCFFF202E008C68 /* avatar3d.js */,
-				AC00123456789ABCDE000002 /* avatar3d-options.js */,
-				F01B474F4E81EE8C62AA194D /* three.module.js */,
-				EFAD9BBC5AD8C4918173E827 /* three.core.js */,
-				34F1149EBEA8CE1C5BDBADCB /* GLTFLoader.js */,
-				FF6D11EBD93044EDF4B48F5D /* RoomEnvironment.js */,
-				9FEF79734BFF9D3BCBB291F2 /* BufferGeometryUtils.js */,
-				4BD37EFF894E398D1DC87C49 /* SkeletonUtils.js */,
-				CA03FFC7E8A07997B303A169 /* avatar-ios.html */,
-				6FCFCEFA59966876E3EFB1CB /* avatar-ios.js */,
-				A1EB07F60CA17588DB2CD73D /* OpenClam3DWebView.swift */,
-				D3CB6AD843DA35F56CF63D61 /* ThreeJS-LICENSE.txt */,
+				1DCEBEB1B8DA5942E32FEFED /* OpenClam3DWebView.swift */,
+				8BB7576A7C4853DC47B07920 /* ThreeJS-LICENSE.txt */,
 			);
 			path = Avatar3D;
 			sourceTree = "<group>";
@@ -1080,19 +1126,20 @@
 			buildActionMask = 2147483647;
 			files = (
 				76B71BEAF74E542DFE66EC67 /* Assets.xcassets in Resources */,
-				DD2D305B0FEC45E72EFB684E /* ThreeJS-LICENSE.txt in Resources */,
-				D07865B32F9383679F5698DE /* avatar-ios.js in Resources */,
-				1053BEC1A85D3A157F3890F9 /* avatar-ios.html in Resources */,
-				0C29AB9403EA4B1CC4263366 /* SkeletonUtils.js in Resources */,
-				65C2C24DC3EC15392463B03B /* BufferGeometryUtils.js in Resources */,
-				3B20FD52B14A5232D6067E69 /* RoomEnvironment.js in Resources */,
-				547A8FFE7D895A4B8E8675AE /* GLTFLoader.js in Resources */,
-				58C6C345B6F865D8EE3ED20D /* three.core.js in Resources */,
-				9F0D351A35FC27FB9E40E2CD /* three.module.js in Resources */,
-				AFFC2E3DA6C718401B891AB5 /* avatar3d.js in Resources */,
-				AC00123456789ABCDE000001 /* avatar3d-options.js in Resources */,
 				D06AB37E1F1CAA07D795C6F6 /* AvatarCatalogAssets.bundle in Resources */,
+				C74FE627891B634A0D79B3F6 /* AvatarUpdates.bundle in Resources */,
+				B33380D3E16F5CA21A5C58F0 /* BufferGeometryUtils.js in Resources */,
+				624820881B00A7786A6BB4E4 /* GLTFLoader.js in Resources */,
 				28AEF61C9FDC4C1AB5940351 /* PrivacyInfo.xcprivacy in Resources */,
+				AEFE9A6C5DBE5782BD7D00A2 /* RoomEnvironment.js in Resources */,
+				8778B1703E0AB9CD21EDF91A /* SkeletonUtils.js in Resources */,
+				088931E5EF7D46181DCCE6C0 /* ThreeJS-LICENSE.txt in Resources */,
+				5F689DA1DCE4B629A1E7C372 /* avatar-ios.html in Resources */,
+				A22A92B9A67388308DDD5EF6 /* avatar-ios.js in Resources */,
+				F54EC1E06307D7056CA0B99B /* avatar3d-options.js in Resources */,
+				D8390BA1FAFE359B52DE2827 /* avatar3d.js in Resources */,
+				2C4075A001ACD272884F8B27 /* three.core.js in Resources */,
+				387838EC29B0AFC58392C520 /* three.module.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1269,9 +1316,9 @@
 				404D58B798FF9332218FE13D /* OpenAIResponsesClient.swift in Sources */,
 				B83336B08D7998BC94F668BD /* OpenAIResponsesTypes.swift in Sources */,
 				205686264C70B7E5A410965D /* OpenClam3DAvatarArtwork.swift in Sources */,
-				30F73E94B6ADC73933CBA310 /* OpenClam3DWebView.swift in Sources */,
 				68D984A246883811AE6199A2 /* OpenClam3DAvatarModel.swift in Sources */,
 				5413889793C19CFB242FEEAE /* OpenClam3DAvatarRig.swift in Sources */,
+				DFCC4E188E77B37E95826E6F /* OpenClam3DWebView.swift in Sources */,
 				C667ECA0A5BEDA5641117E59 /* OpenClamAvatarAssetStore.swift in Sources */,
 				3DF8A90EB7457463FC54E116 /* OpenClamAvatarCarousel.swift in Sources */,
 				D201C001ECC8DC5FF32E7079 /* OpenClamAvatarCarouselLayout.swift in Sources */,
@@ -1282,6 +1329,7 @@
 				D27ACDA474A63DA241096B59 /* OpenClamAvatarStore.swift in Sources */,
 				AD50D2A2C2F1B90226DEDB07 /* OpenClamAvatarStoreView.swift in Sources */,
 				F306CBDA496F13516404947B /* OpenClamAvatarUITestFixture.swift in Sources */,
+				E429F03140041B94ED2F259F /* OpenClamBundledAvatarUpdate.swift in Sources */,
 				E2E33456ABC9E3C2ECF8973A /* OpenClamCatalogAvatarStage.swift in Sources */,
 				35B7C636E5D877C76CA15C84 /* OpenClamKeyboardBridge.swift in Sources */,
 				F388C6464E6760A053F17D46 /* OpenClamKeyboardDictationHost.swift in Sources */,
@@ -1358,7 +1406,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1442,7 +1490,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1460,7 +1508,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1531,7 +1579,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1552,7 +1600,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1590,7 +1638,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1677,7 +1725,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1701,7 +1749,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

@@ -295,9 +295,26 @@ struct OpenClam3DWardrobeSheet: View {
                         .accessibilityIdentifier("openclam-3d-appearance-reset")
                 } else {
                     Section {
-                        Text("This avatar package has no wardrobe or poses. Import its updated .avtr package to add clothing, props, and poses.")
+                        if avatarLibrary.updatingAvatarID == avatarID {
+                            ProgressView("Adding clothing, props, and poses…")
+                        } else {
+                            Text("This avatar has no wardrobe or poses available.")
                             .accessibilityIdentifier("openclam-3d-library-missing")
+                        }
                     }
+                    Section {
+                        behavior("Play transitions", key: "playTransitions")
+                        behavior("Follow cursor", key: "followCursor")
+                    }
+                }
+                if let error = avatarLibrary.bundledUpdateErrors[avatarID] {
+                    Section {
+                        Text(error)
+                        Button("Retry Wardrobe Update") {
+                            Task { await avatarLibrary.applyBundledUpdates() }
+                        }
+                        .disabled(!allowsImport || avatarLibrary.isMutating)
+                    } header: { Text("Wardrobe update couldn’t finish") }
                 }
                 Section {
                     Button("Import Wardrobe Package…", systemImage: "square.and.arrow.down") { showsImporter = true }
@@ -305,12 +322,17 @@ struct OpenClam3DWardrobeSheet: View {
                         .accessibilityIdentifier("openclam-3d-import-wardrobe")
                     if isImporting { ProgressView("Importing wardrobe…") }
                 } footer: {
-                    Text("Choose a package for \(name). It updates this avatar on your iPhone. Updating the app alone does not add clothing or poses.")
+                    Text(!allowsImport ? "End Live Talk to import a different package."
+                         : "You can also choose an updated avatar package from Files.")
                 }
             }
             .navigationTitle("\(name) · Wardrobe & Poses")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(isImporting) } }
+        }
+        .tint(.primary)
+        .task {
+            if allowsImport { await avatarLibrary.applyBundledUpdates() }
         }
         .interactiveDismissDisabled(isImporting)
         .fileImporter(isPresented: $showsImporter, allowedContentTypes: [.openClamAvatarPackage],
