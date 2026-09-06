@@ -22,6 +22,7 @@ final class OpenClam3DAvatarRig {
     let binding: OpenClam3DChannels.Binding
     private(set) var bounds: (min: SIMD3<Float>, max: SIMD3<Float>)
     private var morphBindings: [MorphBinding] = []
+    private var skinnedMorphBindings: [OpenClam3DSkinnedMorphGeometry] = []
     private var head: SCNNode?
     private var neck: SCNNode?
     private var chest: SCNNode?
@@ -113,6 +114,12 @@ final class OpenClam3DAvatarRig {
                 ?? targetNames[node.geometry?.name ?? ""]
                 ?? byCount[morpher.targets.count]?.first
             guard let names else { return }
+            // Keep facial blending out of SceneKit's combined GPU morpher /
+            // skinner path. Material and skeleton rendering remain native.
+            if let blended = OpenClam3DSkinnedMorphGeometry(node: node, names: names) {
+                skinnedMorphBindings.append(blended)
+                return
+            }
             var indices: [String: Int] = [:]
             for (index, name) in names.enumerated() where index < morpher.targets.count {
                 indices[name.lowercased()] = index
@@ -364,7 +371,11 @@ final class OpenClam3DAvatarRig {
     // MARK: Per-frame
 
     func apply(_ pose: OpenClam3DAvatarPose) {
+        SCNTransaction.begin()
+        SCNTransaction.disableActions = true
+        defer { SCNTransaction.commit() }
         let weights = pose.targetWeights(binding: binding)
+        for geometry in skinnedMorphBindings { geometry.apply(weights) }
         for entry in morphBindings {
             let key = ObjectIdentifier(entry.morpher)
             var applied = appliedWeights[key] ?? [:]
@@ -425,5 +436,140 @@ final class OpenClam3DAvatarRig {
         let parentWorld = node.parent?.simdWorldOrientation ?? simd_quatf(angle: 0, axis: SIMD3(0, 1, 0))
         let local = parentWorld.inverse * world * parentWorld
         node.simdOrientation = local * base
+    }
+}
+
+/// Blend glTF POSITION/NORMAL deltas into immutable vertex data before GPU
+/// skinning. Each update starts at the authored base and retains UVs, materials,
+/// indices and skin weights. No frame reads or reuses an in-flight mutable buffer.
+@MainActor
+final class OpenClam3DSkinnedMorphGeometry {
+    private struct Delta {
+        let offset: Int
+        let x: Float
+        let y: Float
+        let z: Float
+    }
+    private struct Target {
+        let name: String
+        let positions: [Delta]
+        let normals: [Delta]
+        let initialWeight: Float
+        let driven: Bool
+    }
+
+    private let node: SCNNode
+    private let base: SCNGeometry
+    private let positions: [Float]
+    private let normals: [Float]?
+    private let targets: [Target]
+    private var applied: [Float]?
+    private(set) var currentPositions: [Float]
+
+    init?(node: SCNNode, names: [String]) {
+        guard let skinner = node.skinner, let base = skinner.baseGeometry,
+              let morpher = node.morpher, morpher.calculationMode == .additive,
+              let positionSource = base.sources(for: .vertex).first,
+              let positions = Self.vectors(positionSource), !positions.isEmpty,
+              names.count == morpher.targets.count else { return nil }
+        let normalSource = base.sources(for: .normal).first
+        let normals = normalSource.flatMap(Self.vectors)
+        let binding = OpenClam3DChannels.Binding.resolve(targetNames: names)
+        let driven = Set(binding.channels.values).union(binding.visemes.values)
+        var targets: [Target] = []
+        for (index, geometry) in morpher.targets.enumerated() {
+            var channels: [SCNGeometrySource.Semantic: [Delta]] = [:]
+            for source in geometry.sources {
+                guard source.semantic == .vertex || source.semantic == .normal,
+                      source.vectorCount == positionSource.vectorCount,
+                      let values = Self.vectors(source) else { return nil }
+                if source.semantic == .normal && normals?.count != positions.count { return nil }
+                var deltas: [Delta] = []
+                for offset in stride(from: 0, to: values.count, by: 3) {
+                    if values[offset] != 0 || values[offset + 1] != 0 || values[offset + 2] != 0 {
+                        deltas.append(Delta(offset: offset, x: values[offset], y: values[offset + 1], z: values[offset + 2]))
+                    }
+                }
+                channels[source.semantic] = deltas
+            }
+            let weight = Float(morpher.weight(forTargetAt: index))
+            guard weight.isFinite else { return nil }
+            targets.append(Target(name: names[index].lowercased(), positions: channels[.vertex] ?? [],
+                                  normals: channels[.normal] ?? [], initialWeight: weight,
+                                  driven: driven.contains(names[index].lowercased())))
+        }
+        self.node = node
+        self.base = base
+        self.positions = positions
+        self.normals = normals
+        self.targets = targets
+        currentPositions = positions
+        node.morpher = nil
+        apply([:])
+    }
+
+    private static func vectors(_ source: SCNGeometrySource) -> [Float]? {
+        guard source.usesFloatComponents, source.bytesPerComponent == 4,
+              source.componentsPerVector == 3, source.vectorCount > 0,
+              source.dataOffset >= 0, source.dataStride >= 12,
+              source.dataOffset <= source.data.count - 12,
+              source.vectorCount - 1 <= (source.data.count - 12 - source.dataOffset) / source.dataStride
+        else { return nil }
+        var result = [Float]()
+        result.reserveCapacity(source.vectorCount * 3)
+        source.data.withUnsafeBytes { bytes in
+            for index in 0 ..< source.vectorCount {
+                let offset = source.dataOffset + index * source.dataStride
+                for component in 0 ..< 3 {
+                    result.append(bytes.loadUnaligned(fromByteOffset: offset + component * 4, as: Float.self))
+                }
+            }
+        }
+        return result.allSatisfy(\.isFinite) ? result : nil
+    }
+
+    func apply(_ weights: [String: Double]) {
+        let next = targets.map { target -> Float in
+            guard !target.positions.isEmpty || !target.normals.isEmpty else { return 0 }
+            if let weight = weights[target.name] { return weight.isFinite ? Float(min(1, max(0, weight))) : 0 }
+            // Channels driven by the app return to zero; other authored values
+            // (e.g. wardrobe fit) must not disappear when speech starts.
+            return target.driven ? 0 : target.initialWeight
+        }
+        guard next != applied else { return }
+        var blended = positions
+        var blendedNormals = normals
+        for (target, weight) in zip(targets, next) where weight != 0 {
+            for delta in target.positions {
+                blended[delta.offset] += weight * delta.x
+                blended[delta.offset + 1] += weight * delta.y
+                blended[delta.offset + 2] += weight * delta.z
+            }
+            if blendedNormals != nil {
+                for delta in target.normals {
+                    blendedNormals![delta.offset] += weight * delta.x
+                    blendedNormals![delta.offset + 1] += weight * delta.y
+                    blendedNormals![delta.offset + 2] += weight * delta.z
+                }
+            }
+        }
+        guard blended.allSatisfy(\.isFinite), blendedNormals?.allSatisfy(\.isFinite) != false else { return }
+        applied = next
+        currentPositions = blended
+        func source(_ values: [Float], semantic: SCNGeometrySource.Semantic) -> SCNGeometrySource {
+            let data = values.withUnsafeBytes { Data($0) }
+            return SCNGeometrySource(data: data, semantic: semantic, vectorCount: values.count / 3,
+                                     usesFloatComponents: true, componentsPerVector: 3,
+                                     bytesPerComponent: 4, dataOffset: 0, dataStride: 12)
+        }
+        var sources = base.sources.filter { $0.semantic != .vertex && (blendedNormals == nil || $0.semantic != .normal) }
+        sources.append(source(blended, semantic: .vertex))
+        if let blendedNormals { sources.append(source(blendedNormals, semantic: .normal)) }
+        let geometry = SCNGeometry(sources: sources, elements: base.elements)
+        geometry.name = base.name
+        geometry.materials = base.materials
+        // SceneKit takes the current geometry from the skinned node. Setting
+        // SCNSkinner.baseGeometry is deprecated and has no effect on iOS.
+        node.geometry = geometry
     }
 }

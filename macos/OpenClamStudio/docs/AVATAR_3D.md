@@ -159,6 +159,14 @@ AVTR; the iOS app renders it with SceneKit through GLTFKit2 and drives the
 same viseme, blink, gaze and mood channels. Normative shape:
 `shared/avatar-package-v2/ios-3d-v5.schema.json`.
 
+On iOS, skinned facial meshes blend supported position/normal targets into
+immutable vertex data before SceneKit applies the skeleton. Each frame starts
+from the authored base, preserving non-facial fit weights, texture coordinates,
+materials and topology. This avoids the combined GPU morph/skin path; models
+with unsupported target attributes retain the native morpher. Animated device
+checks should include blinking, gaze, speech, mixed expressions and neutral
+recovery, rather than checking only a resting load snapshot.
+
 ## Not yet
 
 - Mac-project (`macos-full`) export/import of 3D avatars (share the `.glb`).

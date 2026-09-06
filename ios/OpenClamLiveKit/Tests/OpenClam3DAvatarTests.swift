@@ -64,6 +64,64 @@ final class OpenClam3DAvatarTests: XCTestCase {
         XCTAssertFalse(material.isDoubleSided)
     }
 
+    func testSkinnedFacialBlendPreservesTopologyAndNeverAccumulatesAcrossFrames() throws {
+        func source(_ values: [Float], _ semantic: SCNGeometrySource.Semantic, components: Int = 3) -> SCNGeometrySource {
+            SCNGeometrySource(data: values.withUnsafeBytes { Data($0) }, semantic: semantic,
+                              vectorCount: values.count / components, usesFloatComponents: true,
+                              componentsPerVector: components, bytesPerComponent: 4,
+                              dataOffset: 0, dataStride: components * 4)
+        }
+        let positions: [Float] = [0, 0, 0, 1, 0, 0, 0, 1, 0]
+        let normal = source([0, 0, 1, 0, 0, 1, 0, 0, 1], .normal)
+        let uv = source([0, 0, 1, 0, 0, 1], .texcoord, components: 2)
+        let element = SCNGeometryElement(indices: [UInt16(0), 1, 2], primitiveType: .triangles)
+        let base = SCNGeometry(sources: [source(positions, .vertex), normal, uv], elements: [element])
+        let material = SCNMaterial()
+        base.materials = [material]
+        let node = SCNNode(geometry: base)
+        let head = SCNNode()
+        let skinner = SCNSkinner(baseGeometry: base, bones: [head],
+                                boneInverseBindTransforms: [NSValue(scnMatrix4: SCNMatrix4Identity)],
+                                boneWeights: source([1, 1, 1], .boneWeights, components: 1),
+                                boneIndices: SCNGeometrySource(data: Data([UInt8(0), 0, 0]), semantic: .boneIndices,
+                                                               vectorCount: 3, usesFloatComponents: false,
+                                                               componentsPerVector: 1, bytesPerComponent: 1,
+                                                               dataOffset: 0, dataStride: 1))
+        node.skinner = skinner
+        let morpher = SCNMorpher()
+        morpher.calculationMode = .additive
+        var names = (0 ..< 71).map { "unused-\($0)" }
+        names[0] = "wardrobeFit"; names[50] = "eyeBlinkLeft"; names[70] = "vrc.v_aa"
+        morpher.targets = names.indices.map { index in
+            var delta = [Float](repeating: 0, count: 9)
+            if index == 0 { delta[0] = 0.2 }
+            if index == 50 { delta[7] = -0.4 }
+            if index == 70 { delta[5] = 0.6 }
+            return SCNGeometry(sources: [source(delta, .vertex)], elements: [element])
+        }
+        morpher.setWeight(0.5, forTargetAt: 0)
+        node.morpher = morpher
+        let blend = try XCTUnwrap(OpenClam3DSkinnedMorphGeometry(node: node, names: names))
+        XCTAssertNil(node.morpher, "GPU receives the blended surface, never 71 simultaneous morph buffers")
+        let initial = try XCTUnwrap(node.geometry?.sources(for: .vertex).first?.data)
+        for _ in 0 ..< 40 {
+            blend.apply(["eyeblinkleft": 0.5, "vrc.v_aa": 0.75])
+            XCTAssertEqual(blend.currentPositions[0], 0.1, accuracy: 0.00001, "Authored fit survives speech")
+            XCTAssertEqual(blend.currentPositions[5], 0.45, accuracy: 0.00001)
+            XCTAssertEqual(blend.currentPositions[7], 0.8, accuracy: 0.00001)
+            XCTAssertTrue(node.geometry?.materials.first === material)
+            XCTAssertTrue(node.geometry?.elements.first === element)
+            XCTAssertTrue(node.skinner === skinner)
+            XCTAssertTrue(node.geometry?.sources(for: .texcoord).first === uv)
+            blend.apply([:])
+            XCTAssertEqual(blend.currentPositions, [0.1, 0, 0, 1, 0, 0, 0, 1, 0])
+        }
+        XCTAssertEqual(initial, node.geometry?.sources(for: .vertex).first?.data,
+                       "Previously rendered buffers stay immutable, and neutral returns exactly")
+        blend.apply(["vrc.v_aa": .nan])
+        XCTAssertTrue(blend.currentPositions.allSatisfy(\.isFinite))
+    }
+
     func testInstalledModelRenderingWhenRequested() async throws {
         guard let id = ProcessInfo.processInfo.environment["OPENCLAM_QA_3D_AVATAR_ID"] else {
             throw XCTSkip("Opt-in local model render check")
@@ -85,7 +143,25 @@ final class OpenClam3DAvatarTests: XCTestCase {
         add(attachment)
         if let directory = ProcessInfo.processInfo.environment["OPENCLAM_QA_3D_OUTPUT"] {
             try image.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("loaded-model.png"))
-
+            // Exercise the animated path as well as the untouched load pose.
+            // A neutral snapshot alone does not validate GPU morph + skinning.
+            rig.setCrop(CGRect(x: 250, y: 20, width: 520, height: 720))
+            for (index, phase) in ["idle", "blink", "gaze-left", "gaze-right", "speech", "mixed", "reset"].enumerated() {
+                var pose = OpenClam3DAvatarPose()
+                pose.time = Double(index + 1)
+                pose.reduceMotion = true
+                if phase == "blink" { pose.blinkLeft = 1; pose.blinkRight = 1 }
+                if phase == "gaze-left" { pose.gazeX = -1 }
+                if phase == "gaze-right" { pose.gazeX = 1 }
+                if phase == "speech" { pose.visemeWeights = [.open: 1]; pose.speaking = true }
+                if phase == "mixed" {
+                    pose.visemeWeights = [.open: 0.5, .rounded: 0.5]
+                    pose.blinkLeft = 0.5; pose.blinkRight = 0.5; pose.gazeX = 0.8; pose.brow = 0.7
+                }
+                rig.apply(pose)
+                let frame = renderer.snapshot(atTime: pose.time, with: CGSize(width: 520, height: 720), antialiasingMode: .multisampling4X)
+                try frame.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("pose-\(phase).png"))
+            }
         }
     }
 
