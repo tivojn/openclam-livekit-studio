@@ -31,14 +31,11 @@ final class OpenClam3DAvatarUITests: XCTestCase {
             "-captainAyer.overlay.interactionLayer", "avatar",
             "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
         app.launch()
-        XCTAssertTrue(app.buttons["openclam-3d-controls"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["openclam-3d-controls"].waitForExistence(timeout: 12))
         sleep(5)
-        unfoldAvatarRail()
-        app.buttons["openclam-3d-controls"].tap()
-        XCTAssertTrue(app.buttons["Wardrobe & Poses"].waitForExistence(timeout: 8))
-        app.buttons["Wardrobe & Poses"].tap()
+        openWardrobe()
         func choose(_ group: String, _ choice: String) {
-            let picker = app.buttons["openclam-3d-choice-\(group)"]
+            let picker = app.descendants(matching: .any)["openclam-3d-choice-\(group)"]
             XCTAssertTrue(picker.waitForExistence(timeout: 8))
             picker.tap()
             let option = app.buttons[choice]
@@ -67,20 +64,20 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         choose("prop", "FN SCAR 20S")
         playbackSwitch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         XCTAssertEqual(playbackSwitch.value as? String, "1")
-        XCTAssertEqual(app.buttons["openclam-3d-choice-prop"].value as? String, "FN SCAR 20S")
+        XCTAssertTrue(app.descendants(matching: .any)["openclam-3d-choice-prop"].label.contains("FN SCAR 20S"))
         sleep(5)
-        XCTAssertEqual(app.buttons["openclam-3d-choice-prop"].value as? String, "FN SCAR 20S", "A transition must keep the prop equipped")
+        XCTAssertTrue(app.descendants(matching: .any)["openclam-3d-choice-prop"].label.contains("FN SCAR 20S"), "A transition must keep the prop equipped")
         capture("wardrobe-rifle")
         choose("prop", "Unica 6")
         XCTAssertEqual(playbackSwitch.value as? String, "1", "Selecting another prop must keep playback on")
         app.buttons["Done"].tap()
-        unfoldAvatarRail()
-        app.buttons["openclam-3d-controls"].tap()
-        app.buttons["Wardrobe & Poses"].tap()
+        openWardrobe()
         XCTAssertTrue(playbackSwitch.waitForExistence(timeout: 8))
         XCTAssertEqual(playbackSwitch.value as? String, "1")
-        XCTAssertEqual(app.buttons["openclam-3d-choice-prop"].value as? String, "Unica 6")
+        XCTAssertTrue(app.descendants(matching: .any)["openclam-3d-choice-prop"].label.contains("Unica 6"))
         let reset = app.buttons["openclam-3d-appearance-reset"]
+        // Reopening returns to the medium detent; Form creates lower rows on scroll.
+        for _ in 0 ..< 3 where !reset.exists || !reset.isHittable { app.swipeUp() }
         XCTAssertTrue(reset.waitForExistence(timeout: 8))
         reset.tap()
         app.buttons["Done"].tap()
@@ -91,15 +88,12 @@ final class OpenClam3DAvatarUITests: XCTestCase {
     /// Run against a private 3D fixture without extras.openclamAvatar.
     func testWardrobeEntryForLegacyPackage() throws {
         app.terminate()
-        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID + "-legacy",
             "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.hidden", "NO"]
         app.launch()
-        XCTAssertTrue(app.buttons["openclam-3d-controls"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["openclam-3d-controls"].waitForExistence(timeout: 12))
         sleep(5)
-        unfoldAvatarRail()
-        app.buttons["openclam-3d-controls"].tap()
-        XCTAssertTrue(app.buttons["Wardrobe & Poses"].waitForExistence(timeout: 8))
-        app.buttons["Wardrobe & Poses"].tap()
+        openWardrobe()
         guard app.staticTexts["openclam-3d-library-missing"].waitForExistence(timeout: 8) else {
             throw XCTSkip("Install a legacy 3D avatar without a wardrobe library for this test.")
         }
@@ -111,6 +105,19 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         app.buttons["Cancel"].tap()
         XCTAssertTrue(importer.waitForExistence(timeout: 8))
         app.buttons["Done"].tap()
+    }
+
+    private func openWardrobe() {
+        let entry = app.descendants(matching: .any)["Wardrobe & Poses"]
+        // A rail tap during its idle fade can wake it without opening its menu.
+        // Retry only while the menu is closed, as a second tap closes it.
+        for _ in 0 ..< 3 where !entry.exists {
+            unfoldAvatarRail()
+            app.descendants(matching: .any)["openclam-3d-controls"].tap()
+            _ = entry.waitForExistence(timeout: 3)
+        }
+        XCTAssertTrue(entry.exists)
+        entry.tap()
     }
 
     func testInstalledModelAvatarRendersAndLipSyncs() throws {
@@ -228,7 +235,7 @@ final class OpenClam3DAvatarUITests: XCTestCase {
             "-captainAyer.overlay.interactionLayer", "avatar",
             "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
         app.launch()
-        let controls = app.buttons["openclam-3d-controls"]
+        let controls = app.descendants(matching: .any)["openclam-3d-controls"]
         XCTAssertTrue(controls.waitForExistence(timeout: 12), "Select the installed Tia fixture first")
         sleep(4)
         func command(_ title: String) {
