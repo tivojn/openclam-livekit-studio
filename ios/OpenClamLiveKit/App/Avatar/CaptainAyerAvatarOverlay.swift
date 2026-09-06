@@ -1062,6 +1062,7 @@ struct CaptainAyerAvatarOverlay: View {
     @AppStorage("openclam.3d.orbitYaw") private var orbitYaw = 0.0
     @AppStorage("openclam.3d.orbitPitch") private var orbitPitch = 0.0
     @AppStorage("openclam.3d.dragMoves") private var dragMoves3D = false
+    @State private var showsModelWardrobe = false
     @ObservedObject private var modelOptions = OpenClam3DOptionsStore.shared
     @State private var orbitPreview: OpenClam3DOrbit?
     @State private var orbitStart: OpenClam3DOrbit?
@@ -1768,14 +1769,9 @@ struct CaptainAyerAvatarOverlay: View {
     private var modelControlsMenu: some View {
         Menu {
             if let library = modelOptions.catalogues[avatar.id], !library.poses.isEmpty {
-                Menu("Wardrobe & Poses", systemImage: "person.crop.rectangle") {
-                    modelChoiceMenu("Outfit", group: "outfit", choices: library.outfits, fallback: "Original appearance")
-                    modelChoiceMenu("Body Pose", group: "body", choices: library.poses.filter { $0.group == "body" }, fallback: "Relaxed standing")
-                    modelChoiceMenu("Both Hands", group: "hands", choices: library.poses.filter { $0.group == "hands" }, fallback: "From body pose")
-                    modelChoiceMenu("Left Hand", group: "leftHand", choices: library.poses.filter { $0.group == "leftHand" }, fallback: "From body pose")
-                    modelChoiceMenu("Right Hand", group: "rightHand", choices: library.poses.filter { $0.group == "rightHand" }, fallback: "From body pose")
-                    modelChoiceMenu("Prop", group: "prop", choices: library.props, fallback: "None")
-                    Button("Reset Appearance & Pose") { modelOptions.reset(avatar.id) }
+                Button("Wardrobe & Poses", systemImage: "person.crop.rectangle") {
+                    showsModelWardrobe = true
+                    enableModelControls()
                 }
                 Divider()
             }
@@ -1805,22 +1801,15 @@ struct CaptainAyerAvatarOverlay: View {
         .accessibilityValue("\(dragMoves3D ? "Move" : "Rotate"), zoom \(Int(scale * 100))%, yaw \(Int(cameraOrbit.yaw * 180 / .pi)), pitch \(Int(cameraOrbit.pitch * 180 / .pi)), position \(Int(activeFramingTransform.normalizedOffset.x * 100))%, \(Int(activeFramingTransform.normalizedOffset.y * 100))%")
         .accessibilityHint("Rotate or move with one finger; pinch to resize; two fingers to move")
         .accessibilityIdentifier("openclam-3d-controls")
-    }
-
-    private func modelChoiceMenu(_ title: String, group: String, choices: [OpenClam3DChoice], fallback: String) -> some View {
-        Menu(title) {
-            Button(fallback) { modelOptions.select("", group: group, for: avatar.id) }
-            ForEach(choices) { choice in
-                Button {
-                    modelOptions.select(choice.id, group: group, for: avatar.id)
-                    if group == "body" || group == "prop" { selectAvatarMode(.standby) }
-                    enableModelControls()
-                } label: {
-                    if modelOptions.selection(for: avatar.id)[group] == choice.id {
-                        Label(choice.label, systemImage: "checkmark")
-                    } else { Text(choice.label) }
-                }
+        .simultaneousGesture(TapGesture().onEnded { wakeRail() })
+        .sheet(isPresented: $showsModelWardrobe) {
+            OpenClam3DWardrobeSheet(avatarID: avatar.id, name: avatar.displayName) {
+                selectAvatarMode(.standby)
+                enableModelControls()
             }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
     }
 

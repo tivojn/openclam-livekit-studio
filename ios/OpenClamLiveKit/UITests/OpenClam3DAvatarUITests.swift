@@ -33,29 +33,31 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["openclam-3d-controls"].waitForExistence(timeout: 12))
         sleep(5)
-        func choose(_ group: String, _ choice: String) {
-            unfoldAvatarRail()
-            app.buttons["openclam-3d-controls"].tap()
-            XCTAssertTrue(app.buttons["Wardrobe & Poses"].waitForExistence(timeout: 8))
-            app.buttons["Wardrobe & Poses"].tap()
-            app.buttons[group].tap()
-            app.buttons[choice].tap()
-            sleep(2)
-        }
-        choose("Outfit", "Casual · T-shirt & jeans")
-        choose("Body Pose", "Heart")
-        capture("wardrobe-casual-heart")
-        choose("Outfit", "Dress & heels")
-        choose("Body Pose", "Standing · 3")
-        capture("wardrobe-dress-standing")
-        choose("Prop", "FN SCAR 20S")
-        capture("wardrobe-rifle")
         unfoldAvatarRail()
         app.buttons["openclam-3d-controls"].tap()
+        XCTAssertTrue(app.buttons["Wardrobe & Poses"].waitForExistence(timeout: 8))
         app.buttons["Wardrobe & Poses"].tap()
-        let reset = app.buttons["Reset Appearance & Pose"]
+        func choose(_ group: String, _ choice: String) {
+            let picker = app.buttons["openclam-3d-choice-\(group)"]
+            XCTAssertTrue(picker.waitForExistence(timeout: 8))
+            picker.tap()
+            let option = app.buttons[choice]
+            XCTAssertTrue(option.waitForExistence(timeout: 4))
+            option.tap()
+            sleep(1)
+        }
+        choose("outfit", "Casual · T-shirt & jeans")
+        choose("body", "Heart")
+        capture("wardrobe-casual-heart")
+        choose("outfit", "Dress & heels")
+        choose("body", "Standing · 3")
+        capture("wardrobe-dress-standing")
+        choose("prop", "FN SCAR 20S")
+        capture("wardrobe-rifle")
+        let reset = app.buttons["openclam-3d-appearance-reset"]
         XCTAssertTrue(reset.waitForExistence(timeout: 8))
         reset.tap()
+        app.buttons["Done"].tap()
         sleep(2)
         capture("wardrobe-original-reset")
     }

@@ -229,3 +229,48 @@ final class OpenClam3DOptionsStore: ObservableObject {
     func reset(_ avatarID: String) { selections[avatarID] = [:]; save() }
     private func save() { if let data = try? JSONEncoder().encode(selections) { defaults.set(data, forKey: key) } }
 }
+
+
+@MainActor
+struct OpenClam3DWardrobeSheet: View {
+    let avatarID: String
+    let name: String
+    let onBodyPose: () -> Void
+    @ObservedObject private var options = OpenClam3DOptionsStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let library = options.catalogues[avatarID] {
+                    choices("Outfit", group: "outfit", items: library.outfits, fallback: "Original appearance")
+                    choices("Body Pose", group: "body", items: library.poses.filter { $0.group == "body" }, fallback: "Relaxed standing")
+                    choices("Both Hands", group: "hands", items: library.poses.filter { $0.group == "hands" }, fallback: "From body pose")
+                    choices("Left Hand", group: "leftHand", items: library.poses.filter { $0.group == "leftHand" }, fallback: "From body pose")
+                    choices("Right Hand", group: "rightHand", items: library.poses.filter { $0.group == "rightHand" }, fallback: "From body pose")
+                    choices("Prop", group: "prop", items: library.props, fallback: "None")
+                    Button("Reset Appearance & Pose") { options.reset(avatarID) }
+                        .accessibilityIdentifier("openclam-3d-appearance-reset")
+                }
+            }
+            .navigationTitle("\(name) · Wardrobe & Poses")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+
+    private func choices(_ title: String, group: String, items: [OpenClam3DChoice], fallback: String) -> some View {
+        Picker(title, selection: Binding(
+            get: { options.selection(for: avatarID)[group] ?? "" },
+            set: { value in
+                options.select(value, group: group, for: avatarID)
+                if group == "body" || group == "prop" { onBodyPose() }
+            }
+        )) {
+            Text(fallback).tag("")
+            ForEach(items) { Text($0.label).tag($0.id) }
+        }
+        .pickerStyle(.menu)
+        .accessibilityIdentifier("openclam-3d-choice-\(group)")
+    }
+}
