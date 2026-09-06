@@ -14,17 +14,28 @@ import zipfile
 
 
 def manifest(path):
-    with zipfile.ZipFile(path) as archive:
-        value = json.loads(archive.read("manifest.json"))
+    if path.is_dir():
+        value = json.loads((path / "manifest.json").read_text())
+        assert value["model"]["path"] == "assets/model.glb"
+        with (path / value["model"]["path"]).open("rb") as stream:
+            checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+    else:
+        with zipfile.ZipFile(path) as archive:
+            value = json.loads(archive.read("manifest.json"))
+            assert value["model"]["path"] == "assets/model.glb"
+            with archive.open(value["model"]["path"]) as stream:
+                checksum = hashlib.file_digest(stream, "sha256").hexdigest()
     assert value["variant"] == "ios-3d" and value["version"] == 5
     assert re.fullmatch(r"[a-z0-9][a-z0-9-]*", value["id"])
+    assert checksum == value["model"]["sha256"], "Model must match its manifest"
     return value
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=pathlib.Path, required=True)
-    parser.add_argument("--previous", type=pathlib.Path, action="append", required=True)
+    parser.add_argument("--previous", type=pathlib.Path, action="append", required=True,
+                        help="Earlier AVTR archive or installed package directory")
     parser.add_argument("--destination", type=pathlib.Path, default=pathlib.Path(__file__).parent /
                         "App/AvatarCatalog/Resources/AvatarUpdates.bundle")
     args = parser.parse_args()
@@ -32,9 +43,6 @@ def main():
     sources = [manifest(path) for path in args.previous]
     assert all(source["id"] == target["id"] for source in sources), "Avatar identities must match"
     model = target["model"]
-    with zipfile.ZipFile(args.package) as archive:
-        with archive.open(model["path"]) as stream:
-            assert hashlib.file_digest(stream, "sha256").hexdigest() == model["sha256"]
     with args.package.open("rb") as stream:
         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
     entry = dict(id=target["id"], file=target["id"] + ".avtr", packageSHA256=checksum,

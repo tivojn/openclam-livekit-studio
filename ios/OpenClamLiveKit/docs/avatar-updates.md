@@ -17,7 +17,8 @@ python3 stage-avatar-update.py --package /path/to/wardrobe.avtr \
 xcodegen generate
 ```
 
-Repeat `--previous` for each supported earlier package. This writes a
+Repeat `--previous` for each supported earlier archive or installed package
+directory. The staging tool verifies each actual model hash. This writes a
 git-ignored archive and `updates.local.json` inside the resource bundle.
 Keep these private files out of GitHub and public installer artifacts.
 Use a clean checkout with only the empty index for a public build.
