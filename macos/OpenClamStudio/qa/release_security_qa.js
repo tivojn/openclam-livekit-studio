@@ -642,3 +642,7 @@ for (const required of [
 assert.doesNotMatch(main, /open "\/Applications\/OpenClam Studio\.app"; sleep 5;/);
 
 console.log('fail-closed macOS release and updater QA passed');
+
+assert.ok(release.indexOf('node scripts/finalize-macos-update-metadata.cjs')
+  > release.indexOf('FINAL_HASH_WRITTEN=1'),
+  'Update metadata must be regenerated after signing, stapling and the final checksum');
