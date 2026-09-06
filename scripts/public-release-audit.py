@@ -403,6 +403,10 @@ HISTORICAL_ARA_INTERIM_BINARY_HASHES = {
 # Store artwork from the two preceding catalog tags remains in reachable
 # history. The current catalog hashes are still enforced separately above.
 HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES = {
+    Path("shared/avatar-store-v1/catalog/v1/ola-thumbnail.png"):
+        "eb48d27904cb3a86a0ab90216c1e79ce64ba5db800a92a09fe4316863bc1f8eb",
+    Path("shared/avatar-store-v1/catalog/v1/leo-thumbnail.png"):
+        "2ff824fca884cf6532f823b39ac4287abdacc5e2dba67e751b6bca2cc909c901",
     Path("shared/avatar-store-v1/catalog/v1/ara-thumbnail.png"):
         "7eb7ec65799715cdca9b52bad64d664fe2404b072a6f0a5b6af0368f4393217f",
     Path("shared/avatar-store-v1/catalog/v1/cleo-thumbnail.png"):
@@ -715,12 +719,13 @@ HIGH_ENTROPY_SKIP_NAMES = {
 # Python exporter.  Pin the complete reviewed source file rather than weakening
 # the token scanner or exempting the path: any fixture or surrounding-code
 # change must receive a new explicit review before the public audit passes.
-# The two reviewed revisions contain the byte-identical synthetic fixture;
+# The reviewed revisions contain the byte-identical synthetic fixture;
 # retain the older pin for reachable history as well as the current tests.
 REVIEWED_HIGH_ENTROPY_TEXT_HASHES = {
     Path("ios/OpenClamLiveKit/Tests/OpenClamAvatarPackageTests.swift"): frozenset({
         "2cf53f32d71c5ac5928dd871711e0663aaa132bbdab72d8e67d0c7d5005a6108",
         "0e94993bbb8cea1bbba6d0f726fdeebf13717f16c168bc5d3785fda002e12c9d",
+        "8888ea76b2672d10c19eb232b96c01a2a13ee68afe486e58829faa799541a8b6",
     }),
 }
 
@@ -1102,6 +1107,9 @@ def audit_history_bytes(relative: Path, raw: bytes) -> list[str]:
         historical_hash = historical_hashes.get(relative)
         if historical_hash is not None and actual_hash == historical_hash:
             return []
+    if (relative in HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES
+            and relative not in ALLOWED_BINARY_HASHES):
+        return [f"historical store artwork hash mismatch: {relative}"]
     historical_hash = HISTORICAL_SYNTHETIC_GUIDE_HASHES.get(relative)
     if historical_hash is None:
         return audit_bytes(relative, raw)
@@ -1331,7 +1339,10 @@ def history_findings(root: Path, require_fresh: bool) -> list[str]:
         if not raw_name:
             continue
         relative = Path(os.fsdecode(raw_name).strip("\n"))
-        if relative in HISTORICAL_SYNTHETIC_GUIDE_HASHES:
+        if (relative in HISTORICAL_SYNTHETIC_GUIDE_HASHES
+                or relative in HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES):
+            # Only the historical path is admitted here. audit_history_bytes
+            # below still requires the exact reviewed artwork hash.
             continue
         reason = denied_path_reason(relative)
         if reason is not None:

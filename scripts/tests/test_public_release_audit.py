@@ -21,7 +21,8 @@ SPEC.loader.exec_module(AUDIT)
 
 FIXTURE_PATH = Path("ios/OpenClamLiveKit/Tests/OpenClamAvatarPackageTests.swift")
 PREVIOUS_HASH = "2cf53f32d71c5ac5928dd871711e0663aaa132bbdab72d8e67d0c7d5005a6108"
-CURRENT_HASH = "0e94993bbb8cea1bbba6d0f726fdeebf13717f16c168bc5d3785fda002e12c9d"
+INTERMEDIATE_HASH = "0e94993bbb8cea1bbba6d0f726fdeebf13717f16c168bc5d3785fda002e12c9d"
+CURRENT_HASH = "8888ea76b2672d10c19eb232b96c01a2a13ee68afe486e58829faa799541a8b6"
 GOLDEN_HASH = "79c21dedb5c93b126e04b38df09e41aabd8375d7048cbcc3e5be39186f5545a3"
 
 
@@ -30,10 +31,10 @@ class ReviewedEntropyFixtureTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = (ROOT / FIXTURE_PATH).read_bytes()
 
-    def test_only_two_exact_reviewed_revisions_are_pinned(self):
+    def test_only_exact_reviewed_revisions_are_pinned(self):
         self.assertEqual(
             AUDIT.REVIEWED_HIGH_ENTROPY_TEXT_HASHES,
-            {FIXTURE_PATH: frozenset({PREVIOUS_HASH, CURRENT_HASH})},
+            {FIXTURE_PATH: frozenset({PREVIOUS_HASH, INTERMEDIATE_HASH, CURRENT_HASH})},
         )
         self.assertEqual(hashlib.sha256(self.source).hexdigest(), CURRENT_HASH)
 
@@ -42,20 +43,31 @@ class ReviewedEntropyFixtureTests(unittest.TestCase):
         self.assertEqual(AUDIT.audit_bytes(FIXTURE_PATH, self.source), [])
         self.assertEqual(AUDIT.audit_history_bytes(FIXTURE_PATH, self.source), [])
 
-    def test_both_pins_use_exact_digest_membership(self):
+    def test_pins_use_exact_digest_membership(self):
         # Historical source need not be available in a shallow CI checkout.
-        # Exercise both pins with a mocked digest; the real historical fixture
+        # Exercise the pins with a mocked digest; the real historical fixture
         # comparison is part of the explicit review that established the pins.
         raw = base64.urlsafe_b64encode(
             hashlib.sha512(b"deterministic non-secret audit test fixture").digest()
         )
         self.assertTrue(AUDIT.high_entropy_finding(FIXTURE_PATH, raw))
-        for digest in (PREVIOUS_HASH, CURRENT_HASH):
+        for digest in (PREVIOUS_HASH, INTERMEDIATE_HASH, CURRENT_HASH):
             with self.subTest(digest=digest):
                 result = mock.Mock()
                 result.hexdigest.return_value = digest
                 with mock.patch.object(AUDIT.hashlib, "sha256", return_value=result):
                     self.assertFalse(AUDIT.high_entropy_finding(FIXTURE_PATH, raw))
+
+    def test_published_store_history_pins_do_not_admit_new_artwork(self):
+        for name in ("leo", "ola"):
+            relative = Path(f"shared/avatar-store-v1/catalog/v1/{name}-thumbnail.png")
+            expected = AUDIT.HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES[relative]
+            digest = mock.Mock()
+            digest.hexdigest.return_value = expected
+            with mock.patch.object(AUDIT.hashlib, "sha256", return_value=digest):
+                self.assertEqual(AUDIT.audit_history_bytes(relative, b"synthetic artwork"), [])
+            self.assertTrue(AUDIT.audit_history_bytes(relative, b"unreviewed changed artwork"))
+            self.assertIsNotNone(AUDIT.denied_path_reason(relative))
 
     def test_surrounding_source_mutation_is_not_reviewed(self):
         changed = self.source + b"\n// unreviewed synthetic mutation\n"

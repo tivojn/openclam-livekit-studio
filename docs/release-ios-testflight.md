@@ -20,8 +20,10 @@ so App Store Connect will reject a build number it has already seen.
 ## 2. Audit gates (all must pass)
 
 ```bash
-# repo root
+# clean Git checkout, before installing dependencies or local config
 python3 scripts/public-release-audit.py .
+
+# configured build checkout
 python3 scripts/check-ios-livetalk-release-config.py
 python3 scripts/check-ios-agent-connector-release-config.py
 

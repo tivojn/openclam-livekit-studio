@@ -30,10 +30,11 @@ final class OpenClam3DAvatarTests: XCTestCase {
         mask.isDoubleSided = false
         let cutoff = "if (_output.color.a < 0.65) { discard_fragment(); }"
         mask.shaderModifiers = [.fragment: cutoff]
+        let authoredTransparency = glass.transparency
         mesh.geometry?.materials = [glass, mask]
         scene.rootNode.addChildNode(mesh)
         _ = OpenClam3DAvatarRig(scene: scene, frame: CGSize(width: 1024, height: 1536), targetNames: [:])
-        XCTAssertEqual(glass.transparency, 0.65)
+        XCTAssertEqual(glass.transparency, authoredTransparency)
         XCTAssertEqual(glass.blendMode, .alpha)
         XCTAssertEqual(glass.transparencyMode, .dualLayer)
         XCTAssertFalse(glass.writesToDepthBuffer)
