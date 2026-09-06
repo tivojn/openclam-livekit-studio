@@ -191,6 +191,15 @@ final class OpenClam3DModelResources: @unchecked Sendable {
         return try read(views[index])
     }
 
+    /// Complete ImageIO work before WebKit allocates geometry and GPU resources.
+    /// Each encoded result is discarded after its atomic cache write.
+    func prepareImages(isCancelled: () -> Bool = { false }) throws {
+        for index in images.indices {
+            if isCancelled() { throw CancellationError() }
+            _ = try image(at: index)
+        }
+    }
+
     func image(at index: Int) throws -> Data {
         guard images.indices.contains(index) else { throw URLError(.fileDoesNotExist) }
         return try autoreleasepool {

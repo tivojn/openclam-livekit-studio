@@ -15,10 +15,14 @@ struct OpenClam3DWebView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> WKWebView {
+        Self.makeWebView(coordinator: context.coordinator)
+    }
+
+    static func makeWebView(coordinator: Coordinator) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
-        config.setURLSchemeHandler(context.coordinator.assets, forURLScheme: "openclam-avatar")
-        config.userContentController.add(context.coordinator, name: "avatarStatus")
+        config.setURLSchemeHandler(coordinator.assets, forURLScheme: "openclam-avatar")
+        config.userContentController.add(coordinator, name: "avatarStatus")
         let view = WKWebView(frame: .zero, configuration: config)
         view.isOpaque = false
         view.backgroundColor = .clear
@@ -29,7 +33,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
         // the logical camera crop vertically (728pt became 654pt on iPhone).
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.isUserInteractionEnabled = false
-        view.navigationDelegate = context.coordinator
+        view.navigationDelegate = coordinator
         view.accessibilityIdentifier = "openclam-shared-3d-renderer"
         return view
     }
@@ -74,6 +78,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "avatarStatus")
+        coordinator.startup?.cancel()
         coordinator.timeout?.cancel()
         coordinator.assets.cancelAll()
         view.navigationDelegate = nil
@@ -96,8 +101,12 @@ struct OpenClam3DWebView: UIViewRepresentable {
         var recoveryCount = 0
         var retryID = 0
         var timeout: Task<Void, Never>?
+        var startup: Task<Void, Never>?
+        var preparing = false
+        var activeNavigation: WKNavigation?
+        static let recoveryDelays: [Duration] = [.seconds(2), .seconds(5)]
 
-        func start(_ view: WKWebView) {
+        func start(_ view: WKWebView, delay: Duration = .zero) {
             generation += 1
             hasFailed = false
             view.accessibilityValue = "Loading"
@@ -105,8 +114,13 @@ struct OpenClam3DWebView: UIViewRepresentable {
             pageReady = false
             updating = false
             needsFlush = true
+            startup?.cancel()
+            timeout?.cancel()
             assets.cancelAll()
-            assets.maximumTextureSize = recoveryCount > 0 ? 768 : 2048
+            activeNavigation = nil
+            view.stopLoading()
+            preparing = true
+            assets.maximumTextureSize = recoveryCount == 0 ? 2048 : recoveryCount == 1 ? 768 : 512
             assets.onCatalogue = { [weak self] catalogue in
                 guard let self, self.generation == current else { return }
                 OpenClam3DOptionsStore.shared.receive(catalogue, for: self.avatarID)
@@ -116,17 +130,55 @@ struct OpenClam3DWebView: UIViewRepresentable {
                 guard let self, self.generation == current, !self.hasFailed else { return }
                 OpenClam3DOptionsStore.shared.setLoadState(.loading, for: self.avatarID)
             }
+            armTimeout(view, generation: current, seconds: 120)
+            startup = Task { @MainActor [weak self, weak view] in
+                do {
+                    // A terminated WebKit process needs time to release its resources.
+                    // Do not launch a replacement while the app is in the background.
+                    try await Task.sleep(for: delay)
+                    guard let self, let view, self.generation == current else { return }
+                    while UIApplication.shared.applicationState != .active {
+                        try await Task.sleep(for: .milliseconds(250))
+                    }
+                    try Task.checkCancellation()
+                    try await self.assets.prepare()
+                    while UIApplication.shared.applicationState != .active {
+                        try await Task.sleep(for: .milliseconds(250))
+                    }
+                    try Task.checkCancellation()
+                    guard self.generation == current, !self.hasFailed else { return }
+                    self.preparing = false
+                    self.armTimeout(view, generation: current, seconds: 60)
+                    self.activeNavigation = view.load(URLRequest(url: URL(string:
+                        "openclam-avatar://local/index.html?generation=\(current)")!))
+                } catch is CancellationError {
+                    // A newer model, retry, or dismantle superseded this preparation.
+                } catch {
+                    guard let self, let view, self.generation == current, !self.hasFailed else { return }
+                    self.fail(error.localizedDescription, view: view)
+                }
+            }
+        }
+
+        private func armTimeout(_ view: WKWebView, generation current: Int, seconds: Int) {
             timeout?.cancel()
             timeout = Task { @MainActor [weak self, weak view] in
-                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                // Count foreground time: locking the phone is not a load failure.
+                for _ in 0..<seconds {
+                    do {
+                        repeat { try await Task.sleep(for: .seconds(1)) }
+                        while UIApplication.shared.applicationState != .active
+                    } catch { return }
+                }
                 guard let self, let view, self.generation == current else { return }
                 self.fail("The 3D avatar took too long to load. Try loading it again.", view: view)
             }
-            view.load(URLRequest(url: URL(string: "openclam-avatar://local/index.html?generation=\(current)")!))
         }
 
         func fail(_ message: String, view: WKWebView) {
             hasFailed = true
+            startup?.cancel()
+            preparing = false
             view.accessibilityValue = "Failed"
             timeout?.cancel()
             pageReady = false
@@ -147,7 +199,10 @@ struct OpenClam3DWebView: UIViewRepresentable {
                 guard let self, self.generation == current else { return }
                 self.updating = false
                 if case .failure(let error) = result, let view {
-                    self.fail(error.localizedDescription, view: view)
+                    if (error as NSError).domain == WKError.errorDomain,
+                       (error as NSError).code == WKError.webContentProcessTerminated.rawValue {
+                        self.webViewWebContentProcessDidTerminate(view)
+                    } else { self.fail(error.localizedDescription, view: view) }
                     return
                 }
                 if let view { self.flush(view) }
@@ -166,6 +221,10 @@ struct OpenClam3DWebView: UIViewRepresentable {
                 timeout?.cancel()
                 OpenClam3DOptionsStore.shared.setLoadState(.ready, for: avatarID)
             }
+            if body["event"] as? String == "renderer-lost", let view = message.webView {
+                webViewWebContentProcessDidTerminate(view)
+                return
+            }
             if let error = body["error"] as? String, let view = message.webView {
                 fail(error, view: view)
             }
@@ -181,17 +240,24 @@ struct OpenClam3DWebView: UIViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            if recoveryCount == 0 {
+            // Ignore duplicate callbacks from the dead page during preparation.
+            guard !preparing, !hasFailed else { return }
+            if recoveryCount < Self.recoveryDelays.count {
+                let delay = Self.recoveryDelays[recoveryCount]
                 recoveryCount += 1
-                start(webView)
+                start(webView, delay: delay)
             } else {
                 fail("iOS stopped the 3D renderer. Open 3D controls to try again.", view: webView)
             }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            guard (error as NSError).code != NSURLErrorCancelled else { return }
-            fail(error.localizedDescription, view: webView)
+            guard !preparing, !hasFailed, navigation === activeNavigation,
+                  (error as NSError).code != NSURLErrorCancelled else { return }
+            if (error as NSError).domain == WKError.errorDomain,
+               (error as NSError).code == WKError.webContentProcessTerminated.rawValue {
+                webViewWebContentProcessDidTerminate(webView)
+            } else { fail(error.localizedDescription, view: webView) }
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -222,8 +288,34 @@ final class OpenClam3DWebAssets: NSObject, WKURLSchemeHandler {
     var onCatalogue: (([String: Any]) -> Void)?
     private var requests: [ObjectIdentifier: UUID] = [:]
     private let worker = ModelResourceWorker()
+    private var preparation: UUID?
 
-    func cancelAll() { requests.removeAll() }
+    func cancelAll() { requests.removeAll(); preparation = nil }
+
+    func prepare() async throws {
+        guard let modelURL else { throw URLError(.fileDoesNotExist) }
+        let token = UUID(), revision = revision, maximum = maximumTextureSize
+        preparation = token
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            worker.queue.async { [worker, weak self] in
+                let cancelled = { DispatchQueue.main.sync { self?.preparation != token } }
+                let result = Result<Void, Error> {
+                    if cancelled() { throw CancellationError() }
+                    let model = try worker.model(url: modelURL, revision: revision, maximum: maximum)
+                    DispatchQueue.main.sync {
+                        guard let self, self.preparation == token, let model else { return }
+                        self.onCatalogue?(model.catalogue)
+                    }
+                    try model?.prepareImages(isCancelled: cancelled)
+                    if cancelled() { throw CancellationError() }
+                }
+                DispatchQueue.main.async {
+                    if self?.preparation == token { self?.preparation = nil }
+                    continuation.resume(with: result)
+                }
+            }
+        }
+    }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let request = task.request.url, request.host == "local" else {

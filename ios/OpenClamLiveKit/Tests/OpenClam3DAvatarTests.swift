@@ -729,6 +729,10 @@ extension OpenClam3DAvatarTests {
         }
         XCTAssertEqual((delivered["textures"] as? [[String: Any]])?.first?["source"] as? Int, 0)
         XCTAssertEqual(resources.catalogue["poses"] as? [[String: String]], [["id": "heart", "label": "Heart", "group": "body"]])
+        XCTAssertThrowsError(try resources.prepareImages(isCancelled: { true })) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        try resources.prepareImages()
         let image = try resources.image(at: 0)
         let cacheFile = try XCTUnwrap(resources.cacheDirectory).appendingPathComponent("0.png")
         let cacheDate = try cacheFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
@@ -774,6 +778,63 @@ extension OpenClam3DAvatarTests {
         XCTAssertThrowsError(try OpenClam3DModelResources(url: url))
     }
 
+    func testRealWebGLContextLossRecoversWithoutUserInteraction() async throws {
+        let vertices: [Float] = [0, 0, 0, 1, 0, 0, 0, 1, 0]
+        let binary = vertices.withUnsafeBytes { Data($0) }
+        let document: [String: Any] = [
+            "asset": ["version": "2.0"], "scene": 0, "scenes": [["nodes": [0]]],
+            "nodes": [["mesh": 0]], "meshes": [["primitives": [["attributes": ["POSITION": 0]]]]],
+            "buffers": [["byteLength": binary.count]],
+            "bufferViews": [["buffer": 0, "byteLength": binary.count]],
+            "accessors": [["bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                           "min": [0, 0, 0], "max": [1, 1, 0]]],
+        ]
+        let url = try temporaryDirectory().appendingPathComponent("triangle.glb")
+        try Self.makeGLB(document, binary: binary).write(to: url)
+        let coordinator = OpenClam3DWebView.Coordinator()
+        coordinator.avatarID = "context-loss-test"
+        coordinator.modelURL = url
+        coordinator.assets.modelURL = url
+        coordinator.latest = ["frame": ["width": 1024, "height": 1536],
+            "crop": ["x": 0, "y": 0, "w": 1024, "h": 1536],
+            "orbit": ["yaw": 0, "pitch": 0], "options": ["followCursor": "false"],
+            "state": OpenClam3DAvatarPose().webState, "pointer": NSNull()]
+        let view = OpenClam3DWebView.makeWebView(coordinator: coordinator)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let prior = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIViewController()
+        window.rootViewController?.view = view
+        window.makeKeyAndVisible()
+        defer {
+            OpenClam3DWebView.dismantleUIView(view, coordinator: coordinator)
+            window.isHidden = true
+            prior?.makeKey()
+        }
+        coordinator.start(view)
+        func awaitReady() async throws {
+            for _ in 0..<300 {
+                if view.accessibilityValue == "Ready" { return }
+                if coordinator.hasFailed { XCTFail("Renderer failed: \(OpenClam3DOptionsStore.shared.loadStates[coordinator.avatarID]!)"); return }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTFail("Renderer never became ready")
+        }
+        try await awaitReady()
+        let generation = coordinator.generation
+        // Lose the actual graphics context; this exercises the JavaScript event,
+        // native recovery delay, new page and replay of the last frame together.
+        _ = try await view.evaluateJavaScript("document.querySelector('canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()")
+        for _ in 0..<100 where coordinator.generation == generation {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(coordinator.recoveryCount, 1)
+        XCTAssertGreaterThan(coordinator.generation, generation)
+        try await awaitReady()
+        XCTAssertEqual(view.accessibilityValue, "Ready")
+        XCTAssertEqual(coordinator.latest?["options"] as? [String: String], ["followCursor": "false"])
+    }
+
     func testRendererTerminationRecoveryIsBoundedAndKeepsLastFrame() {
         let coordinator = OpenClam3DWebView.Coordinator()
         coordinator.avatarID = "recovery-test"
@@ -783,12 +844,21 @@ extension OpenClam3DAvatarTests {
         XCTAssertEqual(coordinator.recoveryCount, 1)
         XCTAssertEqual(coordinator.assets.maximumTextureSize, 768)
         XCTAssertNotNil(coordinator.latest, "A stopped timeline must still be able to restart the renderer")
+        XCTAssertNil(view.url, "A dead process must have time to release memory before reloading")
         let generation = coordinator.generation
         coordinator.webViewWebContentProcessDidTerminate(view)
-        XCTAssertEqual(coordinator.generation, generation, "Repeated termination must not silently reload forever")
+        XCTAssertEqual(coordinator.generation, generation, "Duplicate callbacks must not consume recovery attempts")
+        coordinator.preparing = false // the replacement page has begun loading
+        coordinator.webViewWebContentProcessDidTerminate(view)
+        XCTAssertEqual(coordinator.recoveryCount, 2)
+        XCTAssertEqual(coordinator.assets.maximumTextureSize, 512)
+        coordinator.preparing = false
+        coordinator.webViewWebContentProcessDidTerminate(view)
+        XCTAssertEqual(coordinator.recoveryCount, 2, "Repeated failure must not silently reload forever")
         guard case .failed = OpenClam3DOptionsStore.shared.loadStates["recovery-test"] else {
-            return XCTFail("Repeated termination must show a retryable failure")
+            return XCTFail("Exhausted recovery must show a retryable failure")
         }
+        coordinator.startup?.cancel()
         coordinator.timeout?.cancel()
         view.stopLoading()
     }

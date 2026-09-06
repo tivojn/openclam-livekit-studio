@@ -110,8 +110,20 @@ const vm = require('node:vm');
     const phone = { window: { addEventListener() {}, webkit: { messageHandlers: { avatarStatus: { postMessage() {} } } } },
       location: { search: '?generation=1' }, URLSearchParams, console: { ...console } };
     vm.runInNewContext(fs.readFileSync(phoneBridge, 'utf8')
-      .replace(/^import .*;$/gm, '').replace('export function fitAvatarViewport', 'function fitAvatarViewport')
-      + '\nglobalThis.fit = fitAvatarViewport;', phone);
+      .replace(/^import .*;$/gm, '').replace(/export /g, '')
+      + '\nglobalThis.fit = fitAvatarViewport;globalThis.upload = uploadAvatarTextures;', phone);
+    phone.setTimeout = setTimeout;
+    const uploaded = [], closed = [];
+    const bitmap = { close() { closed.push('shared'); assert.equal(uploaded.length, 2); } };
+    const a = { isTexture: true, image: bitmap }, b = { isTexture: true, image: bitmap };
+    const hidden = { visible: false, material: [{ map: a, normalMap: b }, { map: a }] };
+    const prepared = { model: { traverse(fn) { fn(hidden); } },
+      renderer: { initTexture(texture) { assert.equal(closed.length, 0); uploaded.push(texture); } } };
+    assert.equal(await phone.upload(prepared), 1);
+    assert.deepEqual(uploaded, [a, b], 'hidden outfits and shared images must upload before bitmap release');
+    assert.equal(closed.length, 1, 'each shared bitmap closes exactly once');
+    assert.equal(await phone.upload(prepared, () => true), undefined);
+    assert.equal(uploaded.length, 2, 'context loss cancels further uploads');
     for (const [width, height] of [[402, 654], [402, 728], [402, 440], [440, 810], [852, 330]]) {
       for (const zoom of [.5, 1, 2.5]) {
         const crop = { x: 98.51428571428573, y: 0, w: 826.9714285714285 / zoom, h: 1497.6 / zoom };

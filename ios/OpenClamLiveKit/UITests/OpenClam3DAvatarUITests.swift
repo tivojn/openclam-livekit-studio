@@ -350,3 +350,32 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         }
     }
 }
+
+/// Unlike the interaction suite, this never prelaunches the app in setUp.
+/// The release audit clears only this simulator's 3DTextures cache beforehand.
+final class OpenClam3DColdLaunchUITests: XCTestCase {
+    func testColdLaunchRendersWithoutOpeningControls() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+            "-ai.provider.settings.v2.active-avatar.v1", "tia",
+            "-captainAyer.overlay.mode", "standby",
+            "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed,
+            "A cold launch must finish without tapping 3D controls or Retry")
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "3d-cold-launch-no-taps"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 30), .completed)
+        app.terminate()
+    }
+}

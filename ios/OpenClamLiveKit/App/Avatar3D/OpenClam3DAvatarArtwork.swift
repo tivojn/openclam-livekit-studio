@@ -99,6 +99,12 @@ struct OpenClam3DAvatarArtwork: View {
             }
         }
         .overlay {
+            if usesSharedRenderer, options.loadStates[avatar.id] == .loading {
+                ProgressView("Loading 3D avatar…")
+                    .font(.callout).padding()
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .accessibilityIdentifier("openclam-3d-loading")
+            }
             if usesSharedRenderer, case let .failed(message) = options.loadStates[avatar.id] {
                 Text(message).font(.callout).multilineTextAlignment(.center)
                     .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))

@@ -46,10 +46,23 @@ inline data URIs retain the original loader path.
 The resource worker serializes decoding off the main thread and cancels stale
 requests. Decoded PNGs are cached on disk by the actual model SHA-256, texture
 limit, and decoder version; damaged entries are regenerated. The cache keeps
-the current variant and two prior variants, independently of installed assets. The native wardrobe catalogue is available before GPU loading ends.
-A first WebKit process interruption retries once with a smaller texture limit;
-a second interruption or a 60-second load timeout presents a retry action in
-Wardrobe & Poses. Saved clothing, props, playback, and follow preferences survive
-recovery. Build 67 adds this path after build 66 exposed large texture memory
-use on a physical iPhone; simulator success alone does not establish hardware
-memory behavior.
+the current variant and two prior variants, independently of installed assets. The native wardrobe catalogue is available before GPU loading begins.
+
+Build 68 prepares the texture cache before navigating to the renderer, so
+ImageIO work does not overlap WebKit's geometry and GPU allocations on a cold
+launch. The iOS bridge uploads textures from every outfit (including hidden
+ones) and releases each shared ImageBitmap only after all its textures have
+uploaded. This avoids retaining decoded source images through the first
+morph-buffer allocation; authored materials and texture pixels are preserved.
+A lost graphics context reloads the page instead of reusing closed bitmaps.
+
+WebKit termination and graphics-context loss recover automatically after
+2 and then 5 seconds, with smaller texture limits. Duplicate callbacks from a
+dead page do not consume another attempt. Recovery waits for the app to become
+active, retains the latest frame even if the timeline is paused, and preserves
+clothing, props, playback and follow preferences. Preparation has a 120-second
+foreground timeout; rendering has a separate 60-second foreground timeout.
+Exhausted recovery presents a retry action in Wardrobe & Poses.
+
+Cold-cache launch and actual WebGL context-loss tests cover the startup path.
+Simulator success alone does not establish physical-iPhone memory behavior.

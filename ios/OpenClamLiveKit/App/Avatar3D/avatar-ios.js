@@ -24,13 +24,41 @@ window.updateAvatar = frame => {
 async function load(frame) {
   avatar = window.OpenClamAvatar3D.create(frame.frame);
   avatar.canvas.addEventListener('webglcontextlost', event => {
-    event.preventDefault(); fail('The 3D renderer was interrupted. Open 3D controls to try again.');
+    event.preventDefault();
+    window.showAvatarError('Restarting 3D avatar…');
+    report({event:'renderer-lost'});
   });
   await avatar.load('/model.gltf');
+  if (failed) return;
+  const releasedImages = await uploadAvatarTextures(avatar, () => failed);
+  report({event:'textures-uploaded', releasedImages});
   if (failed) return;
   report({event:'catalogue', catalogue:avatar.options?.catalogue() || {poses:[],outfits:[],props:[]}});
   document.body.append(avatar.canvas);
   requestAnimationFrame(draw);
+}
+// Upload every wardrobe texture before the first frame allocates morph buffers.
+// ImageBitmaps otherwise retain a second decoded copy of all 51 Tia images.
+// Include hidden outfits and all textures sharing a bitmap before closing it.
+// A lost WebGL context reloads the page/model instead of reusing closed bitmaps.
+export async function uploadAvatarTextures(avatar, stopped = () => false) {
+  const images = new Map();
+  avatar.model.traverse(node => {
+    for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
+      for (const texture of Object.values(material || {})) {
+        if (!texture?.isTexture || typeof texture.image?.close !== 'function') continue;
+        if (!images.has(texture.image)) images.set(texture.image, new Set());
+        images.get(texture.image).add(texture);
+      }
+    }
+  });
+  for (const [image, textures] of images) {
+    if (stopped()) return;
+    for (const texture of textures) avatar.renderer.initTexture(texture);
+    image.close();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  return images.size;
 }
 let previous = 0;
 // The camera crop and displayed CSS canvas must have the same aspect ratio.
