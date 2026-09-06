@@ -58,16 +58,16 @@ class ReviewedEntropyFixtureTests(unittest.TestCase):
                 with mock.patch.object(AUDIT.hashlib, "sha256", return_value=result):
                     self.assertFalse(AUDIT.high_entropy_finding(FIXTURE_PATH, raw))
 
-    def test_published_store_history_pins_do_not_admit_new_artwork(self):
+    def test_published_store_pins_do_not_admit_new_artwork(self):
         for name in ("leo", "ola"):
             relative = Path(f"shared/avatar-store-v1/catalog/v1/{name}-thumbnail.png")
-            expected = AUDIT.HISTORICAL_AVATAR_STORE_THUMBNAIL_HASHES[relative]
+            expected = AUDIT.AVATAR_STORE_CATALOG_BINARY_HASHES[relative]
             digest = mock.Mock()
             digest.hexdigest.return_value = expected
             with mock.patch.object(AUDIT.hashlib, "sha256", return_value=digest):
                 self.assertEqual(AUDIT.audit_history_bytes(relative, b"synthetic artwork"), [])
             self.assertTrue(AUDIT.audit_history_bytes(relative, b"unreviewed changed artwork"))
-            self.assertIsNotNone(AUDIT.denied_path_reason(relative))
+            self.assertTrue(AUDIT.audit_bytes(relative, b"unreviewed changed artwork"))
 
     def test_surrounding_source_mutation_is_not_reviewed(self):
         changed = self.source + b"\n// unreviewed synthetic mutation\n"
