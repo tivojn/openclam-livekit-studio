@@ -290,6 +290,21 @@ def runtime_manifest(source, *, thumbnail_pending=False):
     }
 
 
+def file_revision(path):
+    stat = os.stat(path)
+    return f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
+
+
+def served_manifest(path):
+    """Identify the actual model on disk without hashing a large GLB per GET."""
+    with open(path) as handle:
+        manifest = json.load(handle)
+    if not is_3d(manifest):
+        return None
+    manifest["model_revision"] = file_revision(os.path.join(os.path.dirname(path), MODEL_NAME))
+    return manifest
+
+
 def publish_runtime(slug, log=print):
     """(Re)write the runtime bundle atomically from the source model."""
     registry = _registry()
@@ -310,7 +325,9 @@ def publish_runtime(slug, log=print):
         except OSError:
             shutil.copyfile(model, target)
         with open(os.path.join(staged, "manifest.json"), "w") as handle:
-            json.dump(runtime_manifest(source, thumbnail_pending=pending), handle, indent=1)
+            manifest = runtime_manifest(source, thumbnail_pending=pending)
+            manifest["source_revision"] = file_revision(model)
+            json.dump(manifest, handle, indent=1)
         previous = live + ".previous"
         shutil.rmtree(previous, ignore_errors=True)
         if os.path.exists(live):
@@ -337,6 +354,7 @@ def ensure_runtime(slug, log=print):
             is_3d(manifest)
             and int(manifest.get("v") or 0) >= RUNTIME_VERSION
             and os.path.isfile(os.path.join(live, MODEL_NAME))
+            and manifest.get("source_revision") == file_revision(os.path.join(registry.adir(slug), MODEL_NAME))
         )
     except (OSError, ValueError):
         current = False

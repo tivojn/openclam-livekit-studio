@@ -116,6 +116,7 @@ let petRoamHoverGate = { armed: false, inside: false };
 let petZoomGesture = null;
 let appearancePushAt = 0;
 let petMotionReady = false;
+const avatarRendererKinds = new WeakMap();
 let liveTalkActive = false;
 let chatMode = false;
 let chatCloseUp = false;
@@ -2785,7 +2786,7 @@ function activeAvatarWindow() {
 }
 
 function requestAvatarMotion(mode) {
-  if (!['walk', 'idle', 'moves'].includes(mode)) return;
+  if (!['walk', 'idle', 'moves', 'rotate-3d', 'reset-3d'].includes(mode)) return;
   const owner = activeAvatarWindow();
   if (owner && !owner.isDestroyed()) post(owner, 'openclam:display-mode-request', mode);
 }
@@ -2795,6 +2796,13 @@ function showPetMenu() {
   if (!owner || owner.isDestroyed()) return;
   // Name on the left, the gesture that does the same thing on the right.
   showMenuWindow([
+    ...(avatarRendererKinds.get(owner.webContents) === '3d' ? [
+      { name: 'Rotate 3D view', hint: 'two-finger swipe · ⌥ drag',
+        click: () => requestAvatarMotion('rotate-3d') },
+      { name: 'Reset 3D view', hint: 'front · default size and position',
+        click: () => requestAvatarMotion('reset-3d') },
+      { type: 'separator' },
+    ] : []),
     { name: 'Open Chat/Talk', hint: 'full conversation workspace',
       click: showChat },
     { name: liveTalkActive ? 'End Live Talk' : 'Live Talk',
@@ -2943,6 +2951,10 @@ function installIpc() {
         || (chatWindow && event.sender === chatWindow.webContents)) showSpeechBubble(value);
   });
   ipcMain.on('openclam:pet-motion-ready', (event, value) => {
+    if (isBuddySender(event) || event.sender === mainWindow?.webContents
+        || event.sender === chatWindow?.webContents) {
+      avatarRendererKinds.set(event.sender, value?.renderer === '3d' ? '3d' : '2d');
+    }
     if (isBuddySender(event)) setBuddyMotionReady(value);
     else if ((mainWindow && event.sender === mainWindow.webContents)
         || (chatWindow && event.sender === chatWindow.webContents)) setPetMotionReady(value);

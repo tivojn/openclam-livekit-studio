@@ -510,6 +510,9 @@
       #conversation { max-height: 34vh; }
     }
 
+    #avatar3DControls { border-top: 1px solid var(--codex-border, #8884); margin-top: 6px; padding-top: 6px; }
+    .avatar-3d-help { font-size: 11px; line-height: 1.5; opacity: .7; margin: 8px 10px; }
+    html.avatar-rotating #stage { cursor: crosshair; }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
     }
@@ -2052,6 +2055,11 @@
     <button id="movesButton" type="button" role="menuitemradio" aria-checked="false" data-symbol="moves">
       <span class="sf-symbol symbol-moves" aria-hidden="true"></span><span class="rail-picker-label">Moves</span><span class="sf-symbol symbol-checkmark rail-picker-check" aria-hidden="true"></span>
     </button>
+    <div id="avatar3DControls" hidden>
+      <button id="rotate3DButton" type="button" role="menuitemcheckbox" aria-checked="false">Rotate 3D view</button>
+      <button id="reset3DButton" type="button" role="menuitem">Reset 3D view</button>
+      <p class="avatar-3d-help">Drag to move · Pinch to resize<br>Two-finger swipe or ⌥ drag to rotate</p>
+    </div>
   </div>
   <div id="opacityPanel" class="rail-picker opacity-picker" hidden>
     <label for="avatarOpacityRange">Avatar opacity <output id="avatarOpacityValue">100%</output></label>
@@ -2327,6 +2335,34 @@
        model to web/avatar3d.js; the compositor below draws that renderer's
        canvas through the same camera, zoom, mirror and hit-test paths. */
     let avatar3d = null;
+    let avatar3dRefresh = null;
+    let avatar3dRotateMode = false;
+    let avatar3dOrbitUntil = 0;
+    let avatarOrbitGesture = false;
+    let avatarOrbitTimer = 0;
+    const avatar3dOrbitKey = () => `openclam.3d.orbit.${manifest && manifest.avatar && manifest.avatar.slug || 'avatar'}`;
+    const avatar3dIdentity = value => {
+      return JSON.stringify([
+        value && value.avatar && value.avatar.slug, value && value.model,
+        value && value.model_revision, value && value.built, value && value.pose, value && value.yaw,
+      ]);
+    };
+    const avatar3dModelURL = value => {
+      const url = new URL(value.model, location.href);
+      url.searchParams.set('revision', value.model_revision || value.built || assetRevision);
+      return url.href;
+    };
+    const restoreAvatar3DOrbit = instance => {
+      try { instance.setOrbit(JSON.parse(localStorage.getItem(avatar3dOrbitKey()) || '{}')); }
+      catch (_) { instance.setOrbit({}); }
+    };
+    const syncAvatar3DControls = () => {
+      document.getElementById('avatar3DControls').hidden = !avatar3d;
+      document.getElementById('rotate3DButton').setAttribute('aria-checked', String(avatar3dRotateMode));
+      canvas.title = avatar3d ? 'Drag to move · Pinch to resize · Two-finger swipe or Option-drag to rotate' : '';
+      root.classList.toggle('avatar-3d', Boolean(avatar3d));
+      root.classList.toggle('avatar-rotating', Boolean(avatar3d && avatar3dRotateMode));
+    };
     let avatar3dGazeState = { x: 0, y: 0, at: 0 };
     const is3DRuntime = value => Boolean(value && typeof value === 'object'
       && value.renderer === '3d' && typeof value.model === 'string' && value.model.length > 0);
@@ -2344,6 +2380,7 @@
       if (!avatar3d) return;
       try { avatar3d.dispose(); } catch (_) { /* context already lost */ }
       avatar3d = null;
+      syncAvatar3DControls();
     };
     /* avatar-3d:end */
     const layers = { eyes: {}, gaze: {}, brow: {}, forehead: {}, cheek: {}, eyebag: {},
@@ -3404,7 +3441,8 @@
 
     const publishMotionReadiness = () => {
       if (!shell || typeof shell.setPetMotionReady !== 'function') return;
-      shell.setPetMotionReady(motion.walk ? motionPlaybackProfile() : { ready: false });
+      shell.setPetMotionReady({ ...(motion.walk ? motionPlaybackProfile() : { ready: false }),
+        renderer: avatar3d ? '3d' : '2d' });
     };
 
     const STYLIZED_SOURCE_MEDIA = new Set([
@@ -3622,12 +3660,14 @@
       updateMotionControlsAvailability();
       const instance = api.create({ width, height });
       try {
-        await instance.load(String(manifest.model), { pose: manifest.pose, yaw: manifest.yaw });
+        await instance.load(avatar3dModelURL(manifest), { pose: manifest.pose, yaw: manifest.yaw });
       } catch (error) {
         instance.dispose();
         throw error;
       }
       avatar3d = instance;
+      restoreAvatar3DOrbit(instance);
+      syncAvatar3DControls();
       avatar3dGazeState = { x: 0, y: 0, at: 0 };
       publishMotionReadiness();
       ready = true;
@@ -3638,6 +3678,44 @@
       requestAnimationFrame(renderLoop);
     }
     /* avatar-3d:end */
+
+    // Hidden Chat/Avatar windows can retain a replaced GLB indefinitely.
+    // Revalidate only the small manifest, then atomically swap the 3D scene.
+    // Keep the existing render loop, conversation, draft and placement alive.
+    const refreshAvatar3D = () => {
+      if (!ready || !avatar3d || avatar3dRefresh) return avatar3dRefresh;
+      const previous = avatar3d;
+      avatar3dRefresh = (async () => {
+        let replacement = null;
+        try {
+          const response = await fetch(`assets/manifest.json?v=${Date.now()}`, { cache: 'no-store' });
+          if (!response.ok) return;
+          const next = await response.json();
+          if (!is3DRuntime(next) || avatar3dIdentity(next) === avatar3dIdentity(manifest)) return;
+          const api = await avatar3dApi();
+          replacement = api.create({ width: Number(next.w) || 1024, height: Number(next.h) || 1536 });
+          await replacement.load(avatar3dModelURL(next), { pose: next.pose, yaw: next.yaw });
+          if (avatar3d !== previous) return;
+          replacement.setOrbit(previous.orbit);
+          manifest = next;
+          avatar3d = replacement;
+          replacement = null;
+          previous.dispose();
+          avatar3dGazeState = { x: 0, y: 0, at: 0 };
+          lastFrame = 0;
+          syncAvatar3DControls();
+        } catch (_) { /* retain the complete current model; retry on next show */ }
+        finally {
+          if (replacement) replacement.dispose();
+          avatar3dRefresh = null;
+        }
+      })();
+      return avatar3dRefresh;
+    };
+    addEventListener('focus', () => { void refreshAvatar3D(); });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) void refreshAvatar3D();
+    });
 
     async function loadAvatar() {
       setStatus('Loading avatar…', 'busy');
@@ -6102,7 +6180,8 @@
       }
       const gazeTarget = cursorGazeTarget(pointer, avatarFaceAnchor(), { x: 1, y: 1 },
         { width: innerWidth, height: innerHeight });
-      const gaze = smoothCursorGaze(avatar3dGazeState, gazeTarget, now, reduce);
+      const attention = Math.max(0, Math.cos(avatar3d.orbit.yaw)) * Math.cos(avatar3d.orbit.pitch);
+      const gaze = smoothCursorGaze(avatar3dGazeState, { x: gazeTarget.x * attention, y: gazeTarget.y * attention }, now, reduce);
       const { breathe } = bodyMotionAt(now, speaking, bodyMotionState, reduce);
       // Only the on-screen part of the logical portrait is rendered, at the
       // size it is shown, so close-ups stay sharp and zoom-outs stay cheap.
@@ -6114,10 +6193,16 @@
       };
       const chatIdleEdge = presentation === 'chat-edge-idle-left' ? 'left'
         : presentation === 'chat-edge-idle-right' ? 'right' : null;
-      const fit = chatIdleEdge
+      let fit = chatIdleEdge
         ? chatWindowMotionFit('idle', previewMetadata, logicalWidth, logicalHeight, now, null, chatIdleEdge)
         : cameraFor(previewMetadata, logicalWidth, logicalHeight);
-      const mirrored = avatarMirrored && root.classList.contains('chat-mode');
+      const fullChat = root.classList.contains('chat-mode');
+      const safeViewport = fullChat ? chatAvatarSafeViewport({ reserveComposer: !shellState.chatCloseUp, reserveRail: true })
+        : { x: 0, y: 0, width: innerWidth, height: innerHeight };
+      // The logical portrait already has a conservative camera margin.
+      // Keep its top below the header, including saved offsets from old 2D poses.
+      fit = clampChatCameraFit({ ...fit, headSpan: { top: 0 } }, safeViewport);
+      const mirrored = avatarMirrored && fullChat;
       const clampX = value => Math.max(0, Math.min(logicalWidth, value));
       const clampY = value => Math.max(0, Math.min(logicalHeight, value));
       const margin = 2 / Math.max(fit.scale, 1e-6);
@@ -6485,7 +6570,7 @@
       // can move the resized figure away from a stationary cursor; dropping
       // the hit claim mid-stream would make Electron click through and lose
       // the remaining wheel events before the gesture can settle or persist.
-      const hit = dragging || Boolean(ptt) || Boolean(avatarZoomGesture) || chromeHit || figureHit;
+      const hit = dragging || Boolean(ptt) || Boolean(avatarZoomGesture) || avatarOrbitGesture || chromeHit || figureHit;
       avatarHit = figureHit;
       root.classList.toggle('avatar-hover', figureHit);
       if (hit && !root.classList.contains('chat-mode')) markActivity();
@@ -9557,6 +9642,7 @@
 
     const applyShellState = value => {
       if (!value || typeof value !== 'object') return;
+      const interfaceModeChanged = Boolean(value.chatMode) !== Boolean(shellState.chatMode);
       const avatarZoomChanged = Number(value.pet && value.pet.zoom) !== Number(shellState.pet && shellState.pet.zoom)
         || Number(value.pet && value.pet.roamZoom) !== Number(shellState.pet && shellState.pet.roamZoom);
       const chatCloseUpChanged = Boolean(value.chatCloseUp) !== Boolean(shellState.chatCloseUp);
@@ -9608,6 +9694,7 @@
         markActivity({ preserveDisplayMode: true });
         lastFrame = 0;
       }
+      if (interfaceModeChanged) void refreshAvatar3D();
       if (avatarZoomChanged) lastFrame = 0;
       syncDisplayModeControls();
       if (motion.walk) publishMotionReadiness();
@@ -9725,6 +9812,67 @@
       updateHit(true);
     };
 
+    const avatar3DGestureTarget = event => {
+      if (!avatar3d || !ready || Number(canvas.style.opacity || 1) <= .001) return false;
+      if (event.target === canvas) return true;
+      if (!root.classList.contains('chat-mode') || !chatWorkspace.contains(event.target)) return false;
+      if (event.target.closest('input, textarea, [contenteditable], button, a, select, #composerShell, #chatHeader, #rail, .message, .msg, pre, code, .email-review')) return false;
+      const selection = getSelection();
+      return !(selection && !selection.isCollapsed && String(selection).trim());
+    };
+
+    const setAvatar3DOrbit = value => {
+      if (!avatar3d) return;
+      avatar3d.setOrbit(value);
+      localStorage.setItem(avatar3dOrbitKey(), JSON.stringify(avatar3d.orbit));
+      lastFrame = 0;
+      markActivity({ preserveDisplayMode: true });
+    };
+
+    const handleAvatar3DWheel = event => {
+      if (event.ctrlKey || dragging || !avatar3DGestureTarget(event)) return;
+      if (performance.now() > avatar3dOrbitUntil && !paintedAvatarAt({ x: event.clientX, y: event.clientY, inside: true })) return;
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? innerHeight : 1;
+      const dx = Math.max(-120, Math.min(120, Number(event.deltaX) * unit || 0));
+      const dy = Math.max(-120, Math.min(120, Number(event.deltaY) * unit || 0));
+      if (!dx && !dy) return;
+      event.preventDefault();
+      avatar3dOrbitUntil = performance.now() + 180;
+      avatarOrbitGesture = true;
+      updateHit(true);
+      clearTimeout(avatarOrbitTimer);
+      avatarOrbitTimer = setTimeout(() => { avatarOrbitGesture = false; updateHit(true); }, 180);
+      setAvatar3DOrbit({ yaw: avatar3d.orbit.yaw - dx * .006, pitch: avatar3d.orbit.pitch + dy * .006 });
+    };
+
+    const resetAvatar3DView = async () => {
+      if (!avatar3d) return;
+      setAvatar3DOrbit({});
+      avatar3dRotateMode = false;
+      chatAvatarOffsets.standard = { x: 0, y: 0 };
+      chatAvatarOffsets.closeUp = { x: 0, y: 0 };
+      chatAvatarOffset = { x: 0, y: 0 };
+      desktopCloseUpOffset = { x: 0, y: 0 };
+      for (const key of ['openclam.chat.avatar-offset.v1', 'openclam.chat.close-up-offset.v1', 'openclam.desktop.close-up-offset.v1']) localStorage.removeItem(key);
+      if (shell && typeof shell.setDisplayMode === 'function') applyShellState(await shell.setDisplayMode('standby'));
+      if (shell && typeof shell.setPetZoom === 'function') applyShellState(await shell.setPetZoom(.6));
+      syncAvatar3DControls();
+      lastFrame = 0;
+    };
+    document.getElementById('rotate3DButton').addEventListener('click', () => {
+      avatar3dRotateMode = !avatar3dRotateMode;
+      syncAvatar3DControls();
+      closeRailPickers();
+      notify(avatar3dRotateMode ? 'Drag Tia to rotate · Pinch to resize' : 'Drag Tia to move · Two-finger swipe to rotate');
+    });
+    document.getElementById('reset3DButton').addEventListener('click', () => {
+      closeRailPickers();
+      void resetAvatar3DView();
+    });
+    addEventListener('storage', event => {
+      if (avatar3d && event.key === avatar3dOrbitKey()) { restoreAvatar3DOrbit(avatar3d); lastFrame = 0; }
+    });
+
     const handleAvatarPinch = event => {
       const pet = shellState.pet || {};
       // Chromium exposes a macOS trackpad pinch as a modifier-wheel stream.
@@ -9732,14 +9880,14 @@
       if (!event.ctrlKey || !shell || typeof shell.setPetZoomLive !== 'function'
           || pet.enabled === false || dragging) return;
       if (root.classList.contains('chat-mode')
-          && (interactionLayer !== 'avatar' || Number(pet.opacity) <= .001)) return;
-      event.preventDefault();
+          && ((interactionLayer !== 'avatar' && !avatar3DGestureTarget(event)) || Number(pet.opacity) <= .001)) return;
       // A pinch may continue after the first resize moves the pixels under the
       // cursor. Require an alpha hit only when the gesture starts.
       const freshAvatarHit = avatarHit || paintedAvatarAt({
         x: event.clientX, y: event.clientY, inside: true,
       });
       if (!avatarZoomGesture && !freshAvatarHit) return;
+      event.preventDefault();
       const range = pet.roam ? PET_ZOOM_RANGES.roam : PET_ZOOM_RANGES.stand;
       const current = activeAvatarZoom();
       const next = pinchZoomValue(current, event, range, innerHeight);
@@ -9765,6 +9913,11 @@
       canvasGesture = null;
       clearTimeout(gesture && gesture.holdTimer);
       if (!gesture) return;
+      if (gesture.rotating) {
+        dragging = false;
+        updateHit(true);
+        return;
+      }
       if (gesture.positionAdjusting) {
         dragging = false;
         root.classList.remove('dragging', 'position-adjusting');
@@ -9807,12 +9960,13 @@
       }
     };
 
-    canvas.addEventListener('pointerdown', event => {
-      const freshAvatarHit = avatarHit || (root.classList.contains('chat-mode')
-        && interactionLayer === 'avatar' && paintedAvatarAt({
-          x: event.clientX, y: event.clientY, inside: true,
-        }));
-      if (event.button !== 0 || !freshAvatarHit) return;
+    const beginCanvasGesture = event => {
+      const freshAvatarHit = avatarHit || paintedAvatarAt({
+        x: event.clientX, y: event.clientY, inside: true,
+      });
+      if (event.button !== 0 || !freshAvatarHit || canvasGesture) return;
+      if (event.target !== canvas && !avatar3DGestureTarget(event)) return;
+      event.preventDefault();
       handleGlobalPointer({ x: event.clientX, y: event.clientY, inside: true });
       clearTimeout(avatarTapTimer);
       avatarTapTimer = 0;
@@ -9826,6 +9980,8 @@
         screenY: event.screenY,
         at: performance.now(),
         talking: false,
+        rotating: Boolean(avatar3d && (event.altKey || avatar3dRotateMode)),
+        startOrbit: avatar3d ? { ...avatar3d.orbit } : null,
         positionAdjusting: false,
         startOffset: { ...(!root.classList.contains('chat-mode') && shellState.desktopCloseUp
           ? desktopCloseUpOffset : chatAvatarOffset) },
@@ -9833,18 +9989,29 @@
         holdTimer: 0,
       };
       canvasGesture = gesture;
-      if (pointOnHead({ x: event.clientX, y: event.clientY })) {
+      if (!gesture.rotating && pointOnHead({ x: event.clientX, y: event.clientY })) {
         gesture.holdTimer = setTimeout(() => {
           if (canvasGesture !== gesture || dragging || live) return;
           gesture.talking = true;
           startRecording();
         }, 230);
       }
+    };
+    canvas.addEventListener('pointerdown', beginCanvasGesture);
+    document.addEventListener('pointerdown', event => {
+      if (event.target !== canvas && avatar3DGestureTarget(event)) beginCanvasGesture(event);
     });
 
     canvas.addEventListener('pointermove', event => {
       if (!shell || !canvasGesture || canvasGesture.id !== event.pointerId || canvasGesture.talking) return;
-      if ((root.classList.contains('chat-mode') && interactionLayer === 'avatar')
+      if (canvasGesture.rotating && avatar3d) {
+        const dx = event.clientX - canvasGesture.x, dy = event.clientY - canvasGesture.y;
+        if (Math.hypot(dx, dy) > 3) dragging = true;
+        setAvatar3DOrbit({ yaw: canvasGesture.startOrbit.yaw - dx * .008,
+          pitch: canvasGesture.startOrbit.pitch + dy * .008 });
+        return;
+      }
+      if ((root.classList.contains('chat-mode') && (interactionLayer === 'avatar' || avatar3d))
           || (!root.classList.contains('chat-mode') && shellState.desktopCloseUp)) {
         const deltaX = event.clientX - canvasGesture.x;
         const deltaY = event.clientY - canvasGesture.y;
@@ -9877,6 +10044,12 @@
     canvas.addEventListener('pointerup', endCanvasGesture);
     canvas.addEventListener('pointercancel', endCanvasGesture);
     canvas.addEventListener('wheel', handleAvatarPinch, { passive: false });
+    canvas.addEventListener('wheel', handleAvatar3DWheel, { passive: false });
+    document.addEventListener('wheel', event => {
+      if (event.target === canvas || !avatar3DGestureTarget(event)) return;
+      handleAvatarPinch(event);
+      handleAvatar3DWheel(event);
+    }, { passive: false });
     canvas.addEventListener('dblclick', event => {
       clearTimeout(avatarTapTimer);
       avatarTapTimer = 0;
@@ -10169,6 +10342,7 @@
     });
     addEventListener('beforeunload', () => {
       clearTimeout(avatarTapTimer);
+      clearTimeout(avatarOrbitTimer);
       finishAvatarZoom();
       if (live) stopLiveTalk('ended');
       if (ptt && ptt.stream) ptt.stream.getTracks().forEach(track => track.stop());
@@ -10194,6 +10368,12 @@
         if (mode === 'walk') void selectWalkMode();
         else if (mode === 'idle') void selectEdgeIdleMode();
         else if (mode === 'moves') void selectMoveMode();
+        else if (mode === 'reset-3d') void resetAvatar3DView();
+        else if (mode === 'rotate-3d' && avatar3d) {
+          avatar3dRotateMode = !avatar3dRotateMode;
+          syncAvatar3DControls();
+          notify(avatar3dRotateMode ? 'Drag to rotate · Pinch to resize' : 'Drag to move · Two-finger swipe to rotate');
+        }
       });
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
       if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(toggleLiveTalk);

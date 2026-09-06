@@ -3220,6 +3220,10 @@ async def api_assets(path: str):
     full = _safe_file(runtime_dir(s), path)
     if not full:
         raise HTTPException(404, "not found")
+    if path == "manifest.json":
+        manifest = AVATAR3D.served_manifest(full)
+        if manifest:
+            return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
     return FileResponse(full, headers={"Cache-Control": "no-store"})
 
 
@@ -4513,6 +4517,10 @@ async def companion_assets(slug: str, path: str):
     full = _safe_file(runtime_dir(slug), path)
     if not full:
         raise HTTPException(404, "not found")
+    if path == "manifest.json":
+        manifest = AVATAR3D.served_manifest(full)
+        if manifest:
+            return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
     return FileResponse(full, headers={"Cache-Control": "no-store"})
 
 

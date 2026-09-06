@@ -150,7 +150,8 @@ class Avatar3D {
     this.headCenter = null;
     this.headRadius = 0;
     this.layoutCache = null;
-    this.smooth = { headYaw: 0, headPitch: 0, headRoll: 0, intensity: 0 };
+    this.orbit = { yaw: 0, pitch: 0 };
+    this.smooth = { gazeYaw: 0, gazePitch: 0, headYaw: 0, headPitch: 0, headRoll: 0, intensity: 0 };
     this.disposed = false;
     this.lights();
   }
@@ -407,17 +408,47 @@ class Avatar3D {
     const width = Math.max(1e-4, size.x);
     const vertical = THREE.MathUtils.degToRad(this.camera.fov) / 2;
     const horizontal = Math.atan(Math.tan(vertical) * this.camera.aspect);
-    const distance = Math.max(
+    let distance = Math.max(
       (height * .5 * 1.06) / Math.tan(vertical),
       (width * .5 * 1.12) / Math.tan(horizontal),
     );
-    this.camera.position.set(center.x, center.y, this.bounds.max.z + distance);
+    const { yaw, pitch } = this.orbit;
+    const outward = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch),
+      Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
+    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+    const up = new THREE.Vector3().crossVectors(outward, right);
+    // Fit every corner from the chosen direction, including its depth. A
+    // front-only bounding rectangle clips the crown in elevated/side views.
+    for (const x of [this.bounds.min.x, this.bounds.max.x]) {
+      for (const y of [this.bounds.min.y, this.bounds.max.y]) {
+        for (const z of [this.bounds.min.z, this.bounds.max.z]) {
+          const point = new THREE.Vector3(x, y, z).sub(center);
+          distance = Math.max(distance, point.dot(outward)
+            + Math.max(Math.abs(point.dot(up)) * 1.08 / Math.tan(vertical),
+              Math.abs(point.dot(right)) * 1.12 / Math.tan(horizontal)));
+        }
+      }
+    }
+    distance = Math.max(distance, this.bounds.max.z - center.z
+      + Math.max(height * .5 * 1.06 / Math.tan(vertical), width * .5 * 1.12 / Math.tan(horizontal)));
+    this.camera.position.copy(center).addScaledVector(outward, distance);
     this.camera.lookAt(center.x, center.y, center.z);
+    this.camera.updateMatrixWorld(true);
     this.camera.near = Math.max(.01, distance * .1);
     this.camera.far = distance * 6 + height * 4;
     this.camera.updateProjectionMatrix();
     this.layoutCamera = null;
     this.layoutCache = null;
+  }
+
+  setOrbit({ yaw = 0, pitch = 0 } = {}) {
+    const finite = value => Number.isFinite(Number(value)) ? Number(value) : 0;
+    const next = { yaw: Math.atan2(Math.sin(finite(yaw)), Math.cos(finite(yaw))),
+      pitch: clamp(finite(pitch), -Math.PI * .44, Math.PI * .44) };
+    if (Math.abs(next.yaw - this.orbit.yaw) < 1e-6
+        && Math.abs(next.pitch - this.orbit.pitch) < 1e-6) return;
+    this.orbit = next;
+    this.frame();
   }
 
   resize(width, height) {
@@ -536,7 +567,12 @@ class Avatar3D {
       this.setChannel(weights, 'blink', Math.max(blink.l || 0, blink.r || 0));
     }
     const gaze = state.gaze || { x: 0, y: 0 };
-    const gx = clamp(Number(gaze.x) || 0, -1, 1), gy = clamp(Number(gaze.y) || 0, -1, 1);
+    const attentionX = clamp(Number(gaze.x) || 0, -1, 1);
+    const attentionY = clamp(Number(gaze.y) || 0, -1, 1);
+    const { x: gx, y: gy } = this.pose(now, elapsed, {
+      gx: attentionX, gy: attentionY, reduce, speaking: Boolean(state.speaking),
+      breathe: Number(state.breathe) || 1, head: state.head || {},
+    });
     // +x is the viewer's right, which is the character's own left.
     if (gx > 0) { this.setChannel(weights, 'eyeLookOutLeft', gx); this.setChannel(weights, 'eyeLookInRight', gx); }
     if (gx < 0) { this.setChannel(weights, 'eyeLookInLeft', -gx); this.setChannel(weights, 'eyeLookOutRight', -gx); }
@@ -602,8 +638,6 @@ class Avatar3D {
       }
     }
 
-    this.pose(now, elapsed, { gx, gy, reduce, speaking: Boolean(state.speaking),
-      breathe: Number(state.breathe) || 1, head: state.head || {} });
     this.renderer.render(this.scene, this.camera);
     return this.canvas;
   }
@@ -621,15 +655,17 @@ class Avatar3D {
   pose(now, elapsed, { gx, gy, reduce, speaking, breathe, head }) {
     const t = now / 1000;
     const idle = reduce ? 0 : 1;
-    // Cursor following shares the turn between neck and head; idle sway and
-    // speech nods ride on top.
-    const yawTarget = gx * .16 + idle * (Math.sin(t * .37) * .012 + Math.sin(t * .11) * .01)
+    // The eyes acquire the cursor first; the head catches up over ~180 ms.
+    // As it turns, the eyes settle back toward the middle of their sockets.
+    this.smooth.gazeYaw = approach(this.smooth.gazeYaw, gx * .46, elapsed, reduce ? 1 : 180);
+    this.smooth.gazePitch = approach(this.smooth.gazePitch, gy * .28, elapsed, reduce ? 1 : 210);
+    const yawTarget = this.smooth.gazeYaw + idle * (Math.sin(t * .37) * .012 + Math.sin(t * .11) * .01)
       + (Number(head.yaw) || 0);
-    const pitchTarget = gy * .1 + idle * Math.sin(t * .29 + 1.3) * .008
+    const pitchTarget = this.smooth.gazePitch + idle * Math.sin(t * .29 + 1.3) * .008
       + (speaking ? Math.sin(t * 2.1) * .006 : 0) + (Number(head.pitch) || 0);
     const rollTarget = idle * Math.sin(t * .19 + .7) * .006 + (Number(head.roll) || 0);
-    this.smooth.headYaw = approach(this.smooth.headYaw, yawTarget, elapsed, reduce ? 1 : 110);
-    this.smooth.headPitch = approach(this.smooth.headPitch, pitchTarget, elapsed, reduce ? 1 : 110);
+    this.smooth.headYaw = yawTarget;
+    this.smooth.headPitch = pitchTarget;
     this.smooth.headRoll = approach(this.smooth.headRoll, rollTarget, elapsed, reduce ? 1 : 140);
     // Screen-down gaze (+gy) pitches the head forward, which is a negative
     // rotation about world X for a figure facing +Z.
@@ -638,7 +674,13 @@ class Avatar3D {
         -this.smooth.headPitch * .4, this.smooth.headYaw * .4, this.smooth.headRoll * .4, 'YXZ'));
     }
     if (this.bones.head) {
-      const share = this.bones.neck ? .6 : 1;
+      // Some exports flatten neck and head into siblings. In that case the
+      // head inherits none of the neck's turn and must receive the full angle.
+      let inheritsNeck = false;
+      for (let parent = this.bones.head.parent; parent; parent = parent.parent) {
+        if (parent === this.bones.neck) { inheritsNeck = true; break; }
+      }
+      const share = inheritsNeck ? .6 : 1;
       this.applyWorldRotation(this.bones.head, new THREE.Euler(
         -this.smooth.headPitch * share, this.smooth.headYaw * share, this.smooth.headRoll * share, 'YXZ'));
     }
@@ -647,13 +689,18 @@ class Avatar3D {
       this.applyWorldRotation(this.bones.chest, new THREE.Euler(
         -clamp(breath, -2, 2) * .006 * idle, idle * Math.sin(t * .23) * .006, 0, 'YXZ'));
     }
+    const eyeGaze = this.bones.head
+      ? { x: clamp(gx - .6 * this.smooth.gazeYaw / .46, -1, 1),
+        y: clamp(gy - .6 * this.smooth.gazePitch / .28, -1, 1) }
+      : { x: gx, y: gy };
     if (!this.channels.has('eyeLookOutLeft')) {
       for (const side of ['l', 'r']) {
         const eye = this.bones.eye[side];
-        if (eye) this.applyWorldRotation(eye, new THREE.Euler(-gy * .12, gx * .18, 0, 'YXZ'));
+        if (eye) this.applyWorldRotation(eye, new THREE.Euler(-eyeGaze.y * .12, eyeGaze.x * .18, 0, 'YXZ'));
       }
     }
     this.root.updateMatrixWorld(true);
+    return eyeGaze;
   }
 
   // A card-sized face crop for the avatar carousel and settings deck.

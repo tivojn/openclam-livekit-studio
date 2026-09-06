@@ -244,7 +244,7 @@ assert.match(source, /html\.chat-mode #composerShell \{[^}]*background:\s*color-
   'chat composer must remain translucent enough to reveal avatar motion beneath it');
 assert.match(source, /html\.chat-mode \.message\.user \.bubble \{[^}]*background:\s*color-mix\(in srgb, var\(--codex-control\) 56%, transparent\);[^}]*backdrop-filter:\s*blur\(4px\)/,
   'chat user bubbles must remain translucent enough to reveal avatar motion beneath them');
-assert.match(source, /canvas\.addEventListener\('pointerdown', event => \{[\s\S]{0,300}interactionLayer === 'avatar'[\s\S]{0,180}paintedAvatarAt\(/,
+assert.match(source, /const beginCanvasGesture = event => \{[\s\S]{0,150}paintedAvatarAt\(/,
   'avatar-first drags must freshly hit-test the visible avatar before starting');
 assert.match(source, /canvasGesture\.positionAdjusting = true;[\s\S]{0,100}root\.classList\.add\('position-adjusting'\)/,
   'a drag in any direction must reposition the front avatar layer');
@@ -2064,7 +2064,7 @@ const hitClassifier = new Function(
   'shell', 'overControls', 'pointer', 'ready', 'innerWidth', 'innerHeight',
   'context', 'pixelRatio', 'root', 'canvas', 'interactionLayer', 'markActivity', 'performance',
   `'use strict'; let dragging = false; let ptt = null; let avatarHit = false; `
-    + `let petHit = false; let lastHitSent = 0; let avatarZoomGesture = null; ${updateHitSource[1]}; `
+    + `let petHit = false; let lastHitSent = 0; let avatarOrbitGesture = false; let avatarZoomGesture = null; ${updateHitSource[1]}; `
     + 'return { updateHit, avatar: () => avatarHit };',
 )(
   { setPetHit: value => hitCalls.push(value) }, () => true,
@@ -2092,7 +2092,7 @@ const zoomHitLifecycle = new Function(
   'shell', 'overControls', 'pointer', 'paintedAvatarAt', 'root', 'canvas',
   'interactionLayer', 'markActivity', 'performance',
   `'use strict'; let dragging = false; let ptt = null; let avatarHit = false; `
-    + `let petHit = false; let lastHitSent = 0; let avatarZoomGesture = { frame: 0 }; `
+    + `let petHit = false; let lastHitSent = 0; let avatarOrbitGesture = false; let avatarZoomGesture = { frame: 0 }; `
     + `${updateHitSource[1]}; `
     + `return { update: () => updateHit(true), release: () => { avatarZoomGesture = null; updateHit(true); } };`,
 )(
@@ -2716,7 +2716,7 @@ assert.match(source, /canvas\.addEventListener\('dblclick', event => \{\n      c
   'the first opacity tap must not fire beneath a double-click Live Talk gesture');
 assert.match(source, /canvas\.addEventListener\('dblclick',[\s\S]{0,360}paintedAvatarAt\([\s\S]{0,180}toggleLiveTalk\(\);/,
   'double-clicking any painted avatar pixel must own Live Talk');
-assert.match(source, /if \(pointOnHead\([\s\S]{0,260}startRecording\(\);/,
+assert.match(source, /if \(!gesture\.rotating && pointOnHead\([\s\S]{0,260}startRecording\(\);/,
   'holding the avatar head must retain push to talk');
 assert.doesNotMatch(source, /avatarTapTimer = setTimeout\(\(\) => \{[\s\S]{0,180}openChat\(false\);/,
   'a body tap must no longer expose chat chrome in pure Avatar mode');

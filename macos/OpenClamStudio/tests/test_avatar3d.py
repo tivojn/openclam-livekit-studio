@@ -130,6 +130,31 @@ class InspectTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.TestCase):
+    def test_replaced_model_revision_refreshes_existing_windows(self):
+        with TemporaryRegistry() as root:
+            model = os.path.join(root, "tia.glb")
+            with open(model, "wb") as handle:
+                handle.write(make_glb(rigged_document(OCULUS)))
+            created = avatar3d.create_avatar(model, "Tia", log=lambda *_: None)
+            slug = created["slug"]
+            runtime = avatar3d.ensure_runtime(slug, log=lambda *_: None)
+            path = os.path.join(runtime, "manifest.json")
+            before = avatar3d.served_manifest(path)
+            stamp = os.stat(path).st_mtime_ns
+            # Merely showing another window must not republish or change identity.
+            avatar3d.ensure_runtime(slug, log=lambda *_: None)
+            self.assertEqual(os.stat(path).st_mtime_ns, stamp)
+            self.assertEqual(avatar3d.served_manifest(path)["model_revision"], before["model_revision"])
+            source = os.path.join(build.adir(slug), "model.glb")
+            os.utime(source, ns=(1_000_000_000, 1_000_000_000))
+            avatar3d.ensure_runtime(slug, log=lambda *_: None)
+            after = avatar3d.served_manifest(path)
+            self.assertNotEqual(after["model_revision"], before["model_revision"])
+            self.assertEqual(after["model"], before["model"])
+            # Updating runtime pixels in place is also visible, even at equal size.
+            os.utime(os.path.join(runtime, "model.glb"), ns=(2_000_000_000, 2_000_000_000))
+            self.assertNotEqual(avatar3d.served_manifest(path)["model_revision"], after["model_revision"])
+
     def test_create_publish_ensure_and_thumbnail(self):
         with TemporaryRegistry() as root:
             model = os.path.join(root, "tia.glb")
