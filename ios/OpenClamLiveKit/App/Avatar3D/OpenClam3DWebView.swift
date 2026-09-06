@@ -22,6 +22,10 @@ struct OpenClam3DWebView: UIViewRepresentable {
         view.backgroundColor = .clear
         view.scrollView.backgroundColor = .clear
         view.scrollView.isScrollEnabled = false
+        // SwiftUI already places this canvas inside the conversation's safe
+        // area. A second WebKit inset shortens its CSS viewport and squeezes
+        // the logical camera crop vertically (728pt became 654pt on iPhone).
+        view.scrollView.contentInsetAdjustmentBehavior = .never
         view.isUserInteractionEnabled = false
         view.navigationDelegate = context.coordinator
         view.accessibilityIdentifier = "openclam-shared-3d-renderer"

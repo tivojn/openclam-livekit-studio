@@ -17,6 +17,16 @@ async function load(frame) {
   requestAnimationFrame(draw);
 }
 let previous = 0;
+// The camera crop and displayed CSS canvas must have the same aspect ratio.
+// Read the actual surface, including keyboard/safe-area layout changes, and
+// expand the crop uniformly if native layout and WebKit update out of step.
+export function fitAvatarViewport(crop, width, height, density = 1) {
+  const scale = Math.min(width / crop.w, height / crop.h);
+  const w = width / scale, h = height / scale;
+  return {x:crop.x + (crop.w-w)/2, y:crop.y + (crop.h-h)/2, w, h,
+    pixelWidth:Math.max(8,Math.round(width*density)),
+    pixelHeight:Math.max(8,Math.round(height*density))};
+}
 function draw(now) {
   requestAnimationFrame(draw);
   if (!latest || document.hidden) return;
@@ -24,10 +34,10 @@ function draw(now) {
   if (now - previous < interval) return;
   previous = now;
   avatar.setOrbit(latest.orbit);
-  const density = Math.min(window.devicePixelRatio || 1, 2048 / Math.max(innerWidth,innerHeight,1));
-  avatar.render(now, state, {...latest.crop,
-    pixelWidth:Math.max(8,Math.round(innerWidth*density)),
-    pixelHeight:Math.max(8,Math.round(innerHeight*density))});
+  const surface = avatar.canvas.getBoundingClientRect();
+  if (!(surface.width > 0 && surface.height > 0)) return;
+  const density = Math.min(window.devicePixelRatio || 1, 2048 / Math.max(surface.width,surface.height));
+  avatar.render(now, state, fitAvatarViewport(latest.crop, surface.width, surface.height, density));
   if (!reported) {reported=true;document.querySelector('#status').remove();report({event:'rendered'});}
 }
 report({event:'page-ready'});

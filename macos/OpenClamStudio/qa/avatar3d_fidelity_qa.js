@@ -101,6 +101,32 @@ const vm = require('node:vm');
         `3D proportions must survive zoom ${scale} and mirror ${mirrored}`);
     }
   }
+  // The phone bridge must preserve the same projection even when WebKit's
+  // CSS surface is smaller than SwiftUI's camera crop. This reproduces the
+  // measured 728pt → 654pt safe-area compression and keyboard resizing.
+  const phoneBridge = path.join(__dirname, '../../../ios/OpenClamLiveKit/App/Avatar3D/avatar-ios.js');
+  if (fs.existsSync(phoneBridge)) {
+    const phone = { window: { webkit: { messageHandlers: { avatarStatus: { postMessage() {} } } } },
+      console: { ...console } };
+    vm.runInNewContext(fs.readFileSync(phoneBridge, 'utf8')
+      .replace(/^import .*;$/gm, '').replace('export function fitAvatarViewport', 'function fitAvatarViewport')
+      + '\nglobalThis.fit = fitAvatarViewport;', phone);
+    for (const [width, height] of [[402, 654], [402, 728], [402, 440], [440, 810], [852, 330]]) {
+      for (const zoom of [.5, 1, 2.5]) {
+        const crop = { x: 98.51428571428573, y: 0, w: 826.9714285714285 / zoom, h: 1497.6 / zoom };
+        const view = phone.fit(crop, width, height, 3);
+        avatar.render(1500, { reduce: true }, view);
+        const center = new three.Vector3(0, .5, 0).project(avatar.camera);
+        const horizontal = new three.Vector3(.1, .5, 0).project(avatar.camera);
+        const vertical = new three.Vector3(0, .6, 0).project(avatar.camera);
+        const ratio = Math.abs(horizontal.x-center.x) * width / (Math.abs(vertical.y-center.y) * height);
+        assert.ok(Math.abs(ratio-1) < 1e-8, `phone canvas ${width}×${height}, zoom ${zoom} must be isotropic`);
+        assert.ok(Math.abs(view.x+view.w/2-(crop.x+crop.w/2)) < 1e-8, 'preserve the crop center');
+        assert.ok(Math.abs(view.y+view.h/2-(crop.y+crop.h/2)) < 1e-8, 'preserve the crop center');
+      }
+    }
+  }
+
   // Orbit the real camera through a full turn and both elevation limits.
   // All model bounds stay inside the logical portrait; reset is exact.
   const front = avatar.camera.position.clone();
