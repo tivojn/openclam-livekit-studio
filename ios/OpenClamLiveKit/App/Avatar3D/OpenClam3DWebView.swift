@@ -49,8 +49,9 @@ struct OpenClam3DWebView: UIViewRepresentable {
             coordinator.modelRevision = revision
             coordinator.modelURL = url
             coordinator.assets.modelURL = url
-            coordinator.pageReady = false
-            view.load(URLRequest(url: URL(string: "openclam-avatar://local/index.html")!))
+            coordinator.assets.revision = revision
+            coordinator.recoveryCount = 0
+            coordinator.start(view)
         }
         let frame = avatar.geometry.bodySize.cgSize
         coordinator.latest = [
@@ -62,11 +63,19 @@ struct OpenClam3DWebView: UIViewRepresentable {
             "options": options.selection(for: avatar.id),
             "pointer": options.pointers[avatar.id].map { ["x": $0.x, "y": $0.y] as Any } ?? NSNull(),
         ]
+        if coordinator.retryID != options.retryIDs[avatar.id, default: 0] {
+            coordinator.retryID = options.retryIDs[avatar.id, default: 0]
+            coordinator.recoveryCount = 0
+            coordinator.start(view)
+        }
+        coordinator.needsFlush = true
         coordinator.flush(view)
     }
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "avatarStatus")
+        coordinator.timeout?.cancel()
+        coordinator.assets.cancelAll()
         view.navigationDelegate = nil
         view.stopLoading()
     }
@@ -81,25 +90,84 @@ struct OpenClam3DWebView: UIViewRepresentable {
         var pageReady = false
         var updating = false
         var latest: [String: Any]?
+        var needsFlush = false
+        var hasFailed = false
+        var generation = 0
+        var recoveryCount = 0
+        var retryID = 0
+        var timeout: Task<Void, Never>?
+
+        func start(_ view: WKWebView) {
+            generation += 1
+            hasFailed = false
+            view.accessibilityValue = "Loading"
+            let current = generation
+            pageReady = false
+            updating = false
+            needsFlush = true
+            assets.cancelAll()
+            assets.maximumTextureSize = recoveryCount > 0 ? 768 : 2048
+            assets.onCatalogue = { [weak self] catalogue in
+                guard let self, self.generation == current else { return }
+                OpenClam3DOptionsStore.shared.receive(catalogue, for: self.avatarID)
+            }
+            // Defer publication out of UIViewRepresentable's update transaction.
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == current, !self.hasFailed else { return }
+                OpenClam3DOptionsStore.shared.setLoadState(.loading, for: self.avatarID)
+            }
+            timeout?.cancel()
+            timeout = Task { @MainActor [weak self, weak view] in
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                guard let self, let view, self.generation == current else { return }
+                self.fail("The 3D avatar took too long to load. Try loading it again.", view: view)
+            }
+            view.load(URLRequest(url: URL(string: "openclam-avatar://local/index.html?generation=\(current)")!))
+        }
+
+        func fail(_ message: String, view: WKWebView) {
+            hasFailed = true
+            view.accessibilityValue = "Failed"
+            timeout?.cancel()
+            pageReady = false
+            assets.cancelAll()
+            view.stopLoading()
+            OpenClam3DOptionsStore.shared.setLoadState(.failed(message), for: avatarID)
+            view.callAsyncJavaScript("window.showAvatarError?.(message)", arguments: ["message": message],
+                                     in: nil, in: .page, completionHandler: nil)
+        }
 
         func flush(_ view: WKWebView) {
-            guard pageReady, !updating, let latest else { return }
-            self.latest = nil
+            guard pageReady, !updating, needsFlush, let latest else { return }
+            needsFlush = false
+            let current = generation
             updating = true
             view.callAsyncJavaScript("window.updateAvatar(frame)", arguments: ["frame": latest],
                                      in: nil, in: .page) { [weak self, weak view] result in
-                guard let self else { return }
+                guard let self, self.generation == current else { return }
                 self.updating = false
-                if case .failure(let error) = result { print("3D bridge: \(error.localizedDescription)") }
+                if case .failure(let error) = result, let view {
+                    self.fail(error.localizedDescription, view: view)
+                    return
+                }
                 if let view { self.flush(view) }
             }
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
+            guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any],
+                  body["generation"] as? Int == generation, !hasFailed else { return }
             if body["event"] as? String == "page-ready" {
                 pageReady = true
                 if let view = message.webView { flush(view) }
+            }
+            if body["event"] as? String == "rendered" {
+                message.webView?.accessibilityValue = "Ready"
+                timeout?.cancel()
+                OpenClam3DOptionsStore.shared.setLoadState(.ready, for: avatarID)
+            }
+            if let error = body["error"] as? String, let view = message.webView {
+                fail(error, view: view)
             }
             if body["event"] as? String == "catalogue", let catalogue = body["catalogue"] {
                 OpenClam3DOptionsStore.shared.receive(catalogue, for: avatarID)
@@ -113,9 +181,21 @@ struct OpenClam3DWebView: UIViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            pageReady = false
-            updating = false
-            webView.reload()
+            if recoveryCount == 0 {
+                recoveryCount += 1
+                start(webView)
+            } else {
+                fail("iOS stopped the 3D renderer. Open 3D controls to try again.", view: webView)
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            guard (error as NSError).code != NSURLErrorCancelled else { return }
+            fail(error.localizedDescription, view: webView)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            self.webView(webView, didFail: navigation, withError: error)
         }
     }
 }
@@ -137,31 +217,98 @@ final class OpenClam3DWebAssets: NSObject, WKURLSchemeHandler {
         "/vendor/three/SkeletonUtils.js": "SkeletonUtils.js",
     ]
 
+    var revision = ""
+    var maximumTextureSize = 2048
+    var onCatalogue: (([String: Any]) -> Void)?
+    private var requests: [ObjectIdentifier: UUID] = [:]
+    private let worker = ModelResourceWorker()
+
+    func cancelAll() { requests.removeAll() }
+
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let request = task.request.url, request.host == "local" else {
             task.didFailWithError(URLError(.unsupportedURL)); return
         }
-        let path = request.path
-        let url: URL?
-        if path == "/model.glb" { url = modelURL }
-        else if let name = Self.resources[path] { url = Bundle.main.url(forResource: name, withExtension: nil) }
-        else { url = nil }
-        guard let url else { task.didFailWithError(URLError(.fileDoesNotExist)); return }
-        do {
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-            let length = try handle.seekToEnd()
-            try handle.seek(toOffset: 0)
-            let type = path.hasSuffix(".js") ? "text/javascript" : path.hasSuffix(".glb") ? "model/gltf-binary" : "text/html"
-            let response = HTTPURLResponse(url: request, statusCode: 200, httpVersion: nil,
-                headerFields: ["Content-Type": type, "Content-Length": String(length), "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"])!
-            task.didReceive(response)
-            while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { task.didReceive(chunk) }
-            task.didFinish()
-        } catch { task.didFailWithError(error) }
+        let key = ObjectIdentifier(task), token = UUID()
+        requests[key] = token
+        let modelURL = modelURL, revision = revision, maximum = maximumTextureSize
+        let bundled = Self.resources[request.path].flatMap { Bundle.main.url(forResource: $0, withExtension: nil) }
+        worker.queue.async { [worker, weak self] in
+            let active = DispatchQueue.main.sync { self?.requests[key] == token }
+            guard active else { return }
+            let result: Result<(Data, String, [String: Any]?), Error> = Result {
+                try autoreleasepool {
+                    if let bundled {
+                        return (try Data(contentsOf: bundled), request.path.hasSuffix(".js") ? "text/javascript" : "text/html", nil)
+                    }
+                    guard let modelURL else { throw URLError(.fileDoesNotExist) }
+                    let prepared = try worker.model(url: modelURL, revision: revision, maximum: maximum)
+                    guard let model = prepared else {
+                        guard request.path == "/model.gltf" else { throw URLError(.fileDoesNotExist) }
+                        return (try Data(contentsOf: modelURL, options: .mappedIfSafe), "model/gltf-binary", nil)
+                    }
+                    if request.path == "/model.gltf" { return (model.document, "model/gltf+json", model.catalogue) }
+                    let parts = request.path.split(separator: "/")
+                    guard parts.count == 2, let digits = parts[1].split(separator: ".").first,
+                          let index = Int(digits), index >= 0 else {
+                        throw URLError(.fileDoesNotExist)
+                    }
+                    if request.path == "/buffers/\(index).bin" { return (try model.buffer(at: index), "application/octet-stream", nil) }
+                    if request.path == "/images/\(index).png" { return (try model.image(at: index), "image/png", nil) }
+                    throw URLError(.fileDoesNotExist)
+                }
+            }
+            // Finish each delivery before decoding the next image. This bounds
+            // native memory and lets WebKit's stop callback cancel queued work.
+            DispatchQueue.main.sync {
+                guard let self, self.requests[key] == token else { return }
+                self.requests[key] = nil
+                switch result {
+                case let .success((data, type, catalogue)):
+                    if let catalogue { self.onCatalogue?(catalogue) }
+                    let response = HTTPURLResponse(url: request, statusCode: 200, httpVersion: nil,
+                        headerFields: ["Content-Type": type, "Content-Length": String(data.count),
+                            "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"])!
+                    task.didReceive(response)
+                    task.didReceive(data)
+                    task.didFinish()
+                case let .failure(error): task.didFailWithError(error)
+                }
+            }
+        }
     }
 
-    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        requests[ObjectIdentifier(task)] = nil
+    }
+}
+
+/// Accessed only on its serial queue. Holding the source handle also keeps an
+/// in-flight load consistent if the package is atomically replaced.
+private final class ModelResourceWorker: @unchecked Sendable {
+    let queue = DispatchQueue(label: "com.openclam.3d-resources", qos: .userInitiated)
+    private var key = ""
+    private var source: OpenClam3DModelResources?
+
+    func model(url: URL, revision: String, maximum: Int) throws -> OpenClam3DModelResources? {
+        let next = "\(url.path):\(revision):\(maximum)"
+        if next == key { return source }
+        do {
+            let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("OpenClam/3DTextures", isDirectory: true)
+            let model = try OpenClam3DModelResources(url: url, maximumTextureSize: maximum, cacheRoot: cache)
+            source = model
+            key = next
+            print("3D textures: \(model.originalTextureBytes) → \(model.decodedTextureBytes) bytes; limit \(model.textureLimit)")
+            return model
+        } catch OpenClam3DModelError.externalResources {
+            // Imported GLBs containing inline data URIs remain supported by
+            // the original loader. The bounded path covers packed BIN assets.
+            source = nil
+            key = next
+            return nil
+        }
+    }
 }
 
 extension OpenClam3DAvatarPose {
@@ -189,10 +336,18 @@ struct OpenClam3DCatalogue: Codable, Equatable {
     var hasChoices: Bool { !poses.isEmpty || !outfits.isEmpty || !props.isEmpty }
 }
 
+enum OpenClam3DLoadState: Equatable {
+    case loading
+    case ready
+    case failed(String)
+}
+
 @MainActor
 final class OpenClam3DOptionsStore: ObservableObject {
     static let shared = OpenClam3DOptionsStore()
     @Published private(set) var catalogues: [String: OpenClam3DCatalogue] = [:]
+    @Published private(set) var loadStates: [String: OpenClam3DLoadState] = [:]
+    @Published private(set) var retryIDs: [String: Int] = [:]
     @Published private(set) var pointers: [String: CGPoint] = [:]
     @Published private var selections: [String: [String: String]]
     private let defaults: UserDefaults
@@ -213,6 +368,15 @@ final class OpenClam3DOptionsStore: ObservableObject {
               catalogue.poses.count <= 256, catalogue.outfits.count <= 64, catalogue.props.count <= 64
         else { return }
         if catalogues[avatarID] != catalogue { catalogues[avatarID] = catalogue }
+    }
+
+    func setLoadState(_ state: OpenClam3DLoadState, for avatarID: String) {
+        if loadStates[avatarID] != state { loadStates[avatarID] = state }
+    }
+
+    func retry(_ avatarID: String) {
+        loadStates[avatarID] = .loading
+        retryIDs[avatarID, default: 0] += 1
     }
 
     func point(_ location: CGPoint?, in size: CGSize, for avatarID: String) {
@@ -297,15 +461,29 @@ struct OpenClam3DWardrobeSheet: View {
                     Section {
                         if avatarLibrary.updatingAvatarID == avatarID {
                             ProgressView("Adding clothing, props, and poses…")
-                        } else {
+                        } else if options.loadStates[avatarID] == .ready {
                             Text("This avatar has no wardrobe or poses available.")
                             .accessibilityIdentifier("openclam-3d-library-missing")
+                        } else if case .failed = options.loadStates[avatarID] {
+                            Text("The avatar could not finish loading.")
+                        } else {
+                            ProgressView("Loading avatar and wardrobe…")
                         }
                     }
                     Section {
                         behavior("Play transitions", key: "playTransitions")
                         behavior("Follow cursor", key: "followCursor")
                     }
+                }
+                if case let .failed(message) = options.loadStates[avatarID] {
+                    Section {
+                        Text(message)
+                        Button("Retry 3D Avatar") { options.retry(avatarID) }
+                            .accessibilityIdentifier("openclam-3d-retry")
+                    }
+                } else if options.loadStates[avatarID] == .loading,
+                          options.catalogues[avatarID]?.hasChoices == true {
+                    Section { ProgressView("Loading 3D avatar…") }
                 }
                 if let error = avatarLibrary.bundledUpdateErrors[avatarID] {
                     Section {

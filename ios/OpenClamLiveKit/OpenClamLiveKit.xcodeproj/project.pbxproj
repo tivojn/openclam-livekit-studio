@@ -135,6 +135,7 @@
 		AAC4B2DA7EB175BCB11C142C /* CompanionAgentToolCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B564409321FA82F37998F1 /* CompanionAgentToolCatalog.swift */; };
 		AB2A9B11A657CD24CEA5342F /* GLTFKit2 in Frameworks */ = {isa = PBXBuildFile; productRef = 4CFD424132D7C01293FF7E4D /* GLTFKit2 */; };
 		AB6956AEC85FC2E79FDFAE35 /* ActivityRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FC28AB4A5774A9C00E46718 /* ActivityRecord.swift */; };
+		AC4F6C5A4DAD787DBF7264F6 /* OpenClam3DModelResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = AADCFB53FA5CA91A4427D0EF /* OpenClam3DModelResources.swift */; };
 		AD50D2A2C2F1B90226DEDB07 /* OpenClamAvatarStoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6344279813D7A311A671526A /* OpenClamAvatarStoreView.swift */; };
 		AEC336CA5CD9AD3EA0697FAF /* ScreenVoicePTTActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD8627F755D0194756B81B5 /* ScreenVoicePTTActivityController.swift */; };
 		AEFE9A6C5DBE5782BD7D00A2 /* RoomEnvironment.js in Resources */ = {isa = PBXBuildFile; fileRef = 90125C1561CAC6E40AF79553 /* RoomEnvironment.js */; };
@@ -388,6 +389,7 @@
 		A421670F9FC98590668CA8DB /* OpenClam3DAvatarUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClam3DAvatarUITests.swift; sourceTree = "<group>"; };
 		A83552D01263C9983C3E1402 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A849614AD3532D1F9283D4D5 /* PrepareScreenContextIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrepareScreenContextIntent.swift; sourceTree = "<group>"; };
+		AADCFB53FA5CA91A4427D0EF /* OpenClam3DModelResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClam3DModelResources.swift; sourceTree = "<group>"; };
 		ABC0D65F8B5C9F548E41341A /* OpenClamLiveKit.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenClamLiveKit.entitlements; sourceTree = "<group>"; };
 		AD1763CCCA49D31B5F810279 /* GoogleMapsURLBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleMapsURLBuilderTests.swift; sourceTree = "<group>"; };
 		AEAD505B1AE9590E13BE595B /* OpenClamLiveKitApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamLiveKitApp.swift; sourceTree = "<group>"; };
@@ -929,6 +931,7 @@
 				E4D4D0309DDD5B4EACDBF62E /* OpenClam3DAvatarArtwork.swift */,
 				498591DB2F33B824E3598FE3 /* OpenClam3DAvatarModel.swift */,
 				2B00D2E46F533E88A6F5440E /* OpenClam3DAvatarRig.swift */,
+				AADCFB53FA5CA91A4427D0EF /* OpenClam3DModelResources.swift */,
 				1DCEBEB1B8DA5942E32FEFED /* OpenClam3DWebView.swift */,
 				8BB7576A7C4853DC47B07920 /* ThreeJS-LICENSE.txt */,
 			);
@@ -1318,6 +1321,7 @@
 				205686264C70B7E5A410965D /* OpenClam3DAvatarArtwork.swift in Sources */,
 				68D984A246883811AE6199A2 /* OpenClam3DAvatarModel.swift in Sources */,
 				5413889793C19CFB242FEEAE /* OpenClam3DAvatarRig.swift in Sources */,
+				AC4F6C5A4DAD787DBF7264F6 /* OpenClam3DModelResources.swift in Sources */,
 				DFCC4E188E77B37E95826E6F /* OpenClam3DWebView.swift in Sources */,
 				C667ECA0A5BEDA5641117E59 /* OpenClamAvatarAssetStore.swift in Sources */,
 				3DF8A90EB7457463FC54E116 /* OpenClamAvatarCarousel.swift in Sources */,
@@ -1406,7 +1410,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1490,7 +1494,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1508,7 +1512,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1579,7 +1583,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1600,7 +1604,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1638,7 +1642,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1725,7 +1729,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1749,7 +1753,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 66;
+				CURRENT_PROJECT_VERSION = 67;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

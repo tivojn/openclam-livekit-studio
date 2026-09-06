@@ -107,8 +107,8 @@ const vm = require('node:vm');
   // measured 728pt → 654pt safe-area compression and keyboard resizing.
   const phoneBridge = path.join(__dirname, '../../../ios/OpenClamLiveKit/App/Avatar3D/avatar-ios.js');
   if (fs.existsSync(phoneBridge)) {
-    const phone = { window: { webkit: { messageHandlers: { avatarStatus: { postMessage() {} } } } },
-      console: { ...console } };
+    const phone = { window: { addEventListener() {}, webkit: { messageHandlers: { avatarStatus: { postMessage() {} } } } },
+      location: { search: '?generation=1' }, URLSearchParams, console: { ...console } };
     vm.runInNewContext(fs.readFileSync(phoneBridge, 'utf8')
       .replace(/^import .*;$/gm, '').replace('export function fitAvatarViewport', 'function fitAvatarViewport')
       + '\nglobalThis.fit = fitAvatarViewport;', phone);

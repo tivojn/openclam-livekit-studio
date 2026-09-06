@@ -54,6 +54,7 @@ struct OpenClam3DAvatarArtwork: View {
     let reduceMotion: Bool
     var orbit = OpenClam3DOrbit()
     @StateObject private var loader = OpenClam3DAvatarLoader()
+    @ObservedObject private var options = OpenClam3DOptionsStore.shared
 
     private var usesSharedRenderer: Bool {
 #if DEBUG
@@ -95,6 +96,13 @@ struct OpenClam3DAvatarArtwork: View {
                     crop: crop,
                     message: loader.failure
                 )
+            }
+        }
+        .overlay {
+            if usesSharedRenderer, case let .failed(message) = options.loadStates[avatar.id] {
+                Text(message).font(.callout).multilineTextAlignment(.center)
+                    .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .padding(32).accessibilityIdentifier("openclam-3d-load-error")
             }
         }
         .task(id: avatar.id) {

@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
 import GLTFKit2
+import ImageIO
+import WebKit
 import SceneKit
 import UIKit
 import XCTest
@@ -690,5 +692,104 @@ extension OpenClam3DAvatarTests {
         store.reset("character")
         XCTAssertNil(store.selection(for: "character")["body"])
         XCTAssertFalse(store.enabled("playTransitions", for: "character"))
+    }
+}
+
+
+extension OpenClam3DAvatarTests {
+    func testStreamedResourcesKeepModelBytesGeometryAndImageAlpha() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 512, height: 256), format: format).pngData { context in
+            UIColor.red.withAlphaComponent(0.5).setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 256, height: 256))
+        }
+        let geometry = Data(0..<16)
+        let binary = geometry + png
+        var original = Self.document(targets: Self.oculusTargets)
+        original["buffers"] = [["byteLength": binary.count]]
+        original["bufferViews"] = [["buffer": 0, "byteOffset": 0, "byteLength": geometry.count],
+                                   ["buffer": 0, "byteOffset": geometry.count, "byteLength": png.count]]
+        original["images"] = [["bufferView": 1, "mimeType": "image/png"]]
+        original["textures"] = [["extensions": ["EXT_texture_webp": ["source": 0]]]]
+        original["extensionsRequired"] = ["EXT_texture_webp"]
+        original["extras"] = ["openclamAvatar": ["poses": [["id": "heart", "label": "Heart", "group": "body"]]]]
+        let bytes = Self.makeGLB(original, binary: binary)
+        let url = try temporaryDirectory().appendingPathComponent("original.glb")
+        try bytes.write(to: url)
+        let cache = try temporaryDirectory()
+        let resources = try OpenClam3DModelResources(url: url, maximumTextureSize: 256, cacheRoot: cache)
+        XCTAssertEqual(try Data(contentsOf: url), bytes, "Loading must not rewrite the user's asset")
+        XCTAssertEqual(try resources.buffer(at: 0), geometry)
+        let delivered = try XCTUnwrap(JSONSerialization.jsonObject(with: resources.document) as? [String: Any])
+        for key in ["meshes", "nodes", "skins", "accessors", "materials", "extras"] {
+            XCTAssertEqual(NSDictionary(dictionary: [key: original[key] ?? NSNull()]),
+                           NSDictionary(dictionary: [key: delivered[key] ?? NSNull()]), key)
+        }
+        XCTAssertEqual((delivered["textures"] as? [[String: Any]])?.first?["source"] as? Int, 0)
+        XCTAssertEqual(resources.catalogue["poses"] as? [[String: String]], [["id": "heart", "label": "Heart", "group": "body"]])
+        let image = try resources.image(at: 0)
+        let cacheFile = try XCTUnwrap(resources.cacheDirectory).appendingPathComponent("0.png")
+        let cacheDate = try cacheFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let reopened = try OpenClam3DModelResources(url: url, maximumTextureSize: 256, cacheRoot: cache)
+        XCTAssertEqual(try reopened.image(at: 0), image)
+        XCTAssertEqual(try cacheFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, cacheDate)
+        try Data("partial cache".utf8).write(to: cacheFile)
+        XCTAssertEqual(try reopened.image(at: 0), image, "A damaged cache must rebuild from the untouched model")
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(image as CFData, nil))
+        let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(decoded.width, 256)
+        XCTAssertEqual(decoded.height, 128, "Image aspect ratio must remain intact")
+        XCTAssertFalse([CGImageAlphaInfo.none, .noneSkipFirst, .noneSkipLast].contains(decoded.alphaInfo))
+        // Read the image into a known RGBA layout to check transparent hair-card pixels.
+        var pixels = [UInt8](repeating: 0, count: 256 * 128 * 4)
+        try pixels.withUnsafeMutableBytes { raw in
+            let context = try XCTUnwrap(CGContext(data: raw.baseAddress, width: 256, height: 128,
+                bitsPerComponent: 8, bytesPerRow: 256 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(decoded, in: CGRect(x: 0, y: 0, width: 256, height: 128))
+        }
+        XCTAssertEqual(pixels[(64 * 256 + 200) * 4 + 3], 0)
+        XCTAssertEqual(Double(pixels[(64 * 256 + 50) * 4 + 3]), 128, accuracy: 2)
+        XCTAssertThrowsError(try resources.buffer(at: -1))
+        XCTAssertThrowsError(try resources.image(at: 1))
+    }
+
+    func testTextureBudgetBoundsLargeWardrobesBeforeDecoding() {
+        let sizes = Array(repeating: (4096, 4096), count: 51)
+        let budget = 256 * 1024 * 1024
+        let limit = OpenClam3DModelResources.textureSize(for: sizes, maximum: 2048, budget: budget)
+        XCTAssertEqual(limit, 1024)
+        XCTAssertLessThanOrEqual(OpenClam3DModelResources.textureBytes(sizes, limit: limit), budget)
+        XCTAssertEqual(OpenClam3DModelResources.textureSize(for: [(4096, 2048)], maximum: 2048, budget: budget), 2048)
+    }
+
+    func testStreamedResourcesRejectRangesOutsideBinary() throws {
+        var document = Self.document(targets: Self.oculusTargets)
+        document["buffers"] = [["byteLength": 4]]
+        document["bufferViews"] = [["buffer": 0, "byteOffset": 3, "byteLength": 4]]
+        let url = try temporaryDirectory().appendingPathComponent("bad.glb")
+        try Self.makeGLB(document).write(to: url)
+        XCTAssertThrowsError(try OpenClam3DModelResources(url: url))
+    }
+
+    func testRendererTerminationRecoveryIsBoundedAndKeepsLastFrame() {
+        let coordinator = OpenClam3DWebView.Coordinator()
+        coordinator.avatarID = "recovery-test"
+        coordinator.latest = ["options": ["prop": "rifle", "followCursor": "false"]]
+        let view = WKWebView()
+        coordinator.webViewWebContentProcessDidTerminate(view)
+        XCTAssertEqual(coordinator.recoveryCount, 1)
+        XCTAssertEqual(coordinator.assets.maximumTextureSize, 768)
+        XCTAssertNotNil(coordinator.latest, "A stopped timeline must still be able to restart the renderer")
+        let generation = coordinator.generation
+        coordinator.webViewWebContentProcessDidTerminate(view)
+        XCTAssertEqual(coordinator.generation, generation, "Repeated termination must not silently reload forever")
+        guard case .failed = OpenClam3DOptionsStore.shared.loadStates["recovery-test"] else {
+            return XCTFail("Repeated termination must show a retryable failure")
+        }
+        coordinator.timeout?.cancel()
+        view.stopLoading()
     }
 }

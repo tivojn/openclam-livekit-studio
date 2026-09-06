@@ -32,7 +32,11 @@ final class OpenClam3DAvatarUITests: XCTestCase {
             "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any)["openclam-3d-controls"].waitForExistence(timeout: 12))
-        sleep(5)
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 12))
+        XCTAssertTrue(NSPredicate(format: "value == %@", "Ready").evaluate(with: renderer)
+            || XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Ready"),
+                object: renderer)], timeout: 60) == .completed, "The model must finish rendering before wardrobe interaction")
         openWardrobe()
         func choose(_ group: String, _ choice: String) {
             let picker = app.descendants(matching: .any)["openclam-3d-choice-\(group)"]
@@ -83,6 +87,14 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         app.buttons["Done"].tap()
         sleep(2)
         capture("wardrobe-original-reset")
+        app.terminate()
+        app.launch()
+        let cachedRenderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(cachedRenderer.waitForExistence(timeout: 12))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: cachedRenderer)], timeout: 20), .completed,
+            "Reopening must render from the prepared texture cache")
+        capture("wardrobe-cached-relaunch")
     }
 
     /// Run against a private 3D fixture without extras.openclamAvatar.

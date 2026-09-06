@@ -31,3 +31,25 @@ the wardrobe manually in the simulator does not validate automatic delivery.
 If an upgrade fails, the existing model remains usable. The Wardrobe & Poses
 sheet displays the error and a retry action. Files import remains available
 for custom packages; it explains when Live Talk temporarily blocks imports.
+
+
+## iOS rendering memory
+
+Packed GLBs are served to WebKit as a read-only glTF document, individual
+original buffer views, and PNG textures decoded by ImageIO at a bounded size.
+The installed GLB, all geometry/sparse accessors, skin matrices, materials,
+pose data, and UVs remain unchanged. Texture scaling preserves aspect ratio
+and alpha, uses at most a 2048-pixel longest edge, and selects a smaller common
+limit when all decoded textures would exceed 256 MiB. Small custom assets with
+inline data URIs retain the original loader path.
+
+The resource worker serializes decoding off the main thread and cancels stale
+requests. Decoded PNGs are cached on disk by the actual model SHA-256, texture
+limit, and decoder version; damaged entries are regenerated. The cache keeps
+the current variant and two prior variants, independently of installed assets. The native wardrobe catalogue is available before GPU loading ends.
+A first WebKit process interruption retries once with a smaller texture limit;
+a second interruption or a 60-second load timeout presents a retry action in
+Wardrobe & Poses. Saved clothing, props, playback, and follow preferences survive
+recovery. Build 67 adds this path after build 66 exposed large texture memory
+use on a physical iPhone; simulator success alone does not establish hardware
+memory behavior.

@@ -1,18 +1,33 @@
 import '/avatar3d.js';
-let avatar, latest, loading, reported = false;
+let avatar, latest, loading, reported = false, failed = false;
 const originalError = console.error;
-console.error = (...items) => { originalError(...items); window.webkit.messageHandlers.avatarStatus.postMessage({error:items.map(String).join(' ')}); };
-const report = body => window.webkit.messageHandlers.avatarStatus.postMessage(body);
+const generation = Number(new URLSearchParams(location.search).get('generation'));
+const report = body => window.webkit.messageHandlers.avatarStatus.postMessage({...body,generation});
+console.error = (...items) => { originalError(...items); report({error:items.map(String).join(' ')}); };
+window.showAvatarError = message => {
+  failed = true;
+  let status = document.querySelector('#status');
+  if (!status) { status = document.createElement('div'); status.id = 'status'; document.body.append(status); }
+  status.textContent = message;
+};
+const fail = error => {
+  const message = String(error?.message || error);
+  window.showAvatarError(message);
+  report({error:message});
+};
+window.addEventListener('error', event => fail(event.error || event.message));
+window.addEventListener('unhandledrejection', event => fail(event.reason));
 window.updateAvatar = frame => {
   latest = frame;
-  if (!loading) loading = load(frame).catch(error => {
-    document.querySelector('#status').textContent = '3D avatar: '+String(error.message || error);
-    report({error:String(error.message || error)});
-  });
+  if (!loading && !failed) loading = load(frame).catch(fail);
 };
 async function load(frame) {
   avatar = window.OpenClamAvatar3D.create(frame.frame);
-  await avatar.load('/model.glb');
+  avatar.canvas.addEventListener('webglcontextlost', event => {
+    event.preventDefault(); fail('The 3D renderer was interrupted. Open 3D controls to try again.');
+  });
+  await avatar.load('/model.gltf');
+  if (failed) return;
   report({event:'catalogue', catalogue:avatar.options?.catalogue() || {poses:[],outfits:[],props:[]}});
   document.body.append(avatar.canvas);
   requestAnimationFrame(draw);
@@ -29,6 +44,7 @@ export function fitAvatarViewport(crop, width, height, density = 1) {
     pixelHeight:Math.max(8,Math.round(height*density))};
 }
 function draw(now) {
+  if (failed) return;
   requestAnimationFrame(draw);
   if (!latest || document.hidden) return;
   const state = latest.state, interval = state.reduce ? 250 : state.speaking ? 16 : 33;
