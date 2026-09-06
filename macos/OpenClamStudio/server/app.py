@@ -39,6 +39,7 @@ import openclaw_pairing
 import openclaw_acp
 import livekit_bridge as LK
 import avatar_package as AVTR
+import avatar3d as AVATAR3D
 import align
 from studio import rig, body as body_authoring
 
@@ -110,8 +111,11 @@ CSP = ("default-src 'self'; img-src 'self' data: blob: https:; "
        "media-src 'self' blob: https:; "
        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
        # 'self' does not cover the ws: scheme, and live dictation streams
-       # over a local WebSocket to this same server.
-       "connect-src 'self' ws://127.0.0.1:* ws://localhost:*{livekit_origins}; "
+       # over a local WebSocket to this same server. blob: lets the 3D avatar
+       # renderer decode the textures embedded in a .glb (three.js hands them
+       # to createImageBitmap through same-document blob URLs); it opens no
+       # network destination.
+       "connect-src 'self' blob: ws://127.0.0.1:* ws://localhost:*{livekit_origins}; "
        "font-src 'self' data:; frame-src 'self' blob:; object-src 'none'; "
        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
@@ -488,6 +492,7 @@ def active_slug():
 # v23 republishes runtime bodies under the medium-aware curved-jaw handoff.
 # The face/expression contract introduced by v22 is otherwise unchanged.
 RUNTIME_VERSION = 23
+AVATAR3D.RUNTIME_VERSION = RUNTIME_VERSION
 
 
 def ensure_runtime(slug, log=print):
@@ -496,6 +501,9 @@ def ensure_runtime(slug, log=print):
     Bundles from an older exporter are republished the same way, so asset
     upgrades (like the widened gaze grid) reach existing avatars without a
     manual rebuild."""
+    if AVATAR3D.is_3d(reg().read_manifest(slug)):
+        # A 3D avatar's runtime is its model plus a manifest; nothing renders.
+        return AVATAR3D.ensure_runtime(slug, log=log)
     d = _recover_runtime_swap(slug)
     manifest_path = os.path.join(d, "manifest.json")
     if os.path.exists(manifest_path):
@@ -1697,6 +1705,80 @@ async def api_upload(
     return m
 
 
+def _reject_3d(slug, action):
+    """Portrait-only studio steps make no sense for a model-driven avatar."""
+    if AVATAR3D.is_3d(reg().read_manifest(slug)):
+        raise HTTPException(
+            400, f"a 3D avatar cannot {action}; its face comes from the model")
+
+
+@app.post("/api/avatar/upload3d")
+async def api_upload_3d(
+        model: UploadFile = File(...),
+        name: str = Form("", max_length=120)):
+    """Register a rigged .glb as a ready-to-activate 3D avatar."""
+    ext = os.path.splitext(model.filename or "")[1].lower()
+    if ext != ".glb":
+        raise HTTPException(400, "upload a binary glTF (.glb) model")
+    descriptor, tmp = tempfile.mkstemp(suffix=".glb")
+    os.close(descriptor)
+    total = 0
+    try:
+        with open(tmp, "wb") as handle:
+            while True:
+                chunk = await model.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > AVATAR3D.MAX_MODEL_BYTES:
+                    raise HTTPException(
+                        413, "model exceeds the "
+                        f"{AVATAR3D.MAX_MODEL_BYTES // (1024 * 1024)} MB upload limit")
+                handle.write(chunk)
+        try:
+            manifest = await asyncio.to_thread(
+                AVATAR3D.create_avatar, tmp, name,
+                original_name=model.filename or "")
+        except AVATAR3D.ModelError as error:
+            raise HTTPException(400, str(error))
+        except Exception as error:
+            raise HTTPException(400, f"could not import model: {error}")
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return manifest
+
+
+class ThumbnailLayout(BaseModel):
+    bounds: list[float] = Field(min_length=4, max_length=4)
+    faceBounds: list[float] = Field(min_length=4, max_length=4)
+
+
+class ThumbnailRequest(BaseModel):
+    slug: str = Field(pattern=SLUG_PATTERN)
+    image: str = Field(min_length=32, max_length=6 * 1024 * 1024)
+    layout: ThumbnailLayout | None = None
+
+
+@app.post("/api/avatar/thumb3d")
+async def api_thumb_3d(r: ThumbnailRequest):
+    """The renderer posts one face snapshot so the deck shows the real model."""
+    header = "data:image/png;base64,"
+    if not r.image.startswith(header):
+        raise HTTPException(400, "thumbnail must be a PNG data URL")
+    try:
+        raw = base64.b64decode(r.image[len(header):], validate=True)
+    except Exception:
+        raise HTTPException(400, "thumbnail is not valid base64")
+    try:
+        await asyncio.to_thread(
+            AVATAR3D.set_thumbnail, r.slug, raw,
+            r.layout.model_dump() if r.layout else None)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    return {"ok": True}
+
+
 class RenameRequest(BaseModel):
     slug: str = Field(pattern=SLUG_PATTERN)
     name: str = Field(min_length=1, max_length=120)
@@ -1934,6 +2016,7 @@ async def api_rig(slug: str = Query(pattern=SLUG_PATTERN)):
     manifest = registry.read_manifest(slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
+    _reject_3d(slug, "be calibrated")
     manifest = registry.repair_source_medium_from_source(
         slug, manifest=manifest)
     if manifest.get("status") != "ready":
@@ -2058,6 +2141,7 @@ async def api_build(b: Slug):
             raise HTTPException(422, f"unknown viseme shapes: {', '.join(unknown)}")
     if not reg().read_manifest(b.slug):
         raise HTTPException(404, "avatar not found")
+    _reject_3d(b.slug, "be rebuilt from a portrait")
     job_id = _reserve_job(b.slug, "build", "Building avatar")
     if not job_id:
         return _already_running(b.slug)
@@ -2502,6 +2586,7 @@ async def api_pipeline(request: PipelineRequest):
     manifest = reg().read_manifest(request.slug)
     if not manifest:
         raise HTTPException(404, "avatar not found")
+    _reject_3d(request.slug, "run the portrait pipeline")
     job_id = _reserve_job(request.slug, "pipeline",
                           "One-click: face, body, walk, idle, moves")
     if not job_id:
@@ -2954,7 +3039,7 @@ def _avatar_is_busy(slug):
 @app.get("/api/avatar/export")
 async def api_avatar_export(
     slug: str = Query(pattern=SLUG_PATTERN),
-    variant: str = Query(pattern=r"^(?:macos-full|ios-light)$"),
+    variant: str = Query(pattern=r"^(?:macos-full|ios-light|ios-3d)$"),
 ):
     """Create one explicit AVTR file; this never synchronizes app state."""
     registry = reg()
@@ -2963,6 +3048,27 @@ async def api_avatar_export(
         raise HTTPException(404, "avatar not found")
     if _avatar_is_busy(slug):
         raise HTTPException(409, "wait for avatar generation to finish")
+    if variant == AVATAR3D.IOS_VARIANT:
+        if not AVATAR3D.is_3d(manifest):
+            raise HTTPException(400, "only a 3D avatar exports as an ios-3d package")
+        descriptor, temporary = tempfile.mkstemp(prefix=".openclam-ios-3d-", suffix=".avtr")
+        os.close(descriptor)
+        try:
+            await asyncio.to_thread(AVATAR3D.export_ios_3d, slug, temporary)
+        except AVTR.AvatarPackageError as error:
+            _discard_temporary(temporary)
+            raise HTTPException(422, str(error)) from error
+        except Exception as error:
+            _discard_temporary(temporary)
+            raise HTTPException(422, "avatar export could not be created") from error
+        return FileResponse(
+            temporary,
+            media_type="application/vnd.openclam.avatar+zip",
+            filename=f"{slug}-{variant}.avtr",
+            headers={"Cache-Control": "no-store"},
+            background=BackgroundTask(_discard_temporary, temporary),
+        )
+    _reject_3d(slug, "be exported as a 2D package; use the iPhone 3D export")
     _recover_body_edit_transaction_if_idle(slug)
     manifest = registry.read_manifest(slug)
     if not isinstance(manifest, dict):
@@ -4095,6 +4201,27 @@ async def livekit_client_script():
         media_type="application/javascript",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/avatar3d.js")
+async def avatar3d_script():
+    path = os.path.join(WEB, "avatar3d.js")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "3D avatar renderer is not installed")
+    return FileResponse(path, media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/vendor/three/{name}")
+async def three_module(name: str):
+    """The staged three.js ES modules (scripts/stage-three-assets.mjs)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.js", name):
+        raise HTTPException(404, "not found")
+    path = os.path.join(WEB, "vendor", "three", name)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "three.js runtime is not staged")
+    return FileResponse(path, media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/live-talk-connection.wav")

@@ -1581,7 +1581,22 @@ struct OpenClamCatalogAvatarStage: View {
         let opacityPlan = OpenClamAvatarStageOpacityPolicy.plan(for: renderOpacity)
         GeometryReader { proxy in
             ZStack {
-                if showsArtwork {
+                if showsArtwork, avatar.compatibility.rendersModel {
+                    // A rigged model draws the same logical crop the plates
+                    // would, so presentation, gestures and opacity are shared.
+                    OpenClam3DAvatarArtwork(
+                        avatar: avatar,
+                        controller: controller,
+                        reactions: reactions,
+                        faceMirror: faceMirror,
+                        crop: crop,
+                        reduceMotion: reduceMotion
+                    )
+                    .opacity(opacityPlan.bodyOpacity)
+                    .clipped()
+                    .compositingGroup()
+                    .allowsHitTesting(false)
+                } else if showsArtwork {
                     ZStack {
                     // The full body is deliberately outside TimelineView. It
                     // remains a stable texture while only the much smaller

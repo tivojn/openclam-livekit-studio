@@ -102,6 +102,7 @@ enum OpenClamAvatarCatalog {
               manifest.variant == OpenClamAvatarPackageContract.variant,
               manifest.id == expectedID.rawValue,
               manifest.displayName == expectedName,
+              let rig = manifest.rig,
               manifest.expression != nil else {
             preconditionFailure("Bundled \(expectedName) manifest is invalid")
         }
@@ -158,7 +159,7 @@ enum OpenClamAvatarCatalog {
             includedByteCount: includedByteCount,
             sourceMedium: manifest.sourceMedium ?? .photograph,
             speechPatch: manifest.speechPatch,
-            geometry: manifest.rig,
+            geometry: rig,
             expressionGeometry: manifest.expression,
             compatibility: fullExpressionCompatibility,
             assets: assets,

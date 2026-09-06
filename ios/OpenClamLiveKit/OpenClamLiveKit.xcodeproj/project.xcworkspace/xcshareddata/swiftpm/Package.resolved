@@ -1,5 +1,5 @@
 {
-  "originHash" : "bd14ed00142634c3a7a02591ce757358127b69cecab484cd87c80bea4104d867",
+  "originHash" : "5704b9decd45a1af4472b3488b9c3bdce88cc7ce381ef85e8c118af031900c26",
   "pins" : [
     {
       "identity" : "client-sdk-swift",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "79fb2beee98e45556bffebefa50b5d05c3382af1",
         "version" : "2.16.0"
+      }
+    },
+    {
+      "identity" : "gltfkit2",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/warrenm/GLTFKit2",
+      "state" : {
+        "revision" : "e69e354c4f31ea07b7816b8cbe2ddb28e897d073",
+        "version" : "0.5.15"
       }
     },
     {

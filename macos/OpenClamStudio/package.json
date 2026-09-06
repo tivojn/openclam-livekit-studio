@@ -1,6 +1,6 @@
 {
   "name": "openclam-livekit-studio",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "author": "OpenClam contributors",
   "license": "MIT",
   "private": true,
@@ -15,16 +15,17 @@
   },
   "homepage": "https://github.com/tivojn/openclam-livekit-studio#readme",
   "scripts": {
-    "prestart": "npm run stage:livekit && npm run fetch:model && npm run build:native",
+    "prestart": "npm run stage:livekit && npm run stage:three && npm run fetch:model && npm run build:native",
     "start": "electron .",
-    "predev": "npm run stage:livekit && npm run fetch:model && npm run build:native",
+    "predev": "npm run stage:livekit && npm run stage:three && npm run fetch:model && npm run build:native",
     "dev": "electron .",
     "build:cutout": "scripts/build-person-cutout.sh",
     "build:native": "npm run build:cutout",
     "stage:livekit": "node scripts/stage-livekit-assets.mjs",
-    "pretest": "npm run stage:livekit",
-    "test": ".venv/bin/python -m unittest discover -s tests -v && node qa/track_qa.js && node qa/pet_window_bounds_qa.js && node qa/pet_window_level_qa.js && node qa/avatar_store_qa.js && node qa/standalone_shell_qa.js && node qa/openclam_desktop_renderer_qa.js && node qa/cursor_gaze_qa.js && node qa/openclam_settings_qa.js && node qa/codex_macos_theme_qa.js && node qa/menu_accessibility_qa.js && node qa/release_security_qa.js",
-    "check:syntax": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/avatar-display-controls.cjs && node --check electron/avatar-store.cjs && node --check electron/bubble-preload.cjs && node --check electron/appearance-preload.cjs && node --check electron/menu-preload.cjs && node --check electron/pet-window-bounds.cjs && node --check electron/pet-window-level.cjs && node --check qa/life_probe.js && node --check qa/track_qa.js && node --check qa/pet_window_bounds_qa.js && node --check qa/pet_window_level_qa.js && node --check qa/avatar_store_qa.js && node --check qa/standalone_shell_qa.js && node --check qa/openclam_desktop_renderer_qa.js && node --check qa/cursor_gaze_qa.js && node --check qa/openclam_settings_qa.js && node --check qa/codex_macos_theme_qa.js && node --check qa/menu_accessibility_qa.js && node --check qa/release_security_qa.js && /bin/bash -n scripts/release-macos.sh && /bin/bash -n scripts/stage-openclaw-plugin.sh && node scripts/check-inline-scripts.mjs && .venv/bin/python -m compileall -q server studio tests scripts qa",
+    "stage:three": "node scripts/stage-three-assets.mjs",
+    "pretest": "npm run stage:livekit && npm run stage:three",
+    "test": ".venv/bin/python -m unittest discover -s tests -v && node qa/track_qa.js && node qa/pet_window_bounds_qa.js && node qa/pet_window_level_qa.js && node qa/avatar_store_qa.js && node qa/standalone_shell_qa.js && node qa/openclam_desktop_renderer_qa.js && node qa/avatar3d_qa.js && node qa/avatar3d_fidelity_qa.js && node qa/cursor_gaze_qa.js && node qa/openclam_settings_qa.js && node qa/codex_macos_theme_qa.js && node qa/menu_accessibility_qa.js && node qa/release_security_qa.js",
+    "check:syntax": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/avatar-display-controls.cjs && node --check electron/avatar-store.cjs && node --check electron/bubble-preload.cjs && node --check electron/appearance-preload.cjs && node --check electron/menu-preload.cjs && node --check electron/pet-window-bounds.cjs && node --check electron/pet-window-level.cjs && node --check qa/life_probe.js && node --check qa/track_qa.js && node --check qa/pet_window_bounds_qa.js && node --check qa/pet_window_level_qa.js && node --check qa/avatar_store_qa.js && node --check qa/standalone_shell_qa.js && node --check qa/openclam_desktop_renderer_qa.js && node --check qa/avatar3d_qa.js && node --check qa/avatar3d_fidelity_qa.js && node --check qa/cursor_gaze_qa.js && node --check qa/openclam_settings_qa.js && node --check qa/codex_macos_theme_qa.js && node --check qa/menu_accessibility_qa.js && node --check qa/release_security_qa.js && /bin/bash -n scripts/release-macos.sh && /bin/bash -n scripts/stage-openclaw-plugin.sh && node scripts/check-inline-scripts.mjs && .venv/bin/python -m compileall -q server studio tests scripts qa",
     "check:native": "scripts/build-person-cutout.sh --check",
     "check:privacy": ".venv/bin/python scripts/public-release-audit.py .",
     "check:avatar": "node qa/life_probe.js . check && .venv/bin/python -W ignore qa/blink_lash_qa.py && .venv/bin/python -W ignore qa/mouth_motion_qa.py",
@@ -35,12 +36,13 @@
     "stage:ffmpeg": "scripts/stage-electron-ffmpeg.sh",
     "stage:openclaw": "scripts/stage-openclaw-plugin.sh",
     "stage:backend": "npm run stage:python && npm run stage:site-packages && npm run stage:ffmpeg && scripts/stage-electron-python.sh --scrub-only",
-    "pack": "npm run stage:livekit && npm run fetch:model && npm run build:native && npm run stage:backend && npm run stage:openclaw && electron-builder --mac dir",
+    "pack": "npm run stage:livekit && npm run stage:three && npm run fetch:model && npm run build:native && npm run stage:backend && npm run stage:openclaw && electron-builder --mac dir",
     "dist": "scripts/release-macos.sh"
   },
   "devDependencies": {
     "electron": "43.4.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "three": "0.185.1"
   },
   "build": {
     "appId": "com.lionheart.openclam.macos",
@@ -150,8 +152,10 @@
           "menu.html",
           "appearance.html",
           "live-worklet.js",
+          "avatar3d.js",
           "assets/sf-symbols/*.png",
           "vendor/livekit-client.umd.js",
+          "vendor/three/*.js",
           "vendor/live-talk-connection.wav"
         ]
       },
@@ -164,7 +168,8 @@
           "avatar-package-v2/manifest.schema.json",
           "avatar-package-v2/macos-full.schema.json",
           "avatar-package-v2/ios-light-v3.schema.json",
-          "avatar-package-v2/ios-full-expression-v4.schema.json"
+          "avatar-package-v2/ios-full-expression-v4.schema.json",
+          "avatar-package-v2/ios-3d-v5.schema.json"
         ]
       },
       {

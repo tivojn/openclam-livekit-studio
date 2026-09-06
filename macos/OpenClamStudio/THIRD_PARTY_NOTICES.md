@@ -19,6 +19,16 @@ license inventory ship inside the Electron framework. The embedded Python
 - Electron: https://github.com/electron/electron
 - Python: https://www.python.org/
 
+## three.js 0.185.1
+
+The 3D avatar renderer ships the published `three` ES modules
+(`three.module.js`, `three.core.js`, the glTF loader, its two helper modules,
+and the room environment) copied by `scripts/stage-three-assets.mjs` with
+their bare `'three'` import specifiers rewritten to same-origin paths. three.js
+is MIT licensed; the retained license text is `docs/LICENSES/THREE_MIT.txt`.
+
+- Project: https://github.com/mrdoob/three.js
+
 ## LiveKit client 2.21.0
 
 The renderer ships the published `livekit-client` 2.21.0 UMD bundle. LiveKit's

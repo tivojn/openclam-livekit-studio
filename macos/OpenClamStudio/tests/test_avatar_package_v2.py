@@ -296,7 +296,8 @@ class AvatarContractParityTests(unittest.TestCase):
     def test_vendored_schemas_match_suite_contract_when_both_exist(self):
         for name in (
                 "README.md", "manifest.schema.json", "macos-full.schema.json",
-                "ios-light-v3.schema.json", "ios-full-expression-v4.schema.json"):
+                "ios-light-v3.schema.json", "ios-full-expression-v4.schema.json",
+                "ios-3d-v5.schema.json"):
             local = SCHEMA_ROOT / name
             self.assertTrue(local.is_file())
             shared = SUITE_SCHEMA_ROOT / name

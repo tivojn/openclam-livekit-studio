@@ -117,6 +117,8 @@ enum OpenClamAvatarAssetRole: Hashable, Sendable {
     case cheekRight
     case underEyeLeft
     case underEyeRight
+    /// The rigged glTF binary of an `ios-3d` package.
+    case model
 }
 
 enum OpenClamAvatarAssetReference: Hashable, Sendable {
@@ -288,6 +290,30 @@ struct OpenClamAvatarRigGeometry: Codable, Equatable, Hashable, Sendable {
         faceTransform.applying(to: OpenClamAvatarPoint(x: 512, y: 512))
     }
 
+    /// The geometry an `ios-3d` package implies: its logical render frame and
+    /// the face rectangle the desktop renderer projected. Sprite boxes are
+    /// unused by the model stage and kept degenerate on purpose.
+    static func model(frame: OpenClamAvatarSize, faceBounds: OpenClamAvatarRect) -> Self {
+        let none = OpenClamAvatarSpriteGeometry(
+            box: OpenClamAvatarRect(x: 0, y: 0, width: 1, height: 1),
+            columns: 1,
+            rows: 1,
+            storage: .verticalStrip
+        )
+        let scale = max(1e-6, faceBounds.width / faceSourceSize.width)
+        return Self(
+            bodySize: frame,
+            faceTransform: OpenClamAvatarFaceTransform(
+                a: scale, b: 0, c: 0, d: scale,
+                tx: faceBounds.x, ty: faceBounds.y
+            ),
+            faceBoundsInBody: faceBounds,
+            leftEye: none, rightEye: none,
+            leftBrow: none, rightBrow: none,
+            leftGaze: none, rightGaze: none
+        )
+    }
+
     var eyeAnchorInBody: OpenClamAvatarPoint {
         faceTransform.applying(to: eyeAnchorInFaceSource)
     }
@@ -336,6 +362,44 @@ struct OpenClamAvatarRigCompatibility: Codable, Equatable, Hashable, Sendable {
     let browSqueezeStateCount: Int
     let gazeHorizontalStateCount: Int
     let gazeVerticalStateCount: Int
+    /// `ios-3d` packages: the face is a rigged model with morph targets, not
+    /// sprite plates. The stage swaps its artwork; gestures stay the same.
+    let rendersModel: Bool
+
+    init(
+        canonicalVisemeCount: Int,
+        eyeStateCount: Int,
+        browVerticalStateCount: Int,
+        browSqueezeStateCount: Int,
+        gazeHorizontalStateCount: Int,
+        gazeVerticalStateCount: Int,
+        rendersModel: Bool = false
+    ) {
+        self.canonicalVisemeCount = canonicalVisemeCount
+        self.eyeStateCount = eyeStateCount
+        self.browVerticalStateCount = browVerticalStateCount
+        self.browSqueezeStateCount = browSqueezeStateCount
+        self.gazeHorizontalStateCount = gazeHorizontalStateCount
+        self.gazeVerticalStateCount = gazeVerticalStateCount
+        self.rendersModel = rendersModel
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case canonicalVisemeCount, eyeStateCount, browVerticalStateCount
+        case browSqueezeStateCount, gazeHorizontalStateCount, gazeVerticalStateCount
+        case rendersModel
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        canonicalVisemeCount = try container.decode(Int.self, forKey: .canonicalVisemeCount)
+        eyeStateCount = try container.decode(Int.self, forKey: .eyeStateCount)
+        browVerticalStateCount = try container.decode(Int.self, forKey: .browVerticalStateCount)
+        browSqueezeStateCount = try container.decode(Int.self, forKey: .browSqueezeStateCount)
+        gazeHorizontalStateCount = try container.decode(Int.self, forKey: .gazeHorizontalStateCount)
+        gazeVerticalStateCount = try container.decode(Int.self, forKey: .gazeVerticalStateCount)
+        rendersModel = try container.decodeIfPresent(Bool.self, forKey: .rendersModel) ?? false
+    }
 
     var supportsFullLocalStage: Bool {
         [OpenClamAvatarViseme.legacyCases.count, OpenClamAvatarViseme.allCases.count]

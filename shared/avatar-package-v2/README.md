@@ -161,3 +161,16 @@ they do not grant executable behavior.
 Mac-full limits are 4 GiB for the compressed archive, 8 GiB expanded, 2 GiB
 per file, 40,000 authoring files, 128 KiB for the manifest, and 1,024 UTF-8
 bytes per archive path. The schema is `macos-full.schema.json`.
+
+## `ios-3d` (version 5)
+
+A rigged 3D character instead of sprite plates. The archive holds exactly
+`manifest.json`, `assets/thumbnail.png` (512×512 PNG) and `assets/model.glb`
+(glTF 2.0 binary, embedded buffers and PNG/JPEG textures only, no Draco,
+meshopt, Basis or WebP, at most 64 MB; 80 MB archive). The manifest carries the
+model's SHA-256 and byte count, the logical render frame plus the figure and
+face rectangles the desktop renderer projected, and which of the fifteen
+Oculus/Meta XR visemes the model expresses directly, approximates from ARKit
+shapes, or lacks. There is no `rig`, `expression`, `speechPatch` or `motions`.
+Normative shape: `ios-3d-v5.schema.json`. Produced by OpenClam Studio's
+"Export iPhone 3D AVTR"; consumed by OpenClam on iPhone 1.0.3 and later.

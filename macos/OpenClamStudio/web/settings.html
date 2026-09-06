@@ -1014,6 +1014,7 @@ document.documentElement.dataset.design='quiet';</script>
         <div class="newface-acts">
           <button class="btn pri hidden" id="createAvatar" type="button" title="Add the chosen portrait with this name">Add portrait</button>
           <button class="btn" id="importAvtr" type="button" title="Import a complete avatar (.avtr) — face, body, walk, and edge idle arrive ready to use">Import .avtr…</button>
+          <button class="btn" id="import3D" type="button" title="Import a rigged 3D character (.glb) with viseme or ARKit shape keys — it lip-syncs from the model itself, no portrait build needed">Import 3D model (.glb)…</button>
         </div>
         <div class="note" style="margin:0">
           Photos, 2D cartoons, and 3D cartoon renders are supported. Choose the
@@ -1027,6 +1028,7 @@ document.documentElement.dataset.design='quiet';</script>
     </div>
     <input type="file" id="file" accept="image/*" class="hidden">
     <input type="file" id="avtrFile" accept=".avtr" class="hidden">
+    <input type="file" id="glbFile" accept=".glb" class="hidden">
   </div>
 
   <h2>Candidates</h2>
@@ -3480,7 +3482,40 @@ function sourceMediumLabel(value) {
   }[normaliseSourceMedium(value)];
 }
 
+function card3D(a) {
+  const on = a.slug === ACTIVE, duo = a.slug === COMPANION;
+  const busy = Boolean(a.job && !a.job.done);
+  const thumb = `/files/${a.slug}/keyframe.png`;
+  const coverage = a.viseme_coverage || {};
+  const direct = Object.keys(coverage.direct || {}).length;
+  const recipe = (coverage.recipe || []).length;
+  const missing = coverage.missing || [];
+  const size = Number(a.model_bytes) ? `${(Number(a.model_bytes) / 1e6).toFixed(1)} MB` : '';
+  return `<div class="av ${on ? 'active' : ''}" data-slug="${esc(a.slug)}"
+    data-busy="${busy ? '1' : '0'}" data-job-kind="${esc((a.job && a.job.kind) || 'publish')}"
+    data-renderer="3d" data-source-medium="3d render" data-remove-headwear="0">
+    <div class="thumb" style="background-image:url('${thumb}')">
+      <span class="badge pill ${on || duo ? 'act' : 'ok'}">${esc(on ? 'active' : duo ? 'on desk · left' : '3D model')}</span>
+    </div>
+    <div class="body">
+      <h3><span class="av-name">${esc(a.name || a.slug)}</span><button class="av-rename" data-act="rename" type="button" title="Rename this avatar" aria-label="Rename this avatar">✎</button></h3>
+      <p class="note">3D model${size ? ' · ' + esc(size) : ''} · ${direct}/15 visemes from the model${recipe && recipe > 1 ? `, ${recipe - 1} approximated` : ''}${a.joint_count ? ` · ${esc(String(a.joint_count))} bones` : ''}</p>
+      ${missing.length ? `<p class="note" style="color:var(--bad-text)">No shape for ${esc(missing.join(', '))}; those sounds reuse the nearest mouth.</p>` : ''}
+      ${(a.warnings || []).slice(0, 2).map(w => `<p class="note">${esc(w)}</p>`).join('')}
+      <div class="acts">
+        <button class="btn sm pri" data-act="activate" ${on ? 'disabled' : ''}>${on ? 'In use' : 'Use this avatar'}</button>
+        <button class="btn sm" data-act="companion" ${on || busy ? 'disabled' : ''}
+          title="Keep a second local avatar on the left side of this Mac’s desk">${duo ? 'Leave the desk' : 'Second avatar (left)'}</button>
+        <button class="btn sm" data-act="persona">${a.persona ? '✓ In character' : 'Give a character'}</button>
+        <button class="btn sm" data-act="export-ios3d" ${busy ? 'disabled' : ''}
+          title="Model, thumbnail, and viseme map for explicit import into OpenClam on iPhone">Export iPhone 3D AVTR</button>
+        <button class="btn sm danger" data-act="delete" ${on ? 'disabled' : ''}>Delete</button>
+      </div>
+    </div></div>`;
+}
+
 function card(a) {
+  if (a.renderer === '3d') return card3D(a);
   const on = a.slug === ACTIVE, st = a.status || 'draft';
   const duo = a.slug === COMPANION;
   const busy = st === 'building' || (a.job && !a.job.done);
@@ -3720,11 +3755,13 @@ async function act(what, slug, btn) {
     loadAvatars();
     return;
   }
-  if (what === 'export-macos' || what === 'export-ios') {
+  if (what === 'export-macos' || what === 'export-ios' || what === 'export-ios3d') {
     const title = btn.closest('.av').querySelector('.av-name');
     const name = title ? title.textContent.trim() : slug;
-    const variant = what === 'export-ios' ? 'ios-light' : 'macos-full';
-    const idleLabel = variant === 'ios-light' ? 'Export full-expression iPhone AVTR' : 'Export Mac project';
+    const variant = what === 'export-ios' ? 'ios-light'
+      : what === 'export-ios3d' ? 'ios-3d' : 'macos-full';
+    const idleLabel = variant === 'ios-light' ? 'Export full-expression iPhone AVTR'
+      : variant === 'ios-3d' ? 'Export iPhone 3D AVTR' : 'Export Mac project';
     if (SHELL && SHELL.isElectron && typeof SHELL.exportAvatar === 'function') {
       btn.disabled = true; btn.textContent = 'Exporting…';
       const result = await SHELL.exportAvatar({ slug, name, variant });
@@ -6150,6 +6187,7 @@ drop.onclick = () => file.click();
 drop.addEventListener('drop', ev => {
   const dropped = ev.dataTransfer.files[0];
   if (dropped && /\.avtr$/i.test(dropped.name)) { importAvatarFile(dropped); return; }
+  if (dropped && /\.glb$/i.test(dropped.name)) { importModelFile(dropped); return; }
   stageUpload(dropped);
 });
 
@@ -6176,6 +6214,36 @@ async function importAvatarFile(file) {
   }
 }
 $('#importAvtr').onclick = () => $('#avtrFile').click();
+
+/* 3D model import: one .glb carries the mesh, skeleton and facial shape keys.
+   The server validates the container and reports viseme coverage; the avatar
+   is ready to activate at once because nothing has to be generated. */
+async function importModelFile(file) {
+  if (!file) return;
+  const button = $('#import3D');
+  button.disabled = true; button.textContent = 'Importing…';
+  try {
+    const form = new FormData();
+    form.append('model', file, file.name);
+    form.append('name', $('#newname').value || file.name.replace(/\.[^.]+$/, ''));
+    const result = await api('/api/avatar/upload3d', { method: 'POST', body: form });
+    if (result.detail) { alert(result.detail); return; }
+    const coverage = result.viseme_coverage || {};
+    const direct = Object.keys(coverage.direct || {}).length;
+    const warnings = Array.isArray(result.warnings) && result.warnings.length
+      ? ' ' + result.warnings[0] : '';
+    note(`Imported ${result.name || result.slug} · ${direct}/15 visemes from the model.${warnings}`);
+    $('#newname').value = '';
+    await loadAvatars();
+  } catch (error) {
+    alert('Import failed: ' + error.message);
+  } finally {
+    button.disabled = false; button.textContent = 'Import 3D model (.glb)…';
+    $('#glbFile').value = '';
+  }
+}
+$('#import3D').onclick = () => $('#glbFile').click();
+$('#glbFile').addEventListener('change', () => importModelFile($('#glbFile').files[0]));
 $('#avtrFile').addEventListener('change', () => importAvatarFile($('#avtrFile').files[0]));
 file.onchange = () => stageUpload(file.files[0]);
 

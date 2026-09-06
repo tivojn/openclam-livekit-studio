@@ -4,6 +4,7 @@ import CoreMedia
 import CryptoKit
 import Foundation
 import ImageIO
+import OSLog
 import UniformTypeIdentifiers
 import ZIPFoundation
 
@@ -33,6 +34,25 @@ struct OpenClamAvatarPackageMotionAsset: Codable, Equatable, Sendable {
     let durationMilliseconds: Int
 }
 
+/// The rigged model of an `ios-3d` (v5) package plus the framing the desktop
+/// renderer measured, so the phone frames the same face rectangle.
+struct OpenClamAvatarPackageModelAsset: Codable, Equatable, Sendable {
+    struct VisemeCoverage: Codable, Equatable, Sendable {
+        let direct: [String]
+        let approximated: [String]
+        let missing: [String]
+    }
+
+    let path: String
+    let sha256: String
+    let byteCount: Int
+    let mediaType: String
+    let frame: OpenClamAvatarSize
+    let bounds: OpenClamAvatarRect
+    let faceBounds: OpenClamAvatarRect
+    let visemes: VisemeCoverage
+}
+
 struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
     let format: String
     let version: Int
@@ -41,8 +61,10 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
     let displayName: String
     let sourceMedium: OpenClamAvatarSourceMedium?
     let speechPatch: OpenClamAvatarSpeechPatchMetadata?
-    let rig: OpenClamAvatarRigGeometry
+    /// Sprite packages carry a rig; `ios-3d` packages carry `model` instead.
+    let rig: OpenClamAvatarRigGeometry?
     let expression: OpenClamAvatarExpressionGeometry?
+    let model: OpenClamAvatarPackageModelAsset?
     let assets: [String: OpenClamAvatarPackageAsset]
     let motions: [String: OpenClamAvatarPackageMotionAsset]?
 
@@ -54,8 +76,9 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
         displayName: String,
         sourceMedium: OpenClamAvatarSourceMedium? = nil,
         speechPatch: OpenClamAvatarSpeechPatchMetadata? = nil,
-        rig: OpenClamAvatarRigGeometry,
+        rig: OpenClamAvatarRigGeometry?,
         expression: OpenClamAvatarExpressionGeometry? = nil,
+        model: OpenClamAvatarPackageModelAsset? = nil,
         assets: [String: OpenClamAvatarPackageAsset],
         motions: [String: OpenClamAvatarPackageMotionAsset]? = nil
     ) {
@@ -68,6 +91,7 @@ struct OpenClamAvatarPackageManifest: Codable, Equatable, Sendable {
         self.speechPatch = speechPatch
         self.rig = rig
         self.expression = expression
+        self.model = model
         self.assets = assets
         self.motions = motions
     }
@@ -202,9 +226,19 @@ enum OpenClamAvatarPackageContract {
     /// Kept for existing v2 exporter/tests; new motion-capable exports use
     /// `motionVersion` explicitly.
     static let version = legacyVersion
-    static let supportedVersions = Set([legacyVersion, motionVersion, expressionVersion])
+    /// v5: a rigged `.glb` with morph targets, lip-synced by the 3D stage.
+    static let modelVersion = 5
+    static let supportedVersions = Set([legacyVersion, motionVersion, expressionVersion, modelVersion])
     static let variant = "ios-light"
+    static let modelVariant = "ios-3d"
     static let manifestPath = "manifest.json"
+    static let modelPath = "assets/model.glb"
+    static let modelMediaType = "model/gltf-binary"
+    static let modelFileCount = 3
+    static let maximumModelByteCount: UInt64 = 64 * 1_024 * 1_024
+    static let maximumModelArchiveByteCount: UInt64 = 80 * 1_024 * 1_024
+    static let maximumModelExpandedByteCount: UInt64 = 96 * 1_024 * 1_024
+    static let modelThumbnailDimension = 512
 
     static let maximumArchiveByteCount: UInt64 = 64 * 1_024 * 1_024
     static let maximumExpandedByteCount: UInt64 = 96 * 1_024 * 1_024
@@ -322,8 +356,11 @@ enum OpenClamAvatarPackageContract {
             paths.formUnion(specification.allowedPaths)
         }
         paths.formUnion(motionSpecifications.map(\.path))
+        paths.insert(modelPath)
         return paths
     }()
+
+    static let modelArchivePaths: Set<String> = [manifestPath, "assets/thumbnail.png", modelPath]
 
     static var defaultStorageRoot: URL {
         let base = FileManager.default.urls(
@@ -340,19 +377,29 @@ enum OpenClamAvatarPackageContract {
         _ entries: [OpenClamAvatarArchiveEntryMetadata],
         archiveByteCount: UInt64
     ) throws {
+        let isModelShape = entries.count == modelFileCount
+            && Set(entries.map(\.path)) == modelArchivePaths
         let isLegacyShape = (baseFileCount ... baseFileCount
             + OpenClamAvatarMotionKind.allCases.count).contains(entries.count)
         let isFullExpressionShape = (fullExpressionFileCount ... maximumFileCount)
             .contains(entries.count)
-        guard isLegacyShape || isFullExpressionShape else {
-            throw OpenClamAvatarPackageError.tooManyFiles
+        guard isModelShape || isLegacyShape || isFullExpressionShape else {
+            throw entries.count <= modelFileCount + 1 && !isModelShape
+                && entries.contains(where: { !modelArchivePaths.contains($0.path) })
+                ? OpenClamAvatarPackageError.unexpectedArchivePath(
+                    entries.first(where: { !modelArchivePaths.contains($0.path) })?.path ?? "")
+                : OpenClamAvatarPackageError.tooManyFiles
         }
-        let archiveLimit = isFullExpressionShape
-            ? maximumArchiveByteCount
-            : legacyMaximumArchiveByteCount
-        let expandedLimit = isFullExpressionShape
-            ? maximumExpandedByteCount
-            : legacyMaximumExpandedByteCount
+        let archiveLimit = isModelShape
+            ? maximumModelArchiveByteCount
+            : isFullExpressionShape
+                ? maximumArchiveByteCount
+                : legacyMaximumArchiveByteCount
+        let expandedLimit = isModelShape
+            ? maximumModelExpandedByteCount
+            : isFullExpressionShape
+                ? maximumExpandedByteCount
+                : legacyMaximumExpandedByteCount
         guard archiveByteCount <= archiveLimit else {
             throw OpenClamAvatarPackageError.archiveTooLarge
         }
@@ -377,10 +424,12 @@ enum OpenClamAvatarPackageContract {
 
             let perFileLimit = entry.path == manifestPath
                 ? maximumManifestByteCount
-                : maximumAssetByteCount
+                : entry.path == modelPath
+                    ? maximumModelByteCount
+                    : maximumAssetByteCount
             guard entry.uncompressedSize > 0,
                   entry.uncompressedSize <= perFileLimit,
-                  entry.compressedSize <= maximumAssetByteCount else {
+                  entry.compressedSize <= max(maximumAssetByteCount, perFileLimit) else {
                 throw entry.path == manifestPath
                     ? OpenClamAvatarPackageError.manifestTooLarge
                     : OpenClamAvatarPackageError.packageContentsTooLarge
@@ -421,6 +470,10 @@ enum OpenClamAvatarPackageContract {
 }
 
 struct OpenClamAvatarPackageStore: Sendable {
+    private static let logger = Logger(
+        subsystem: "com.lionheart.openclam.livekitpilot",
+        category: "avatar-package"
+    )
     struct OwnedLegacyDuplicateSignature: Equatable, Sendable {
         let sourceID: String
         let targetID: String
@@ -573,8 +626,10 @@ struct OpenClamAvatarPackageStore: Sendable {
               sourceByteCount > 0 else {
             throw OpenClamAvatarPackageError.sourceIsNotARegularFile
         }
-        guard UInt64(sourceByteCount)
-                <= OpenClamAvatarPackageContract.maximumArchiveByteCount else {
+        guard UInt64(sourceByteCount) <= max(
+            OpenClamAvatarPackageContract.maximumArchiveByteCount,
+            OpenClamAvatarPackageContract.maximumModelArchiveByteCount
+        ) else {
             throw OpenClamAvatarPackageError.archiveTooLarge
         }
 
@@ -749,11 +804,21 @@ struct OpenClamAvatarPackageStore: Sendable {
             )
             guard values?.isDirectory == true,
                   values?.isSymbolicLink != true,
-                  OpenClamAvatarID.isValid(directory.lastPathComponent),
-                  let descriptor = try? validatedDescriptor(in: directory),
-                  descriptor.id == directory.lastPathComponent else {
+                  OpenClamAvatarID.isValid(directory.lastPathComponent) else {
                 return nil
             }
+            let descriptor: OpenClamAvatarDescriptor
+            do {
+                descriptor = try validatedDescriptor(in: directory)
+            } catch {
+                // Skipped installs are counted for the settings deck; the reason
+                // is worth having in the console when a package will not load.
+                Self.logger.error(
+                    "Skipping installed avatar \(directory.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+                return nil
+            }
+            guard descriptor.id == directory.lastPathComponent else { return nil }
             return descriptor
         }
         .sorted {
@@ -1089,6 +1154,16 @@ struct OpenClamAvatarPackageStore: Sendable {
             throw OpenClamAvatarPackageError.invalidManifest
         }
         try validateManifestContract(manifest)
+        if manifest.version == OpenClamAvatarPackageContract.modelVersion {
+            return try validatedModelDescriptor(
+                manifest: manifest,
+                directory: directory,
+                installedAssetPaths: installedAssetPaths
+            )
+        }
+        guard let rig = manifest.rig else {
+            throw OpenClamAvatarPackageError.invalidRig
+        }
         let assetSpecifications = OpenClamAvatarPackageContract.assetSpecifications(
             for: manifest.version
         )
@@ -1110,7 +1185,7 @@ struct OpenClamAvatarPackageStore: Sendable {
                 asset,
                 roleKey: specification.key,
                 role: specification.role,
-                rig: manifest.rig,
+                rig: rig,
                 expression: manifest.expression,
                 maximumImageDimension: manifest.version
                     == OpenClamAvatarPackageContract.expressionVersion
@@ -1161,13 +1236,124 @@ struct OpenClamAvatarPackageStore: Sendable {
             includedByteCount: includedByteCount,
             sourceMedium: manifest.sourceMedium ?? .photograph,
             speechPatch: manifest.speechPatch,
-            geometry: manifest.rig,
+            geometry: rig,
             expressionGeometry: manifest.expression,
             compatibility: manifest.version == OpenClamAvatarPackageContract.expressionVersion
                 ? .iosFullExpression
                 : .iosLight,
             assets: references,
             motions: motionReferences
+        )
+    }
+
+    /// `ios-3d`: exactly a thumbnail and a `.glb`; the model is checked as a
+    /// glTF container (magic, version, embedded resources, no decoders the app
+    /// lacks) and by its declared size and SHA-256.
+    private func validatedModelDescriptor(
+        manifest: OpenClamAvatarPackageManifest,
+        directory: URL,
+        installedAssetPaths: Set<String>
+    ) throws -> OpenClamAvatarDescriptor {
+        guard let model = manifest.model,
+              let thumbnail = manifest.assets["thumbnail"] else {
+            throw OpenClamAvatarPackageError.missingAsset("model")
+        }
+        guard installedAssetPaths == Set([thumbnail.path, model.path]) else {
+            throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+        }
+        guard model.path == OpenClamAvatarPackageContract.modelPath,
+              model.mediaType == OpenClamAvatarPackageContract.modelMediaType else {
+            throw OpenClamAvatarPackageError.invalidAssetPath("model")
+        }
+        guard model.byteCount > 0,
+              UInt64(model.byteCount) <= OpenClamAvatarPackageContract.maximumModelByteCount,
+              model.frame.width >= 64, model.frame.width <= 4_096,
+              model.frame.height >= 64, model.frame.height <= 4_096,
+              model.faceBounds.width > 0, model.faceBounds.height > 0,
+              model.faceBounds.x >= 0, model.faceBounds.y >= 0,
+              model.faceBounds.x + model.faceBounds.width <= model.frame.width + 0.5,
+              model.faceBounds.y + model.faceBounds.height <= model.frame.height + 0.5 else {
+            throw OpenClamAvatarPackageError.invalidRig
+        }
+        let geometry = OpenClamAvatarRigGeometry.model(
+            frame: model.frame,
+            faceBounds: model.faceBounds
+        )
+        let thumbnailURL = directory.appendingPathComponent(thumbnail.path, isDirectory: false)
+        guard thumbnail.path == "assets/thumbnail.png",
+              thumbnail.mediaType == "image/png",
+              thumbnail.width == OpenClamAvatarPackageContract.modelThumbnailDimension,
+              thumbnail.height == OpenClamAvatarPackageContract.modelThumbnailDimension else {
+            throw OpenClamAvatarPackageError.invalidAssetPath("thumbnail")
+        }
+        try validateAsset(
+            thumbnail,
+            roleKey: "thumbnail",
+            role: .thumbnail,
+            rig: geometry,
+            expression: nil,
+            maximumImageDimension: OpenClamAvatarPackageContract.maximumImageDimension,
+            fileURL: thumbnailURL
+        )
+
+        let modelURL = directory.appendingPathComponent(model.path, isDirectory: false)
+        let values: URLResourceValues
+        do {
+            values = try modelURL.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            )
+        } catch {
+            throw OpenClamAvatarPackageError.missingAsset("model")
+        }
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw OpenClamAvatarPackageError.missingAsset("model")
+        }
+        guard values.fileSize == model.byteCount else {
+            throw OpenClamAvatarPackageError.invalidAssetSize("model")
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: modelURL, options: .mappedIfSafe)
+        } catch {
+            throw OpenClamAvatarPackageError.missingAsset("model")
+        }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard digest == model.sha256 else {
+            throw OpenClamAvatarPackageError.hashMismatch("model")
+        }
+        let summary: OpenClam3DGLBSummary
+        do {
+            summary = try OpenClam3DGLBReader.summary(of: data)
+        } catch {
+            throw OpenClamAvatarPackageError.invalidAssetImage("model")
+        }
+        guard !summary.targetNames.isEmpty || !summary.joints.isEmpty else {
+            throw OpenClamAvatarPackageError.invalidAssetImage("model")
+        }
+
+        guard let avatarID = OpenClamAvatarID(rawValue: manifest.id) else {
+            throw OpenClamAvatarPackageError.invalidIdentifier
+        }
+        let includedByteCount = thumbnail.byteCount.addingReportingOverflow(model.byteCount)
+        guard !includedByteCount.overflow else {
+            throw OpenClamAvatarPackageError.packageContentsTooLarge
+        }
+        return OpenClamAvatarDescriptor(
+            avatarID: avatarID,
+            displayName: manifest.displayName,
+            sourceSlug: manifest.id,
+            sourceRelativeRuntimePath: "Application Support/OpenClam/Avatars/v2/\(manifest.id)",
+            includedByteCount: includedByteCount.partialValue,
+            sourceMedium: manifest.sourceMedium ?? .rendered3D,
+            speechPatch: nil,
+            geometry: geometry,
+            expressionGeometry: nil,
+            compatibility: .ios3D,
+            assets: [
+                .thumbnail: .installedFile(thumbnailURL),
+                .model: .installedFile(modelURL),
+            ],
+            motions: [:]
         )
     }
 
@@ -1211,7 +1397,9 @@ struct OpenClamAvatarPackageStore: Sendable {
         let maximumAssetItemCount = OpenClamAvatarPackageContract
             .fullExpressionAssetSpecifications.count
             + OpenClamAvatarMotionKind.allCases.count
-        guard (minimumAssetItemCount ... maximumAssetItemCount).contains(assetItems.count) else {
+        let modelAssetItemCount = OpenClamAvatarPackageContract.modelFileCount - 1
+        guard (minimumAssetItemCount ... maximumAssetItemCount).contains(assetItems.count)
+                || assetItems.count == modelAssetItemCount else {
             throw OpenClamAvatarPackageError.tooManyFiles
         }
         for item in assetItems {
@@ -1243,6 +1431,30 @@ struct OpenClamAvatarPackageStore: Sendable {
         }
         guard let version = root["version"] as? Int else {
             throw OpenClamAvatarPackageError.invalidManifest
+        }
+        if version == OpenClamAvatarPackageContract.modelVersion {
+            var keys = Set(["format", "version", "variant", "id", "displayName", "model", "assets"])
+            if root["sourceMedium"] != nil { keys.insert("sourceMedium") }
+            try requireExactKeys(root, keys)
+            guard let model = root["model"] as? [String: Any],
+                  let assets = root["assets"] as? [String: Any],
+                  Set(assets.keys) == ["thumbnail"],
+                  let thumbnail = assets["thumbnail"] as? [String: Any] else {
+                throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+            }
+            try requireExactKeys(
+                model,
+                ["path", "sha256", "byteCount", "mediaType", "frame", "bounds", "faceBounds", "visemes"]
+            )
+            try requireExactKeys(try object(model, "frame"), ["width", "height"])
+            try requireExactKeys(try object(model, "bounds"), ["x", "y", "width", "height"])
+            try requireExactKeys(try object(model, "faceBounds"), ["x", "y", "width", "height"])
+            try requireExactKeys(try object(model, "visemes"), ["direct", "approximated", "missing"])
+            try requireExactKeys(
+                thumbnail,
+                ["path", "sha256", "byteCount", "mediaType", "width", "height"]
+            )
+            return
         }
         if version == OpenClamAvatarPackageContract.legacyVersion {
             try requireExactKeys(root, baseKeys)
@@ -1383,7 +1595,10 @@ struct OpenClamAvatarPackageStore: Sendable {
         guard OpenClamAvatarPackageContract.supportedVersions.contains(manifest.version) else {
             throw OpenClamAvatarPackageError.unsupportedVersion(manifest.version)
         }
-        guard manifest.variant == OpenClamAvatarPackageContract.variant else {
+        let expectedVariant = manifest.version == OpenClamAvatarPackageContract.modelVersion
+            ? OpenClamAvatarPackageContract.modelVariant
+            : OpenClamAvatarPackageContract.variant
+        guard manifest.variant == expectedVariant else {
             throw OpenClamAvatarPackageError.unsupportedVariant(manifest.variant)
         }
         guard OpenClamAvatarID.isValid(manifest.id) else {
@@ -1397,6 +1612,18 @@ struct OpenClamAvatarPackageStore: Sendable {
               normalizedName.count <= 64,
               !normalizedName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw OpenClamAvatarPackageError.invalidDisplayName
+        }
+        if manifest.version == OpenClamAvatarPackageContract.modelVersion {
+            guard manifest.model != nil, manifest.rig == nil, manifest.expression == nil,
+                  manifest.speechPatch == nil, manifest.motions == nil,
+                  Set(manifest.assets.keys) == ["thumbnail"],
+                  manifest.sourceMedium == nil || manifest.sourceMedium == .rendered3D else {
+                throw OpenClamAvatarPackageError.privateMetadataNotAllowed
+            }
+            return
+        }
+        guard manifest.model == nil, let rig = manifest.rig else {
+            throw OpenClamAvatarPackageError.privateMetadataNotAllowed
         }
         let assetSpecifications = OpenClamAvatarPackageContract.assetSpecifications(
             for: manifest.version
@@ -1421,7 +1648,7 @@ struct OpenClamAvatarPackageStore: Sendable {
                 throw OpenClamAvatarPackageError.privateMetadataNotAllowed
             }
         }
-        try validateRig(manifest.rig)
+        try validateRig(rig)
         if manifest.version == OpenClamAvatarPackageContract.expressionVersion {
             guard let expression = manifest.expression else {
                 throw OpenClamAvatarPackageError.invalidRig
@@ -1970,7 +2197,7 @@ struct OpenClamAvatarPackageStore: Sendable {
         expression: OpenClamAvatarExpressionGeometry?
     ) throws -> (width: Int, height: Int) {
         switch role {
-        case .thumbnail:
+        case .thumbnail, .model:
             throw OpenClamAvatarPackageError.invalidRig
         case .body:
             return (try pixel(rig.bodySize.width), try pixel(rig.bodySize.height))
@@ -2213,6 +2440,16 @@ private extension OpenClamAvatarRigCompatibility {
         browSqueezeStateCount: 3,
         gazeHorizontalStateCount: 25,
         gazeVerticalStateCount: 11
+    )
+
+    static let ios3D = Self(
+        canonicalVisemeCount: OpenClamAvatarViseme.allCases.count,
+        eyeStateCount: 8,
+        browVerticalStateCount: 14,
+        browSqueezeStateCount: 3,
+        gazeHorizontalStateCount: 25,
+        gazeVerticalStateCount: 11,
+        rendersModel: true
     )
 }
 

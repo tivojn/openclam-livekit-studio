@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclam.app/schemas/avatar-package-v2/ios-3d-v5.schema.json",
+  "title": "OpenClam iOS 3D avatar package manifest (v5)",
+  "description": "A rigged glTF binary with facial shape keys, lip-synced on iPhone from the same Oculus/Meta XR 15-viseme track as ios-light packages. Exactly three archive entries: manifest.json, assets/thumbnail.png, assets/model.glb.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "variant", "id", "displayName", "model", "assets"],
+  "properties": {
+    "format": { "const": "openclam-avatar" },
+    "version": { "const": 5 },
+    "variant": { "const": "ios-3d" },
+    "id": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62})$" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "sourceMedium": { "const": "3d render" },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "byteCount", "mediaType", "frame", "bounds", "faceBounds", "visemes"],
+      "properties": {
+        "path": { "const": "assets/model.glb" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "byteCount": { "type": "integer", "minimum": 20, "maximum": 67108864 },
+        "mediaType": { "const": "model/gltf-binary" },
+        "frame": { "$ref": "#/$defs/size" },
+        "bounds": { "$ref": "#/$defs/rect" },
+        "faceBounds": { "$ref": "#/$defs/rect" },
+        "visemes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["direct", "approximated", "missing"],
+          "properties": {
+            "direct": { "$ref": "#/$defs/visemeList" },
+            "approximated": { "$ref": "#/$defs/visemeList" },
+            "missing": { "$ref": "#/$defs/visemeList" }
+          }
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thumbnail"],
+      "properties": {
+        "thumbnail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "byteCount", "mediaType", "width", "height"],
+          "properties": {
+            "path": { "const": "assets/thumbnail.png" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "byteCount": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+            "mediaType": { "const": "image/png" },
+            "width": { "const": 512 },
+            "height": { "const": 512 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "size": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 64, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 64, "maximum": 4096 }
+      }
+    },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0 },
+        "y": { "type": "number", "minimum": 0 },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "visemeList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["sil", "PP", "FF", "TH", "DD", "kk", "CH", "SS", "nn", "RR", "aa", "E", "ih", "oh", "ou"] }
+    }
+  }
+}

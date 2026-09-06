@@ -10,6 +10,7 @@
       || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   </script>
   <script src="/livekit-client.js"></script>
+  <script type="module" src="/avatar3d.js"></script>
   <style>
     :root {
       --ink: #f7f4ef;
@@ -2322,6 +2323,29 @@
     let cutoutImage = null;
     let headReplacementActive = false;
     const visemeImages = new Map();
+    /* avatar-3d:begin — a runtime manifest with `renderer: "3d"` hands its
+       model to web/avatar3d.js; the compositor below draws that renderer's
+       canvas through the same camera, zoom, mirror and hit-test paths. */
+    let avatar3d = null;
+    let avatar3dGazeState = { x: 0, y: 0, at: 0 };
+    const is3DRuntime = value => Boolean(value && typeof value === 'object'
+      && value.renderer === '3d' && typeof value.model === 'string' && value.model.length > 0);
+    const avatar3dApi = () => {
+      if (window.OpenClamAvatar3D) return Promise.resolve(window.OpenClamAvatar3D);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('3D renderer did not load')), 10000);
+        addEventListener('openclam-avatar3d-ready', () => {
+          clearTimeout(timer);
+          resolve(window.OpenClamAvatar3D);
+        }, { once: true });
+      });
+    };
+    const disposeAvatar3D = () => {
+      if (!avatar3d) return;
+      try { avatar3d.dispose(); } catch (_) { /* context already lost */ }
+      avatar3d = null;
+    };
+    /* avatar-3d:end */
     const layers = { eyes: {}, gaze: {}, brow: {}, forehead: {}, cheek: {}, eyebag: {},
       stylizedBlink: {}, smile: null, emotionMouth: null };
     const motion = {};
@@ -3537,12 +3561,95 @@
       return true;
     };
 
+    /* avatar-3d:begin */
+    const avatar3dExpression = (plan, speaking) => {
+      const value = key => Math.max(0, Math.min(1, Number(plan && plan[key]) || 0));
+      const gain = speaking ? 1 : .35;
+      return {
+        smile: Math.max(value('laughter'), value('humor'), value('warmth') * .6,
+          value('brightness') * .5) * gain,
+        sad: Math.max(value('sadness'), value('empathy') * .5) * gain,
+        surprise: value('surprise') * gain,
+        anger: value('anger') * gain,
+      };
+    };
+
+    const publishAvatar3DThumbnail = async (attempt = 0) => {
+      if (!avatar3d || !manifest || !manifest.avatar || !manifest.avatar.slug) return;
+      try {
+        const image = avatar3d.snapshot(512);
+        if (!image) {
+          // The renderer had no complete frame yet (GPU still starting).
+          if (attempt < 5) setTimeout(() => publishAvatar3DThumbnail(attempt + 1), 1500);
+          return;
+        }
+        const layout = avatar3d.layout();
+        await postJSON('/api/avatar/thumb3d', {
+          slug: manifest.avatar.slug, image,
+          layout: layout && layout.faceBounds
+            ? { bounds: layout.bounds, faceBounds: layout.faceBounds } : undefined,
+        });
+        manifest.thumbnail_pending = false;
+      } catch (_) { /* the placeholder card face remains until the next load */ }
+    };
+
+    async function loadAvatar3D() {
+      const api = await avatar3dApi();
+      if (!api || typeof api.create !== 'function') throw new Error('3D renderer unavailable');
+      if (!api.supported()) throw new Error('WebGL is unavailable');
+      const width = Number(manifest.w) || 1024;
+      const height = Number(manifest.h) || 1536;
+      portraitWidth = width;
+      portraitHeight = height;
+      faceCanvas.width = width;
+      faceCanvas.height = height;
+      headCanvas.width = width;
+      headCanvas.height = height;
+      visemeImages.clear();
+      for (const kind of ['eyes', 'gaze', 'brow', 'forehead', 'cheek', 'eyebag',
+        'stylizedBlink']) layers[kind] = {};
+      layers.smile = null;
+      layers.emotionMouth = null;
+      currentViseme = 'sil';
+      previousViseme = 'sil';
+      stylizedMouthMaskKey = '';
+      stylizedMouthPatchCache = new WeakMap();
+      bodyImage = null;
+      headMask = null;
+      bodyHeadClearMask = null;
+      cutoutImage = null;
+      for (const kind of Object.keys(motion)) delete motion[kind];
+      updateMotionControlsAvailability();
+      const instance = api.create({ width, height });
+      try {
+        await instance.load(String(manifest.model), { pose: manifest.pose, yaw: manifest.yaw });
+      } catch (error) {
+        instance.dispose();
+        throw error;
+      }
+      avatar3d = instance;
+      avatar3dGazeState = { x: 0, y: 0, at: 0 };
+      publishMotionReadiness();
+      ready = true;
+      emptyState.classList.remove('show');
+      setStatus(`${manifest.avatar && manifest.avatar.name ? manifest.avatar.name : 'OpenClam'} · ready`, 'good');
+      void refreshAvatarCarousel();
+      if (manifest.thumbnail_pending && !isCompanion) setTimeout(publishAvatar3DThumbnail, 1500);
+      requestAnimationFrame(renderLoop);
+    }
+    /* avatar-3d:end */
+
     async function loadAvatar() {
       setStatus('Loading avatar…', 'busy');
+      disposeAvatar3D();
       try {
         const response = await fetch(`assets/manifest.json?v=${assetRevision}`, { cache: 'no-store' });
         if (!response.ok) throw new Error('missing avatar');
         manifest = await response.json();
+        if (is3DRuntime(manifest)) {
+          await loadAvatar3D();
+          return;
+        }
         if (!manifest || !Array.isArray(manifest.visemes) || !manifest.frames) throw new Error('invalid avatar');
         syncLiveRigOverride();
 
@@ -3627,6 +3734,7 @@
         requestAnimationFrame(renderLoop);
       } catch (_) {
         manifest = null;
+        disposeAvatar3D();
         for (const kind of Object.keys(motion)) delete motion[kind];
         updateMotionControlsAvailability();
         ready = false;
@@ -5974,7 +6082,101 @@
       };
     };
 
+    /* avatar-3d:begin */
+    const drawAvatar3D = (now, presentation = '') => {
+      clearStage();
+      const reduce = reducedMotion.matches;
+      const wanted = desiredViseme(now);
+      if (wanted !== currentViseme) {
+        previousViseme = currentViseme;
+        currentViseme = wanted;
+        visemeChangedAt = now;
+      }
+      const blink = blinkAmounts(now, reduce);
+      const liveAudioSpeaking = Boolean(
+        live && live.remoteAudioState && live.remoteAudioState.speaking);
+      const speaking = Boolean(agentSpeaking || speechSource || liveAudioSpeaking);
+      if (speechSource && speechExpressionTimeline.length) {
+        speechExpressionPlan = speechExpressionPlanAt(
+          speechExpressionTimeline, Math.max(0, speechTime()), speechExpressionPlan);
+      }
+      const gazeTarget = cursorGazeTarget(pointer, avatarFaceAnchor(), { x: 1, y: 1 },
+        { width: innerWidth, height: innerHeight });
+      const gaze = smoothCursorGaze(avatar3dGazeState, gazeTarget, now, reduce);
+      const { breathe } = bodyMotionAt(now, speaking, bodyMotionState, reduce);
+      // Only the on-screen part of the logical portrait is rendered, at the
+      // size it is shown, so close-ups stay sharp and zoom-outs stay cheap.
+      const logicalWidth = avatar3d.width, logicalHeight = avatar3d.height;
+      const previewMetadata = {
+        bounds: avatar3d.layout().bounds,
+        alignment: { face_bounds: avatar3d.layout().faceBounds
+          || [logicalWidth * .3, logicalHeight * .04, logicalWidth * .4, logicalHeight * .16] },
+      };
+      const chatIdleEdge = presentation === 'chat-edge-idle-left' ? 'left'
+        : presentation === 'chat-edge-idle-right' ? 'right' : null;
+      const fit = chatIdleEdge
+        ? chatWindowMotionFit('idle', previewMetadata, logicalWidth, logicalHeight, now, null, chatIdleEdge)
+        : cameraFor(previewMetadata, logicalWidth, logicalHeight);
+      const mirrored = avatarMirrored && root.classList.contains('chat-mode');
+      const clampX = value => Math.max(0, Math.min(logicalWidth, value));
+      const clampY = value => Math.max(0, Math.min(logicalHeight, value));
+      const margin = 2 / Math.max(fit.scale, 1e-6);
+      const view = {
+        x: mirrored ? 0 : clampX((0 - fit.x) / fit.scale - margin),
+        y: clampY((0 - fit.y) / fit.scale - margin),
+      };
+      view.w = (mirrored ? logicalWidth : clampX((innerWidth - fit.x) / fit.scale + margin)) - view.x;
+      view.h = clampY((innerHeight - fit.y) / fit.scale + margin) - view.y;
+      const cap = 2048 / Math.max(view.w * fit.scale * pixelRatio, view.h * fit.scale * pixelRatio, 1);
+      const density = fit.scale * pixelRatio * Math.min(1, cap);
+      view.pixelWidth = Math.max(8, Math.round(view.w * density));
+      view.pixelHeight = Math.max(8, Math.round(view.h * density));
+      const image = avatar3d.render(now, {
+        viseme: currentViseme,
+        intensity: speaking ? Math.max(.4, Number(audioSignal && audioSignal.relative) || 0) : 0,
+        blink,
+        gaze: avatarMirrored && root.classList.contains('chat-mode')
+          ? { x: -gaze.x, y: gaze.y } : gaze,
+        brow: microBrow(now, reduce),
+        expression: avatar3dExpression(speechExpressionPlan, speaking),
+        breathe,
+        speaking,
+        reduce,
+      }, view);
+      const width = logicalWidth, height = logicalHeight;
+      const metadata = previewMetadata;
+      if (view.w > 0 && view.h > 0) {
+        context.save();
+        context.setTransform(pixelRatio * fit.scale, 0, 0, pixelRatio * fit.scale,
+          pixelRatio * fit.x, pixelRatio * fit.y);
+        context.drawImage(image, 0, 0, image.width, image.height, view.x, view.y, view.w, view.h);
+        context.restore();
+      }
+      const bounds = metadata.bounds;
+      lastBodyGeometry = {
+        fit, width, height, metadata,
+        pivotX: bounds[0] + bounds[2] * .5, pivotY: bounds[1] + bounds[3],
+        sway: 0, breathe, hasBody: false,
+      };
+    };
+
+    const avatar3dFrameDelay = now => {
+      const active = speechSource || hasAttachedAgentAudio() || agentSpeaking || ptt
+        || dragging || avatarZoomGesture;
+      if (active) return shellState.onBattery ? 50 : 32;
+      if (reducedMotion.matches) return STANDBY_MAINTENANCE_MS;
+      const pointerRecent = pointer.seen && now - Number(pointer.at) < STANDBY_GAZE_SETTLE_MS;
+      if (pointerRecent || blinkStartedAt) return shellState.onBattery ? 50 : 32;
+      // Idle breathing and sway stay continuous but cheap.
+      return shellState.onBattery ? 66 : 40;
+    };
+    /* avatar-3d:end */
+
     const drawAvatar = (now, presentation = '') => {
+      if (avatar3d) {
+        drawAvatar3D(now, presentation);
+        return;
+      }
       clearStage();
       composeHead(now);
       const hasBody = Boolean(bodyImage && manifest.body);
@@ -6146,6 +6348,7 @@
 
     const frameDelay = now => {
       if (document.hidden || Number(shellState.pet && shellState.pet.opacity) <= .001) return 250;
+      if (avatar3d) return avatar3dFrameDelay(now);
       if (manualMotionKind) {
         const chatWalkIdle = root.classList.contains('chat-mode')
           && manualMotionKind === 'walk'

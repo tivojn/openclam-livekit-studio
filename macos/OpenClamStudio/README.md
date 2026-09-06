@@ -43,6 +43,10 @@ from the Mac and explicit import on the iPhone.
   and is never saved in OpenClam, OpenClaw config, or shell history.
 - A desktop avatar with calibrated face rig, lip sync, gaze, blinking, brows,
   full body, click reactions, walk, edge idle, and authored moves.
+- 3D avatars: import a rigged `.glb` with viseme or ARKit shape keys and the
+  same timed viseme track lip-syncs the model, with blink, gaze, mood, head
+  follow and breathing. The 2D portrait pipeline is unchanged. See
+  [docs/AVATAR_3D.md](docs/AVATAR_3D.md).
 - Avatar Studio for portrait preparation, visemes, full-body turnaround,
   wardrobe direction, walk, edge idle, moves, local cutout, review, and
   activation.
