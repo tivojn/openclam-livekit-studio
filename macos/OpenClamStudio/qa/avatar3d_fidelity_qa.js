@@ -212,6 +212,10 @@ const vm = require('node:vm');
       }
     }
 
+    moving.options = {update() {},enabled:()=>false};
+    moving.render(gazeTime += 1000, {reduce:true,gaze:{x:1,y:1},lookTarget:new three.Vector3(3,4,2)});
+    assert.ok(Math.abs(heading(head)) < 1e-8, 'cursor opt-out returns the head to its neutral pose');
+    assert.ok(Math.abs(heading(eye)) < 1e-8, 'cursor opt-out returns both eyes to neutral');
   }
   console.log('3D appearance: authored materials and non-speech morph weights preserved.');
   console.log('3D compositor: close-up, zoom and mirror preserve camera aspect ratio.');

@@ -1497,7 +1497,10 @@ struct CaptainAyerAvatarOverlay: View {
                     orbitPreview = nil; orbitStart = nil
                 }
             },
-            onTap: { _ in dismissOpacityPanel(); noteAvatarInteraction() },
+            onTap: { point in
+                modelOptions.point(point, in: canvasBounds.size, for: avatar.id)
+                dismissOpacityPanel(); noteAvatarInteraction()
+            },
             onTransformBegan: beginAvatarTransform,
             onTransformChanged: { magnification, translation in
                 updateAvatarTransform(magnification: magnification, translation: translation,
@@ -1507,6 +1510,14 @@ struct CaptainAyerAvatarOverlay: View {
                 endAvatarTransform(cancelled: cancelled, stageFrame: stageFrame, canvasBounds: canvasBounds)
             }
         )
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let point):
+                modelOptions.point(point, in: canvasBounds.size, for: avatar.id)
+            case .ended:
+                modelOptions.point(nil, in: canvasBounds.size, for: avatar.id)
+            }
+        }
         .accessibilityHidden(true)
     }
 

@@ -45,3 +45,5 @@ wardrobe/prop visibility, reduced motion, and repeated resets. The existing
 fidelity and interaction checks cover model appearance, projection, gaze,
 rotate/move/pinch controls, and resource packaging. iOS includes saved-selection
 unit coverage and an optional UI test against an installed private 3D fixture.
+
+Pose playback and cursor following start enabled. “Play transitions” cycles upright standing/heart poses every four seconds; an optional `extras.openclamAvatar.playback` ID list can define the sequence. Choosing a body/hand pose or prop pauses playback. Reset restores the original appearance and pauses playback. Both switches remember an explicit opt-out per avatar and remain available in chat, desktop avatar mode and the iOS wardrobe sheet. Reduce Motion suspends automatic playback. iOS follows a tap or connected pointer without taking over rotate/move/pinch gestures.

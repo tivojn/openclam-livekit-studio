@@ -601,6 +601,9 @@ class Avatar3D {
   render(now, state = {}, view = null) {
     if (this.disposed || !this.model) return this.canvas;
     this.options?.update(now, Boolean(state.reduce));
+    if (this.options && !this.options.enabled('followCursor')) {
+      state = {...state,gaze:{x:0,y:0},lookTarget:null};
+    }
     this.applyView(view);
     const elapsed = this.lastFrameAt > 0 ? clamp(now - this.lastFrameAt, 1, 120) : 16;
     this.lastFrameAt = now;

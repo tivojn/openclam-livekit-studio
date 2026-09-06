@@ -2809,6 +2809,12 @@ function showAvatarOptionsMenu(owner) {
         ...choices.map(choice => ({ name: choice.label, click: () => choose(group, choice.id) }))],
     })),
     { type: 'separator' },
+    { name: 'Play transitions', submenu: [
+      { name: 'On', click: () => choose('playTransitions', 'true') },
+      { name: 'Off', click: () => choose('playTransitions', 'false') }] },
+    { name: 'Follow cursor', submenu: [
+      { name: 'On', click: () => choose('followCursor', 'true') },
+      { name: 'Off', click: () => choose('followCursor', 'false') }] },
     { name: 'Reset appearance & pose', click: () => choose('reset', '') },
   ]);
 }

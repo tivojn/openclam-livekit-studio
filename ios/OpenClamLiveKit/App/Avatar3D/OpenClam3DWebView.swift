@@ -59,6 +59,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
             "orbit": ["yaw": orbit.yaw, "pitch": orbit.pitch],
             "state": pose.webState,
             "options": options.selection(for: avatar.id),
+            "pointer": options.pointers[avatar.id].map { ["x": $0.x, "y": $0.y] as Any } ?? NSNull(),
         ]
         coordinator.flush(view)
     }
@@ -190,6 +191,7 @@ struct OpenClam3DCatalogue: Codable, Equatable {
 final class OpenClam3DOptionsStore: ObservableObject {
     static let shared = OpenClam3DOptionsStore()
     @Published private(set) var catalogues: [String: OpenClam3DCatalogue] = [:]
+    @Published private(set) var pointers: [String: CGPoint] = [:]
     @Published private var selections: [String: [String: String]]
     private let defaults: UserDefaults
     private let key = "openclam.3d.appearanceSelections"
@@ -211,6 +213,29 @@ final class OpenClam3DOptionsStore: ObservableObject {
         if catalogues[avatarID] != catalogue { catalogues[avatarID] = catalogue }
     }
 
+    func point(_ location: CGPoint?, in size: CGSize, for avatarID: String) {
+        guard enabled("followCursor", for: avatarID), let location,
+              size.width > 0, size.height > 0, location.x.isFinite, location.y.isFinite else {
+            pointers[avatarID] = nil
+            return
+        }
+        pointers[avatarID] = CGPoint(x: location.x / size.width, y: location.y / size.height)
+    }
+
+    func enabled(_ key: String, for avatarID: String) -> Bool {
+        selection(for: avatarID)[key] != "false"
+    }
+
+    func setEnabled(_ enabled: Bool, key: String, for avatarID: String) {
+        guard ["playTransitions", "followCursor"].contains(key) else { return }
+        var next = selection(for: avatarID)
+        next[key] = enabled ? nil : "false"
+        if key == "playTransitions", enabled { next["prop"] = nil }
+        if key == "followCursor", !enabled { pointers[avatarID] = nil }
+        selections[avatarID] = next
+        save()
+    }
+
     func select(_ id: String, group: String, for avatarID: String) {
         guard let catalogue = catalogues[avatarID] else { return }
         let choices = group == "outfit" ? catalogue.outfits : group == "prop" ? catalogue.props
@@ -218,6 +243,9 @@ final class OpenClam3DOptionsStore: ObservableObject {
         guard id.isEmpty || choices.contains(where: { $0.id == id }) else { return }
         var next = selection(for: avatarID)
         next[group] = id.isEmpty ? nil : id
+        if ["body", "hands", "leftHand", "rightHand", "prop"].contains(group) {
+            next["playTransitions"] = "false"
+        }
         if group == "body" || (group == "prop" && !id.isEmpty) {
             for hand in ["hands", "leftHand", "rightHand"] { next[hand] = nil }
         }
@@ -226,7 +254,12 @@ final class OpenClam3DOptionsStore: ObservableObject {
         save()
     }
 
-    func reset(_ avatarID: String) { selections[avatarID] = [:]; save() }
+    func reset(_ avatarID: String) {
+        var next = ["playTransitions": "false"]
+        next["followCursor"] = selection(for: avatarID)["followCursor"]
+        selections[avatarID] = next
+        save()
+    }
     private func save() { if let data = try? JSONEncoder().encode(selections) { defaults.set(data, forKey: key) } }
 }
 
@@ -249,6 +282,8 @@ struct OpenClam3DWardrobeSheet: View {
                     choices("Left Hand", group: "leftHand", items: library.poses.filter { $0.group == "leftHand" }, fallback: "From body pose")
                     choices("Right Hand", group: "rightHand", items: library.poses.filter { $0.group == "rightHand" }, fallback: "From body pose")
                     choices("Prop", group: "prop", items: library.props, fallback: "None")
+                    behavior("Play transitions", key: "playTransitions")
+                    behavior("Follow cursor", key: "followCursor")
                     Button("Reset Appearance & Pose") { options.reset(avatarID) }
                         .accessibilityIdentifier("openclam-3d-appearance-reset")
                 }
@@ -257,6 +292,17 @@ struct OpenClam3DWardrobeSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
+    }
+
+    private func behavior(_ title: String, key: String) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { options.enabled(key, for: avatarID) },
+            set: { value in
+                options.setEnabled(value, key: key, for: avatarID)
+                if key == "playTransitions", value { onBodyPose() }
+            }
+        ))
+        .accessibilityIdentifier("openclam-3d-\(key)")
     }
 
     private func choices(_ title: String, group: String, items: [OpenClam3DChoice], fallback: String) -> some View {

@@ -11,7 +11,7 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
  const rows=m=>[0,1,2,3].map(r=>[0,1,2,3].map(c=>m.elements[c*4+r]));
  const rest=Object.fromEntries([shoulder,hand,finger].map(n=>[n.name,rows(n.matrixWorld)]));
  const rotate=new THREE.Matrix4().makeRotationZ(.7),shear=new THREE.Matrix4().set(1,.15,0,.1,0,1,0,0,0,0,1,0,0,0,0,1);
- const lib=new sandbox.Library({model,root,bones:{},baseQuaternions:new Map()}, {version:1,rest,defaultOutfit:'original',outfits:[{id:'original',nodes:['coat']},{id:'dress',nodes:['dress']}],props:[{id:'prop',nodes:['prop']}],poses:[{id:'pose',group:'body',deltas:{shoulder:rows(rotate),hand:rows(rotate),finger:rows(rotate.clone().multiply(shear))}},{id:'fist',group:'rightHand',deltas:{finger:rows(shear)}}]});
+ const lib=new sandbox.Library({model,root,bones:{},baseQuaternions:new Map()}, {version:1,rest,defaultOutfit:'original',outfits:[{id:'original',nodes:['coat']},{id:'dress',nodes:['dress']}],props:[{id:'prop',nodes:['prop']}],poses:[{id:'pose',label:'Standing',group:'body',deltas:{shoulder:rows(rotate),hand:rows(rotate),finger:rows(rotate.clone().multiply(shear))}},{id:'fist',group:'rightHand',deltas:{finger:rows(shear)}}]});
  lib.captureIdle();assert(old.visible&&!dress.visible&&!prop.visible);
  const baseline=lib.bones.map(b=>b.world.clone());
  lib.select({body:'pose',outfit:'dress',prop:'prop'},100);lib.update(425);assert(lib.transition);lib.update(800);
@@ -21,6 +21,18 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
  for(let n=0;n<30;n++){lib.select({body:'pose'},2000);lib.update(2100,true);lib.select({},2200);lib.update(2300,true);}
  for(const [i,b] of lib.bones.entries())assert(Math.max(...b.node.matrixWorld.elements.map((v,j)=>Math.abs(v-baseline[i].elements[j])))<1e-10,'reset cannot accumulate rotation or shear');
  lib.select({body:'missing',outfit:'missing'},3000);assert.equal(Object.keys(lib.selection).length,0);
+ // Playback starts without a preference, respects Reduce Motion, and an
+ // explicit opt-out survives the repeated frame selections used by iOS.
+ lib.select({},0);lib.update(0,true);
+ assert(lib.enabled('playTransitions')&&lib.enabled('followCursor'));
+ lib.update(4100);assert(lib.transition,'default playback must start');lib.update(4800);
+ assert(Math.abs(shoulder.matrixWorld.elements[0]-Math.cos(.7))<1e-9);
+ lib.select({playTransitions:'false',followCursor:'false'},5000);lib.update(5700);
+ for(const time of [10000,20000,30000]){lib.select({playTransitions:'false',followCursor:'false'},time);lib.update(time);}
+ assert(!lib.transition&&!lib.enabled('followCursor'));
+ assert(Math.abs(shoulder.matrixWorld.elements[0]-1)<1e-9,'paused playback stays neutral');
+ lib.select({},31000);lib.update(36000,true);assert(!lib.transition,'Reduce Motion prevents autoplay');
+ lib.update(40100);assert(lib.transition,'playback resumes after Reduce Motion');
  assert.throws(()=>new sandbox.Library({model,root}, {version:2,rest,poses:[]}));
  console.log('3D options: authored affine poses, layered hands, wardrobe/props, reduced motion and repeated reset verified.');
 })().catch(e=>{console.error(e);process.exitCode=1});

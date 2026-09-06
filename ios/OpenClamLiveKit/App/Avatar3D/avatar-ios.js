@@ -39,7 +39,12 @@ function draw(now) {
   const surface = avatar.canvas.getBoundingClientRect();
   if (!(surface.width > 0 && surface.height > 0)) return;
   const density = Math.min(window.devicePixelRatio || 1, 2048 / Math.max(surface.width,surface.height));
-  avatar.render(now, state, fitAvatarViewport(latest.crop, surface.width, surface.height, density));
+  const viewport = fitAvatarViewport(latest.crop, surface.width, surface.height, density);
+  const lookTarget = latest.pointer ? avatar.gazePoint({
+    x:viewport.x + latest.pointer.x * viewport.w,
+    y:viewport.y + latest.pointer.y * viewport.h,
+  }) : null;
+  avatar.render(now, {...state,lookTarget}, viewport);
   if (!reported) {reported=true;document.querySelector('#status').remove();report({event:'rendered'});}
 }
 report({event:'page-ready'});

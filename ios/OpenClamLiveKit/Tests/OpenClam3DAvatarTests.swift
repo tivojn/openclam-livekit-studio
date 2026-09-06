@@ -15,6 +15,28 @@ final class OpenClam3DAvatarTests: XCTestCase {
         "vrc.v_ih", "vrc.v_oh", "vrc.v_ou", "eyeBlinkLeft", "eyeBlinkRight",
     ]
 
+    func testPlaybackAndCursorDefaultsRememberAnExplicitOptOut() {
+        let name = "OpenClam3DDefaultsTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OpenClam3DOptionsStore(defaults: defaults)
+        XCTAssertTrue(store.enabled("playTransitions", for: "tia"))
+        XCTAssertTrue(store.enabled("followCursor", for: "tia"))
+        store.point(CGPoint(x: 100, y: 75), in: CGSize(width: 200, height: 300), for: "tia")
+        XCTAssertEqual(store.pointers["tia"], CGPoint(x: 0.5, y: 0.25))
+        store.setEnabled(false, key: "followCursor", for: "tia")
+        store.setEnabled(false, key: "playTransitions", for: "tia")
+        XCTAssertNil(store.pointers["tia"])
+        let reopened = OpenClam3DOptionsStore(defaults: defaults)
+        XCTAssertFalse(reopened.enabled("playTransitions", for: "tia"))
+        XCTAssertFalse(reopened.enabled("followCursor", for: "tia"))
+        XCTAssertTrue(reopened.enabled("playTransitions", for: "another"))
+        reopened.reset("tia")
+        XCTAssertFalse(reopened.enabled("followCursor", for: "tia"))
+        reopened.setEnabled(true, key: "playTransitions", for: "tia")
+        XCTAssertTrue(OpenClam3DOptionsStore(defaults: defaults).enabled("playTransitions", for: "tia"))
+    }
+
     func testOrbitFitsEveryCornerAndResetRestoresTheFrontCamera() {
         let scene = SCNScene()
         scene.rootNode.addChildNode(SCNNode(geometry: SCNBox(width: 0.7, height: 1.9, length: 0.45, chamferRadius: 0)))
@@ -561,6 +583,7 @@ extension OpenClam3DAvatarTests {
         store.select("unknown", group: "body", for: "character")
         XCTAssertEqual(store.selection(for: "character")["body"], "heart")
         store.reset("character")
-        XCTAssertTrue(store.selection(for: "character").isEmpty)
+        XCTAssertNil(store.selection(for: "character")["body"])
+        XCTAssertFalse(store.enabled("playTransitions", for: "character"))
     }
 }

@@ -10390,8 +10390,12 @@
       });
       if (typeof shell.onPetMoves === 'function') shell.onPetMoves(() => { void selectMoveMode(); });
       if (typeof shell.onAvatarOptionsRequest === 'function') shell.onAvatarOptionsRequest(({group, id} = {}) => {
-        if (!avatar3d?.options || !['outfit','body','hands','leftHand','rightHand','prop','reset'].includes(group)) return;
-        const next = group === 'reset' ? {} : {...avatar3d.options.selection, [group]: id};
+        if (!avatar3d?.options || !['outfit','body','hands','leftHand','rightHand','prop','reset','playTransitions','followCursor'].includes(group)) return;
+        const next = group === 'reset'
+          ? {playTransitions:'false',followCursor:avatar3d.options.selection.followCursor}
+          : {...avatar3d.options.selection, [group]: id};
+        if (['body','hands','leftHand','rightHand','prop'].includes(group)) next.playTransitions = 'false';
+        if (group === 'playTransitions' && id === 'true') { delete next.prop; void selectStandbyMode(); }
         if (group === 'body' || (group === 'prop' && id)) {
           delete next.hands; delete next.leftHand; delete next.rightHand;
           if (group === 'prop') next.body = avatar3d.options.props.find(p => p.id === id)?.pose;

@@ -46,8 +46,20 @@ final class OpenClam3DAvatarUITests: XCTestCase {
             option.tap()
             sleep(1)
         }
+        let cursorSwitch = app.switches["openclam-3d-followCursor"]
+        XCTAssertTrue(cursorSwitch.waitForExistence(timeout: 8))
+        if !cursorSwitch.isHittable { app.swipeUp() }
+        let initialCursor = cursorSwitch.value as? String
+        cursorSwitch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertNotEqual(cursorSwitch.value as? String, initialCursor)
+        cursorSwitch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertEqual(cursorSwitch.value as? String, initialCursor)
+        let playbackSwitch = app.switches["openclam-3d-playTransitions"]
+        if playbackSwitch.value as? String != "1" { playbackSwitch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap() }
+        XCTAssertEqual(playbackSwitch.value as? String, "1")
         choose("outfit", "Casual · T-shirt & jeans")
         choose("body", "Heart")
+        XCTAssertEqual(playbackSwitch.value as? String, "0", "A chosen pose must pause playback")
         capture("wardrobe-casual-heart")
         choose("outfit", "Dress & heels")
         choose("body", "Standing · 3")
