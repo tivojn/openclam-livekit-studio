@@ -6216,12 +6216,18 @@
       const density = fit.scale * pixelRatio * Math.min(1, cap);
       view.pixelWidth = Math.max(8, Math.round(view.w * density));
       view.pixelHeight = Math.max(8, Math.round(view.h * density));
+      const cursor = avatarCanvasPoint(pointer);
+      const lookTarget = pointer.seen ? avatar3d.gazePoint({
+        x: (cursor.x - fit.x) / fit.scale,
+        y: (cursor.y - fit.y) / fit.scale,
+      }) : null;
       const image = avatar3d.render(now, {
         viseme: currentViseme,
         intensity: speaking ? Math.max(.4, Number(audioSignal && audioSignal.relative) || 0) : 0,
         blink,
         gaze: avatarMirrored && root.classList.contains('chat-mode')
           ? { x: -gaze.x, y: gaze.y } : gaze,
+        lookTarget,
         brow: microBrow(now, reduce),
         expression: avatar3dExpression(speechExpressionPlan, speaking),
         breathe,

@@ -15,6 +15,62 @@ final class OpenClam3DAvatarTests: XCTestCase {
         "vrc.v_ih", "vrc.v_oh", "vrc.v_ou", "eyeBlinkLeft", "eyeBlinkRight",
     ]
 
+    func testOrbitFitsEveryCornerAndResetRestoresTheFrontCamera() {
+        let scene = SCNScene()
+        scene.rootNode.addChildNode(SCNNode(geometry: SCNBox(width: 0.7, height: 1.9, length: 0.45, chamferRadius: 0)))
+        let rig = OpenClam3DAvatarRig(scene: scene, frame: CGSize(width: 1024, height: 1536), targetNames: [:])
+        let original = rig.cameraNode.simdWorldTransform
+        for yaw in [0.0, .pi / 2, .pi, -.pi / 2] {
+            for pitch in [-Double.pi * 0.44, 0, Double.pi * 0.44] {
+                rig.setOrbit(.init(yaw: yaw, pitch: pitch))
+                let m = simd_float4x4(rig.cameraNode.camera!.projectionTransform) * rig.cameraNode.simdWorldTransform.inverse
+                for x in [rig.bounds.min.x, rig.bounds.max.x] {
+                    for y in [rig.bounds.min.y, rig.bounds.max.y] {
+                        for z in [rig.bounds.min.z, rig.bounds.max.z] {
+                            let p = m * SIMD4<Float>(x, y, z, 1)
+                            XCTAssertLessThan(abs(p.x / p.w), 1)
+                            XCTAssertLessThan(abs(p.y / p.w), 1)
+                            XCTAssertGreaterThan(p.w, 0)
+                        }
+                    }
+                }
+            }
+        }
+        rig.setOrbit(.init())
+        for i in 0..<4 { for j in 0..<4 {
+            XCTAssertEqual(rig.cameraNode.simdWorldTransform[i][j], original[i][j], accuracy: 0.00001)
+        } }
+        let drag = OpenClam3DOrbit().dragging(CGSize(width: 200, height: 150))
+        XCTAssertLessThan(drag.yaw, 0)
+        XCTAssertGreaterThan(drag.pitch, 0)
+        XCTAssertEqual(OpenClam3DOrbit(pitch: 100).sanitized.pitch, .pi * 0.44)
+        XCTAssertEqual(OpenClam3DOrbit(yaw: .nan, pitch: .infinity).sanitized, .init())
+    }
+
+    func testSharedRendererResourcesAndWeightedSpeechAreAvailableOffline() throws {
+        for name in OpenClam3DWebAssets.resources.values {
+            XCTAssertNotNil(Bundle.main.url(forResource: name, withExtension: nil), "Missing renderer dependency: \(name)")
+        }
+        var pose = OpenClam3DAvatarPose()
+        pose.visemeWeights = [.open: 0.6, .bilabial: 0.4]
+        let weights = try XCTUnwrap(pose.webState["visemeWeights"] as? [String: Double])
+        XCTAssertEqual(weights, ["aa": 0.6, "PP": 0.4])
+    }
+
+    func testViewportZoomAndPlacementMapToTheVisibleCameraCrop() {
+        let logical = CGRect(x: 0, y: 0, width: 1024, height: 1536)
+        let canvas = CGRect(x: 0, y: 60, width: 400, height: 600)
+        let full = OpenClam3DViewportPolicy.crop(logicalCrop: logical, stageFrame: canvas,
+                                               canvas: canvas, transform: .factory)
+        XCTAssertEqual(full, logical)
+        let zoomed = OpenClam3DViewportPolicy.crop(logicalCrop: logical, stageFrame: canvas, canvas: canvas,
+                            transform: .init(scale: 2, normalizedOffset: CGPoint(x: 0.1, y: 0.1)))
+        XCTAssertEqual(zoomed.width, logical.width / 2, accuracy: 0.001)
+        XCTAssertEqual(zoomed.height, logical.height / 2, accuracy: 0.001)
+        XCTAssertEqual(zoomed.minX, 204.8, accuracy: 0.001)
+        XCTAssertEqual(zoomed.minY, -76.8, accuracy: 0.001)
+    }
+
     func testRigPreservesLoadedMaterialAppearance() {
         let scene = SCNScene()
         let mesh = SCNNode(geometry: SCNSphere(radius: 1))
@@ -62,6 +118,32 @@ final class OpenClam3DAvatarTests: XCTestCase {
         XCTAssertEqual(pbr.baseColorFactor.z, originalColor.z)
         XCTAssertEqual(material.alphaMode, .blend)
         XCTAssertFalse(material.isDoubleSided)
+    }
+
+    func testUnsignedBoneIndicesRemainPositiveAcrossTheSignedByteBoundary() throws {
+        let raw = Data([99, 0, 127, 128, 156, 99, 99, 156, 128, 127, 0, 99])
+        let source = SCNGeometrySource(data: raw, semantic: .boneIndices, vectorCount: 2,
+                                       usesFloatComponents: false, componentsPerVector: 4,
+                                       bytesPerComponent: 1, dataOffset: 1, dataStride: 6)
+        let result = try XCTUnwrap(OpenClam3DAvatarRig.widenedBoneIndices(source, boneCount: 157))
+        XCTAssertEqual(result.bytesPerComponent, 2)
+        XCTAssertEqual(result.componentsPerVector, 4)
+        XCTAssertEqual(result.vectorCount, 2)
+        let values = result.data.withUnsafeBytes { Array($0.bindMemory(to: UInt16.self)) }
+        XCTAssertEqual(values, [0, 127, 128, 156, 156, 128, 127, 0])
+        XCTAssertEqual(source.data, raw, "Loading must not rewrite the installed asset")
+        XCTAssertNil(OpenClam3DAvatarRig.widenedBoneIndices(source, boneCount: 156))
+
+        let wide: [UInt16] = [0, 255, 32_768, 65_535]
+        let shorts = SCNGeometrySource(data: wide.withUnsafeBytes { Data($0) }, semantic: .boneIndices,
+                                      vectorCount: 1, usesFloatComponents: false, componentsPerVector: 4,
+                                      bytesPerComponent: 2, dataOffset: 0, dataStride: 8)
+        XCTAssertNil(OpenClam3DAvatarRig.widenedBoneIndices(shorts, boneCount: 65_536),
+                     "Existing uint16 skinning indices need no widening")
+        let truncated = SCNGeometrySource(data: Data([0, 1, 2]), semantic: .boneIndices,
+                                         vectorCount: 2, usesFloatComponents: false, componentsPerVector: 4,
+                                         bytesPerComponent: 1, dataOffset: 0, dataStride: 4)
+        XCTAssertNil(OpenClam3DAvatarRig.widenedBoneIndices(truncated, boneCount: 157))
     }
 
     func testSkinnedFacialBlendPreservesTopologyAndNeverAccumulatesAcrossFrames() throws {
@@ -133,6 +215,14 @@ final class OpenClam3DAvatarTests: XCTestCase {
         let summary = try OpenClam3DGLBReader.summary(of: data)
         let rig = try await OpenClam3DAvatarRig.load(modelURL: url, frame: CGSize(width: 1024, height: 1536),
                                                    targetNames: summary.targetNames)
+        var skins = 0
+        rig.scene.rootNode.enumerateHierarchy { node, _ in
+            guard let skin = node.skinner else { return }
+            skins += 1
+            XCTAssertEqual(skin.boneIndices.bytesPerComponent, 2, "\(node.name ?? "mesh") must use 16-bit bone indices")
+            XCTAssertEqual(skin.boneIndices.vectorCount, skin.boneWeights.vectorCount)
+        }
+        XCTAssertGreaterThan(skins, 0)
         let renderer = SCNRenderer(device: nil, options: nil)
         renderer.scene = rig.scene
         renderer.pointOfView = rig.cameraNode
@@ -143,6 +233,16 @@ final class OpenClam3DAvatarTests: XCTestCase {
         add(attachment)
         if let directory = ProcessInfo.processInfo.environment["OPENCLAM_QA_3D_OUTPUT"] {
             try image.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("loaded-model.png"))
+            for (name, orbit) in [("front", OpenClam3DOrbit()),
+                                   ("above", OpenClam3DOrbit(pitch: .pi / 4)),
+                                   ("below", OpenClam3DOrbit(pitch: -.pi / 6)),
+                                   ("side", OpenClam3DOrbit(yaw: .pi / 2)),
+                                   ("back", OpenClam3DOrbit(yaw: .pi))] {
+                rig.setOrbit(orbit)
+                let view = renderer.snapshot(atTime: 0, with: CGSize(width: 512, height: 768), antialiasingMode: .multisampling4X)
+                try view.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("orbit-\(name).png"))
+            }
+            rig.setOrbit(.init())
             // Exercise the animated path as well as the untouched load pose.
             // A neutral snapshot alone does not validate GPU morph + skinning.
             rig.setCrop(CGRect(x: 250, y: 20, width: 520, height: 720))

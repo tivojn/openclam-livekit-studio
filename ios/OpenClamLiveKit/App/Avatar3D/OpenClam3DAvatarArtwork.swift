@@ -52,11 +52,27 @@ struct OpenClam3DAvatarArtwork: View {
     @ObservedObject var faceMirror: CaptainAyerFaceMirrorController
     let crop: CGRect
     let reduceMotion: Bool
+    var orbit = OpenClam3DOrbit()
     @StateObject private var loader = OpenClam3DAvatarLoader()
+
+    private var usesSharedRenderer: Bool {
+#if DEBUG
+        return !CommandLine.arguments.contains("-OpenClamUITestNativeRenderer")
+#else
+        return true
+#endif
+    }
 
     var body: some View {
         GeometryReader { proxy in
-            if let rig = loader.rig {
+            if usesSharedRenderer {
+                TimelineView(.animation(minimumInterval: OpenClam3DAvatarFramePolicy.minimumInterval(
+                    speaking: controller.isExpressionAnimating || faceMirror.isCapturing,
+                    reduceMotion: reduceMotion))) { context in
+                    OpenClam3DWebView(avatar: avatar, pose: pose(at: context.date), orbit: orbit,
+                        visibleRect: Self.visibleRect(crop: crop, in: proxy.size))
+                }
+            } else if let rig = loader.rig {
                 TimelineView(
                     .animation(
                         minimumInterval: OpenClam3DAvatarFramePolicy.minimumInterval(
@@ -69,6 +85,7 @@ struct OpenClam3DAvatarArtwork: View {
                     OpenClam3DSceneView(
                         rig: rig,
                         pose: pose(at: context.date),
+                        orbit: orbit,
                         visibleRect: Self.visibleRect(crop: crop, in: proxy.size)
                     )
                 }
@@ -80,7 +97,9 @@ struct OpenClam3DAvatarArtwork: View {
                 )
             }
         }
-        .task(id: avatar.id) { await loader.load(avatar) }
+        .task(id: avatar.id) {
+            if !usesSharedRenderer { await loader.load(avatar) }
+        }
         .allowsHitTesting(false)
     }
 
@@ -211,6 +230,7 @@ private struct OpenClam3DAvatarPlaceholder: View {
 private struct OpenClam3DSceneView: UIViewRepresentable {
     let rig: OpenClam3DAvatarRig
     let pose: OpenClam3DAvatarPose
+    let orbit: OpenClam3DOrbit
     let visibleRect: CGRect
 
     func makeUIView(context: Context) -> SCNView {
@@ -234,6 +254,7 @@ private struct OpenClam3DSceneView: UIViewRepresentable {
             view.scene = rig.scene
             view.pointOfView = rig.cameraNode
         }
+        rig.setOrbit(orbit)
         rig.setCrop(visibleRect)
         rig.apply(pose)
         view.setNeedsDisplay()

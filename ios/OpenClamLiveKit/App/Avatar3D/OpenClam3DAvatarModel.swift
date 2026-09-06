@@ -1,6 +1,45 @@
 import CoreGraphics
 import Foundation
 
+/// Camera angles shared by gesture previews and the SceneKit renderer.
+struct OpenClam3DOrbit: Equatable, Sendable {
+    var yaw: Double = 0
+    var pitch: Double = 0
+
+    var sanitized: Self {
+        let y = yaw.isFinite ? yaw : 0
+        let p = pitch.isFinite ? pitch : 0
+        return Self(yaw: atan2(sin(y), cos(y)), pitch: min(.pi * 0.44, max(-.pi * 0.44, p)))
+    }
+
+    func dragging(_ translation: CGSize) -> Self {
+        Self(yaw: yaw - Double(translation.width) * 0.009,
+             pitch: pitch + Double(translation.height) * 0.007).sanitized
+    }
+}
+
+/// Invert the overlay placement into a camera crop, so zoom renders the
+/// visible pixels at screen resolution instead of enlarging a cached layer.
+enum OpenClam3DViewportPolicy {
+    static func crop(logicalCrop: CGRect, stageFrame: CGRect, canvas: CGRect,
+                     transform: OpenClamAvatarStandbyTransform) -> CGRect {
+        let fit = min(stageFrame.width / max(1, logicalCrop.width),
+                      stageFrame.height / max(1, logicalCrop.height))
+        let width = stageFrame.width / max(0.0001, fit)
+        let height = stageFrame.height / max(0.0001, fit)
+        let base = CGRect(x: logicalCrop.midX - width / 2, y: logicalCrop.midY - height / 2,
+                          width: width, height: height)
+        let scale = max(0.0001, stageFrame.width / max(1, base.width) * transform.scale)
+        let origin = CGPoint(
+            x: stageFrame.midX - stageFrame.width * transform.scale / 2
+                + transform.normalizedOffset.x * canvas.width,
+            y: stageFrame.minY + transform.normalizedOffset.y * canvas.height)
+        return CGRect(x: base.minX + (canvas.minX - origin.x) / scale,
+                      y: base.minY + (canvas.minY - origin.y) / scale,
+                      width: canvas.width / scale, height: canvas.height / scale)
+    }
+}
+
 /// Pure, renderer-independent pieces of the 3D avatar path: the glTF binary
 /// reader used for import validation, the viseme and expression channel
 /// tables shared with the Mac renderer (`web/avatar3d.js`), and the pose
@@ -71,7 +110,6 @@ enum OpenClam3DGLBReader {
         "KHR_draco_mesh_compression",
         "EXT_meshopt_compression",
         "KHR_texture_basisu",
-        "EXT_texture_webp",
     ]
 
     static func summary(of data: Data) throws -> OpenClam3DGLBSummary {

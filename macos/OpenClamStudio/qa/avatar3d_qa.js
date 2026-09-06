@@ -76,7 +76,7 @@ assert.match(app, /variant: str = Query\(pattern=r"\^\(\?:macos-full\|ios-light\
 assert.match(app, /if variant == AVATAR3D\.IOS_VARIANT:/);
 assert.match(server3d, /def export_ios_3d\(slug, destination/);
 assert.match(server3d, /def transcode_textures_for_ios\(/);
-assert.match(server3d, /IOS_MAX_MODEL_BYTES = 64 \* 1024 \* 1024/);
+assert.match(server3d, /IOS_MAX_MODEL_BYTES = 256 \* 1024 \* 1024/);
 assert.match(settings, /data-act="export-ios3d"/);
 const schema = JSON.parse(read('../../shared/avatar-package-v2/ios-3d-v5.schema.json'));
 assert.equal(schema.properties.version.const, 5);

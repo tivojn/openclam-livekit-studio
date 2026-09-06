@@ -48,6 +48,10 @@ const vm = require('node:vm');
   assert.equal(mesh.morphTargetInfluences[0], .72);
   assert.equal(mesh.morphTargetInfluences[1], 0, 'the blink must release');
 
+  avatar.render(1300, {reduce:true, visemeWeights:{aa:.7,PP:.3}});
+  assert.ok(mesh.morphTargetInfluences[2] > 0, 'weighted phone speech reaches the shared solver');
+  assert.equal(mesh.morphTargetInfluences[0], .72, 'weighted speech keeps the authored body fit');
+
   // Exercise the production compositor AND real camera projection together.
   // Previously it calculated a crop but called render() without that view,
   // squeezing the full portrait into the cropped destination rectangle.
@@ -65,6 +69,7 @@ const vm = require('node:vm');
     shellState: { chatCloseUp: false },
     chatAvatarSafeViewport: () => ({ x: 200, y: 80, width: 900, height: 680 }),
     numericAvatarZoom: value => Number(value) || 1,
+    avatarCanvasPoint: point => point,
     avatarMirrored: false, root: { classList: { contains: () => true } },
     innerWidth: 1100, innerHeight: 760, pixelRatio: 2,
     audioSignal: null, microBrow: () => 0, avatar3dExpression: () => ({}),
@@ -130,8 +135,11 @@ const vm = require('node:vm');
     (nested ? neck : fixture).add(head);
     head.position.y = nested ? .3 : 1.3;
     const eye = new three.Bone(); eye.name = 'c_eye.l'; head.add(eye);
+    eye.position.set(-.035, .08, .05);
+    const rightEye = new three.Bone(); rightEye.name = 'c_eye.r'; rightEye.position.set(.035, .08, .05); head.add(rightEye);
     const hair = new three.Object3D(); hair.position.set(.1, .2, 0); head.add(hair);
-    fixture.add(new three.Mesh(new three.BoxGeometry(), new three.MeshStandardMaterial()));
+    const body = new three.Mesh(new three.BoxGeometry(.7, 2, .4), new three.MeshStandardMaterial());
+    body.position.y = 1; fixture.add(body);
     gltf.scene = fixture;
     const moving = sandbox.window.OpenClamAvatar3D.create();
     await moving.load('gaze-fixture.glb', { pose: 'rest' });
@@ -156,6 +164,27 @@ const vm = require('node:vm');
     }
     assert.ok(Math.abs(heading(head)) < 1e-8, 'head returns to neutral without drift');
     assert.ok(Math.abs(heading(eye)) < 1e-8, 'eyes return to neutral without drift');
+    // Unproject through the uncropped camera, then verify each optical axis
+    // independently. This catches sign, eye convergence and orbit/crop errors.
+    for (const orbit of [{yaw:0,pitch:0}, {yaw:.2,pitch:.15}, {yaw:-.2,pitch:-.15}]) {
+      moving.setOrbit(orbit);
+      moving.applyView({x:150,y:50,w:500,h:700,pixelWidth:1000,pixelHeight:1400});
+      const face = moving.project(moving.headCenter);
+      for (const [dx,dy] of [[0,0],[-45,0],[45,0],[0,-45],[0,45]]) {
+        const cursor = {x:face.x+dx,y:face.y+dy};
+        const target = moving.gazePoint(cursor), projected = moving.project(target);
+        assert.ok(Math.hypot(projected.x-cursor.x,projected.y-cursor.y)<1e-7,
+          'cursor depth must reproject to the exact portrait pixel');
+        moving.render(gazeTime += 1000, {reduce:true, lookTarget:target});
+        for (const eyeBone of [eye,rightEye]) {
+          const actual = moving.eyeForward.get(eyeBone).clone()
+            .applyQuaternion(eyeBone.getWorldQuaternion(new three.Quaternion())).normalize();
+          const expected = target.clone().sub(eyeBone.getWorldPosition(new three.Vector3())).normalize();
+          assert.ok(actual.angleTo(expected)<1e-6, 'both eyes converge on the actual target');
+        }
+      }
+    }
+
   }
   console.log('3D appearance: authored materials and non-speech morph weights preserved.');
   console.log('3D compositor: close-up, zoom and mirror preserve camera aspect ratio.');

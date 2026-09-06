@@ -269,6 +269,12 @@ class IOSExportTests(unittest.TestCase):
             self.assertNotIn("extensionsRequired", shipped_document)
             view = shipped_document["bufferViews"][0]
             self.assertTrue(binary[view["byteOffset"]:view["byteOffset"] + 8].startswith(b"\x89PNG"))
+            exact = avatar3d.export_ios_3d(manifest["slug"], destination,
+                                          log=lambda *_: None, preserve_source=True)
+            with zipfile.ZipFile(destination) as archive, open(model, "rb") as original:
+                self.assertEqual(archive.read("assets/model.glb"), original.read())
+                self.assertEqual(len(archive.read("assets/model.glb")), exact["model"]["byteCount"])
+
 
     def test_export_refuses_portrait_avatars(self):
         import avatar_package

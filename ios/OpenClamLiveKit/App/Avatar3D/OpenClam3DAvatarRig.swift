@@ -32,6 +32,7 @@ final class OpenClam3DAvatarRig {
     private var lastPoseTime: TimeInterval?
     private var appliedWeights: [ObjectIdentifier: [Int: CGFloat]] = [:]
     private var currentCrop: CGRect = .zero
+    private(set) var orbit = OpenClam3DOrbit()
     private let fieldOfView: Double = 22
 
     static func load(
@@ -80,6 +81,7 @@ final class OpenClam3DAvatarRig {
         scene.background.contents = nil
         // GLTFKit2 supplies the authored alpha cutoff, blending and sidedness.
         // Preserve those materials instead of guessing from mesh/material names.
+        normalizeSkinningIndices()
         bindMorphers(targetNames: targetNames)
         collectBones()
         relaxArms()
@@ -105,6 +107,57 @@ final class OpenClam3DAvatarRig {
     }
 
     // MARK: Loading
+
+    /// glTF JOINTS are unsigned, but SCNGeometrySource's integer initializer
+    /// has no signedness flag. Keep indices above 127 out of a one-byte signed
+    /// representation on device renderers by widening them to UInt16. SceneKit
+    /// accepts at most two bytes for bone indices. Existing UInt16 inputs
+    /// already retain the unsigned glTF representation.
+    /// Preserve the original palette and every influence, including zero-weight
+    /// slots; changing palette order would also require rewriting bind matrices.
+    static func widenedBoneIndices(_ source: SCNGeometrySource, boneCount: Int) -> SCNGeometrySource? {
+        let width = source.bytesPerComponent
+        let components = source.componentsPerVector
+        guard !source.usesFloatComponents, width == 1,
+              (1...4).contains(components), source.vectorCount > 0,
+              boneCount > 0,
+              source.dataOffset >= 0, source.dataStride >= components * width,
+              source.dataOffset <= source.data.count - components * width,
+              source.vectorCount - 1 <= (source.data.count - components * width - source.dataOffset) / source.dataStride
+        else { return nil }
+        var indices = [UInt16]()
+        indices.reserveCapacity(source.vectorCount * components)
+        let valid = source.data.withUnsafeBytes { bytes -> Bool in
+            for vertex in 0..<source.vectorCount {
+                for component in 0..<components {
+                    let offset = source.dataOffset + vertex * source.dataStride + component * width
+                    let index = bytes.load(fromByteOffset: offset, as: UInt8.self)
+                    guard Int(index) < boneCount else { return false }
+                    indices.append(UInt16(index))
+                }
+            }
+            return true
+        }
+        guard valid else { return nil }
+        return SCNGeometrySource(data: indices.withUnsafeBytes { Data($0) }, semantic: .boneIndices,
+                                 vectorCount: source.vectorCount, usesFloatComponents: false,
+                                 componentsPerVector: components, bytesPerComponent: 2,
+                                 dataOffset: 0, dataStride: components * 2)
+    }
+
+    private func normalizeSkinningIndices() {
+        scene.rootNode.enumerateHierarchy { node, _ in
+            guard let old = node.skinner,
+                  let indices = Self.widenedBoneIndices(old.boneIndices, boneCount: old.bones.count)
+            else { return }
+            let replacement = SCNSkinner(baseGeometry: old.baseGeometry, bones: old.bones,
+                                        boneInverseBindTransforms: old.boneInverseBindTransforms,
+                                        boneWeights: old.boneWeights, boneIndices: indices)
+            replacement.baseGeometryBindTransform = old.baseGeometryBindTransform
+            replacement.skeleton = old.skeleton
+            node.skinner = replacement
+        }
+    }
 
     private func bindMorphers(targetNames: [String: [String]]) {
         let byCount = Dictionary(grouping: targetNames.values, by: \.count)
@@ -327,6 +380,13 @@ final class OpenClam3DAvatarRig {
         }
     }()
 
+    func setOrbit(_ value: OpenClam3DOrbit) {
+        let next = value.sanitized
+        guard next != orbit else { return }
+        orbit = next
+        frameCamera()
+    }
+
     private func frameCamera() {
         let size = bounds.max - bounds.min
         let center = (bounds.min + bounds.max) / 2
@@ -334,12 +394,31 @@ final class OpenClam3DAvatarRig {
         let vertical = Float(fieldOfView * .pi / 180) / 2
         let aspect = Float(frame.width / frame.height)
         let horizontal = atan(tan(vertical) * aspect)
-        let distance = max(height * 0.5 * 1.06 / tan(vertical), width * 0.5 * 1.12 / tan(horizontal))
-        cameraNode.simdPosition = SIMD3(center.x, center.y, bounds.max.z + distance)
-        cameraNode.simdLook(at: center)
+        let yaw = Float(orbit.yaw), pitch = Float(orbit.pitch)
+        let outward = SIMD3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch))
+        let right = SIMD3(cos(yaw), Float(0), -sin(yaw))
+        let up = simd_cross(outward, right)
+        var distance = bounds.max.z - center.z
+            + max(height * 0.5 * 1.06 / tan(vertical), width * 0.5 * 1.12 / tan(horizontal))
+        // Fit depth as well as height/width at every angle, preserving crown
+        // and feet when viewing the figure from above, below, or the side.
+        for x in [bounds.min.x, bounds.max.x] {
+            for y in [bounds.min.y, bounds.max.y] {
+                for z in [bounds.min.z, bounds.max.z] {
+                    let point = SIMD3(x, y, z) - center
+                    distance = max(distance, simd_dot(point, outward)
+                        + max(abs(simd_dot(point, up)) * 1.08 / tan(vertical),
+                              abs(simd_dot(point, right)) * 1.12 / tan(horizontal)))
+                }
+            }
+        }
+        cameraNode.simdPosition = center + outward * distance
+        cameraNode.simdLook(at: center, up: SIMD3(0, 1, 0), localFront: SIMD3(0, 0, -1))
         cameraNode.camera?.zNear = Double(max(0.01, distance * 0.1))
         cameraNode.camera?.zFar = Double(distance * 6 + height * 4)
-        setCrop(CGRect(origin: .zero, size: frame))
+        let crop = currentCrop.isEmpty ? CGRect(origin: .zero, size: frame) : currentCrop
+        currentCrop = .zero // near/far may change even when the crop stays put
+        setCrop(crop)
     }
 
     /// Render only `crop` (in the logical frame) by offsetting the projection.

@@ -483,8 +483,8 @@ def set_thumbnail(slug, png_bytes, layout=None):
 
 IOS_VARIANT = "ios-3d"
 IOS_VERSION = 5
-IOS_MAX_MODEL_BYTES = 64 * 1024 * 1024
-IOS_MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
+IOS_MAX_MODEL_BYTES = 256 * 1024 * 1024
+IOS_MAX_ARCHIVE_BYTES = 280 * 1024 * 1024
 IOS_THUMBNAIL_SIZE = 512
 DEFAULT_LAYOUT = {
     "bounds": [0.0, 0.0, float(RENDER_WIDTH), float(RENDER_HEIGHT)],
@@ -599,7 +599,7 @@ def _layout(source):
     }
 
 
-def export_ios_3d(slug, destination, log=print):
+def export_ios_3d(slug, destination, log=print, *, preserve_source=False):
     """Write one ``ios-3d`` AVTR: manifest, thumbnail and the transcoded model."""
     import hashlib
     import io
@@ -617,7 +617,12 @@ def export_ios_3d(slug, destination, log=print):
     descriptor, transcoded = tempfile.mkstemp(suffix=".glb")
     os.close(descriptor)
     try:
-        transcode_textures_for_ios(model, transcoded)
+        if preserve_source:
+            # Build 62+ shares the Mac WebGL renderer and supports WebP.
+            # Copy the original GLB byte for byte; no geometry/material edits.
+            shutil.copyfile(model, transcoded)
+        else:
+            transcode_textures_for_ios(model, transcoded)
         model_bytes = os.path.getsize(transcoded)
         if model_bytes > IOS_MAX_MODEL_BYTES:
             raise AVTR.AvatarPackageError(
@@ -683,7 +688,7 @@ def export_ios_3d(slug, destination, log=print):
             AVTR._write_zip_file(archive, Path(transcoded), f"assets/{MODEL_NAME}", zipfile.ZIP_STORED)
         if os.path.getsize(temporary) > IOS_MAX_ARCHIVE_BYTES:
             os.remove(temporary)
-            raise AVTR.AvatarPackageError("the iPhone package exceeds 80 MB")
+            raise AVTR.AvatarPackageError("the iPhone package exceeds 280 MB")
         os.replace(temporary, destination)
         log(f"exported {identifier} as {IOS_VARIANT} ({os.path.getsize(destination) / 1e6:.1f} MB)")
         return manifest

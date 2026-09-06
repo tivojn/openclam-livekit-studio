@@ -145,6 +145,7 @@ class Avatar3D {
     this.coverage = { direct: {}, recipe: [], missing: [] };
     this.baseQuaternions = new Map();
     this.headOffset = new THREE.Quaternion();
+    this.eyeForward = new Map();
     this.lastFrameAt = 0;
     this.bounds = new THREE.Box3();
     this.headCenter = null;
@@ -228,6 +229,13 @@ class Avatar3D {
     this.normalise();
     this.frame();
     this.model.updateMatrixWorld(true);
+    const front = new THREE.Vector3(0, 0, 1)
+      .applyQuaternion(this.model.getWorldQuaternion(new THREE.Quaternion()));
+    for (const side of ['l', 'r']) {
+      const eye = this.bones.eye[side];
+      if (eye) this.eyeForward.set(eye, front.clone()
+        .applyQuaternion(eye.getWorldQuaternion(new THREE.Quaternion()).invert()));
+    }
     return this;
   }
 
@@ -471,6 +479,47 @@ class Avatar3D {
     return { x: (ndc.x + 1) * .5 * this.width, y: (1 - ndc.y) * .5 * this.height };
   }
 
+  gazePoint(point) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    // Unproject the actual cursor through the full portrait camera. Choosing
+    // a plane in front of the face gives the 2D cursor a stable 3D depth.
+    // Its projection is exact at any crop, zoom, placement or orbit angle.
+    this.project(this.headCenter);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(point.x / this.width * 2 - 1,
+      1 - point.y / this.height * 2), this.layoutCamera);
+    const normal = this.camera.position.clone().sub(this.headCenter).normalize();
+    const depth = Math.min(this.bounds.getSize(new THREE.Vector3()).y * .18,
+      this.camera.position.distanceTo(this.headCenter) * .65);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal,
+      this.headCenter.clone().addScaledVector(normal, depth));
+    return ray.ray.intersectPlane(plane, new THREE.Vector3());
+  }
+
+  aimEyes(target) {
+    for (const side of ['l', 'r']) {
+      const eye = this.bones.eye[side];
+      const base = eye && this.baseQuaternions.get(eye);
+      if (!base) continue;
+      const parent = eye.parent
+        ? eye.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
+      const neutral = parent.clone().multiply(base);
+      const forward = this.eyeForward.get(eye);
+      if (!forward) continue;
+      const from = forward.clone().applyQuaternion(neutral).normalize();
+      const to = new THREE.Vector3(target.x, target.y, target.z)
+        .sub(eye.getWorldPosition(new THREE.Vector3())).normalize();
+      const delta = new THREE.Quaternion().setFromUnitVectors(from, to);
+      // Beyond a comfortable eye range, keep looking as close as anatomy
+      // allows. Never flip the eyes toward a cursor behind the character.
+      const angle = from.angleTo(to);
+      if (angle > .65) delta.slerp(new THREE.Quaternion(), 1 - .65 / angle);
+      const local = parent.clone().invert().multiply(delta).multiply(parent);
+      eye.quaternion.copy(base).premultiply(local);
+    }
+    this.root.updateMatrixWorld(true);
+  }
+
   // Render only `view` (a rectangle in the logical width x height image) into
   // `pixelWidth` x `pixelHeight` device pixels. The compositor asks for the
   // part that is on screen at its on-screen size, so a close-up is as sharp
@@ -543,7 +592,9 @@ class Avatar3D {
     this.smooth.intensity = approach(this.smooth.intensity, intensity, elapsed, 60);
     const articulation = .58 + .42 * this.smooth.intensity;
     for (const viseme of VISEMES) {
-      const target = viseme === wanted && wanted !== 'sil' ? 1 : 0;
+      const target = state.visemeWeights && typeof state.visemeWeights === 'object'
+        ? clamp(Number(state.visemeWeights[viseme]) || 0, 0, 1)
+        : viseme === wanted && wanted !== 'sil' ? 1 : 0;
       const tau = target > this.visemeWeights[viseme] ? 38 : 64;
       this.visemeWeights[viseme] = approach(this.visemeWeights[viseme], target, elapsed, tau);
       const weight = this.visemeWeights[viseme];
@@ -571,13 +622,15 @@ class Avatar3D {
     const attentionY = clamp(Number(gaze.y) || 0, -1, 1);
     const { x: gx, y: gy } = this.pose(now, elapsed, {
       gx: attentionX, gy: attentionY, reduce, speaking: Boolean(state.speaking),
-      breathe: Number(state.breathe) || 1, head: state.head || {},
+      breathe: Number(state.breathe) || 1, head: state.head || {}, target: state.lookTarget,
     });
     // +x is the viewer's right, which is the character's own left.
-    if (gx > 0) { this.setChannel(weights, 'eyeLookOutLeft', gx); this.setChannel(weights, 'eyeLookInRight', gx); }
-    if (gx < 0) { this.setChannel(weights, 'eyeLookInLeft', -gx); this.setChannel(weights, 'eyeLookOutRight', -gx); }
-    if (gy > 0) { this.setChannel(weights, 'eyeLookDownLeft', gy); this.setChannel(weights, 'eyeLookDownRight', gy); }
-    if (gy < 0) { this.setChannel(weights, 'eyeLookUpLeft', -gy); this.setChannel(weights, 'eyeLookUpRight', -gy); }
+    if (!(state.lookTarget && this.bones.eye.l && this.bones.eye.r)) {
+      if (gx > 0) { this.setChannel(weights, 'eyeLookOutLeft', gx); this.setChannel(weights, 'eyeLookInRight', gx); }
+      if (gx < 0) { this.setChannel(weights, 'eyeLookInLeft', -gx); this.setChannel(weights, 'eyeLookOutRight', -gx); }
+      if (gy > 0) { this.setChannel(weights, 'eyeLookDownLeft', gy); this.setChannel(weights, 'eyeLookDownRight', gy); }
+      if (gy < 0) { this.setChannel(weights, 'eyeLookUpLeft', -gy); this.setChannel(weights, 'eyeLookUpRight', -gy); }
+    }
 
     // Brows and mood.
     const brow = clamp(Number(state.brow) || 0, -1, 1);
@@ -652,13 +705,22 @@ class Avatar3D {
     bone.quaternion.copy(base).premultiply(localDelta);
   }
 
-  pose(now, elapsed, { gx, gy, reduce, speaking, breathe, head }) {
+  pose(now, elapsed, { gx, gy, reduce, speaking, breathe, head, target }) {
     const t = now / 1000;
     const idle = reduce ? 0 : 1;
     // The eyes acquire the cursor first; the head catches up over ~180 ms.
     // As it turns, the eyes settle back toward the middle of their sockets.
-    this.smooth.gazeYaw = approach(this.smooth.gazeYaw, gx * .46, elapsed, reduce ? 1 : 180);
-    this.smooth.gazePitch = approach(this.smooth.gazePitch, gy * .28, elapsed, reduce ? 1 : 210);
+    let wantedYaw = gx * .46, wantedPitch = gy * .28;
+    if (target) {
+      const direction = new THREE.Vector3(target.x, target.y, target.z).sub(this.headCenter);
+      const front = new THREE.Vector3(0, 0, 1)
+        .applyQuaternion(this.model.getWorldQuaternion(new THREE.Quaternion()));
+      const relativeYaw = Math.atan2(direction.x, direction.z) - Math.atan2(front.x, front.z);
+      wantedYaw = clamp(Math.atan2(Math.sin(relativeYaw), Math.cos(relativeYaw)) * .65, -.55, .55);
+      wantedPitch = clamp(Math.atan2(-direction.y, Math.hypot(direction.x, direction.z)) * .65, -.35, .35);
+    }
+    this.smooth.gazeYaw = approach(this.smooth.gazeYaw, wantedYaw, elapsed, reduce ? 1 : 180);
+    this.smooth.gazePitch = approach(this.smooth.gazePitch, wantedPitch, elapsed, reduce ? 1 : 210);
     const yawTarget = this.smooth.gazeYaw + idle * (Math.sin(t * .37) * .012 + Math.sin(t * .11) * .01)
       + (Number(head.yaw) || 0);
     const pitchTarget = this.smooth.gazePitch + idle * Math.sin(t * .29 + 1.3) * .008
@@ -667,11 +729,12 @@ class Avatar3D {
     this.smooth.headYaw = yawTarget;
     this.smooth.headPitch = pitchTarget;
     this.smooth.headRoll = approach(this.smooth.headRoll, rollTarget, elapsed, reduce ? 1 : 140);
-    // Screen-down gaze (+gy) pitches the head forward, which is a negative
-    // rotation about world X for a figure facing +Z.
+    // Precise targets use world-space pitch: positive X looks down for a
+    // figure facing +Z. Keep the legacy normalized-gaze fallback separate.
+    const pitchSign = target ? 1 : -1;
     if (this.bones.neck) {
       this.applyWorldRotation(this.bones.neck, new THREE.Euler(
-        -this.smooth.headPitch * .4, this.smooth.headYaw * .4, this.smooth.headRoll * .4, 'YXZ'));
+        pitchSign * this.smooth.headPitch * .4, this.smooth.headYaw * .4, this.smooth.headRoll * .4, 'YXZ'));
     }
     if (this.bones.head) {
       // Some exports flatten neck and head into siblings. In that case the
@@ -682,7 +745,7 @@ class Avatar3D {
       }
       const share = inheritsNeck ? .6 : 1;
       this.applyWorldRotation(this.bones.head, new THREE.Euler(
-        -this.smooth.headPitch * share, this.smooth.headYaw * share, this.smooth.headRoll * share, 'YXZ'));
+        pitchSign * this.smooth.headPitch * share, this.smooth.headYaw * share, this.smooth.headRoll * share, 'YXZ'));
     }
     if (this.bones.chest) {
       const breath = (breathe - 1) / .0025;
@@ -700,6 +763,7 @@ class Avatar3D {
       }
     }
     this.root.updateMatrixWorld(true);
+    if (target) this.aimEyes(target);
     return eyeGaze;
   }
 

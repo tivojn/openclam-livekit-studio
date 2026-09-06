@@ -235,9 +235,9 @@ enum OpenClamAvatarPackageContract {
     static let modelPath = "assets/model.glb"
     static let modelMediaType = "model/gltf-binary"
     static let modelFileCount = 3
-    static let maximumModelByteCount: UInt64 = 64 * 1_024 * 1_024
-    static let maximumModelArchiveByteCount: UInt64 = 80 * 1_024 * 1_024
-    static let maximumModelExpandedByteCount: UInt64 = 96 * 1_024 * 1_024
+    static let maximumModelByteCount: UInt64 = 256 * 1_024 * 1_024
+    static let maximumModelArchiveByteCount: UInt64 = 280 * 1_024 * 1_024
+    static let maximumModelExpandedByteCount: UInt64 = 300 * 1_024 * 1_024
     static let modelThumbnailDimension = 512
 
     static let maximumArchiveByteCount: UInt64 = 64 * 1_024 * 1_024

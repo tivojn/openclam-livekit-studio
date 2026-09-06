@@ -167,7 +167,10 @@ bytes per archive path. The schema is `macos-full.schema.json`.
 A rigged 3D character instead of sprite plates. The archive holds exactly
 `manifest.json`, `assets/thumbnail.png` (512×512 PNG) and `assets/model.glb`
 (glTF 2.0 binary, embedded buffers and PNG/JPEG textures only, no Draco,
-meshopt, Basis or WebP, at most 64 MB; 80 MB archive). The manifest carries the
+meshopt or Basis, at most 256 MB; 280 MB archive). Build 62 and later use
+the same Three.js renderer as macOS, accept embedded WebP textures, and can
+import the original desktop GLB without editing its geometry or materials.
+Earlier iOS builds require PNG/JPEG textures and a model below 64 MB. The manifest carries the
 model's SHA-256 and byte count, the logical render frame plus the figure and
 face rectangles the desktop renderer projected, and which of the fifteen
 Oculus/Meta XR visemes the model expresses directly, approximates from ARKit

@@ -1059,6 +1059,11 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var displayMode = OpenClamAvatarDisplayMode.closeUp
     @State private var standbyOffset = CGPoint.zero
     @State private var closeUpOffset = CGPoint.zero
+    @AppStorage("openclam.3d.orbitYaw") private var orbitYaw = 0.0
+    @AppStorage("openclam.3d.orbitPitch") private var orbitPitch = 0.0
+    @AppStorage("openclam.3d.dragMoves") private var dragMoves3D = false
+    @State private var orbitPreview: OpenClam3DOrbit?
+    @State private var orbitStart: OpenClam3DOrbit?
     @State private var gestureState = CaptainAyerOverlayGestureState()
     @State private var transformSession: OpenClamAvatarTransformSession?
     @State private var isAvatarHidden = false
@@ -1070,6 +1075,10 @@ struct CaptainAyerAvatarOverlay: View {
     @State private var lastAvatarWakeSignal = -TimeInterval.infinity
     @State private var motionSession = OpenClamAvatarMotionSessionState()
     @State private var motionCompletionTask: Task<Void, Never>?
+
+    private var cameraOrbit: OpenClam3DOrbit {
+        orbitPreview ?? OpenClam3DOrbit(yaw: orbitYaw, pitch: orbitPitch).sanitized
+    }
 
     private var isCloseUp: Bool { displayMode == .closeUp }
     private var shouldDimRailControls: Bool {
@@ -1126,6 +1135,21 @@ struct CaptainAyerAvatarOverlay: View {
 
             ZStack(alignment: .trailing) {
                 if !isAvatarHidden {
+                    if avatar.compatibility.rendersModel {
+                        OpenClam3DAvatarArtwork(
+                            avatar: avatar, controller: controller, reactions: faceReactions,
+                            faceMirror: faceMirror,
+                            crop: OpenClam3DViewportPolicy.crop(
+                                logicalCrop: presentation.crop(for: avatar), stageFrame: stageLayout.stageFrame,
+                                canvas: stageBounds, transform: presentedTransform),
+                            reduceMotion: reduceMotion, orbit: cameraOrbit)
+                            .frame(width: stageBounds.width, height: stageBounds.height)
+                            .position(x: stageBounds.midX, y: stageBounds.midY)
+                            .opacity(opacity)
+                            .clipped()
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    } else {
                     avatarStage(
                         presentation: presentation,
                         width: stageLayout.stageFrame.width,
@@ -1148,6 +1172,14 @@ struct CaptainAyerAvatarOverlay: View {
                     // thread layer still disables the surface completely.
                     .allowsHitTesting(interactionLayer.allowsAvatarGestures)
                     .transition(.opacity)
+
+                    }
+
+                    if avatar.compatibility.rendersModel && interactionLayer.allowsAvatarGestures {
+                        modelControls(stageFrame: stageLayout.stageFrame, canvasBounds: stageBounds)
+                            .frame(width: stageBounds.width, height: stageBounds.height)
+                            .position(x: stageBounds.midX, y: stageBounds.midY)
+                    }
 
                     if let kind = motionSession.activeKind,
                        let fileURL = motionFileURL(for: kind),
@@ -1416,6 +1448,8 @@ struct CaptainAyerAvatarOverlay: View {
                 )
             },
             onTapInteraction: dismissOpacityPanel,
+            orbit: cameraOrbit,
+            usesExternal3DControls: avatar.compatibility.rendersModel,
             onInteraction: noteAvatarInteraction
         )
         .frame(width: width, height: height)
@@ -1430,6 +1464,48 @@ struct CaptainAyerAvatarOverlay: View {
         .onHover { hovering in
             if hovering { noteAvatarInteraction() }
         }
+    }
+
+    /// A stable, unscaled canvas lets both fingers land beside the model.
+    /// It remains below the tool rail and above the thread only in Avatar mode.
+    private func modelControls(stageFrame: CGRect, canvasBounds: CGRect) -> some View {
+        OpenClamAvatarStageInteractionView(
+            interactionPath: CGPath(rect: CGRect(origin: .zero, size: canvasBounds.size), transform: nil),
+            onSinglePanBegan: {
+                faceReactions.cancelGaze()
+                if dragMoves3D { beginAvatarTransform() }
+                else { orbitStart = cameraOrbit }
+                noteAvatarInteraction()
+            },
+            onSinglePanChanged: { translation, _ in
+                if dragMoves3D {
+                    updateAvatarTransform(magnification: 1, translation: translation,
+                        canvasSize: canvasBounds.size, stageFrame: stageFrame, canvasBounds: canvasBounds)
+                } else if let start = orbitStart {
+                    orbitPreview = start.dragging(translation)
+                }
+            },
+            onSinglePanEnded: { _, _, cancelled in
+                if dragMoves3D {
+                    endAvatarTransform(cancelled: cancelled, stageFrame: stageFrame, canvasBounds: canvasBounds)
+                } else {
+                    if !cancelled, let preview = orbitPreview {
+                        orbitYaw = preview.yaw; orbitPitch = preview.pitch
+                    }
+                    orbitPreview = nil; orbitStart = nil
+                }
+            },
+            onTap: { _ in dismissOpacityPanel(); noteAvatarInteraction() },
+            onTransformBegan: beginAvatarTransform,
+            onTransformChanged: { magnification, translation in
+                updateAvatarTransform(magnification: magnification, translation: translation,
+                    canvasSize: canvasBounds.size, stageFrame: stageFrame, canvasBounds: canvasBounds)
+            },
+            onTransformEnded: { cancelled in
+                endAvatarTransform(cancelled: cancelled, stageFrame: stageFrame, canvasBounds: canvasBounds)
+            }
+        )
+        .accessibilityHidden(true)
     }
 
     private func motionLayer(
@@ -1557,6 +1633,7 @@ struct CaptainAyerAvatarOverlay: View {
     }
 
     private func cancelAvatarGesturePreviews() {
+        orbitPreview = nil; orbitStart = nil
         if let revertedOpacity = gestureState.cancelAll() {
             setOpacity(revertedOpacity, persists: false)
         }
@@ -1624,6 +1701,7 @@ struct CaptainAyerAvatarOverlay: View {
                 .accessibilityIdentifier("openclam-avatar-picker")
 
                 avatarModeMenu
+                if avatar.compatibility.rendersModel { modelControlsMenu }
 
                 railButton(
                     systemImage: controller.isSpeaking
@@ -1684,6 +1762,57 @@ struct CaptainAyerAvatarOverlay: View {
         }
         .accessibilityHint("Shows or hides the avatar tool rail")
         .accessibilityIdentifier("openclam-avatar-rail-fold-button")
+    }
+
+    private var modelControlsMenu: some View {
+        Menu {
+            Button { dragMoves3D = false; enableModelControls() } label: {
+                Label("Rotate with One Finger", systemImage: dragMoves3D ? "rotate.3d" : "checkmark")
+            }
+            Button { dragMoves3D = true; enableModelControls() } label: {
+                Label("Move with One Finger", systemImage: dragMoves3D ? "checkmark" : "arrow.up.and.down.and.arrow.left.and.right")
+            }
+            Text("Pinch to resize · Two fingers to move")
+            Divider()
+            Button("Front View") { setModelView(yaw: 0, pitch: 0) }
+            Button("Back View") { setModelView(yaw: .pi, pitch: 0) }
+            Button("View from Above") { setModelView(yaw: 0, pitch: .pi / 4) }
+            Button("View from Below") { setModelView(yaw: 0, pitch: -.pi / 6) }
+            Divider()
+            Button("Zoom In") { zoomModel(by: 1.2) }
+            Button("Zoom Out") { zoomModel(by: 1 / 1.2) }
+            Button("Reset 3D View", systemImage: "arrow.counterclockwise") {
+                setModelView(yaw: 0, pitch: 0)
+                resetStandbyTransform()
+            }
+        } label: {
+            railMenuLabel(systemImage: "rotate.3d", isActive: true)
+        }
+        .accessibilityLabel("3D view controls")
+        .accessibilityValue("\(dragMoves3D ? "Move" : "Rotate"), zoom \(Int(scale * 100))%, yaw \(Int(cameraOrbit.yaw * 180 / .pi)), pitch \(Int(cameraOrbit.pitch * 180 / .pi)), position \(Int(activeFramingTransform.normalizedOffset.x * 100))%, \(Int(activeFramingTransform.normalizedOffset.y * 100))%")
+        .accessibilityHint("Rotate or move with one finger; pinch to resize; two fingers to move")
+        .accessibilityIdentifier("openclam-3d-controls")
+    }
+
+    private func enableModelControls() {
+        interactionLayer = .avatar
+        storedInteractionLayer = interactionLayer.rawValue
+        wakeRail()
+    }
+
+    private func setModelView(yaw: Double, pitch: Double) {
+        orbitPreview = nil; orbitStart = nil
+        orbitYaw = yaw; orbitPitch = pitch
+        enableModelControls()
+    }
+
+    private func zoomModel(by factor: CGFloat) {
+        let current = activeFramingTransform
+        let next = OpenClamAvatarStandbyTransformPolicy.sanitized(
+            scale: current.scale * factor, normalizedOffset: current.normalizedOffset)
+        applyFramingTransform(next, for: displayMode)
+        persistFramingTransform(next, for: displayMode)
+        enableModelControls()
     }
 
     private var avatarModeMenu: some View {
@@ -2007,8 +2136,12 @@ struct CaptainAyerAvatarOverlay: View {
         storedStandbyOffsetX = Double(factory.normalizedOffset.x)
         storedStandbyOffsetY = Double(factory.normalizedOffset.y)
         standbyOffset = factory.normalizedOffset
-        transformSession = nil
-        selectAvatarMode(.standby)
+        cancelAvatarGesturePreviews()
+        stopAvatarMotion(restoreFraming: false)
+        displayMode = .standby
+        scale = factory.scale
+        storedDisplayMode = OpenClamAvatarDisplayMode.standby.rawValue
+        storedFraming = "full"
     }
 
     private func stopAvatarMotion(restoreFraming: Bool = true) {

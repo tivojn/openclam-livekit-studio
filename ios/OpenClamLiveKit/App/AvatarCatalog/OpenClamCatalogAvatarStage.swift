@@ -1055,7 +1055,7 @@ enum OpenClamAvatarStageInteractionGeometry {
 }
 
 @MainActor
-private final class OpenClamAvatarStageInteractionUIView: UIView {
+final class OpenClamAvatarStageInteractionUIView: UIView {
     var interactionPath: CGPath?
 
     override init(frame: CGRect) {
@@ -1087,7 +1087,7 @@ private final class OpenClamAvatarStageInteractionUIView: UIView {
 /// gives one finger and two fingers unambiguous, non-overlapping jobs while
 /// preserving the stage's descriptor-derived silhouette hit testing.
 @MainActor
-private struct OpenClamAvatarStageInteractionView: UIViewRepresentable {
+struct OpenClamAvatarStageInteractionView: UIViewRepresentable {
     let interactionPath: CGPath
     let onSinglePanBegan: () -> Void
     let onSinglePanChanged: (_ translation: CGSize, _ location: CGPoint) -> Void
@@ -1535,6 +1535,8 @@ struct OpenClamCatalogAvatarStage: View {
     /// an overlay such as the opacity panel can dismiss without disappearing
     /// while its avatar is actively being adjusted.
     let onTapInteraction: (() -> Void)?
+    let orbit: OpenClam3DOrbit
+    let usesExternal3DControls: Bool
     let onInteraction: () -> Void
     private let imageStore: OpenClamAvatarAssetStore
 
@@ -1555,9 +1557,13 @@ struct OpenClamCatalogAvatarStage: View {
         onTransformEnded: ((Bool) -> Void)? = nil,
         onTapInteraction: (() -> Void)? = nil,
         imageStore: OpenClamAvatarAssetStore? = nil,
+        orbit: OpenClam3DOrbit = .init(),
+        usesExternal3DControls: Bool = false,
         onInteraction: @escaping () -> Void = {}
     ) {
         self.avatar = avatar
+        self.orbit = orbit
+        self.usesExternal3DControls = usesExternal3DControls
         self.controller = controller
         self.reactions = reactions
         self.faceMirror = faceMirror
@@ -1590,7 +1596,8 @@ struct OpenClamCatalogAvatarStage: View {
                         reactions: reactions,
                         faceMirror: faceMirror,
                         crop: crop,
-                        reduceMotion: reduceMotion
+                        reduceMotion: reduceMotion,
+                        orbit: orbit
                     )
                     .opacity(opacityPlan.bodyOpacity)
                     .clipped()
@@ -1705,6 +1712,7 @@ struct OpenClamCatalogAvatarStage: View {
                     }
                 )
                     .frame(width: proxy.size.width, height: proxy.size.height)
+                    .allowsHitTesting(!usesExternal3DControls)
                     .accessibilityHidden(true)
             }
         }

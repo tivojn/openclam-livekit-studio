@@ -130,6 +130,55 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         capture("3d-avatar-full-body")
     }
 
+    func test3DControlsRotatePinchMoveAndReset() throws {
+        app.terminate()
+        app.launchArguments += ["-OpenClamUITestMacRenderer",
+            "-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby",
+            "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        let controls = app.buttons["openclam-3d-controls"]
+        XCTAssertTrue(controls.waitForExistence(timeout: 12), "Select the installed Tia fixture first")
+        sleep(4)
+        func command(_ title: String) {
+            unfoldAvatarRail()
+            controls.tap()
+            let item = app.buttons[title]
+            XCTAssertTrue(item.waitForExistence(timeout: 3))
+            item.tap()
+        }
+        command("Reset 3D View")
+        command("Rotate with One Finger")
+        let initial = controls.value as? String
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.47, dy: 0.52))
+        let target = app.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.62))
+        start.press(forDuration: 0.1, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertNotEqual(controls.value as? String, initial, "One finger must orbit the actual view")
+        capture("shared-3d-orbit")
+        command("Reset 3D View")
+        app.pinch(withScale: 1.45, velocity: 1)
+        XCTAssertFalse((controls.value as? String ?? "").contains("zoom 100%"), "A real two-touch pinch must resize")
+        capture("shared-3d-pinch")
+        command("View from Above")
+        XCTAssertTrue((controls.value as? String ?? "").contains("pitch 45"))
+        capture("shared-3d-above")
+        command("Back View")
+        capture("shared-3d-back")
+        command("Reset 3D View")
+        XCTAssertTrue((controls.value as? String ?? "").contains("zoom 100%, yaw 0, pitch 0"), "Reset state: \(controls.value ?? "missing")")
+        selectAvatarMode("Close-up")
+        app.pinch(withScale: 0.8, velocity: -1)
+        capture("shared-3d-closeup-pinch")
+        command("Move with One Finger")
+        let beforeMove = controls.value as? String
+        start.press(forDuration: 0.1, thenDragTo: target)
+        XCTAssertNotEqual(controls.value as? String, beforeMove, "Dragging in Move mode changes placement")
+        capture("shared-3d-moved")
+        command("Reset 3D View")
+        capture("shared-3d-reset")
+    }
+
     // MARK: helpers (mirrors OpenClamConversationUITests)
 
     private func unfoldAvatarRail() {
