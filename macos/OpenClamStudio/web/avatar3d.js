@@ -233,6 +233,12 @@ class Avatar3D {
     }
     if (options.pose !== 'rest') this.relaxArms();
     this.options?.captureIdle();
+    if (this.options && options.motionLibrary) {
+      try {
+        const { Avatar3DMotion } = await import('/avatar3d-motion.js');
+        this.motion = await new Avatar3DMotion(this.options).load(options.motionLibrary);
+      } catch (error) { console.warn('3D motions:', error.message); }
+    }
     this.normalise();
     this.frame();
     if (this.options) this.options.restBounds = this.bounds.clone();
@@ -838,6 +844,7 @@ class Avatar3D {
 
   dispose() {
     this.disposed = true;
+    this.motion?.dispose();
     if (this.model) {
       this.model.traverse(node => {
         if (node.geometry) node.geometry.dispose();

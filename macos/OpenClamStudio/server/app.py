@@ -4222,6 +4222,16 @@ async def avatar3d_options_script():
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/avatar3d-motion.js")
+async def avatar3d_motion_module():
+    return FileResponse(os.path.join(WEB, "avatar3d-motion.js"), media_type="text/javascript", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/avatar3d-companion.js")
+async def avatar3d_companion_module():
+    return FileResponse(os.path.join(WEB, "avatar3d-companion.js"), media_type="text/javascript", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/vendor/three/{name}")
 async def three_module(name: str):
     """The staged three.js ES modules (scripts/stage-three-assets.mjs)."""

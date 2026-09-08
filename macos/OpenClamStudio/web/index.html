@@ -512,6 +512,10 @@
 
     #avatar3DControls { border-top: 1px solid var(--codex-border, #8884); margin-top: 6px; padding-top: 6px; }
     #avatarOptions3D button { display: block; padding: 8px; }
+    .avatar-3d #walkButton, .avatar-3d #movesButton { display: none; }
+    #avatarOptions3D .avatar-motion-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    #avatarOptions3D .avatar-motion-actions button { width: auto; min-height: 36px; white-space: normal; font-size: 12px; border: 1px solid var(--codex-border, #8884); border-radius: 8px; }
+    #avatarOptions3D .avatar-motion-actions button[aria-pressed="true"] { background: var(--codex-hover, #8883); }
     #avatarOptions3D details { padding: 10px; }
     #avatarOptions3D summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
     #avatarOptions3D label { display: grid; gap: 4px; margin: 10px 0; font-size: 12px; }
@@ -2345,6 +2349,76 @@
     let avatar3dRefresh = null;
     let avatar3dOptionsMounted = null;
     let disposeAvatarOptions = () => {};
+    let avatarCompanionAPI = null;
+    let lastAvatarCommand = null;
+    const companionKey = () => `openclam.3d.companion.${manifest?.avatar?.slug || 'avatar'}`;
+    const setupCompanion = async instance => {
+      if (!instance.motion) return;
+      avatarCompanionAPI ||= await import('/avatar3d-companion.js');
+      instance.companion = new avatarCompanionAPI.CompanionController();
+      try { const prefs=JSON.parse(localStorage.getItem(companionKey()) || '{}');
+        instance.companion.follow=prefs.follow===true;instance.companion.gestures=prefs.gestures!==false; } catch {}
+      instance.companionOffset = {x:0,y:0};
+      instance.companionWalkRequested = false;
+    };
+    window.addEventListener('storage',event=>{
+      if(event.key!==companionKey()||!avatar3d?.companion)return;
+      try { const prefs=JSON.parse(event.newValue||'{}');
+        avatar3d.companion.command(prefs.follow?'follow':'stay');avatar3d.companion.gestures=prefs.gestures!==false; }
+      catch {}
+    });
+    const performAvatarAction = async (action, {toggleFollow=false}={}) => {
+      const instance=avatar3d, controller=instance?.companion;
+      if (!controller) throw Error('Interactive motions are not installed for this avatar.');
+      if(action==='gestures'){
+        controller.gestures=!controller.gestures;
+        localStorage.setItem(companionKey(),JSON.stringify({follow:controller.follow,gestures:controller.gestures}));
+        window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
+        return '';
+      }
+      closeRailPickers();
+      const wasFollowing=toggleFollow&&controller.follow;
+      controller.command(action==='follow'&&wasFollowing?'stay':action);
+      localStorage.setItem(companionKey(),JSON.stringify({follow:controller.follow,gestures:controller.gestures}));
+      window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
+      instance.motion.stop();instance.companionWalkRequested=false;
+      if (action==='stay' || (action==='follow'&&wasFollowing)) {
+        instance.options.select({...instance.options.selection,playTransitions:'false'});
+        localStorage.setItem(`openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,JSON.stringify(instance.options.selection));
+        window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
+        return 'I’ll stay here.';
+      }
+      await selectStandbyMode();
+      if(instance!==avatar3d)return '';
+      if (action==='follow'||action==='come') {
+        await instance.motion.prepare('walk');
+        return action==='follow'?'I’ll follow your cursor in every direction. Say “stay” to stop.':'Coming over.';
+      }
+      if (action==='wave'||action==='dance') {
+        await instance.motion.play(action,{loop:false});
+        return action==='wave'?'Hello! 👋':'Let’s dance.';
+      }
+      const id={heart:'Ps001.heart',sit:'Ps004.sit',stand:''}[action];
+      if(id!==undefined){
+        instance.options.select({...instance.options.selection,body:id,hands:undefined,
+          leftHand:undefined,rightHand:undefined,playTransitions:'false'});
+        localStorage.setItem(`openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,JSON.stringify(instance.options.selection));
+        window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
+        return {heart:'A heart for you. ♥',sit:'Taking a seat.',stand:'Standing up.'}[action];
+      }
+      return '';
+    };
+    const handleAvatarCommand = async (text, options={}) => {
+      if (!avatar3d?.companion || options.attachments?.length) return false;
+      const action=avatarCompanionAPI.avatarIntent(text);
+      if(!action)return false;
+      if(!options.userAlreadyRendered)addMessage('user',text,{readable:false});
+      const pending=performAvatarAction(action);
+      lastAvatarCommand={text:String(text).trim().toLowerCase(),at:performance.now(),pending};
+      try { const answer=await pending;if(answer)addMessage('assistant',answer); }
+      catch(error){notify(error.message);}
+      return true;
+    };
     let avatar3dRotateMode = false;
     let avatar3dOrbitUntil = 0;
     let avatarOrbitGesture = false;
@@ -2354,6 +2428,7 @@
       return JSON.stringify([
         value && value.avatar && value.avatar.slug, value && value.model,
         value && value.model_revision, value && value.built, value && value.pose, value && value.yaw,
+        value && value.motion_library, value && value.motion_revision,
       ]);
     };
     const avatar3dModelURL = value => {
@@ -2373,9 +2448,14 @@
         const container = document.getElementById('avatarOptions3D');
         if (avatar3d) disposeAvatarOptions = window.OpenClamAvatar3D.mountOptions(
           container, avatar3d.options, `openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,
-          () => { void selectStandbyMode(); lastFrame = 0; },
+          () => { avatar3d?.companion?.command('stay');void selectStandbyMode(); lastFrame = 0; },
           () => { if (shell) void shell.openSettings(); else location.href = '/settings.html'; });
         else container.replaceChildren();
+        if (avatar3d?.companion) {
+          const disposeOptions=disposeAvatarOptions;
+          const disposeCompanion=avatarCompanionAPI.mountCompanionControls(container,avatar3d,companionKey(),performAvatarAction);
+          disposeAvatarOptions=()=>{disposeCompanion();disposeOptions();};
+        }
       }
       document.getElementById('rotate3DButton').setAttribute('aria-checked', String(avatar3dRotateMode));
       canvas.title = avatar3d ? 'Drag to move · Pinch to resize · Two-finger swipe or Option-drag to rotate' : '';
@@ -3679,7 +3759,9 @@
       updateMotionControlsAvailability();
       const instance = api.create({ width, height });
       try {
-        await instance.load(avatar3dModelURL(manifest), { pose: manifest.pose, yaw: manifest.yaw });
+        await instance.load(avatar3dModelURL(manifest), { pose: manifest.pose, yaw: manifest.yaw,
+          motionLibrary: manifest.motion_library });
+        await setupCompanion(instance);
       } catch (error) {
         instance.dispose();
         throw error;
@@ -3713,10 +3795,11 @@
           if (!is3DRuntime(next) || avatar3dIdentity(next) === avatar3dIdentity(manifest)) return;
           const api = await avatar3dApi();
           replacement = api.create({ width: Number(next.w) || 1024, height: Number(next.h) || 1536 });
-          await replacement.load(avatar3dModelURL(next), { pose: next.pose, yaw: next.yaw });
+          await replacement.load(avatar3dModelURL(next), { pose: next.pose, yaw: next.yaw, motionLibrary: next.motion_library });
           if (avatar3d !== previous) return;
           replacement.setOrbit(previous.orbit);
           manifest = next;
+          await setupCompanion(replacement);
           avatar3d = replacement;
           replacement = null;
           previous.dispose();
@@ -6219,6 +6302,55 @@
       const fullChat = root.classList.contains('chat-mode');
       const safeViewport = fullChat ? chatAvatarSafeViewport({ reserveComposer: !shellState.chatCloseUp, reserveRail: true })
         : { x: 0, y: 0, width: innerWidth, height: innerHeight };
+      if (avatar3d.companion) {
+        const controller=avatar3d.companion;
+        const controls=document.getElementById('avatar3DControls');
+        const manual=Boolean(dragging||canvasGesture||avatarZoomGesture||avatarOrbitGesture);
+        if(manual)controller.pause(now);
+        const blocked=manual||speaking||Boolean(ptt)||document.hidden||Boolean(shellState.pet?.locked)
+          || (controls && !controls.hidden && controls.matches(':hover'));
+        const body=previewMetadata.bounds;
+        const offset=fullChat?avatar3d.companionOffset:{x:0,y:0};
+        const centerX=fit.x+(body[0]+body[2]*.5)*fit.scale;
+        const centerY=fit.y+(body[1]+body[3]*.5)*fit.scale;
+        const anchorX=centerX+offset.x, anchorY=centerY+offset.y;
+        const margin=Math.min(safeViewport.width*.45,body[2]*fit.scale*.5+12);
+        // Cursor and travel limits share the canvas coordinates, including
+        // the optional CSS mirror. Keep the crown and feet inside the area.
+        const cursor=avatarCanvasPoint(pointer);
+        const edge1=avatarCanvasPoint({x:safeViewport.x,y:0}).x;
+        const edge2=avatarCanvasPoint({x:safeViewport.x+safeViewport.width,y:0}).x;
+        const minX=fullChat?Math.min(edge1,edge2)+margin:
+          (pointer.companionMinX??-Infinity)+anchorX-innerWidth/2;
+        const maxX=fullChat?Math.max(edge1,edge2)-margin:
+          (pointer.companionMaxX??Infinity)+anchorX-innerWidth/2;
+        const minY=fullChat?safeViewport.y+(body[1]+body[3]*.5)*fit.scale:
+          (pointer.companionMinY??-Infinity)+anchorY-innerHeight/2;
+        const maxY=fullChat?Math.max(minY,safeViewport.y+safeViewport.height-body[3]*fit.scale*.5-12):
+          (pointer.companionMaxY??Infinity)+anchorY-innerHeight/2;
+        const step=controller.step(now,{cursorX:cursor.x,cursorY:cursor.y,anchorX,anchorY,height:body[3]*fit.scale,
+          minX,maxX,minY,maxY,
+          seen:pointer.seen,blocked,reduce});
+        if(step.walking&&!avatar3d.companionWalkRequested){
+          avatar3d.companionWalkRequested=true;
+          void avatar3d.motion.play('walk',{loop:true}).catch(error=>{controller.command('stay');notify(error.message);});
+        } else if(!step.walking&&avatar3d.companionWalkRequested){
+          avatar3d.companionWalkRequested=false;avatar3d.motion.stop();
+        }
+        if(!manual&&now>=controller.pauseUntil&&(controller.follow||controller.come||avatar3d.companionTurning)){
+          avatar3d.companionTurning=Math.abs(step.yaw)>.005;
+          avatar3d.setOrbit({yaw:step.yaw,pitch:0});
+        }
+        if(fullChat){
+          const next={x:offset.x+step.dx,y:offset.y+step.dy};
+          if(step.walking){
+            next.x=Math.max(minX-centerX,Math.min(maxX-centerX,next.x));
+            next.y=Math.max(minY-centerY,Math.min(maxY-centerY,next.y));
+          }
+          avatar3d.companionOffset=next;
+          fit.x+=next.x;fit.y+=next.y;
+        } else if((step.dx||step.dy)&&shell?.moveCompanion) shell.moveCompanion({dx:step.dx,dy:step.dy});
+      }
       // The logical portrait already has a conservative camera margin.
       // Keep its top below the header, including saved offsets from old 2D poses.
       fit = clampChatCameraFit({ ...fit, headSpan: { top: 0 } }, safeViewport);
@@ -6253,6 +6385,7 @@
         breathe,
         speaking,
         reduce,
+        head: avatar3d.companion?.gesture(now,speaking,reduce),
       }, view);
       const width = logicalWidth, height = logicalHeight;
       const metadata = previewMetadata;
@@ -6345,6 +6478,7 @@
     const chatStandbyEdge = value => Number(value && value.x) < 0 ? 'left' : 'right';
     const standbyIdleDelay = inChat => inChat ? 10000 : 12000;
     const edgeIdleActive = now => {
+      if (avatar3d?.companion && (avatar3d.companion.follow || avatar3d.companion.come || avatar3d.motion?.active)) return false;
       const inChat = root.classList.contains('chat-mode');
       return Boolean((motion.idle || inChat) && !roamState.enabled
         && !speechSource && !agentSpeaking && !live && !ptt && !turnController
@@ -8519,6 +8653,7 @@
     async function submitTurn(text, options = {}) {
       const value = String(text || '').trim();
       if (!value || turnController || (avatarOnlyMotion && !options.liveAgentBridge)) return;
+      if(await handleAvatarCommand(value,options))return;
       const agentID = selectedOpenClawAgent();
       if (agentID) return submitOpenClawTurn(value, agentID, options);
       return submitLocalTurn(value, options);
@@ -9156,6 +9291,18 @@
       if (turnController || document.querySelector('.email-review')) {
         return agentTurnRPCAnswer('busy');
       }
+      const avatarAction=avatar3d?.companion && avatarCompanionAPI.avatarIntent(request.spoken_request);
+      if(avatarAction){
+        if(!claimLiveTalkRPCRequest(session.replayedAgentTurnRequests,request.request_id,128))return agentTurnRPCAnswer('rejected');
+        const text=String(request.spoken_request).trim().toLowerCase();
+        const recent=lastAvatarCommand?.text===text&&performance.now()-lastAvatarCommand.at<8000;
+        try{
+          const answer=await (recent?lastAvatarCommand.pending:performAvatarAction(avatarAction));
+          if(!recent&&answer)addMessage('assistant',answer);
+          rememberExpectedDelegatedAssistantReply(session,answer,performance.now());
+          return agentTurnRPCAnswer('completed',answer);
+        }catch{return agentTurnRPCAnswer('failed');}
+      }
       const agentID = selectedOpenClawAgent();
       if (!agentID) {
         setStatus('Select an OpenClaw agent for Live Talk actions', '');
@@ -9274,6 +9421,7 @@
           }
           if (role === 'user') {
             appendFinalUserTurnSegment(session, text, segmentID, now);
+            void handleAvatarCommand(text,{userAlreadyRendered:true});
           } else {
             if (!assistantDisposition.preserveUserTurn) {
               session.assistantOutputSinceUser = true;
@@ -9739,6 +9887,10 @@
         pointer = {
           x: nextX,
           y: nextY,
+          companionMinX: Number.isFinite(point.companionMinX) ? point.companionMinX : undefined,
+          companionMaxX: Number.isFinite(point.companionMaxX) ? point.companionMaxX : undefined,
+          companionMinY: Number.isFinite(point.companionMinY) ? point.companionMinY : undefined,
+          companionMaxY: Number.isFinite(point.companionMaxY) ? point.companionMaxY : undefined,
           inside: nextInside,
           seen: nextSeen,
           // Main's 250ms stationary heartbeat must not keep the renderer in

@@ -1,0 +1,137 @@
+'use strict';
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const {companionStep}=require('../electron/companion-move.cjs');
+const sandbox={};
+vm.runInNewContext(fs.readFileSync('web/avatar3d-companion.js','utf8').replace(/export /g,'')+'\nglobalThis.Controller=CompanionController;globalThis.intent=avatarIntent;',sandbox);
+for(const [text,expected] of [['Tia, wave!','wave'],['Can you show me a heart?','heart'],['sit down','sit'],['Please follow my cursor','follow'],['stay','stay'],['跳舞','dance'],['Tia, come here','come']])assert.equal(sandbox.intent(text),expected);
+for(const text of ['walk with cursor','walk with cusor','Follow the mouse pointer around',
+  'Hey Tia, could you please walk with my cursor around the screen?', 'Move with the mouse', 'Track my pointer',
+  'I want you to follow my mouse', 'I’d like her to follow the cursor', 'Keep following my cursor please',
+  'Start walking with my mouse', 'Follow wherever I move my mouse', 'Go wherever the cursor goes',
+  'Make Tia follow my cursor', 'Can you please chase the cursor, thanks!', '请跟着我的鼠标移动']){
+  assert.equal(sandbox.intent(text),'follow',text);
+}
+for(const text of ['Stop following my cursor','Do not follow my mouse','Don’t follow me','Stop walking with the mouse',
+  'Tia, stay still please', '停止跟随鼠标'])assert.equal(sandbox.intent(text),'stay',text);
+for(const text of ['What is a wave?','Write a poem about dance','Tell Bob to come here','Do not dance',
+  'Do you think Tia could wave?','"wave"','Explain how to follow my cursor', 'She said follow my cursor',
+  'I want you to explain cursor tracking', 'Follow my instructions', 'Follow my cursor when I ask later',
+  'Please don’t start following my cursor', 'Can you tell me how to follow the mouse?', 'Tiara follow my cursor']){
+  assert.equal(sandbox.intent(text),null,'do not intercept prose: '+text);
+}
+const controller=new sandbox.Controller();controller.command('follow');
+let x=100,walking=false;
+for(let t=1000;t<8000;t+=32){const s=controller.step(t,{cursorX:500,anchorX:x,minX:50,maxX:600,height:500});x+=s.dx;walking||=s.walking;}
+assert(walking&&x>450&&x<490,'walk approaches the cursor and leaves personal space');
+for(let t=8000;t<11000;t+=32){const s=controller.step(t,{cursorX:x+32,anchorX:x,height:500});assert(!s.walking,'dead zone must not chatter');}
+controller.pause(11000);
+assert.equal(controller.step(11032,{cursorX:900,anchorX:x}).dx,0,'manual interaction owns movement');
+assert.equal(controller.step(15000,{cursorX:900,anchorX:x,reduce:true}).dx,0,'Reduce Motion stops walking');
+controller.command('stay');assert.equal(controller.step(15032,{cursorX:900,anchorX:x}).dx,0);
+controller.command('come');x=100;
+for(let t=16000;t<26000;t+=32){const s=controller.step(t,{cursorX:900,anchorX:x,minX:40,maxX:300,height:500});x+=s.dx;}
+assert(!controller.come&&x<300,'one-shot approach stops at the viewport boundary');
+const bounds={x:700,y:40,width:300,height:600},area={x:0,y:24,width:1000,height:800};
+assert.equal(companionStep(bounds,area,10000,0,10000).x,700,'native movement cannot leave right edge');
+assert.equal(companionStep(bounds,area,-10000,0,32).x,694,'native IPC caps velocity independently');
+assert.equal(companionStep(bounds,area,0,-10000,10000).y,24,'native movement cannot leave top edge');
+assert.equal(companionStep({...bounds,y:224},area,0,10000,10000).y,224,'native movement cannot leave bottom edge');
+assert.equal(companionStep(bounds,area,NaN,0,32),null);
+assert.equal(companionStep(bounds,area,0,Infinity,32),null);
+assert.equal(companionStep(bounds,area,10,10,0).x,700);
+const diagonal=companionStep({...bounds,x:400},area,10000,10000,100);
+assert(Math.hypot(diagonal.x-400,diagonal.y-40)<21,'native vector limit covers diagonal IPC');
+let next={...bounds,x:400};
+for(let i=0;i<100;i++)next=companionStep(next,area,.1,.2,32,next.remainder);
+assert.equal(next.x,410);assert.equal(next.y,60,'subpixel steps accumulate instead of losing vertical motion');
+// Use the actual IPC handler: a y-only change must reach setPosition, while
+// hidden/locked avatars and the chat window cannot move native windows.
+const main=fs.readFileSync('electron/main.cjs','utf8');
+const ipcStart=main.indexOf('  const companionLastStep=new WeakMap();');
+const ipcSource=main.slice(ipcStart,main.indexOf("  ipcMain.handle('openclam:get-state'",ipcStart));
+let nativeNow=1000, handler, nativeBounds={...bounds,x:400}, locked=false, shown=true;
+const sender={}, nativeWindow={isDestroyed:()=>false,isVisible:()=>shown,getBounds:()=>nativeBounds,
+  setPosition(x,y){nativeBounds={...nativeBounds,x,y};}};
+const ipcContext={WeakMap,Date:{now:()=>nativeNow},companionStep,
+  ipcMain:{on:(name,callback)=>{handler=callback;}},BrowserWindow:{fromWebContents:()=>nativeWindow},
+  isBuddySender:()=>false,mainWindow:nativeWindow,state:{get petLocked(){return locked;}},petDrag:false,desktopCloseUp:false,
+  avatarRendererKinds:new Map([[sender,'3d']]),screen:{getDisplayMatching:()=>({workArea:area})},saveStateSoon(){}};
+vm.runInNewContext(ipcSource,ipcContext);
+for(let i=0;i<100;i++){nativeNow+=32;handler({sender},{dx:0,dy:1});}
+assert.equal(nativeBounds.y,140,'native IPC moves vertically without an x change');
+locked=true;handler({sender},{dx:10,dy:10});assert.equal(nativeBounds.y,140);
+locked=false;shown=false;handler({sender},{dx:10,dy:10});assert.equal(nativeBounds.y,140);
+shown=true;ipcContext.mainWindow={};handler({sender},{dx:10,dy:10});assert.equal(nativeBounds.y,140);
+for(const [dx,dy] of [[300,0],[0,-300],[0,300],[300,300],[-300,300],[-300,-300]]){
+  const c=new sandbox.Controller();c.command('follow');let x=500,y=500;
+  for(let t=1000;t<12000;t+=32){
+    const s=c.step(t,{cursorX:500+dx,cursorY:500+dy,anchorX:x,anchorY:y,height:300});
+    assert(Math.hypot(s.dx,s.dy)<=84*.05+1e-8,'diagonal speed uses a vector limit');
+    x+=s.dx;y+=s.dy;
+  }
+  assert(Math.hypot(500+dx-x,500+dy-y)<34,'arrive near cursor in all directions');
+  assert(!c.walking,'settle after arrival');
+  for(const block of [{blocked:true},{reduce:true},{seen:false},{cursorY:NaN}]){
+    const s=c.step(14100,{cursorX:100,cursorY:100,anchorX:x,anchorY:y,...block});
+    assert.equal(s.dx,0);assert.equal(s.dy,0);
+  }
+  c.pause(15000);
+  assert.equal(c.step(15032,{cursorX:900,cursorY:900,anchorX:x,anchorY:y}).dy,0,'manual controls own both axes');
+  c.command('follow');c.command('follow');assert(c.follow,'repeated follow is idempotent');
+  c.command('stay');const stopped=c.step(19000,{cursorX:900,cursorY:900,anchorX:x,anchorY:y});
+  assert.equal(stopped.dx,0);assert.equal(stopped.dy,0);
+}
+const c=new sandbox.Controller();c.command('come');x=100;let y=100;
+for(let t=1000;t<16000;t+=32){
+  const s=c.step(t,{cursorX:900,cursorY:900,anchorX:x,anchorY:y,minX:40,maxX:400,minY:50,maxY:300,height:300});
+  x+=s.dx;y+=s.dy;assert(x<=400&&y<=300,'one-shot approach stays within both boundaries');
+}
+assert(!c.come&&x>370&&y>270,'come here completes near the nearest reachable point');
+
+// The toolbar toggles; another spoken request must never switch follow off.
+const page=fs.readFileSync('web/index.html','utf8');
+const idleStart=page.indexOf('    const edgeIdleActive = ');
+const idleSource=page.slice(idleStart,page.indexOf('\n    };',idleStart)+7);
+const idle={avatar3d:{companion:new sandbox.Controller(),motion:{}},root:{classList:{contains:()=>true}},
+  motion:{},roamState:{enabled:false},speechSource:null,agentSpeaking:false,live:null,ptt:null,turnController:null,
+  lastActivity:0,standbyIdleDelay:()=>10000};
+vm.createContext(idle);vm.runInContext(idleSource+'\nglobalThis.isIdle=edgeIdleActive;',idle);
+assert(idle.isIdle(20000),'ordinary standby still enters edge idle');
+idle.avatar3d.companion.command('follow');assert(!idle.isIdle(600000),'following must not shrink/dock after the idle timeout');
+idle.avatar3d.companion.command('come');assert(!idle.isIdle(600000));
+idle.avatar3d.companion.command('stay');idle.avatar3d.motion.active={id:'dance'};
+assert(!idle.isIdle(600000),'a playing clip also owns its presentation');
+const drawStart=page.indexOf('      if (avatar3d.companion) {',page.indexOf('    const drawAvatar3D = '));
+const travel=page.slice(drawStart,page.indexOf('      // The logical portrait',drawStart));
+for(const mirrored of [false,true]){
+  const s={fullChat:true,now:1000,fit:{x:400,y:300,scale:1},previewMetadata:{bounds:[0,0,100,200]},
+    safeViewport:{x:200,y:80,width:700,height:600},innerWidth:1000,innerHeight:800,
+    pointer:{x:280,y:200,seen:true},dragging:false,canvasGesture:null,avatarZoomGesture:null,avatarOrbitGesture:false,
+    speaking:false,ptt:null,reduce:false,shellState:{pet:{}},document:{getElementById:()=>null,hidden:false},
+    notify:assert.fail,avatarCanvasPoint:p=>({x:mirrored?1100-p.x:p.x,y:p.y}),
+    avatar3d:{companion:new sandbox.Controller(),companionOffset:{x:0,y:0},
+      motion:{play:()=>Promise.resolve(),stop(){}},setOrbit(){}}};
+  s.avatar3d.companion.command('follow');vm.createContext(s);
+  const frame=()=>{s.fit={x:400,y:300,scale:1};vm.runInContext(travel,s);};
+  for(;s.now<11000;s.now+=32)frame();
+  const offset=s.avatar3d.companionOffset;
+  assert(mirrored?offset.x>200:offset.x<-100,'mirrored and ordinary chat both approach the visible cursor');
+  assert(offset.y<-170,'renderer applies vertical travel');
+  s.pointer.y=600;
+  for(;s.now<21000;s.now+=32)frame();
+  assert(s.avatar3d.companionOffset.y>140,'same chat avatar can travel down again');
+  const before={...s.avatar3d.companionOffset};s.dragging=true;s.pointer={x:880,y:90,seen:true};
+  for(;s.now<22000;s.now+=32)frame();
+  assert.deepEqual(JSON.parse(JSON.stringify(s.avatar3d.companionOffset)),before,'manual gesture leaves follow placement untouched');
+}
+const start=page.indexOf('    const performAvatarAction = ');
+const source=page.slice(start,page.indexOf('\n    };',start)+7);
+const avatar={companion:new sandbox.Controller(),motion:{stop(){},async prepare(){}},options:{selection:{},select(){}}};
+const actions={avatar3d:avatar,manifest:{avatar:{slug:'tia'}},localStorage:{setItem(){}},
+  companionKey:()=>'',window:{dispatchEvent(){}},Event:class{},closeRailPickers(){},async selectStandbyMode(){}};
+vm.createContext(actions);vm.runInContext(source+'\nglobalThis.perform=performAvatarAction;',actions);
+(async()=>{
+  await actions.perform('follow');await actions.perform('follow');assert(avatar.companion.follow);
+  await actions.perform('follow',{toggleFollow:true});assert(!avatar.companion.follow);
+  console.log('3D companion: varied commands, idempotent requests, 2D travel, manual ownership, bounds and fractional native movement passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

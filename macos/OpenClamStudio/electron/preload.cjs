@@ -61,6 +61,7 @@ const api = Object.freeze({
   beginPetDrag: (point) => ipcRenderer.send('openclam:drag-start', point),
   movePetDrag: (point) => ipcRenderer.send('openclam:drag-move', point),
   endPetDrag: () => ipcRenderer.send('openclam:drag-end'),
+  moveCompanion: (step) => ipcRenderer.send('openclam:companion-step', step),
   avatarChanged: () => ipcRenderer.invoke('openclam:avatar-changed'),
   companionChanged: () => ipcRenderer.invoke('openclam:companion-changed'),
   restartBackend: () => ipcRenderer.invoke('openclam:restart-backend'),

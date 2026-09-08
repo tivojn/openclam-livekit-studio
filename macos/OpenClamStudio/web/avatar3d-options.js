@@ -131,6 +131,10 @@ export class Avatar3DOptions {
     if (JSON.stringify(next) === JSON.stringify(this.selection)) return this.selection;
     const previous = this.selection;
     this.selection = next;
+    if (this.avatar.motion?.active && ['body','hands','leftHand','rightHand'].every(key=>previous[key]===next[key])) {
+      this.applyVisibility(next);
+      return this.selection;
+    }
     // Changing gaze alone must not restart a pose or the playback interval.
     const withoutGaze = value => JSON.stringify({...value,followCursor:undefined});
     if (withoutGaze(previous) !== withoutGaze(next)) {
@@ -141,6 +145,7 @@ export class Avatar3DOptions {
   }
 
   applyPose(next, now) {
+    this.avatar.motion?.stop({immediate:true});
     this.applyVisibility(next);
     let target=this.idle.map(copy);
     if(next.body) target=this.targetFor(this.poses.get(next.body)).map(copy);
@@ -160,6 +165,7 @@ export class Avatar3DOptions {
   }
 
   update(now, reduce=false) {
+    if (this.avatar.motion?.update(now, reduce)) return;
     if (reduce || !this.enabled('playTransitions')) {
       this.nextPlaybackAt = now + 4000;
     } else if (this.nextPlaybackAt === null) {
@@ -259,5 +265,6 @@ export function mountAvatar3DOptions(container, library, key, onBodyPose = () =>
   const restore=()=>{try{apply(JSON.parse(localStorage.getItem(key)||'{}'));}catch{apply({});}};
   const storage=event=>{if(event.key===key)restore();};
   restore();window.addEventListener('storage',storage);
-  return ()=>window.removeEventListener('storage',storage);
+  window.addEventListener('openclam-avatar-controls-refresh',refresh);
+  return ()=>{window.removeEventListener('storage',storage);window.removeEventListener('openclam-avatar-controls-refresh',refresh);};
 }

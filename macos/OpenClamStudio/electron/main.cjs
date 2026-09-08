@@ -21,6 +21,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
+const { companionStep } = require('./companion-move.cjs');
 const {
   boundsForPetZoom,
   boundsForPetZoomAtAnchor,
@@ -1033,6 +1034,13 @@ function startPetPointerTracking() {
       const localPoint = {
         x: point.x - bounds.x, y: point.y - bounds.y, inside,
       };
+      if (!target.attentionOnly) {
+        const area=screen.getDisplayMatching(bounds).workArea;
+        localPoint.companionMinX=area.x-bounds.x+bounds.width/2;
+        localPoint.companionMaxX=area.x+area.width-bounds.x-bounds.width/2;
+        localPoint.companionMinY=area.y-bounds.y+bounds.height/2;
+        localPoint.companionMaxY=area.y+area.height-bounds.y-bounds.height/2;
+      }
       if (target.key === 'pet' && state.petRoam && petRoamRuntime) {
         petRoamHoverGate = observeRoamPointer(petRoamHoverGate, inside);
       }
@@ -2923,6 +2931,25 @@ async function restartBackend() {
 }
 
 function installIpc() {
+  const companionLastStep=new WeakMap();
+  ipcMain.on('openclam:companion-step', (event, step) => {
+    const window=BrowserWindow.fromWebContents(event.sender);
+    const buddy=isBuddySender(event);
+    if (!window || window.isDestroyed() || !window.isVisible()
+      || (!buddy && window!==mainWindow) || state.petLocked
+      || (buddy ? buddyDrag||buddyRoam : petDrag||state.petRoam||desktopCloseUp)
+      || avatarRendererKinds.get(event.sender)!=='3d') return;
+    const now=Date.now(), previous=companionLastStep.get(window);
+    const elapsed=now-(previous?.at??now-32);
+    const bounds=window.getBounds();
+    const remainder=previous&&previous.x===bounds.x&&previous.y===bounds.y&&elapsed<250
+      ?previous.remainder:undefined;
+    const next=companionStep(bounds,screen.getDisplayMatching(bounds).workArea,step?.dx,step?.dy,elapsed,remainder);
+    if(next){
+      companionLastStep.set(window,{at:now,x:next.x,y:next.y,remainder:next.remainder});
+      if(next.x!==bounds.x||next.y!==bounds.y){window.setPosition(next.x,next.y,false);saveStateSoon();}
+    }
+  });
   ipcMain.handle('openclam:get-state', (event) => (
     isBuddySender(event) ? buddyShellState() : shellState()));
   ipcMain.handle('openclam:copy-settings-text', writeSettingsClipboard);

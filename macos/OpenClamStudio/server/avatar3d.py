@@ -278,6 +278,7 @@ def runtime_manifest(source, *, thumbnail_pending=False):
         "h": int(source.get("render_height") or RENDER_HEIGHT),
         "avatar": {"slug": source["slug"], "name": source.get("name") or source["slug"]},
         "model": f"assets/{MODEL_NAME}",
+        **({"motion_library": "assets/motions/library.json"} if source.get("motion_library") else {}),
         "model_bytes": int(source.get("model_bytes") or 0),
         "visemes": list(VISEMES),
         "frames": {},
@@ -324,9 +325,12 @@ def publish_runtime(slug, log=print):
             os.link(model, target)
         except OSError:
             shutil.copyfile(model, target)
+        motion_revision = publish_motion_library(directory, staged) if source.get("motion_library") else None
         with open(os.path.join(staged, "manifest.json"), "w") as handle:
             manifest = runtime_manifest(source, thumbnail_pending=pending)
             manifest["source_revision"] = file_revision(model)
+            if motion_revision:
+                manifest["motion_revision"] = motion_revision
             json.dump(manifest, handle, indent=1)
         previous = live + ".previous"
         shutil.rmtree(previous, ignore_errors=True)
@@ -342,6 +346,36 @@ def publish_runtime(slug, log=print):
     return live
 
 
+def publish_motion_library(directory, staged):
+    """Publish optional offline clips without modifying the original GLB."""
+    root = os.path.join(directory, "motions")
+    library_path = os.path.join(root, "library.json")
+    with open(library_path) as handle:
+        library = json.load(handle)
+    if library.get("version") != 1 or not isinstance(library.get("clips"), list) or len(library["clips"]) > 24:
+        raise ValueError("invalid motion library")
+    names = ["library.json"]
+    for clip in library["clips"]:
+        if not isinstance(clip, dict) or not re.fullmatch(r"[a-z0-9_-]{1,40}", str(clip.get("id", ""))):
+            raise ValueError("invalid motion clip")
+        name = clip.get("file", "")
+        if not re.fullmatch(r"[a-z0-9_-]{1,40}\.json", name):
+            raise ValueError("invalid motion file")
+        names.append(name)
+    target = os.path.join(staged, "motions")
+    os.makedirs(target)
+    total = 0
+    for name in set(names):
+        path = os.path.join(root, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            raise ValueError("motion file missing or linked")
+        total += os.path.getsize(path)
+        if total > 32 * 1024 * 1024:
+            raise ValueError("motion library is too large")
+        shutil.copyfile(path, os.path.join(target, name))
+    return file_revision(library_path)
+
+
 def ensure_runtime(slug, log=print):
     """Return the runtime directory, publishing it when absent or stale."""
     registry = _registry()
@@ -355,6 +389,8 @@ def ensure_runtime(slug, log=print):
             and int(manifest.get("v") or 0) >= RUNTIME_VERSION
             and os.path.isfile(os.path.join(live, MODEL_NAME))
             and manifest.get("source_revision") == file_revision(os.path.join(registry.adir(slug), MODEL_NAME))
+            and (not registry.read_manifest(slug).get("motion_library") or
+                 manifest.get("motion_revision") == file_revision(os.path.join(registry.adir(slug), "motions", "library.json")))
         )
     except (OSError, ValueError):
         current = False

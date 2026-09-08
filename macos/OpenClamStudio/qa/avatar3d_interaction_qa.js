@@ -89,7 +89,7 @@ for (const chat of [false, true]) {
   const next = { ...initial, model_revision: 'new' };
   const s = { ready: true, avatar3d: old, avatar3dRefresh: null, manifest: initial, assetRevision: 1,
     location: { href: 'http://localhost/' }, URL, Date, lastFrame: 1, avatar3dGazeState: {},
-    syncAvatar3DControls() {}, avatar3dApi: async () => ({ create: () => replacement }),
+    syncAvatar3DControls() {}, setupCompanion: async () => {}, avatar3dApi: async () => ({ create: () => replacement }),
     fetch: async () => ({ ok: true, json: async () => next }), };
   vm.createContext(s);
   for (const name of ['avatar3dIdentity', 'avatar3dModelURL', 'refreshAvatar3D']) vm.runInContext(helper(name) + `\nglobalThis.${name}=${name};`, s);
