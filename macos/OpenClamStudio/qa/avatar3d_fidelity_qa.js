@@ -108,7 +108,7 @@ const vm = require('node:vm');
   const phoneBridge = path.join(__dirname, '../../../ios/OpenClamLiveKit/App/Avatar3D/avatar-ios.js');
   if (fs.existsSync(phoneBridge)) {
     const phone = { window: { addEventListener() {}, webkit: { messageHandlers: { avatarStatus: { postMessage() {} } } } },
-      location: { search: '?generation=1' }, URLSearchParams, console: { ...console } };
+      document: { addEventListener() {} }, location: { search: '?generation=1' }, URLSearchParams, console: { ...console } };
     vm.runInNewContext(fs.readFileSync(phoneBridge, 'utf8')
       .replace(/^import .*;$/gm, '').replace(/export /g, '')
       + '\nglobalThis.fit = fitAvatarViewport;globalThis.upload = uploadAvatarTextures;', phone);

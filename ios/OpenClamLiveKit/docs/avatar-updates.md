@@ -66,3 +66,29 @@ Exhausted recovery presents a retry action in Wardrobe & Poses.
 
 Cold-cache launch and actual WebGL context-loss tests cover the startup path.
 Simulator success alone does not establish physical-iPhone memory behavior.
+
+## Dynamic motions (build 69)
+
+The optional private `MotionUpdates.bundle` adds a motion library to the signed
+application without rewriting the installed GLB or forcing an AVTR reinstall.
+Run `stage-motion-update.py --model /path/to/model.glb --motions /path/to/motions`
+before a private build. The source bundle is empty and all staged JSON is ignored
+by Git. The index records the exact model SHA-256 and every declared file hash
+and size. A mismatched custom model never receives the pack. Only indexed paths
+are served by the local WebKit scheme, and clip hashes are checked before loading.
+
+The shared macOS motion player loads clips on demand; iOS retains at most two
+decoded clips. Wardrobe & Poses offers a searchable motion browser, random dances,
+and Stop. React to conversation defaults on and preserves an explicit opt-out.
+The ordinary provider reply may carry an allowlisted private reaction category;
+the native streaming/final parser removes it before display, history, or speech.
+Remote-provider and Live Talk replies use the same conservative local contextual
+fallback as macOS. There are no extra inference calls or Meshy calls at runtime.
+Text and composer dictation accept explicit motion names and common requests.
+Stop takes priority, pauses reactions and the authored pose playlist; Reduce
+Motion stops body animation. Existing touch orbit, pinch, placement, gaze,
+wardrobe, hand grips, original geometry, and renderer recovery remain available.
+
+Private release verification must inspect the signed archive, confirm all clips
+and the model hash, and exercise an existing installed Tia without reimporting.
+The optional legacy wardrobe update remains bundled for earlier installations.

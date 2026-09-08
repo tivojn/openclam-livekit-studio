@@ -23,6 +23,73 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         app = nil
     }
 
+    func testDynamicMotionsBundledLibraryAndPlayback() throws {
+        app.terminate()
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed)
+        openWardrobe()
+        let browse = app.buttons["openclam-3d-browse-motions"]
+        XCTAssertTrue(browse.waitForExistence(timeout: 10))
+        XCTAssertTrue(browse.label.contains("62"), "TestFlight must include the full private motion library")
+        let reactions = app.switches["openclam-3d-dynamicMotions"]
+        XCTAssertTrue(reactions.exists)
+        if reactions.value as? String != "1" { reactions.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap() }
+        capture("dynamic-motions-default-controls")
+        browse.tap()
+        let wave = app.buttons["openclam-3d-motion-wave"]
+        XCTAssertTrue(wave.waitForExistence(timeout: 5))
+        wave.tap()
+        let status = app.staticTexts["openclam-3d-motion-status"].firstMatch
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "Playing: Wave"), object: status)], timeout: 15), .completed)
+        capture("dynamic-motions-library-wave")
+        app.navigationBars["Dynamic motions"].buttons["BackButton"].tap()
+        let random = app.buttons["Random dance"]
+        XCTAssertTrue(random.waitForExistence(timeout: 5))
+        random.tap()
+        let danceStatus = app.staticTexts["openclam-3d-motion-status"].firstMatch
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH %@ AND label != %@", "Playing:", "Playing: Wave"), object: danceStatus)], timeout: 15), .completed)
+        app.buttons["Done"].tap()
+        capture("dynamic-dance-start")
+        sleep(2)
+        capture("dynamic-dance-later")
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        openWardrobe()
+        app.buttons["Stop motion"].tap()
+        XCTAssertEqual(reactions.value as? String, "0", "Stop must also pause automatic reactions")
+        reactions.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertEqual(reactions.value as? String, "1")
+        app.buttons["Done"].tap()
+    }
+
+    func testTypedMotionCommandUsesLocalRenderer() throws {
+        app.terminate()
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "closeup", "-captainAyer.overlay.opacity", "1"]
+        app.launch()
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed)
+        let compact = app.buttons["Message the AI assistant"]
+        if compact.exists { compact.tap() }
+        let composer = app.textFields["Message the AI assistant"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("Tia, do joyful sway")
+        app.buttons["Send message"].tap()
+        let answer = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Here’s Joyful Sway.")).firstMatch
+        XCTAssertTrue(answer.waitForExistence(timeout: 15), "A named motion must execute locally without asking an AI provider")
+        capture("dynamic-motion-typed-request")
+    }
+
     func testWardrobeAndAuthoredPoses() throws {
         app.terminate()
         app.launchArguments += ["-OpenClamUITestMacRenderer",

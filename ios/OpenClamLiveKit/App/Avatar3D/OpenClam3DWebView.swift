@@ -41,7 +41,11 @@ struct OpenClam3DWebView: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {
         guard case let .installedFile(url)? = avatar.asset(.model) else { return }
         let coordinator = context.coordinator
+        if coordinator.avatarID != avatar.id,
+           options.renderers[coordinator.avatarID] === coordinator { options.renderers[coordinator.avatarID] = nil }
         coordinator.avatarID = avatar.id
+        coordinator.view = view
+        options.renderers[avatar.id] = coordinator
         let now = ProcessInfo.processInfo.systemUptime
         var revision = coordinator.modelRevision
         if coordinator.modelURL != url || now - coordinator.lastRevisionCheck > 1 {
@@ -64,6 +68,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
                      "w": visibleRect.width, "h": visibleRect.height],
             "orbit": ["yaw": orbit.yaw, "pitch": orbit.pitch],
             "state": pose.webState,
+            "conversation": options.conversations[avatar.id] ?? [:],
             "options": options.selection(for: avatar.id),
             "pointer": options.pointers[avatar.id].map { ["x": $0.x, "y": $0.y] as Any } ?? NSNull(),
         ]
@@ -78,6 +83,9 @@ struct OpenClam3DWebView: UIViewRepresentable {
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "avatarStatus")
+        if OpenClam3DOptionsStore.shared.renderers[coordinator.avatarID] === coordinator {
+            OpenClam3DOptionsStore.shared.renderers[coordinator.avatarID] = nil
+        }
         coordinator.startup?.cancel()
         coordinator.timeout?.cancel()
         coordinator.assets.cancelAll()
@@ -89,6 +97,14 @@ struct OpenClam3DWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let assets = OpenClam3DWebAssets()
         var avatarID = ""
+        weak var view: WKWebView?
+
+        func command(_ value: String, isText: Bool) async throws -> String? {
+            guard pageReady, !hasFailed, let view else { return nil }
+            return try await view.callAsyncJavaScript(
+                "return await window.avatarCommand(value, isText)",
+                arguments: ["value": value, "isText": isText], in: nil, contentWorld: .page) as? String
+        }
         var modelURL: URL?
         var modelRevision = ""
         var lastRevisionCheck: TimeInterval = 0
@@ -225,6 +241,19 @@ struct OpenClam3DWebView: UIViewRepresentable {
                 webViewWebContentProcessDidTerminate(view)
                 return
             }
+            if body["event"] as? String == "motion-framing" {
+                OpenClam3DOptionsStore.shared.motionPresentationRequests[avatarID, default: 0] += 1
+            }
+            if body["event"] as? String == "motion-status" {
+                OpenClam3DOptionsStore.shared.motionStatuses[avatarID] = String((body["text"] as? String ?? "").prefix(160))
+            }
+            if body["event"] as? String == "preference", let key = body["key"] as? String,
+               let value = body["value"] as? Bool {
+                OpenClam3DOptionsStore.shared.setEnabled(value, key: key, for: avatarID)
+            }
+            if body["event"] as? String == "pose", let id = body["id"] as? String {
+                OpenClam3DOptionsStore.shared.select(id, group: "body", for: avatarID)
+            }
             if let error = body["error"] as? String, let view = message.webView {
                 fail(error, view: view)
             }
@@ -275,6 +304,8 @@ final class OpenClam3DWebAssets: NSObject, WKURLSchemeHandler {
         "/index.html": "avatar-ios.html", "/avatar-ios.js": "avatar-ios.js",
         "/avatar3d.js": "avatar3d.js",
         "/avatar3d-options.js": "avatar3d-options.js",
+        "/avatar3d-motion.js": "avatar3d-motion.js",
+        "/avatar3d-companion.js": "avatar3d-companion.js",
         "/vendor/three/three.module.js": "three.module.js",
         "/vendor/three/three.core.js": "three.core.js",
         "/vendor/three/GLTFLoader.js": "GLTFLoader.js",
@@ -304,7 +335,7 @@ final class OpenClam3DWebAssets: NSObject, WKURLSchemeHandler {
                     let model = try worker.model(url: modelURL, revision: revision, maximum: maximum)
                     DispatchQueue.main.sync {
                         guard let self, self.preparation == token, let model else { return }
-                        self.onCatalogue?(model.catalogue)
+                        self.onCatalogue?(worker.catalogue(model))
                     }
                     try model?.prepareImages(isCancelled: cancelled)
                     if cancelled() { throw CancellationError() }
@@ -335,11 +366,18 @@ final class OpenClam3DWebAssets: NSObject, WKURLSchemeHandler {
                     }
                     guard let modelURL else { throw URLError(.fileDoesNotExist) }
                     let prepared = try worker.model(url: modelURL, revision: revision, maximum: maximum)
+                    if request.path.hasPrefix("/motions/") {
+                        if let pack = worker.motionPack { return (try pack.resource(path: request.path), "application/json", nil) }
+                        if request.path == "/motions/library.json" {
+                            return (Data("{\"version\":1,\"clips\":[]}".utf8), "application/json", nil)
+                        }
+                        throw URLError(.fileDoesNotExist)
+                    }
                     guard let model = prepared else {
                         guard request.path == "/model.gltf" else { throw URLError(.fileDoesNotExist) }
                         return (try Data(contentsOf: modelURL, options: .mappedIfSafe), "model/gltf-binary", nil)
                     }
-                    if request.path == "/model.gltf" { return (model.document, "model/gltf+json", model.catalogue) }
+                    if request.path == "/model.gltf" { return (model.document, "model/gltf+json", worker.catalogue(model)) }
                     let parts = request.path.split(separator: "/")
                     guard parts.count == 2, let digits = parts[1].split(separator: ".").first,
                           let index = Int(digits), index >= 0 else {
@@ -381,6 +419,12 @@ private final class ModelResourceWorker: @unchecked Sendable {
     let queue = DispatchQueue(label: "com.openclam.3d-resources", qos: .userInitiated)
     private var key = ""
     private var source: OpenClam3DModelResources?
+    private(set) var motionPack: OpenClam3DMotionPack?
+    func catalogue(_ model: OpenClam3DModelResources) -> [String: Any] {
+        var value = model.catalogue
+        value["motions"] = motionPack?.choices ?? []
+        return value
+    }
 
     func model(url: URL, revision: String, maximum: Int) throws -> OpenClam3DModelResources? {
         let next = "\(url.path):\(revision):\(maximum)"
@@ -390,6 +434,7 @@ private final class ModelResourceWorker: @unchecked Sendable {
                 .appendingPathComponent("OpenClam/3DTextures", isDirectory: true)
             let model = try OpenClam3DModelResources(url: url, maximumTextureSize: maximum, cacheRoot: cache)
             source = model
+            motionPack = try OpenClam3DMotionPack.load(modelSHA256: model.modelSHA256)
             key = next
             print("3D textures: \(model.originalTextureBytes) → \(model.decodedTextureBytes) bytes; limit \(model.textureLimit)")
             return model
@@ -397,6 +442,7 @@ private final class ModelResourceWorker: @unchecked Sendable {
             // Imported GLBs containing inline data URIs remain supported by
             // the original loader. The bounded path covers packed BIN assets.
             source = nil
+            motionPack = nil
             key = next
             return nil
         }
@@ -419,12 +465,14 @@ struct OpenClam3DChoice: Codable, Identifiable, Equatable {
     let label: String
     var group: String?
     var pose: String?
+    var category: String?
 }
 
 struct OpenClam3DCatalogue: Codable, Equatable {
     var poses: [OpenClam3DChoice] = []
     var outfits: [OpenClam3DChoice] = []
     var props: [OpenClam3DChoice] = []
+    var motions: [OpenClam3DChoice]?
     var hasChoices: Bool { !poses.isEmpty || !outfits.isEmpty || !props.isEmpty }
 }
 
@@ -441,6 +489,27 @@ final class OpenClam3DOptionsStore: ObservableObject {
     @Published private(set) var loadStates: [String: OpenClam3DLoadState] = [:]
     @Published private(set) var retryIDs: [String: Int] = [:]
     @Published private(set) var pointers: [String: CGPoint] = [:]
+    @Published var motionPresentationRequests: [String: Int] = [:]
+    @Published var motionStatuses: [String: String] = [:]
+    @Published private(set) var conversations: [String: [String: String]] = [:]
+    // Coordinators retain their view weakly; removed views unregister on teardown.
+    var renderers: [String: OpenClam3DWebView.Coordinator] = [:]
+    var reactionHints: [UUID: String] = [:]
+
+    func command(_ text: String, for avatarID: String, isText: Bool = false) async -> String? {
+        guard catalogues[avatarID]?.motions?.isEmpty == false,
+              loadStates[avatarID] == .ready else { return nil }
+        do { return try await renderers[avatarID]?.command(text, isText: isText) }
+        catch { motionStatuses[avatarID] = "Could not play motion. Try again."; return "I couldn’t play that motion. Please try again." }
+    }
+
+    func conversation(_ message: ConversationMessage, user: String, for avatarID: String) {
+        let hint = reactionHints.removeValue(forKey: message.id)
+        guard enabled("dynamicMotions", for: avatarID), Date().timeIntervalSince(message.date) < 15 else { return }
+        conversations[avatarID] = ["id": message.id.uuidString, "user": String(user.prefix(6000)),
+            "reply": String(message.text.prefix(6000)), "suggestion": hint ?? "", "created": String(message.date.timeIntervalSince1970 * 1000)]
+    }
+
     @Published private var selections: [String: [String: String]]
     private let defaults: UserDefaults
     private let key = "openclam.3d.appearanceSelections"
@@ -457,7 +526,7 @@ final class OpenClam3DOptionsStore: ObservableObject {
     func receive(_ value: Any, for avatarID: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: value), data.count < 100_000,
               let catalogue = try? JSONDecoder().decode(OpenClam3DCatalogue.self, from: data),
-              catalogue.poses.count <= 256, catalogue.outfits.count <= 64, catalogue.props.count <= 64
+              catalogue.poses.count <= 256, catalogue.outfits.count <= 64, catalogue.props.count <= 64, (catalogue.motions?.count ?? 0) <= 96
         else { return }
         if catalogues[avatarID] != catalogue { catalogues[avatarID] = catalogue }
     }
@@ -485,7 +554,7 @@ final class OpenClam3DOptionsStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, key: String, for avatarID: String) {
-        guard ["playTransitions", "followCursor"].contains(key) else { return }
+        guard ["playTransitions", "followCursor", "dynamicMotions"].contains(key) else { return }
         var next = selection(for: avatarID)
         next[key] = enabled ? nil : "false"
         if key == "followCursor", !enabled { pointers[avatarID] = nil }
@@ -514,6 +583,7 @@ final class OpenClam3DOptionsStore: ObservableObject {
     func reset(_ avatarID: String) {
         var next = ["playTransitions": "false"]
         next["followCursor"] = selection(for: avatarID)["followCursor"]
+        next["dynamicMotions"] = selection(for: avatarID)["dynamicMotions"]
         selections[avatarID] = next
         save()
     }
@@ -538,6 +608,19 @@ struct OpenClam3DWardrobeSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let clips = options.catalogues[avatarID]?.motions, !clips.isEmpty {
+                    Section("Dynamic motions") {
+                        behavior("React to conversation", key: "dynamicMotions")
+                        NavigationLink("Browse motions (\(clips.count))") {
+                            OpenClam3DMotionBrowser(avatarID: avatarID, clips: clips, onPlay: onBodyPose)
+                        }.accessibilityIdentifier("openclam-3d-browse-motions")
+                        Button("Random dance") { playMotion("random-dance") }
+                        Button("Stop motion") { playMotion("stay") }
+                        if let status = options.motionStatuses[avatarID], !status.isEmpty {
+                            Text(status).font(.footnote).accessibilityIdentifier("openclam-3d-motion-status")
+                        }
+                    }
+                }
                 if let library = options.catalogues[avatarID], library.hasChoices {
                     choices("Outfit", group: "outfit", items: library.outfits, fallback: "Original appearance")
                     choices("Body Pose", group: "body", items: library.poses.filter { $0.group == "body" }, fallback: "Relaxed standing")
@@ -631,6 +714,11 @@ struct OpenClam3DWardrobeSheet: View {
         case .failure(let error):
             if (error as NSError).code != NSUserCancelledError { importError = error.localizedDescription }
         }
+    }
+
+    private func playMotion(_ action: String) {
+        onBodyPose()
+        Task { _ = await options.command(action, for: avatarID) }
     }
 
     private func behavior(_ title: String, key: String) -> some View {

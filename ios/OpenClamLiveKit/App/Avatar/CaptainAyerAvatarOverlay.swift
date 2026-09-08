@@ -1338,6 +1338,11 @@ struct CaptainAyerAvatarOverlay: View {
         .onChange(of: controller.isSpeaking) { _, isSpeaking in
             if isSpeaking { stopAvatarMotion() }
         }
+        .onChange(of: modelOptions.motionPresentationRequests[avatar.id]) { _, _ in
+            guard avatar.compatibility.rendersModel else { return }
+            selectAvatarMode(.standby)
+            enableModelControls()
+        }
         .onChange(of: avatar.id) { _, _ in
             stopAvatarMotion()
         }

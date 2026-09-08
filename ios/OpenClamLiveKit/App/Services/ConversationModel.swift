@@ -1066,6 +1066,19 @@ final class ConversationModel: ObservableObject {
         stopSpeechOutput()
         pendingScreenContextSubmission = nil
 
+        if let avatarID = aiConfiguration?.activeAvatarID {
+            isWorking = true
+            let answer = await OpenClam3DOptionsStore.shared.command(input, for: avatarID, isText: true)
+            isWorking = false
+            if let answer {
+                messages.append(.init(role: .user, text: input))
+                reply(answer)
+                onSubmissionSaved?()
+                _ = await persistConversationHistory()
+                return
+            }
+        }
+
         if let aiConfiguration,
            let remoteBinding = aiConfiguration.conversationRoute(
             for: historyController.selectedThreadID
@@ -3029,18 +3042,27 @@ extension ConversationModel {
                     webSearchService: webSearchService
                 )
             }
+            let motionStore = OpenClam3DOptionsStore.shared
+            let dynamicMotions = !replyOnly && motionStore.enabled("dynamicMotions", for: aiConfiguration.activeAvatarID)
+                && motionStore.catalogues[aiConfiguration.activeAvatarID]?.motions?.isEmpty == false
             let result = try await client.respondStreaming(
                 input: input,
                 instructions: promptContext.applyingPersona(to: replyOnly
                     ? Self.replyOnlyAgentInstructions
-                    : Self.agentInstructionsWithTrustedClock()),
+                    : Self.agentInstructionsWithTrustedClock()) + (dynamicMotions ? "\n" + OpenClam3DReaction.prompt : ""),
                 tools: try Self.agentTools(forLatestUserInput: latestUserInput),
                 executor: executor,
                 onPartialText: { text in
-                    await self.showStreamingAssistantReply(text)
+                    await self.showStreamingAssistantReply(dynamicMotions ? OpenClam3DReaction.extract(text, partial: true).text : text)
                 }
             )
-            reply(result.text, isEligibleForAIContext: !replyOnly)
+            let parsed = dynamicMotions ? OpenClam3DReaction.extract(result.text) : (text: result.text, suggestion: nil as String?)
+            let replyID = UUID()
+            if let hint = parsed.suggestion {
+                if motionStore.reactionHints.count > 32 { motionStore.reactionHints.removeAll() }
+                motionStore.reactionHints[replyID] = hint
+            }
+            reply(parsed.text, id: replyID, isEligibleForAIContext: !replyOnly)
         } catch is CancellationError {
             excludeMessageFromAIContext(submittedMessageID)
             reply("That request was cancelled. Review any draft, result, or action card already shown; nothing was auto-sent, booked, copied, or saved.")

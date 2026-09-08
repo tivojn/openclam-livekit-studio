@@ -2,3 +2,6 @@ Config/LiveTalk.local.xcconfig
 Config/AgentConnector.local.xcconfig
 .derived-data-live-talk/
 .wrangler/
+App/Avatar3D/MotionUpdates.bundle/*.json
+.derived-data-dynamic/
+.derived-data-release69/

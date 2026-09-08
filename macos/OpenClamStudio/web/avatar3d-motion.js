@@ -16,10 +16,11 @@ const smooth = t => {t=Math.max(0,Math.min(1,t));return t*t*(3-2*t);};
 // Optional local motion clips. The API credential and donor character never
 // enter the runtime. Clips address the original exported rig by bone name.
 export class Avatar3DMotion {
-  constructor(options) { this.options=options;this.clips=new Map();this.active=null;this.generation=0;this.cacheClock=0; }
+  constructor(options,{cacheLimit=4}={}) { this.options=options;this.cacheLimit=Math.max(1,Math.min(4,cacheLimit));this.clips=new Map();this.active=null;this.generation=0;this.cacheClock=0; }
   async load(url) {
     const origin=new URL(url,location.href);
-    if(origin.origin!==location.origin)throw Error('Motion library must be local');
+    const page=new URL(location.href);
+    if(origin.protocol!==page.protocol||origin.host!==page.host)throw Error('Motion library must be local');
     const response=await fetch(origin,{cache:'no-cache'});
     if(!response.ok)throw Error('Motion library unavailable');
     const data=await response.json();
@@ -27,7 +28,7 @@ export class Avatar3DMotion {
     for(const entry of data.clips) {
       if(!/^[a-z0-9_-]{1,40}$/.test(entry.id))throw Error('Invalid motion name');
       const source=new URL(entry.file,origin);
-      if(source.origin!==origin.origin)throw Error('Motion clip must be local');
+      if(source.protocol!==origin.protocol||source.host!==origin.host)throw Error('Motion clip must be local');
       this.clips.set(entry.id,{...entry,url:source.href,ready:null});
     }
     return this;
@@ -61,7 +62,7 @@ export class Avatar3DMotion {
       }
       clip.ready={frames,indices,fps:data.fps,loop:Boolean(data.loop),bounds,cache:new Map()};
       const cached=[...this.clips.values()].filter(c=>c.ready).sort((a,b)=>(a.used||0)-(b.used||0));
-      while(cached.length>4){
+      while(cached.length>this.cacheLimit){
         const victim=cached.find(c=>c!==clip&&c.ready!==this.active?.clip);
         if(!victim)break;
         victim.ready=null;cached.splice(cached.indexOf(victim),1);

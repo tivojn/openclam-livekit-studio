@@ -3668,6 +3668,10 @@ struct ConversationView: View {
               let message = conversation.messages.first(where: { $0.id == messageID }) else {
             return nil
         }
+        if activeAvatarDescriptor.compatibility.rendersModel,
+           let user = conversation.messages.last(where: { $0.role == .user }) {
+            OpenClam3DOptionsStore.shared.conversation(message, user: user.text, for: activeAvatarDescriptor.id)
+        }
         AccessibilityNotification.Announcement("Assistant: \(message.text)").post()
         if !liveTalk.phase.isSessionActive, reserveAppAudioLane() {
             conversation.speakAssistantReply(message.text, using: aiConfiguration)

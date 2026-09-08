@@ -13,6 +13,7 @@ final class OpenClam3DModelResources: @unchecked Sendable {
         let length: Int
     }
 
+    let modelSHA256: String
     let document: Data
     let textureLimit: Int
     let decodedTextureBytes: Int
@@ -120,11 +121,12 @@ final class OpenClam3DModelResources: @unchecked Sendable {
                          "props": Self.choices(library["props"])]
             views = spans
             images = imageSpans
+            try file.seek(toOffset: 0)
+            var hash = SHA256()
+            while let chunk = try file.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
+            let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+            modelSHA256 = digest
             if let cacheRoot {
-                try file.seek(toOffset: 0)
-                var hash = SHA256()
-                while let chunk = try file.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
-                let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
                 let folder = cacheRoot.appendingPathComponent("\(digest)-\(cap)-v1", isDirectory: true)
                 try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: folder.path)
