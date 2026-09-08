@@ -166,7 +166,7 @@ export class Avatar3DOptions {
 
   update(now, reduce=false) {
     if (this.avatar.motion?.update(now, reduce)) return;
-    if (reduce || !this.enabled('playTransitions')) {
+    if (reduce || !this.enabled('playTransitions') || this.avatar.motion?.pending) {
       this.nextPlaybackAt = now + 4000;
     } else if (this.nextPlaybackAt === null) {
       this.nextPlaybackAt = now + 4000;

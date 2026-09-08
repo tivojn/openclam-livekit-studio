@@ -4258,6 +4258,7 @@ async def live_talk_connection_sound():
 
 class Turn(BaseModel):
     history: list
+    avatar_reactions: bool = Field(default=False, strict=True)
     # Live Talk already owns the audible TTS lane. Its trusted foreground turn
     # bridge requests the same text/media result without paying for or producing
     # a second, discarded local voice. Existing chat and PTT requests omit this
@@ -4319,9 +4320,11 @@ def _llm_runtime_identity(cfg):
     )
 
 
-def _direct_chat_system(cfg, now=None):
+def _direct_chat_system(cfg, now=None, *, avatar_reactions=False):
+    from server.avatar_reactions import PROMPT
     now = now or datetime.datetime.now().astimezone()
     return (effective_persona(cfg) + _OWN_TOOLS + _llm_runtime_identity(cfg)
+            + (PROMPT if avatar_reactions else '')
             + "\n\nRIGHT NOW it is " + now.strftime("%A %Y-%m-%dT%H:%M %Z")
             + ". Compute every relative date from this.")
 
@@ -4358,7 +4361,7 @@ async def reply(t: Turn):
     msgs = list(t.history[-12:])
     # The brain has no clock of its own: without this it books "tomorrow"
     # against its training-time sense of the date (sim, 2026-08-07).
-    system = _direct_chat_system(cfg)
+    system = _direct_chat_system(cfg, avatar_reactions=t.avatar_reactions)
     try:
         text = await P.chat(msgs, cfg["llm"], system=system)
     except Exception as e:
@@ -4369,12 +4372,13 @@ async def reply(t: Turn):
                 "My model is not answering. Check the provider in Settings.")
     if not text:
         text = "I lost that thread for a second. Say it again?"
-    return await _finish_direct_reply(text, cfg)
+    return await _finish_direct_reply(text, cfg, avatar_reactions=t.avatar_reactions)
 
 
 def _stream_visible_reply(raw_text):
     """Hide private media directives while their tokens are still arriving."""
-    text = _OWN_TOOL_CALL.sub("", str(raw_text or ""))
+    from server.avatar_reactions import extract
+    text = _OWN_TOOL_CALL.sub("", extract(raw_text, partial=True)[0])
     marker = text.rfind("<<")
     if marker >= 0:
         tail = text[marker:].lower()
@@ -4385,8 +4389,10 @@ def _stream_visible_reply(raw_text):
     return text.rstrip()
 
 
-async def _finish_direct_reply(text, cfg, *, suppress_local_tts: bool = False):
+async def _finish_direct_reply(text, cfg, *, suppress_local_tts: bool = False, avatar_reactions: bool = False):
     import media_gen
+    from server.avatar_reactions import extract
+    text, reaction = extract(text)
     cards = []
     call = _OWN_TOOL_CALL.search(text)
     if call:
@@ -4414,6 +4420,8 @@ async def _finish_direct_reply(text, cfg, *, suppress_local_tts: bool = False):
         result["text"] = text
     result["media"] = cards
     result["llm_route"] = P.last_route("llm")
+    if avatar_reactions:
+        result["avatar_reaction"] = reaction
     return result
 
 
@@ -4421,7 +4429,7 @@ async def _finish_direct_reply(text, cfg, *, suppress_local_tts: bool = False):
 async def reply_stream(t: Turn):
     cfg = P.load()
     msgs = list(t.history[-12:])
-    system = _direct_chat_system(cfg)
+    system = _direct_chat_system(cfg, avatar_reactions=t.avatar_reactions)
 
     async def events():
         raw_text = ""
@@ -4453,6 +4461,7 @@ async def reply_stream(t: Turn):
             raw_text,
             cfg,
             suppress_local_tts=t.suppress_local_tts,
+            avatar_reactions=t.avatar_reactions,
         )
         yield json.dumps(
             {"type": "complete", **result},

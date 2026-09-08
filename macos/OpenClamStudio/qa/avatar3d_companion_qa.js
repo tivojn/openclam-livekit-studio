@@ -2,7 +2,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {companionStep}=require('../electron/companion-move.cjs');
 const sandbox={};
-vm.runInNewContext(fs.readFileSync('web/avatar3d-companion.js','utf8').replace(/export /g,'')+'\nglobalThis.Controller=CompanionController;globalThis.intent=avatarIntent;',sandbox);
+vm.runInNewContext(fs.readFileSync('web/avatar3d-companion.js','utf8').replace(/export /g,'')+'\nglobalThis.Controller=CompanionController;globalThis.intent=avatarIntent;globalThis.motionIntent=motionIntent;globalThis.react=conversationReaction;',sandbox);
 for(const [text,expected] of [['Tia, wave!','wave'],['Can you show me a heart?','heart'],['sit down','sit'],['Please follow my cursor','follow'],['stay','stay'],['跳舞','dance'],['Tia, come here','come']])assert.equal(sandbox.intent(text),expected);
 for(const text of ['walk with cursor','walk with cusor','Follow the mouse pointer around',
   'Hey Tia, could you please walk with my cursor around the screen?', 'Move with the mouse', 'Track my pointer',
@@ -110,7 +110,7 @@ for(const mirrored of [false,true]){
     speaking:false,ptt:null,reduce:false,shellState:{pet:{}},document:{getElementById:()=>null,hidden:false},
     notify:assert.fail,avatarCanvasPoint:p=>({x:mirrored?1100-p.x:p.x,y:p.y}),
     avatar3d:{companion:new sandbox.Controller(),companionOffset:{x:0,y:0},
-      motion:{play:()=>Promise.resolve(),stop(){}},setOrbit(){}}};
+      options:{selection:{}},motion:{clips:new Map(),play:()=>Promise.resolve(),stop(){}},setOrbit(){}}};
   s.avatar3d.companion.command('follow');vm.createContext(s);
   const frame=()=>{s.fit={x:400,y:300,scale:1};vm.runInContext(travel,s);};
   for(;s.now<11000;s.now+=32)frame();
@@ -128,10 +128,56 @@ const start=page.indexOf('    const performAvatarAction = ');
 const source=page.slice(start,page.indexOf('\n    };',start)+7);
 const avatar={companion:new sandbox.Controller(),motion:{stop(){},async prepare(){}},options:{selection:{},select(){}}};
 const actions={avatar3d:avatar,manifest:{avatar:{slug:'tia'}},localStorage:{setItem(){}},
-  companionKey:()=>'',window:{dispatchEvent(){}},Event:class{},closeRailPickers(){},async selectStandbyMode(){}};
+  publishMotionReadiness(){},companionKey:()=>'',window:{dispatchEvent(){}},Event:class{},closeRailPickers(){},async selectStandbyMode(){}};
 vm.createContext(actions);vm.runInContext(source+'\nglobalThis.perform=performAvatarAction;',actions);
 (async()=>{
   await actions.perform('follow');await actions.perform('follow');assert(avatar.companion.follow);
   await actions.perform('follow',{toggleFollow:true});assert(!avatar.companion.follow);
+  assert(avatar.companion.reactions,'turning off follow preserves conversation reactions');
+  await actions.perform('stay');assert(!avatar.companion.reactions,'explicit stay disables automatic reactions');
   console.log('3D companion: varied commands, idempotent requests, 2D travel, manual ownership, bounds and fractional native movement passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
+
+const clips=new Map([['heart',{id:'heart',label:'Overhead Heart',aliases:['big heart'],reactions:['affection'],requiresFreeHands:true}],
+  ['happy',{id:'happy',label:'Joyful Sway',aliases:['happy dance'],reactions:['celebration']}],
+  ['cheer',{id:'cheer',reactions:['celebration']}]]);
+for(const request of ['Could you please do a happy dance?', 'Tia, play joyful sway', 'can u try some happy dance'])assert.equal(sandbox.motionIntent(request,clips),'clip:happy');
+for(const prose of ['Do not do a happy dance','Why is happy dance named that?','She said play joyful sway','Write about big heart'])assert.equal(sandbox.motionIntent(prose,clips),null);
+assert.equal(sandbox.react('I got the job!','Congratulations!','celebration'),'celebration');
+assert.equal(sandbox.react('I love you','Sending you a hug.','affection'),'affection');
+assert.equal(sandbox.react('What is a heart?','A heart pumps blood.','none'),null);
+assert.equal(sandbox.react('My friend died.','I am sorry. Congratulations was a mistake.','celebration'),null);
+assert.equal(sandbox.react('I am not happy','Let’s celebrate!','celebration'),null);
+assert.equal(sandbox.react('Show me a heart','Of course!','affection'),null);
+assert.equal(sandbox.react('Explain dance','Here is the explanation.','run-arbitrary-code'),null);
+const reacting=new sandbox.Controller({random:()=>0});
+reacting.consider('I got the job!','Congratulations!','celebration',1000);
+assert.equal(reacting.takeReaction(1100,clips,true),null,'busy/manual state defers automatic motion');
+assert.equal(reacting.takeReaction(1200,clips),'happy');
+reacting.consider('I passed!','You did it!','celebration',2000);
+assert.equal(reacting.takeReaction(2100,clips),null,'cooldown prevents constant reactions');
+reacting.consider('I passed!','You did it!','celebration',24000);
+assert.equal(reacting.takeReaction(24001,clips),'cheer','repeated categories vary the selected clip');
+reacting.consider('Love you','Sending a hug','affection',50000);
+assert.equal(reacting.takeReaction(50001,clips,false,{hasProp:true}),null,'heart gesture cannot displace a held prop');
+reacting.consider('Thanks a lot','You are sweet','affection',80000);reacting.pause(80001);
+assert.equal(reacting.takeReaction(90000,clips),null,'manual interaction clears pending reactions');
+reacting.consider('Hi','Hello!','celebration',100000);reacting.command('stay');
+assert.equal(reacting.takeReaction(100001,clips),null,'stay has priority');
+console.log('Context reactions: provider hints, local fallback, manual priority, cooldown, varied choices, prop ownership and direct preset commands passed.');
+
+// Desktop menu executes against the active owner and uses its installed catalog.
+let menuItems,packet;
+const owner={webContents:{},isDestroyed:()=>false};
+const menus={avatarOptionCatalogues:new Map([[owner.webContents,{reactions:true,follow:false,
+  motions:[{id:'jazz-dance',label:'Jazz Dance',group:'Dances'}]}]]),
+  showMenuWindow:items=>{menuItems=items;},post:(...args)=>{packet=args;}};
+vm.createContext(menus);
+const menuStart=main.indexOf('function showAvatarMotionMenu(');
+vm.runInContext(main.slice(menuStart,main.indexOf('function showPetMenu()',menuStart))+'\nglobalThis.show=showAvatarMotionMenu;',menus);
+menus.show(owner);
+assert.equal(menuItems[0].checked,true);
+menuItems.find(item=>item.name==='Dances').submenu[0].click();
+assert.equal(packet[0],owner);assert.equal(packet[1],'openclam:avatar-options-request');
+assert.equal(packet[2].id,'clip:jazz-dance');
+menuItems[0].click();assert.equal(packet[2].id,'reactions');

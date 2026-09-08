@@ -49,6 +49,9 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
  lib.select({prop:'prop',playTransitions:'false'},50000);lib.update(50700);lib.update(55000);
  assert(prop.visible&&!lib.transition&&!lib.enabled('playTransitions'),'pausing keeps the prop');
  lib.select({prop:'prop'},56000);lib.update(60100);assert(prop.visible&&lib.transition,'resuming keeps the prop');
+ lib.update(61000);lib.avatar.motion={pending:1,update:()=>false,stop(){throw Error('autoplay canceled a pending motion');}};
+ lib.update(70000);assert(!lib.transition,'a loading motion defers the pose playlist');
+ lib.avatar.motion.pending=null;lib.avatar.motion.stop=()=>{};lib.update(74100);assert(lib.transition,'autoplay can resume once loading finishes');
  assert.throws(()=>new sandbox.Library({model,root}, {version:2,rest,poses:[]}));
  console.log('3D options: authored affine poses, layered hands, wardrobe/props, reduced motion and repeated reset verified.');
 })().catch(e=>{console.error(e);process.exitCode=1});

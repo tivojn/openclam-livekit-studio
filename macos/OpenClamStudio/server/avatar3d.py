@@ -352,7 +352,7 @@ def publish_motion_library(directory, staged):
     library_path = os.path.join(root, "library.json")
     with open(library_path) as handle:
         library = json.load(handle)
-    if library.get("version") != 1 or not isinstance(library.get("clips"), list) or len(library["clips"]) > 24:
+    if library.get("version") != 1 or not isinstance(library.get("clips"), list) or len(library["clips"]) > 96:
         raise ValueError("invalid motion library")
     names = ["library.json"]
     for clip in library["clips"]:
@@ -369,8 +369,9 @@ def publish_motion_library(directory, staged):
         path = os.path.join(root, name)
         if os.path.islink(path) or not os.path.isfile(path):
             raise ValueError("motion file missing or linked")
-        total += os.path.getsize(path)
-        if total > 32 * 1024 * 1024:
+        size = os.path.getsize(path)
+        total += size
+        if size > 32 * 1024 * 1024 or total > 512 * 1024 * 1024:
             raise ValueError("motion library is too large")
         shutil.copyfile(path, os.path.join(target, name))
     return file_revision(library_path)

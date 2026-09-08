@@ -2357,31 +2357,38 @@
       avatarCompanionAPI ||= await import('/avatar3d-companion.js');
       instance.companion = new avatarCompanionAPI.CompanionController();
       try { const prefs=JSON.parse(localStorage.getItem(companionKey()) || '{}');
-        instance.companion.follow=prefs.follow===true;instance.companion.gestures=prefs.gestures!==false; } catch {}
+        instance.companion.follow=prefs.follow===true;instance.companion.gestures=prefs.gestures!==false;
+        instance.companion.reactions=prefs.reactions!==false; } catch {}
       instance.companionOffset = {x:0,y:0};
       instance.companionWalkRequested = false;
     };
     window.addEventListener('storage',event=>{
       if(event.key!==companionKey()||!avatar3d?.companion)return;
       try { const prefs=JSON.parse(event.newValue||'{}');
-        avatar3d.companion.command(prefs.follow?'follow':'stay');avatar3d.companion.gestures=prefs.gestures!==false; }
+        avatar3d.companion.command(prefs.follow?'follow':'stay');avatar3d.companion.gestures=prefs.gestures!==false;
+        avatar3d.companion.reactions=prefs.reactions!==false;
+        publishMotionReadiness();window.dispatchEvent(new Event('openclam-avatar-controls-refresh')); }
       catch {}
     });
     const performAvatarAction = async (action, {toggleFollow=false}={}) => {
       const instance=avatar3d, controller=instance?.companion;
       if (!controller) throw Error('Interactive motions are not installed for this avatar.');
-      if(action==='gestures'){
-        controller.gestures=!controller.gestures;
-        localStorage.setItem(companionKey(),JSON.stringify({follow:controller.follow,gestures:controller.gestures}));
+      if(['gestures','reactions','reactions-on','reactions-off'].includes(action)){
+        const key=action.startsWith('reactions')?'reactions':'gestures';
+        controller[key]=action==='reactions-on'?true:action==='reactions-off'?false:!controller[key];
+        controller.pendingReaction=null;
+        localStorage.setItem(companionKey(),JSON.stringify({follow:controller.follow,gestures:controller.gestures,reactions:controller.reactions}));
         window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
-        return '';
+        publishMotionReadiness();
+        return action==='reactions-on'?'Dynamic motions are on.':action==='reactions-off'?'Dynamic motions are off.':'';
       }
       closeRailPickers();
       const wasFollowing=toggleFollow&&controller.follow;
-      controller.command(action==='follow'&&wasFollowing?'stay':action);
-      localStorage.setItem(companionKey(),JSON.stringify({follow:controller.follow,gestures:controller.gestures}));
+      controller.command(action==='follow'&&wasFollowing?'pause-follow':action);
+      localStorage.setItem(companionKey(),JSON.stringify({follow:controller.follow,gestures:controller.gestures,reactions:controller.reactions}));
       window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
-      instance.motion.stop();instance.companionWalkRequested=false;
+      publishMotionReadiness();
+      instance.motion.stop();instance.companionWalkRequested=false;instance.companionReactionPending=null;
       if (action==='stay' || (action==='follow'&&wasFollowing)) {
         instance.options.select({...instance.options.selection,playTransitions:'false'});
         localStorage.setItem(`openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,JSON.stringify(instance.options.selection));
@@ -2394,9 +2401,28 @@
         await instance.motion.prepare('walk');
         return action==='follow'?'I’ll follow your cursor in every direction. Say “stay” to stop.':'Coming over.';
       }
+      if(action==='random-motion'||action==='random-dance'){
+        const choices=[...instance.motion.clips.values()].filter(c=>c.id!=='dance'
+          &&(action!=='random-dance'||c.category==='Dances')
+          &&!(instance.options.selection.prop&&c.requiresFreeHands));
+        const fresh=choices.filter(c=>c.id!==instance.lastRequestedMotion);
+        const pool=fresh.length?fresh:choices;
+        if(!pool.length)throw Error('No matching motions are installed.');
+        const clip=pool[Math.floor(Math.random()*pool.length)];
+        instance.lastRequestedMotion=clip.id;
+        await instance.motion.play(clip.id,{loop:false});
+        return `Here’s ${clip.label||clip.id}.`;
+      }
       if (action==='wave'||action==='dance') {
-        await instance.motion.play(action,{loop:false});
+        const id=action==='dance'&&instance.motion.clips.has('joyful-sway')?'joyful-sway':action;
+        await instance.motion.play(id,{loop:false});
         return action==='wave'?'Hello! 👋':'Let’s dance.';
+      }
+      if(action.startsWith('clip:')){
+        const id=action.slice(5),clip=instance.motion.clips.get(id);
+        if(!clip)throw Error('This motion is not installed.');
+        await instance.motion.play(id,{loop:false});
+        return `Here’s ${clip.label||id}.`;
       }
       const id={heart:'Ps001.heart',sit:'Ps004.sit',stand:''}[action];
       if(id!==undefined){
@@ -2410,7 +2436,7 @@
     };
     const handleAvatarCommand = async (text, options={}) => {
       if (!avatar3d?.companion || options.attachments?.length) return false;
-      const action=avatarCompanionAPI.avatarIntent(text);
+      const action=avatarCompanionAPI.avatarIntent(text)||avatarCompanionAPI.motionIntent(text,avatar3d.motion.clips);
       if(!action)return false;
       if(!options.userAlreadyRendered)addMessage('user',text,{readable:false});
       const pending=performAvatarAction(action);
@@ -2418,6 +2444,10 @@
       try { const answer=await pending;if(answer)addMessage('assistant',answer); }
       catch(error){notify(error.message);}
       return true;
+    };
+    const considerAvatarReaction = (user,reply,suggestion) => {
+      if(avatar3d?.motion&&avatarCompanionAPI?.motionIntent(user,avatar3d.motion.clips))return;
+      avatar3d?.companion?.consider(user,reply,suggestion,performance.now());
     };
     let avatar3dRotateMode = false;
     let avatar3dOrbitUntil = 0;
@@ -2448,7 +2478,7 @@
         const container = document.getElementById('avatarOptions3D');
         if (avatar3d) disposeAvatarOptions = window.OpenClamAvatar3D.mountOptions(
           container, avatar3d.options, `openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,
-          () => { avatar3d?.companion?.command('stay');void selectStandbyMode(); lastFrame = 0; },
+          () => { avatar3d?.companion?.command('pose');void selectStandbyMode(); lastFrame = 0; },
           () => { if (shell) void shell.openSettings(); else location.href = '/settings.html'; });
         else container.replaceChildren();
         if (avatar3d?.companion) {
@@ -3541,7 +3571,11 @@
     const publishMotionReadiness = () => {
       if (!shell || typeof shell.setPetMotionReady !== 'function') return;
       shell.setPetMotionReady({ ...(motion.walk ? motionPlaybackProfile() : { ready: false }),
-        renderer: avatar3d ? '3d' : '2d', options: avatar3d?.options?.catalogue() });
+        renderer: avatar3d ? '3d' : '2d', options: avatar3d ? {
+          ...avatar3d.options?.catalogue(),
+          motions:[...(avatar3d.motion?.clips.values()||[])].map(c=>({id:c.id,label:c.label||c.id,group:c.category||'Other'})),
+          follow:Boolean(avatar3d.companion?.follow),reactions:Boolean(avatar3d.companion?.reactions),
+        } : undefined });
     };
 
     const STYLIZED_SOURCE_MEDIA = new Set([
@@ -6310,6 +6344,19 @@
         const blocked=manual||speaking||Boolean(ptt)||document.hidden||Boolean(shellState.pet?.locked)
           || (controls && !controls.hidden && controls.matches(':hover'));
         const body=previewMetadata.bounds;
+        const reaction=controller.takeReaction(now,avatar3d.motion.clips,
+          manual||Boolean(ptt)||document.hidden||reduce||Boolean(shellState.pet?.locked)
+          ||controller.walking||Boolean(avatar3d.motion.active)||Boolean(avatar3d.companionReactionPending),
+          {hasProp:Boolean(avatar3d.options.selection.prop)});
+        if(reaction){
+          avatar3d.companionWalkRequested=false;
+          avatar3d.setOrbit({yaw:0,pitch:0});
+          const instance=avatar3d, pending={};
+          instance.companionReactionPending=pending;
+          void instance.motion.play(reaction,{loop:false}).catch(error=>notify(error.message)).finally(()=>{
+            if(instance.companionReactionPending===pending)instance.companionReactionPending=null;
+          });
+        }
         const offset=fullChat?avatar3d.companionOffset:{x:0,y:0};
         const centerX=fit.x+(body[0]+body[2]*.5)*fit.scale;
         const centerY=fit.y+(body[1]+body[3]*.5)*fit.scale;
@@ -6330,7 +6377,7 @@
           (pointer.companionMaxY??Infinity)+anchorY-innerHeight/2;
         const step=controller.step(now,{cursorX:cursor.x,cursorY:cursor.y,anchorX,anchorY,height:body[3]*fit.scale,
           minX,maxX,minY,maxY,
-          seen:pointer.seen,blocked,reduce});
+          seen:pointer.seen,blocked:blocked||Boolean(avatar3d.companionReactionPending)||Boolean(avatar3d.motion.active&&avatar3d.motion.active.id!=='walk'),reduce});
         if(step.walking&&!avatar3d.companionWalkRequested){
           avatar3d.companionWalkRequested=true;
           void avatar3d.motion.play('walk',{loop:true}).catch(error=>{controller.command('stay');notify(error.message);});
@@ -6339,7 +6386,7 @@
         }
         if(!manual&&now>=controller.pauseUntil&&(controller.follow||controller.come||avatar3d.companionTurning)){
           avatar3d.companionTurning=Math.abs(step.yaw)>.005;
-          avatar3d.setOrbit({yaw:step.yaw,pitch:0});
+          if(!avatar3d.motion.active||avatar3d.motion.active.id==='walk')avatar3d.setOrbit({yaw:step.yaw,pitch:0});
         }
         if(fullChat){
           const next={x:offset.x+step.dx,y:offset.y+step.dy};
@@ -6381,7 +6428,11 @@
           ? { x: -gaze.x, y: gaze.y } : gaze,
         lookTarget,
         brow: microBrow(now, reduce),
-        expression: avatar3dExpression(speechExpressionPlan, speaking),
+        expression: (()=>{
+          const speech=avatar3dExpression(speechExpressionPlan,speaking);
+          const dynamic=avatar3d.motion?.expression(now,reduce)||{};
+          return Object.fromEntries(Object.keys(speech).map(key=>[key,Math.max(speech[key],dynamic[key]||0)]));
+        })(),
         breathe,
         speaking,
         reduce,
@@ -8481,6 +8532,7 @@
           addMessage('assistant', completedText);
         }
         finishWorkTimeline(work, 'completed');
+        considerAvatarReaction(value,completedText);
         // Connected OpenClaw turns stream their own text but do not carry
         // synthesized audio. Reuse the exact same /say + timed-viseme path as
         // the message Read Aloud control so typed and push-to-talk agent turns
@@ -8562,6 +8614,7 @@
           body: JSON.stringify({
             history,
             suppress_local_tts: Boolean(options.liveAgentBridge),
+            avatar_reactions: Boolean(avatar3d?.companion?.reactions),
           }),
           signal: controller.signal,
         });
@@ -8614,6 +8667,7 @@
           addMessage('assistant', answer, { route: result.llm_route });
         }
         history.push({ role: 'assistant', content: answer });
+        considerAvatarReaction(value,answer,result.avatar_reaction);
         if (history.length > 24) history.splice(0, history.length - 24);
         await appendMedia(result.media);
         if (result.audio && !options.liveAgentBridge) {
@@ -9291,7 +9345,8 @@
       if (turnController || document.querySelector('.email-review')) {
         return agentTurnRPCAnswer('busy');
       }
-      const avatarAction=avatar3d?.companion && avatarCompanionAPI.avatarIntent(request.spoken_request);
+      const avatarAction=avatar3d?.companion && (avatarCompanionAPI.avatarIntent(request.spoken_request)
+        ||avatarCompanionAPI.motionIntent(request.spoken_request,avatar3d.motion.clips));
       if(avatarAction){
         if(!claimLiveTalkRPCRequest(session.replayedAgentTurnRequests,request.request_id,128))return agentTurnRPCAnswer('rejected');
         const text=String(request.spoken_request).trim().toLowerCase();
@@ -9436,6 +9491,7 @@
           const suppressAssistant = role === 'assistant' && assistantDisposition.suppress;
           if (!suppressAssistant) {
             addMessage(role, text, { readable: role === 'assistant' });
+            if(role==='assistant')considerAvatarReaction(session.latestFinalUserTranscript,text);
           }
         } else if (role === 'assistant') {
           const generation = Number.isFinite(session.agentSpeechGeneration)
@@ -10543,6 +10599,10 @@
       });
       if (typeof shell.onPetMoves === 'function') shell.onPetMoves(() => { void selectMoveMode(); });
       if (typeof shell.onAvatarOptionsRequest === 'function') shell.onAvatarOptionsRequest(({group, id} = {}) => {
+        if(group==='motion'&&avatar3d?.companion){
+          void performAvatarAction(id,{toggleFollow:id==='follow'}).catch(error=>notify(error.message));
+          return;
+        }
         if (!avatar3d?.options || !['outfit','body','hands','leftHand','rightHand','prop','reset','playTransitions','followCursor'].includes(group)) return;
         const next = group === 'reset'
           ? {playTransitions:'false',followCursor:avatar3d.options.selection.followCursor}

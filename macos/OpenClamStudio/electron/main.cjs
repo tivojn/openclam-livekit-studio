@@ -2833,6 +2833,21 @@ function showAvatarOptionsMenu(owner) {
   ]);
 }
 
+function showAvatarMotionMenu(owner) {
+  const library=avatarOptionCatalogues.get(owner.webContents);
+  const clips=library?.motions||[];
+  const perform=id=>{if(!owner.isDestroyed())post(owner,'openclam:avatar-options-request',{group:'motion',id});};
+  showMenuWindow([
+    {name:'React to conversation',type:'checkbox',checked:Boolean(library?.reactions),click:()=>perform('reactions')},
+    {name:'Walk with cursor',type:'checkbox',checked:Boolean(library?.follow),click:()=>perform('follow')},
+    {name:'Stop / stay',click:()=>perform('stay')},
+    {type:'separator'},
+    ...[...new Set(clips.map(c=>c.group||'Other'))].map(category=>({name:category,
+      submenu:clips.filter(c=>(c.group||'Other')===category).map(c=>({name:c.label,click:()=>perform('clip:'+c.id)}))})),
+    ...(!clips.length?[{name:'No motion library installed',enabled:false}]:[]),
+  ]);
+}
+
 function showPetMenu() {
   const owner = activeAvatarWindow();
   if (!owner || owner.isDestroyed()) return;
@@ -2840,6 +2855,7 @@ function showPetMenu() {
   showMenuWindow([
     ...(avatarRendererKinds.get(owner.webContents) === '3d' ? [
       { name: 'Wardrobe & poses…', click: () => showAvatarOptionsMenu(owner) },
+      { name: 'Dynamic motions…', click: () => showAvatarMotionMenu(owner) },
       { name: 'Rotate 3D view', hint: 'two-finger swipe · ⌥ drag',
         click: () => requestAvatarMotion('rotate-3d') },
       { name: 'Reset 3D view', hint: 'front · default size and position',
@@ -3021,7 +3037,8 @@ function installIpc() {
         .map(p => ({ id: p.id, label: p.label.slice(0, 80), group: String(p.group || '').slice(0, 20) })) : [];
       const options = value?.options;
       avatarOptionCatalogues.set(event.sender, { poses: clean(options?.poses),
-        outfits: clean(options?.outfits), props: clean(options?.props) });
+        outfits: clean(options?.outfits), props: clean(options?.props), motions:clean(options?.motions),
+        follow:options?.follow===true,reactions:options?.reactions===true });
     }
     if (isBuddySender(event)) setBuddyMotionReady(value);
     else if ((mainWindow && event.sender === mainWindow.webContents)

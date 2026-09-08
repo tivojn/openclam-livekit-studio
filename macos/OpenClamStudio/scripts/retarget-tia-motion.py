@@ -18,6 +18,7 @@ from mathutils import Matrix, Quaternion, Vector
 parser = argparse.ArgumentParser()
 for key in ('blend', 'model', 'motion', 'output', 'name'):
     parser.add_argument('--' + key, required=True)
+parser.add_argument('--preset', action='store_true', help='Transfer a Meshy preset rig and preserve airborne motion')
 args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 bpy.ops.wm.open_mainfile(filepath=args.blend)
 scene = bpy.context.scene
@@ -30,10 +31,28 @@ rest_world = {p.name: C @ arm.matrix_world @ p.matrix @ C.inverted()
 control_rest = {p.name: p.matrix.copy() for p in arm.pose.bones}
 bases = {p.name: p.matrix_basis.copy() for p in arm.pose.bones}
 arm.animation_data_create().action = None
+# Only the rig is evaluated for baking. Unreferenced render meshes make each
+# constraint update unnecessarily evaluate millions of vertices. Discard them
+# from this temporary Blender session; source files are never saved.
+referenced = {constraint.target for pb in arm.pose.bones for constraint in pb.constraints
+              if getattr(constraint,'target',None)}
+for obj in list(bpy.data.objects):
+    if obj.type in ('MESH','CURVE') and obj not in referenced:
+        bpy.data.objects.remove(obj,do_unlink=True)
 
 before = set(bpy.data.objects)
 bpy.ops.import_scene.fbx(filepath=args.motion)
 donor = next(o for o in bpy.data.objects if o not in before and o.type == 'ARMATURE')
+if args.preset:
+    # Meshy preset rigs use a different convention from SMPL-H text motions.
+    # Rename only the temporary donor, never the original Tia hierarchy.
+    aliases = {'Hips':'Pelvis','Spine02':'Spine1','Spine01':'Spine2','Spine':'Spine3','neck':'Neck'}
+    for side, prefix in [('Left','L'),('Right','R')]:
+        aliases.update({side+name:prefix+'_'+target for name,target in [
+            ('Shoulder','Collar'),('Arm','Shoulder'),('ForeArm','Elbow'),('Hand','Wrist'),
+            ('UpLeg','Hip'),('Leg','Knee'),('Foot','Ankle'),('ToeBase','Foot')]})
+    for old,new in aliases.items():
+        if old in donor.data.bones:donor.data.bones[old].name=new
 action = donor.animation_data.action
 start, end = map(int, action.frame_range)
 fps = scene.render.fps / scene.render.fps_base
@@ -94,12 +113,24 @@ for i in range(len(nodes)):
 bone_ids = [i for i, n in enumerate(nodes) if n.get('name') in rest_world]
 bone_names = [nodes[i]['name'] for i in bone_ids]
 frames = []
+envelope_min = Vector((math.inf,math.inf,math.inf))
+envelope_max = Vector((-math.inf,-math.inf,-math.inf))
+# Keep long catalog presets within the runtime limit without speeding them up.
+samples = min(900, end-start+1)
+frame_times = [start+(end-start)*i/(samples-1) for i in range(samples)]
+output_fps = (samples-1)*fps/(end-start)
 scene.frame_set(start)
 bpy.context.view_layer.update()
 root_start = (donor.matrix_world @ donor.pose.bones['Pelvis'].matrix).translation.copy()
+donor_floor = {}
+if args.preset:
+    for frame in frame_times:
+        scene.frame_set(math.floor(frame),subframe=frame%1)
+        donor_floor[frame] = min((donor.matrix_world @ donor.pose.bones[s+'_Ankle'].matrix).translation.z for s in ('L','R'))
+    floor_base = min(donor_floor.values())
 min_feet = min(control_rest['c_foot_fk.' + s].translation.z for s in ('l', 'r'))
-for frame in range(start, end + 1):
-    scene.frame_set(frame)
+for frame_index,frame in enumerate(frame_times):
+    scene.frame_set(math.floor(frame),subframe=frame%1)
     for pb in arm.pose.bones:
         pb.matrix_basis = bases[pb.name]
     bpy.context.view_layer.update()
@@ -140,7 +171,8 @@ for frame in range(start, end + 1):
     floor = min(evaluated.pose.bones['foot.' + s].matrix.translation.z for s in ('l', 'r'))
     root = arm.pose.bones['c_root_master.x']
     m = root.matrix.copy()
-    m.translation.z += min_feet - floor
+    airborne = max(0, donor_floor[frame]-floor_base) if args.preset else 0
+    m.translation.z += min_feet + airborne - floor
     root.matrix = m
     bpy.context.view_layer.update()
     evaluated = arm.evaluated_get(bpy.context.evaluated_depsgraph_get())
@@ -149,6 +181,10 @@ for frame in range(start, end + 1):
         name = nodes[i]['name']
         posed = C @ evaluated.matrix_world @ evaluated.pose.bones[name].matrix @ C.inverted()
         targets[i] = posed @ rest_world[name].inverted() @ worlds[i]
+        point=targets[i].translation
+        for axis in range(3):
+            envelope_min[axis]=min(envelope_min[axis],point[axis])
+            envelope_max[axis]=max(envelope_max[axis],point[axis])
     # Bake local matrices for the *exported* hierarchy, which deliberately
     # flattens some Blender constraint chains. Preserve all affine terms.
     values = []
@@ -158,11 +194,12 @@ for frame in range(start, end + 1):
         local = pm.inverted() @ targets[i]
         values.extend(round(float(local[r][c]), 7) for r in range(3) for c in range(4))
     frames.append(values)
-    if (frame - start) % 30 == 0:
+    if frame_index % 30 == 0:
         print('BAKED', args.name, frame - start, 'of', end - start + 1, flush=True)
 result = {'version': 1, 'id': args.name, 'label': args.name.title(),
-          'source': 'Meshy text-to-motion, retargeted to the original Tia rig',
-          'fps': fps, 'bones': bone_names, 'frames': frames,
+          'source': ('Meshy preset' if args.preset else 'Meshy text-to-motion') + ', retargeted to the original Tia rig',
+          'fps': output_fps, 'bones': bone_names, 'frames': frames,
+          'bounds': [[round(v-.12,5) for v in envelope_min], [round(v+.12,5) for v in envelope_max]],
           'loop': args.name in ('walk', 'dance')}
 Path(args.output).write_text(json.dumps(result, separators=(',', ':')))
 print('DONE', args.output, len(frames), 'frames', len(bone_names), 'bones', flush=True)

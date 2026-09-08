@@ -37,3 +37,17 @@ class MotionPublishTests(unittest.TestCase):
     def test_avatar_without_motions_keeps_legacy_manifest(self):
         self.assertNotIn('motion_library', avatar3d.runtime_manifest({'slug': 'plain'}))
         self.assertEqual(avatar3d.runtime_manifest({'slug': 'tia', 'motion_library': True})['motion_library'], 'assets/motions/library.json')
+
+    def test_publishes_a_broad_catalog_without_donor_assets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            (root/'motions').mkdir()
+            clips=[{'id':f'clip-{i}','file':f'clip-{i}.json','category':'Dances','reactions':['celebration']} for i in range(63)]
+            for clip in clips:
+                (root/'motions'/clip['file']).write_text('{"version":1}')
+            (root/'motions/library.json').write_text(json.dumps({'version':1,'clips':clips}))
+            (root/'staged').mkdir()
+            avatar3d.publish_motion_library(root, root/'staged')
+            self.assertEqual(len(list((root/'staged/motions').iterdir())),64)
+            published=json.loads((root/'staged/motions/library.json').read_text())
+            self.assertEqual(published['clips'][0]['reactions'],['celebration'])
