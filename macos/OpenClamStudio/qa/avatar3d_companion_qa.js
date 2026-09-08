@@ -143,6 +143,8 @@ const clips=new Map([['heart',{id:'heart',label:'Overhead Heart',aliases:['big h
   ['cheer',{id:'cheer',reactions:['celebration']}]]);
 for(const request of ['Could you please do a happy dance?', 'Tia, play joyful sway', 'can u try some happy dance'])assert.equal(sandbox.motionIntent(request,clips),'clip:happy');
 for(const prose of ['Do not do a happy dance','Why is happy dance named that?','She said play joyful sway','Write about big heart'])assert.equal(sandbox.motionIntent(prose,clips),null);
+assert.equal(sandbox.react('be happy','Let’s brighten things up!','none'),'celebration');
+assert.equal(sandbox.motionIntent('do kongfu',new Map([['kungfu',{id:'kungfu',label:'Kung Fu'}]])),'clip:kungfu');
 assert.equal(sandbox.react('I got the job!','Congratulations!','celebration'),'celebration');
 assert.equal(sandbox.react('I love you','Sending you a hug.','affection'),'affection');
 assert.equal(sandbox.react('What is a heart?','A heart pumps blood.','none'),null);

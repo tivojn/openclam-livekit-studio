@@ -11,7 +11,7 @@ PROMPT = (
     'conversation and the tone of this reply. Most factual, technical or routine replies '
     'should use none. Affection is for personal warmth directed to the user, not for '
     'mentions of hearts or loving a product. Celebration is for genuinely happy news, '
-    'not the phrase happy to help. Never celebrate grief, danger, distress, bad news '
+    'or a request to be cheerful and playful, not the routine phrase happy to help. Never celebrate grief, danger, distress, bad news '
     'or sarcasm. Do not invent feelings or change your answer to justify a gesture. '
     'This is a nonbinding visual suggestion; manual controls override it. Never explain '
     'or speak the directive. Omit it when using a media creation directive.'

@@ -8,7 +8,7 @@ const normalizeRequest = text => {
   const prefix=/^(?:(?:hey |hi |hello )?tia\b[,，:]?\s+(?=\S)|(?:please|pls|plz)[,，]?\s+|(?:can|could|would|will) (?:you|u)\s+|(?:i want|i would like|i'd like) (?:you|her|tia) to\s+|(?:have|make) (?:tia|her)\s+)/;
   for(let i=0;i<5;i++)value=value.replace(prefix,'');
   value=value.replace(/(?:[,，]? (?:please|pls|plz|thanks|thank you|tia))+$/,'')
-    .replace(/\b(?:cusor|curser)\b/g,'cursor');
+    .replace(/\b(?:cusor|curser)\b/g,'cursor').replace(/\bkong[ -]?fu\b/g,'kung fu');
   return value;
 };
 
@@ -57,6 +57,8 @@ export function conversationReaction(user, reply, suggestion) {
   if(/\b(?:died|death|grief|grieving|mourning|funeral|heartbroken|suicid\w*|cancer|devastated|terrified|heart attack)\b|去世|葬礼|悲痛|自杀|癌症/.test(both))return null;
   if(/\b(?:not happy|unhappy|not celebrating|don't celebrate|do not celebrate|not funny|isn't funny|stop reacting)\b|别庆祝|不开心|别跳舞/.test(both))return null;
   const allowed=['affection','celebration','amusement','greeting','agreement','gratitude','curiosity','empathy'];
+  if(/^(?:please )?(?:be happy|cheer up|be cheerful|开心点|开心一点)[.!?。！]?$/i.test(u.trim())
+    && /cheerful|upbeat|brighten|happy|celebrat|开心|快乐/.test(a))return 'celebration';
   if(suggestion==='none')return null;
   if(allowed.includes(suggestion))return suggestion;
   if(/\b(?:love you|you mean (?:a lot|so much) to me|sending (?:you )?(?:a hug|love)|you're (?:so )?(?:sweet|kind)|you are (?:so )?(?:sweet|kind))\b|爱你|给你一个拥抱|你真贴心/.test(both))return 'affection';
