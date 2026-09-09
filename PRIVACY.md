@@ -70,8 +70,13 @@ language-model, speech-recognition, or speech-synthesis credentials. Live Talk
 audio remains on its separate LiveKit path. When the user has selected an
 OpenClaw agent and asks Live Talk to perform an agent action, the exact finalized
 request text is sent through the paired OpenClaw connector; the bounded result
-returns to LiveKit for speech. Ordinary conversation that does not invoke that
-agent-action tool is not sent through the connector.
+returns to LiveKit for speech. When **Connected OpenClaw** is selected as the
+Live Talk conversation source, every finalized spoken turn follows this route,
+including ordinary conversation. The app also supplies bounded local avatar
+presentation notes, such as installed motion capabilities. OpenClaw uses the
+same conversation transport as typed chat; its model credentials are not sent
+to the voice broker. With other Live Talk model choices, ordinary conversation
+that does not invoke the agent-action tool stays outside the connector.
 
 ## Avatars
 

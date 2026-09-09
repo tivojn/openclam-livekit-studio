@@ -44,6 +44,12 @@ the renderer.
   that agent. Its bounded text result returns to the LiveKit voice agent for
   speech while the Mac retains the visible Work state, result, and any files.
   The connector receives no LiveKit or provider credential.
+- Selecting **Connected OpenClaw** as the Live Talk conversation source sends
+  every finalized spoken turn through the existing OpenClaw conversation
+  transport, including casual conversation. Bounded avatar presentation notes
+  accompany the request. OpenClaw owns the reply and its model credentials;
+  LiveKit receives the bounded reply for the selected speaking voice, without
+  a second voice language model generating or rewriting it.
 - Avatar generation sends only the references and direction required for the
   operation to the image or video provider selected in Avatar Studio. Local
   cutout, calibration, rig assembly, and AVTR packaging stay on the Mac.

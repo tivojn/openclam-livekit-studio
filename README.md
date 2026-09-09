@@ -128,10 +128,14 @@ OpenClaw Gateway. Chat and tap-to-talk send text through this connector; the
 avatar's existing iOS speech recognition and speaking voice remain local
 choices, while Live Talk stays a separate LiveKit feature.
 
-On macOS and iOS, ordinary casual Live Talk remains on the low-latency LiveKit
-model. Agentic actions requested during that call require the conversation's
-selected and connected OpenClaw agent; without one, the action fails closed
-with recovery guidance and is never sent to a plain local language model.
+On macOS and iOS, choose **Connected OpenClaw** in Continuous Live Talk settings
+to send every spoken turn to the conversation's selected OpenClaw agent. Its
+model, context and tools produce the reply; LiveKit still handles speech
+recognition and the selected speaking voice. The existing managed/BYOK voice
+model choices remain available and delegate agentic actions only when needed.
+Both routes require a selected, connected agent for OpenClaw turns and report
+connection failures instead of silently substituting another language model.
+See [Connected OpenClaw setup and validation](docs/connected-openclaw-live-talk.md).
 
 The pilot bridge bootstrap is not sufficient public-user authentication. Add
 App Attest and verified-installation rate limiting before public distribution.
