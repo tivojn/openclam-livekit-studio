@@ -10,6 +10,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
     let pose: OpenClam3DAvatarPose
     let orbit: OpenClam3DOrbit
     let visibleRect: CGRect
+    var isActive = true
     @ObservedObject private var options = OpenClam3DOptionsStore.shared
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -68,6 +69,9 @@ struct OpenClam3DWebView: UIViewRepresentable {
                      "w": visibleRect.width, "h": visibleRect.height],
             "orbit": ["yaw": orbit.yaw, "pitch": orbit.pitch],
             "state": pose.webState,
+            "performance": ["active": isActive,
+                "lowPower": ProcessInfo.processInfo.isLowPowerModeEnabled,
+                "thermal": ProcessInfo.processInfo.thermalState.rawValue],
             "conversation": options.conversations[avatar.id] ?? [:],
             "options": options.selection(for: avatar.id),
             "pointer": options.pointers[avatar.id].map { ["x": $0.x, "y": $0.y] as Any } ?? NSNull(),
@@ -82,6 +86,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        view.evaluateJavaScript("window.disposeAvatar?.()", completionHandler: nil)
         view.configuration.userContentController.removeScriptMessageHandler(forName: "avatarStatus")
         if OpenClam3DOptionsStore.shared.renderers[coordinator.avatarID] === coordinator {
             OpenClam3DOptionsStore.shared.renderers[coordinator.avatarID] = nil
@@ -111,6 +116,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
         var pageReady = false
         var updating = false
         var latest: [String: Any]?
+        private var lastFrame: NSDictionary?
         var needsFlush = false
         var hasFailed = false
         var generation = 0
@@ -129,6 +135,7 @@ struct OpenClam3DWebView: UIViewRepresentable {
             let current = generation
             pageReady = false
             updating = false
+            lastFrame = nil
             needsFlush = true
             startup?.cancel()
             timeout?.cancel()
@@ -208,6 +215,11 @@ struct OpenClam3DWebView: UIViewRepresentable {
         func flush(_ view: WKWebView) {
             guard pageReady, !updating, needsFlush, let latest else { return }
             needsFlush = false
+            // An idle TimelineView tick often produces identical state. Avoid
+            // serializing the whole conversation and crossing processes again.
+            let frame = latest as NSDictionary
+            guard lastFrame?.isEqual(to: latest) != true else { return }
+            lastFrame = frame
             let current = generation
             updating = true
             view.callAsyncJavaScript("window.updateAvatar(frame)", arguments: ["frame": latest],
@@ -531,7 +543,7 @@ final class OpenClam3DOptionsStore: ObservableObject {
 
     func conversation(
         _ message: ConversationMessage, user: String, for avatarID: String,
-        deliveredAt: Date? = nil, turnID: String? = nil
+        deliveredAt: Date? = nil, turnID: String? = nil, replyText: String? = nil
     ) {
         let hint = reactionHints.removeValue(forKey: message.id)
         // A Live Talk message keeps the time its first partial arrived. The
@@ -541,8 +553,12 @@ final class OpenClam3DOptionsStore: ObservableObject {
         // The shared controller applies the automatic-reaction preference.
         // A later explicit, LLM-affirmed movement request must still reach it.
         guard Date().timeIntervalSince(created) < 15 else { return }
-        conversations[avatarID] = ["id": message.id.uuidString, "turnID": turnID ?? message.id.uuidString, "user": String(user.prefix(6000)),
-            "reply": String(message.text.prefix(6000)), "suggestion": hint ?? "", "created": String(created.timeIntervalSince1970 * 1000)]
+        let reply = String((replyText ?? message.text).prefix(6000))
+        let previous = conversations[avatarID]
+        let turn = turnID ?? message.id.uuidString
+        guard previous?["turnID"] != turn || previous?["reply"] != reply || hint != nil else { return }
+        conversations[avatarID] = ["id": UUID().uuidString, "turnID": turn, "user": String(user.prefix(6000)),
+            "reply": reply, "suggestion": hint ?? "", "created": String(created.timeIntervalSince1970 * 1000)]
     }
 
     @Published private var selections: [String: [String: String]]

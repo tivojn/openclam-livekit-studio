@@ -4277,6 +4277,7 @@ async def live_talk_connection_sound():
 class Turn(BaseModel):
     history: list
     avatar_reactions: bool = Field(default=False, strict=True)
+    avatar_motions: bool = Field(default=False, strict=True)
     # Live Talk already owns the audible TTS lane. Its trusted foreground turn
     # bridge requests the same text/media result without paying for or producing
     # a second, discarded local voice. Existing chat and PTT requests omit this
@@ -4338,19 +4339,19 @@ def _llm_runtime_identity(cfg):
     )
 
 
-def _direct_chat_system(cfg, now=None, *, avatar_reactions=False):
+def _direct_chat_system(cfg, now=None, *, avatar_reactions=False, avatar_motions=False):
     from server.avatar_reactions import PROMPT, motion_prompt
-    reaction_prompt = PROMPT
-    if avatar_reactions:
+    reaction_prompt = PROMPT if avatar_reactions else motion_prompt([], automatic_reactions=False)
+    if avatar_reactions or avatar_motions:
         try:
             slug = reg().get_active()
             with open(os.path.join(reg().adir(slug), "motions", "library.json")) as handle:
-                reaction_prompt = motion_prompt(json.load(handle).get("clips", []))
+                reaction_prompt = motion_prompt(json.load(handle).get("clips", []), automatic_reactions=avatar_reactions)
         except (OSError, ValueError, TypeError):
             pass
     now = now or datetime.datetime.now().astimezone()
     return (effective_persona(cfg) + _OWN_TOOLS + _llm_runtime_identity(cfg)
-            + (reaction_prompt if avatar_reactions else '')
+            + (reaction_prompt if avatar_reactions or avatar_motions else '')
             + "\n\nRIGHT NOW it is " + now.strftime("%A %Y-%m-%dT%H:%M %Z")
             + ". Compute every relative date from this.")
 
@@ -4387,7 +4388,7 @@ async def reply(t: Turn):
     msgs = list(t.history[-12:])
     # The brain has no clock of its own: without this it books "tomorrow"
     # against its training-time sense of the date (sim, 2026-08-07).
-    system = _direct_chat_system(cfg, avatar_reactions=t.avatar_reactions)
+    system = _direct_chat_system(cfg, avatar_reactions=t.avatar_reactions, avatar_motions=t.avatar_motions)
     try:
         text = await P.chat(msgs, cfg["llm"], system=system)
     except Exception as e:
@@ -4398,7 +4399,7 @@ async def reply(t: Turn):
                 "My model is not answering. Check the provider in Settings.")
     if not text:
         text = "I lost that thread for a second. Say it again?"
-    return await _finish_direct_reply(text, cfg, avatar_reactions=t.avatar_reactions)
+    return await _finish_direct_reply(text, cfg, avatar_reactions=t.avatar_reactions or t.avatar_motions)
 
 
 def _stream_visible_reply(raw_text):
@@ -4455,7 +4456,7 @@ async def _finish_direct_reply(text, cfg, *, suppress_local_tts: bool = False, a
 async def reply_stream(t: Turn):
     cfg = P.load()
     msgs = list(t.history[-12:])
-    system = _direct_chat_system(cfg, avatar_reactions=t.avatar_reactions)
+    system = _direct_chat_system(cfg, avatar_reactions=t.avatar_reactions, avatar_motions=t.avatar_motions)
 
     async def events():
         raw_text = ""
@@ -4487,7 +4488,7 @@ async def reply_stream(t: Turn):
             raw_text,
             cfg,
             suppress_local_tts=t.suppress_local_tts,
-            avatar_reactions=t.avatar_reactions,
+            avatar_reactions=t.avatar_reactions or t.avatar_motions,
         )
         yield json.dumps(
             {"type": "complete", **result},

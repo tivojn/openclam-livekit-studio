@@ -2369,14 +2369,14 @@
         publishMotionReadiness();window.dispatchEvent(new Event('openclam-avatar-controls-refresh')); }
       catch {}
     });
-    const beginAvatarStudioTravel = async (instance, action, generation) => {
-      if(reducedMotion.matches)throw Error('Turn off Reduce Motion to walk across the stage.');
+    const beginAvatarStudioTravel = async (instance, action, generation, {stationary=false}={}) => {
+      if(reducedMotion.matches&&!stationary)throw Error('Turn off Reduce Motion to walk across the stage.');
       const geometry=lastBodyGeometry;
       if(!geometry)throw Error('The avatar is still loading.');
       const originalFit={...geometry.fit};
       instance.stagePreparing=true;
       try {
-        await instance.motion.prepare(action==='run-around'?'hello-run':'walk');
+        if(!stationary)await instance.motion.prepare(action==='run-around'?'hello-run':'walk');
         if(instance!==avatar3d||instance.actionGeneration!==generation)return '';
         const fullChat=root.classList.contains('chat-mode');
         let origin={x:0,y:0};
@@ -2446,6 +2446,11 @@
       clearLocalTransientDisplayMode();
       markActivity({preserveDisplayMode:true});
       if(instance!==avatar3d)return '';
+      // Any body clip can translate or extend beyond the standing portrait.
+      // Give it the same full-screen/chat-area surface as walking, preserving
+      // the current actor scale and position when expanding the native window.
+      await beginAvatarStudioTravel(instance,action,generation,{stationary:true});
+      if(instance!==avatar3d||instance.actionGeneration!==generation)return '';
       if(action==='random-motion'||action==='random-dance'){
         const choices=[...instance.motion.clips.values()].filter(c=>c.id!=='dance'
           &&(action!=='random-dance'||c.category==='Dances')
@@ -6437,7 +6442,10 @@
           avatar3d.setOrbit({yaw:0,pitch:0});
           const instance=avatar3d, pending={};
           instance.companionReactionPending=pending;
-          void instance.motion.play(reaction,{loop:false}).catch(error=>notify(error.message)).finally(()=>{
+          const generation=instance.actionGeneration=(instance.actionGeneration||0)+1;
+          void beginAvatarStudioTravel(instance,'pose',generation,{stationary:true}).then(()=>{
+            if(instance===avatar3d&&instance.actionGeneration===generation)return instance.motion.play(reaction,{loop:false});
+          }).catch(error=>notify(error.message)).finally(()=>{
             if(instance.companionReactionPending===pending)instance.companionReactionPending=null;
           });
         }
@@ -6471,6 +6479,9 @@
       // The logical portrait already has a conservative camera margin.
       // Keep its top below the header, including saved offsets from old 2D poses.
       if(!avatar3d.studioStage)fit = clampChatCameraFit({ ...fit, headSpan: { top: 0 } }, safeViewport);
+      avatar3d.prepareMotionFrame(now,reduce);
+      if(avatar3d.studioStage)fit=avatar3d.studioStage.project({...safeViewport,x:renderLeft});
+      fit=avatar3d.keepMotionInViewport?.(fit,{...safeViewport,x:renderLeft})||fit;
       // Extend the rendered frustum to the available surface. Raised hands
       // may leave the standing portrait; render them without zooming out.
       let view={x:(renderLeft-fit.x)/fit.scale,y:(safeViewport.y-fit.y)/fit.scale,
@@ -8696,6 +8707,7 @@
             history,
             suppress_local_tts: Boolean(options.liveAgentBridge),
             avatar_reactions: Boolean(avatar3d?.companion?.reactions),
+            avatar_motions: Boolean(avatar3d?.motion?.clips.size),
           }),
           signal: controller.signal,
         });
@@ -9538,7 +9550,16 @@
         let assistantDisposition = null;
         if (segment.final) {
           const key = `${role}:${String(segment.id || text)}`;
-          if (session.finalTranscriptIDs.has(key)) continue;
+          if (session.finalTranscriptIDs.has(key)) {
+            const accepted=session.avatarReplySegments?.get(key);
+            const turnID=session.avatarReactionTurnID||'live:greeting';
+            if(role==='assistant'&&accepted?.turnID===turnID&&!session.userTurnOpen&&accepted.text!==text){
+              accepted.text=text;
+              const reply=[...session.avatarReplySegments.values()].filter(v=>v.turnID===turnID).map(v=>v.text).join(' ');
+              considerAvatarReaction(session.latestFinalUserTranscript,reply,undefined,turnID);
+            }
+            continue;
+          }
           session.finalTranscriptIDs.add(key);
           if (role === 'assistant') {
             // Classify an expected echo or interrupted-generation final before
@@ -9562,8 +9583,14 @@
           const suppressAssistant = role === 'assistant' && assistantDisposition.suppress;
           if (!suppressAssistant) {
             addMessage(role, text, { readable: role === 'assistant' });
-            if(role==='assistant'&&!assistantDisposition.preserveUserTurn)
-              considerAvatarReaction(session.latestFinalUserTranscript,text,undefined,session.avatarReactionTurnID||'live:greeting');
+            if(role==='assistant'&&!assistantDisposition.preserveUserTurn){
+              const turnID=session.avatarReactionTurnID||'live:greeting';
+              session.avatarReplySegments??=new Map();
+              session.avatarReplySegments.set(key,{turnID,text});
+              if(session.avatarReplySegments.size>64)session.avatarReplySegments.delete(session.avatarReplySegments.keys().next().value);
+              const reply=[...session.avatarReplySegments.values()].filter(v=>v.turnID===turnID).map(v=>v.text).join(' ');
+              considerAvatarReaction(session.latestFinalUserTranscript,reply,undefined,turnID);
+            }
           }
         } else if (role === 'assistant') {
           const generation = Number.isFinite(session.agentSpeechGeneration)

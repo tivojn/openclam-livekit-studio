@@ -227,3 +227,48 @@ assert.equal(conversationController.takeReaction(2001,conversationClips),'action
 conversationController.consider('show me',"I'll demonstrate a kung fu punch.",'clip:kung-fu-punch',3000,{clips:conversationClips,turnID:'k2'});
 assert.equal(conversationController.takeReaction(3001,conversationClips),null);
 console.log('LLM-owned motion decisions: no input-only playback, discussion/clarification/refusal stay still, validated choices play once.');
+
+const realisticClips=new Map([['sit-cross-legged',{id:'sit-cross-legged',label:'Sit Cross-Legged'}],
+  ['kung-fu-punch',{id:'kung-fu-punch',label:'Kung Fu Punch'}],['walk',{id:'walk',label:'Walk'}],
+  ['wave',{id:'wave',label:'Wave',reactions:['greeting']}]]);
+for(const [user,reply,hint,expected] of [
+  ['Can you smile Can you sit?',"Of course! I'll sit cross-legged for you right now. Anything else you'd like to see?",undefined,'clip:sit-cross-legged'],
+  ['sit',"Sure, I'll sit down.",'none','action:sit'],
+  ['closer',"Of course! I'll walk a little closer to you.",undefined,'action:closer'],
+  ['stand',"Sure, standing up now!",undefined,'action:stand'],
+  ['come closer',"Of course, coming closer now.",undefined,'action:closer'],
+  ['run around',"I'm running around the screen now!",undefined,'action:run-around'],
+  ['dance',"Absolutely! Let me show you a dance. Would you like something else?",undefined,'action:dance'],
+  ['run around',"I'll run around the chat window for you now.",undefined,'action:run-around'],
+  ['kungfu',"I can explain kung fu if you'd like.",undefined,null],
+  ['dance',"If you ask later, I'll dance.",undefined,null],
+])assert.equal(sandbox.replyAction(user,reply,hint,realisticClips),expected,reply);
+const upgrading=new sandbox.Controller({random:()=>0});
+upgrading.consider('Can you sit?','Hello!',undefined,1000,{turnID:'one-turn',clips:realisticClips});
+assert.equal(upgrading.takeReaction(1001,realisticClips),'wave');
+upgrading.consider('Can you sit?',"Hello! I'll sit down.",undefined,1100,{turnID:'one-turn',clips:realisticClips});
+assert.equal(upgrading.takeReaction(1101,realisticClips),'action:sit','a greeting must not consume the later performance decision');
+upgrading.consider('Can you sit?',"Hello! I'll sit down. Anything else?",undefined,1200,{turnID:'one-turn',clips:realisticClips});
+assert.equal(upgrading.takeReaction(1201,realisticClips),null,'the actual decision executes only once');
+
+// A clip launched from the small desktop pet must first acquire the display.
+const startStage=page.indexOf('    const beginAvatarStudioTravel = ');
+const stageSource=page.slice(startStage,page.indexOf('    const performAvatarAction = ',startStage));
+const stageAvatar={actionGeneration:1,layout:()=>({bounds:[0,0,100,200],faceBounds:[25,0,50,40]}),
+  lockStudioLens(){},orbit:{yaw:0,pitch:0},restBounds:{min:{y:0},max:{y:2}},studioDistance:5,
+  studioProjection:()=>({ground:{x:50,y:200},pixelsPerUnit:100,groundDepth:.2}),companion:{},
+  motion:{prepare:()=>assert.fail('a stationary clip should not load an unrelated walk')}};
+let expanded=0;
+const expansion={avatar3d:stageAvatar,avatarCompanionAPI:{AvatarStudioStage:sandbox.Stage},
+  reducedMotion:{matches:false},lastBodyGeometry:{fit:{x:10,y:20,scale:2}},
+  root:{classList:{contains:()=>false}},shell:{setDisplayMode:async mode=>{assert.equal(mode,'approach');expanded++;return {approachOrigin:{x:700,y:30}};}},
+  applyShellState(){},requestAnimationFrame:fn=>fn(),innerWidth:1400,innerHeight:900};
+vm.createContext(expansion);vm.runInContext(stageSource+'globalThis.begin=beginAvatarStudioTravel;',expansion);
+(async()=>{
+  await expansion.begin(stageAvatar,'clip:kung-fu-punch',1,{stationary:true});
+  assert.equal(expanded,1,'a non-spatial punch acquires the full native display before playing');
+  const fit=stageAvatar.studioStage.project({x:0,y:0,width:1400,height:900});
+  assert.equal(fit.scale,2,'native expansion preserves the resting actor size');
+  assert(Math.abs(fit.x-710)<1e-8&&Math.abs(fit.y-50)<1e-8,'native expansion preserves screen placement');
+  await expansion.begin(stageAvatar,'wave',1,{stationary:true});assert.equal(expanded,1,'an existing stage is not expanded/reset twice');
+})().catch(error=>{console.error(error);process.exitCode=1;});

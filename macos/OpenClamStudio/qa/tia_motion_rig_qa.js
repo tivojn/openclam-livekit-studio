@@ -129,6 +129,29 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
   assert(maxError<2,id+' visible gait points along the rendered ground path: '+maxError);
   report.regressions.push({id,screenTravel:true,maxProjectedHeadingError:maxError,samples});
  }
+ // Use the real authored root translation, including the punch's long lunge.
+ for(const [width,height] of [[1100,760],[393,680],[1600,980]]){
+  avatar.motion.stop({immediate:true});time=0;avatar.options.select({body:'',playTransitions:'false',followCursor:'false'},0);avatar.options.update(1000);
+  avatar.setOrbit({yaw:0,pitch:0});avatar.lockStudioLens();
+  const layout=avatar.layout(),surface={x:30,y:60,width,height},scale=height*.68/layout.bounds[3];
+  const fit={scale,x:surface.x+width*.9-(layout.bounds[0]+layout.bounds[2]/2)*scale,y:surface.y+height*.1-layout.bounds[1]*scale};
+  time=1000;await avatar.motion.play('kung-fu-punch',{now:time,loop:false});let samples=0;
+  for(time=1000;time<8600;time+=16){
+   avatar.prepareMotionFrame(time,false);
+   const adjusted=avatar.keepMotionInViewport(fit,surface);
+   avatar.render(time,{breathe:1});
+   // Measure the prepared pose before rendering, as both production hosts do.
+   const points=avatar.options.bones.map(b=>avatar.project(b.node.getWorldPosition(new THREE.Vector3())));
+   const span=(Math.max(...points.map(p=>p.x))-Math.min(...points.map(p=>p.x)))*scale;
+   const checked=span+avatar.height*scale*.05<=width?points:[avatar.bones.head,avatar.bones.chest,avatar.bones.hips].map(n=>avatar.project(n.getWorldPosition(new THREE.Vector3())));
+   for(const p of checked){const x=adjusted.x+p.x*scale,y=adjusted.y+p.y*scale;
+    assert(x>=surface.x-8&&x<=surface.x+width+8,'punch cannot disappear horizontally: '+JSON.stringify({width,time,x}));
+    assert(y>=surface.y-8&&y<=surface.y+height+8,'punch keeps its body inside the available height: '+JSON.stringify({width,height,time,y,adjusted}));
+   }
+   assert.equal(adjusted.scale,scale,'containment never shrinks the performer');samples++;
+  }
+  report.regressions.push({motion:'kung-fu-punch',containment:true,width,height,samples});
+ }
  fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n');
  console.log('PASS',allNames.length,'real Tia clips, punch endings, authored pose returns, gaze extremes, and running foot regression');
 })().catch(e=>{console.error(e);process.exitCode=1;});

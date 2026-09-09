@@ -154,11 +154,10 @@ export class Avatar3DOptions {
       const pose=this.poses.get(next[group]), layer=this.targetFor(pose);
       this.bones.forEach((bone,i)=>{if(Object.hasOwn(pose.deltas,bone.name))target[i]=copy(layer[i]);});
     }
-    let targetBounds = null;
-    if (this.restBounds && this.avatar.modelBounds) {
-      this.write(target);
-      targetBounds = this.restBounds.clone().union(this.avatar.modelBounds());
-    }
+    // Framing already uses the standing bounds. Re-skinning every vertex and
+    // evaluating every morph to measure a pose stalls the render thread (Tia
+    // has 760k vertices). Bone animation does not need that unused measurement.
+    const targetBounds = this.restBounds?.clone() || null;
     this.transition={from:this.current.map(copy),target,start:now,
       fromBounds:this.avatar.bounds?.clone(),targetBounds};
     this.write(this.current);
@@ -189,7 +188,7 @@ export class Avatar3DOptions {
     if (targetBounds && fromBounds) {
       this.avatar.bounds.min.copy(fromBounds.min).lerp(targetBounds.min,u);
       this.avatar.bounds.max.copy(fromBounds.max).lerp(targetBounds.max,u);
-      this.avatar.frame();
+      if (!this.avatar.restBounds) this.avatar.frame();
     }
     if(t===1)this.transition=null;
     const head = this.avatar.bones.head;

@@ -137,7 +137,7 @@ const contextualClipTags = {
 const conversationalActions = new Set([...Object.keys(stageDestinations),'follow','come','closer','back','walk-around','run-around','wave','heart','sit','stand','dance','stay','random-dance','random-motion','reactions-on','reactions-off']);
 export function replyAvatarAction(user, reply, suggestion, clips) {
   const text=String(reply||'').normalize('NFKC').replace(/[’‘]/g,"'").trim();
-  if(!text || suggestion==='none')return null;
+  if(!text)return null;
   const denied=/\b(?:can't|cannot|couldn't|won't|will not|unable|don't have a body|do not have a body|don't actually|only imagine|wish i could)\b|不能|无法|不会表演|没有身体/i.test(text);
   if(denied)return null;
   if(typeof suggestion==='string'){
@@ -152,10 +152,21 @@ export function replyAvatarAction(user, reply, suggestion, clips) {
     (_,speaker,verb)=>speaker+' '+({walking:'walk',running:'run',moving:'move',following:'follow'}[verb.toLowerCase()]));
   const performance = performanceText.match(/\b(?:i(?:'ll| will| am going to|'m going to)|let me|let's)\s+(?:(?:just|now|also|quickly)\s+)?((?:show|demonstrate|perform|try|do|give|dance|wave|follow|go|head|walk|run|jog|wander|stroll|roam|step|move|come|sit|stand|stop|stay|make|turn|enable|disable)\b[^.!?]*)(?:[.!]|$)/i);
   const presentation = text.match(/\bhere(?:'s| is) ((?:a |my |the )?(?:quick |little )?(?:dance|wave|heart|kung fu|punch|demonstration)\b[^.!?]*)(?:[.!]|$)/i);
+  const present = text.match(/(?:^|[.!]\s*)(?:(?:sure|okay|ok|of course|absolutely)[,!]?\s+)?(?:i(?:'m| am)\s+)?(standing up|sitting down|waving|dancing|running|walking|coming|moving|stepping|going|heading|following|performing|showing)\b([^.!?]*)(?:[.!]|$)/i);
   const chinese = text.match(/(?:我来|我会|给你表演)([^。！？?]+)/);
-  const plain=performance?.[1]||presentation?.[1]||chinese?.[1];
-  if(!plain || /\b(?:if|would|could|might|imagine|pretend|in my head|explain|describe|history|meaning|write|teach|learn|tutorial|movie|video|example|how to|about|code|script|tests|terminal|program|server)\b|假如|想象|解释|历史|教程/i.test(text))return null;
-  const direct=avatarIntent(plain)||motionIntent(plain,clips);
+  const plain=performance?.[1]||presentation?.[1]||(present&&present[1].replace(/standing|sitting|waving|dancing|running|walking|coming|moving|stepping|going|heading|following|performing|showing/i,
+    verb=>({standing:'stand',sitting:'sit',waving:'wave',dancing:'dance',running:'run',walking:'walk',coming:'come',moving:'move',stepping:'step',going:'go',heading:'head',following:'follow',performing:'perform',showing:'show'}[verb.toLowerCase()]))+present[2])||chinese?.[1];
+  if(!plain)return null;
+  // Check the performance clause, not an unrelated follow-up question such as
+  // "Would you like anything else?". A conditional introduction still vetoes it.
+  const match=performance||presentation||present||chinese;
+  const prefix=text.slice(0,match.index).split(/[.!]/).at(-1);
+  if(/\b(?:if|would|could|might|imagine|pretend|in my head|explain|describe|history|meaning|write|teach|learn|tutorial|movie|video|example|how to|about|code|script|tests|terminal|program|server)\b|假如|想象|解释|历史|教程/i.test(plain)
+    || /\b(?:if|would|could|might|imagine|pretend|said|says|wrote|quoted)\b/i.test(prefix))return null;
+  const simple=plain.replace(/\b(?:for you|right now|now|a little|a bit|around a little)\b/gi,'')
+    .replace(/\b(?:your|the user's) (cursor|mouse|pointer)\b/gi,'my $1')
+    .replace(/\bcloser to you\b/gi,'closer').replace(/\s+/g,' ').trim();
+  const direct=avatarIntent(simple)||motionIntent(simple,clips);
   if(direct)return direct.startsWith('clip:')?direct:'action:'+direct;
   const words=motionWords(plain);
   let best=null,score=0;
@@ -197,12 +208,12 @@ export function conversationReaction(user, reply, suggestion) {
 
 export class CompanionController {
   constructor({random=Math.random}={}){this.random=random;this.follow=false;this.come=false;this.walking=false;this.yaw=0;this.at=0;this.pauseUntil=0;this.velocityX=0;this.velocityY=0;this.gestures=true;this.wasSpeaking=false;this.gestureAt=-Infinity;
-    this.reactions=true;this.pendingReaction=null;this.reactionAt=-Infinity;this.reactionKey='';this.lastReactionClip='';this.reactedTurns=new Set();}
+    this.reactions=true;this.pendingReaction=null;this.reactionAt=-Infinity;this.reactionKey='';this.lastReactionClip='';this.reactedTurns=new Set();this.performedTurns=new Set();}
   consider(user,reply,suggestion,now,{clips,turnID=''}={}){
     const key=String(user).slice(-1000)+'\n'+String(reply).slice(0,2000);
-    if(turnID?this.reactedTurns.has(turnID):key===this.reactionKey)return;
     const decision=replyAvatarAction(user,reply,suggestion,clips);
-    if(!this.reactions&&(!decision||!(avatarIntent(user)||motionIntent(user,clips))))return;
+    if(turnID?(this.performedTurns.has(turnID)||(!decision&&this.reactedTurns.has(turnID))):key===this.reactionKey)return;
+    if(!this.reactions&&!decision)return;
     const clipID=decision?.startsWith('clip:')?decision.slice(5):null;
     const action=decision?.startsWith('action:')?decision:null;
     const kind=decision?null:conversationReaction(user,reply,suggestion);
@@ -215,6 +226,7 @@ export class CompanionController {
     if(blocked||now<this.pauseUntil)return null;
     if(pending.action){
       this.pendingReaction=null;this.reactionKey=pending.key;this.reactionAt=now;
+      if(pending.turnID){this.performedTurns.add(pending.turnID);if(this.performedTurns.size>64)this.performedTurns.delete(this.performedTurns.values().next().value);}
       if(pending.turnID){this.reactedTurns.add(pending.turnID);if(this.reactedTurns.size>64)this.reactedTurns.delete(this.reactedTurns.values().next().value);}
       return pending.action;
     }
@@ -227,6 +239,7 @@ export class CompanionController {
     this.pendingReaction=null;
     if(!clip)return null;
     this.lastReactionClip=clip.id;this.reactionAt=now;this.reactionKey=pending.key;
+    if(pending.clipID&&pending.turnID){this.performedTurns.add(pending.turnID);if(this.performedTurns.size>64)this.performedTurns.delete(this.performedTurns.values().next().value);}
     if(pending.turnID){this.reactedTurns.add(pending.turnID);if(this.reactedTurns.size>64)this.reactedTurns.delete(this.reactedTurns.values().next().value);}
     return pending.clipID?'action:clip:'+clip.id:clip.id;
   }
@@ -371,7 +384,7 @@ export class AvatarStudioStage {
     this.normalRatio=fit.scale/surface.height;
     this.nearScale=this.clamp(Math.min(surface.width/(this.face[2]*fit.scale),surface.height/(this.face[3]*fit.scale))*1.12,2,32);
     const framing=this.framing(fit.scale,surface);
-    const cx=fit.x+framing.point.x*fit.scale,cy=fit.y+framing.point.y*fit.scale;
+    const cx=fit.x+framing.point.x*fit.scale;
     this.x=this.fraction(cx,surface.x,surface.width,framing.mx);
     // The user's chosen resting size defines the studio's middle distance,
     // even when the old 2D placement was low in the window. Ease its residual
@@ -387,6 +400,7 @@ export class AvatarStudioStage {
     this.modelHeight=bounds.max.y-bounds.min.y;
     this.cameraDistance=avatar.studioDistance;
     this.projection=avatar.studioProjection();this.facingYaw=avatar.orbit.yaw;
+    this.crownAt=()=>avatar.crownProjection?.()?.y;
   }
   fraction(value,start,length,margin){return this.clamp((value-start-margin)/Math.max(1,length-2*margin));}
   depthScale(y=this.y){
@@ -423,8 +437,21 @@ export class AvatarStudioStage {
   project(surface){
     const scale=this.normalRatio*surface.height*this.depthScale();
     const f=this.framing(scale,surface);
-    return {scale,x:surface.x+f.mx+this.x*(surface.width-2*f.mx)-f.point.x*scale+(this.entryOffset?.x||0)*(this.entryWeight||0),
-      y:surface.y+f.my+this.y*(surface.height-2*f.my)-f.point.y*scale+(this.entryOffset?.y||0)*(this.entryWeight||0)};
+    const b=this.bounds,headroom=Math.min(24,surface.height*.025);
+    const bodyMargin=Math.min(surface.height/2,b[3]*scale/2+headroom);
+    // Depth determines size and the floor position, not the face's position.
+    // Once the full figure outgrows the shot, track the crown at the top and
+    // let the torso/legs leave below the camera. Blending toward a face center
+    // and then placing that center at near-floor depth made the actor sink.
+    const bodyY=surface.y+bodyMargin+this.y*(surface.height-2*bodyMargin)
+      -(b[1]+b[3]/2)*scale+(this.entryOffset?.y||0)*(this.entryWeight||0);
+    const measuredCrown=this.crownAt?.();
+    const crown=Number.isFinite(measuredCrown)?measuredCrown:Math.min(b[1],this.face[1]);
+    const crownY=surface.y+headroom-crown*scale;
+    const closeBlend=this.clamp((b[3]*scale/surface.height-.85)/.15);
+    const eased=closeBlend*closeBlend*(3-2*closeBlend);
+    const y=Math.max(crownY,bodyY+(crownY-bodyY)*eased);
+    return {scale,x:surface.x+f.mx+this.x*(surface.width-2*f.mx)-f.point.x*scale+(this.entryOffset?.x||0)*(this.entryWeight||0),y};
   }
   // Screen pointer positions map to the whole stage, not only the narrow
   // leftover space around a large bounding box.

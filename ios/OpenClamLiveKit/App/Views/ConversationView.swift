@@ -305,6 +305,7 @@ struct ConversationView: View {
     @State private var expandsComposerForEditing = false
     @State private var readAloudMessageID: UUID?
     @State private var assistantReplyDeliveryBoundary = AssistantReplyDeliveryBoundary()
+    @State private var avatarReplyDeliveryBoundary = AvatarReplyDeliveryBoundary()
     @State private var userTurnPlacementBoundary = ConversationUserTurnPlacementBoundary()
     @State private var threadPositioning = ConversationThreadPositioningState()
     @State private var activeSessionImagePreviews: [UUID: UIImage] = [:]
@@ -649,6 +650,17 @@ struct ConversationView: View {
         proxy: ScrollViewProxy
     ) -> some View {
         baseThreadScroll(in: viewport)
+            .onChange(of: avatarReplyDeliverySnapshot) { _, snapshot in
+                guard let id = avatarReplyDeliveryBoundary.observe(snapshot),
+                      activeAvatarDescriptor.compatibility.rendersModel,
+                      let message = conversation.messages.first(where: { $0.id == id }) else { return }
+                OpenClam3DOptionsStore.shared.conversation(
+                    message, user: conversation.avatarReactionUserText(for: id),
+                    for: activeAvatarDescriptor.id, deliveredAt: Date(),
+                    turnID: conversation.avatarReactionTurnID(for: id),
+                    replyText: conversation.avatarReactionReplyText(for: id)
+                )
+            }
             .onChange(of: conversation.pendingEmail?.id) { previousID, currentID in
                 guard ConversationReviewRevealPolicy.shouldRevealPendingEmail(
                     previousID: previousID,
@@ -733,6 +745,7 @@ struct ConversationView: View {
             }
             .onAppear {
                 assistantReplyDeliveryBoundary.prime(with: assistantReplyDeliverySnapshot)
+                avatarReplyDeliveryBoundary.prime(with: avatarReplyDeliverySnapshot)
                 userTurnPlacementBoundary.prime(with: assistantReplyDeliverySnapshot)
                 threadPositioning.resetForThreadChange()
                 if !isFreshConversation {
@@ -2779,6 +2792,10 @@ struct ConversationView: View {
         )
     }
 
+    private var avatarReplyDeliverySnapshot: AvatarReplyDeliverySnapshot {
+        .init(threadID: conversation.historyController.selectedThreadID, messages: conversation.messages)
+    }
+
     private var languageModelProviders: [AIProviderDescriptor] {
         AIProviderRegistry.providers(for: .llm).filter {
             AIProviderRegistry.hasRuntimeAdapter(provider: $0.id, capability: .llm)
@@ -3667,15 +3684,6 @@ struct ConversationView: View {
         guard let messageID = assistantReplyDeliveryBoundary.observe(snapshot),
               let message = conversation.messages.first(where: { $0.id == messageID }) else {
             return nil
-        }
-        if activeAvatarDescriptor.compatibility.rendersModel {
-            // Pair with the preceding user, not a later barge-in observed in
-            // the same update. Live Talk's initial greeting has no user yet.
-            let user = conversation.avatarReactionUserText(for: messageID)
-            OpenClam3DOptionsStore.shared.conversation(
-                message, user: user, for: activeAvatarDescriptor.id, deliveredAt: Date(),
-                turnID: conversation.avatarReactionTurnID(for: messageID)
-            )
         }
         AccessibilityNotification.Announcement("Assistant: \(message.text)").post()
         if !liveTalk.phase.isSessionActive, reserveAppAudioLane() {

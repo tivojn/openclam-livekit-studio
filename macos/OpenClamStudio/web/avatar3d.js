@@ -253,6 +253,7 @@ class Avatar3D {
       this.headReferencePoint = this.headCenter.clone()
         .applyMatrix4(this.bones.head.matrixWorld.clone().invert());
     }
+    this.captureCrown();
     const front = new THREE.Vector3(0, 0, 1)
       .applyQuaternion(this.model.getWorldQuaternion(new THREE.Quaternion()));
     if(this.bones.head)this.headForward=front.clone()
@@ -748,9 +749,63 @@ class Avatar3D {
     weights.set(channel, Math.min(1, (weights.get(channel) || 0) + value));
   }
 
+  captureCrown() {
+    if (!this.bones.head || !this.headCenter) return;
+    // Measure the visible geometry once at load. A projected 3D box includes
+    // empty corners above the hair; magnifying that gap made close-ups sink.
+    // Keep only the crown landmark, attached to the same head as the hair.
+    const point=new THREE.Vector3();let top=Infinity,crown=null;
+    this.model.traverseVisible(node=>{
+      if(!node.isMesh||!node.geometry?.attributes.position)return;
+      for(let i=0;i<node.geometry.attributes.position.count;i++){
+        node.getVertexPosition(i,point).applyMatrix4(node.matrixWorld);
+        if(point.y<this.headCenter.y)continue;
+        const y=this.project(point).y;
+        if(y<top){top=y;crown=point.clone();}
+      }
+    });
+    if(crown)this.crownReferencePoint=crown.applyMatrix4(this.bones.head.matrixWorld.clone().invert());
+  }
+
+  crownProjection() {
+    if(!this.crownReferencePoint||!this.bones.head)return null;
+    return this.project(this.crownReferencePoint.clone().applyMatrix4(this.bones.head.matrixWorld));
+  }
+
+  prepareMotionFrame(now, reduce = false) {
+    this.options?.update(now, reduce);
+    this.preparedMotionFrame={now,reduce};
+  }
+
+  keepMotionInViewport(fit, surface) {
+    if (!this.options || !(this.motion?.active || this.options.transition)) return fit;
+    // Joint bounds are cheap and include the animated root translation. Keep
+    // hands, head and feet inside the host surface without changing actor size.
+    // Exact deformed-vertex bounds would stall the mobile render thread.
+    const points=this.options.bones.map(({node})=>this.project(node.getWorldPosition(new THREE.Vector3())));
+    if(!points.length||!points.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)))return fit;
+    const pad=Math.max(8,this.height*fit.scale*.025);
+    const crown=this.crownProjection();if(crown)points.push(crown);
+    const xs=points.map(p=>p.x*fit.scale),ys=points.map(p=>p.y*fit.scale);
+    const torso=[this.bones.head,this.bones.chest,this.bones.hips].filter(Boolean)
+      .map(node=>this.project(node.getWorldPosition(new THREE.Vector3())));
+    const focusX=(torso.length?torso:points).map(p=>p.x*fit.scale);
+    const head=crown||(torso.length?torso[0]:points[0]);
+    const place=(origin,min,max,start,length,focusMin,focusMax=focusMin)=>max-min+pad*2<=length
+      ? clamp(origin,start+pad-min,start+length-pad-max)
+      : clamp(origin,start+pad-focusMin,start+length-pad-focusMax);
+    // A deliberately enlarged figure can exceed a phone's width. Keep its
+    // torso/head on screen without a surprise zoom or letting the root lunge
+    // carry the entire performer outside the view.
+    return {...fit,x:place(fit.x,Math.min(...xs),Math.max(...xs),surface.x,surface.width,Math.min(...focusX),Math.max(...focusX)),
+      y:place(fit.y,Math.min(...ys),Math.max(...ys),surface.y,surface.height,head.y*fit.scale)};
+  }
+
   render(now, state = {}, view = null) {
     if (this.disposed || !this.model) return this.canvas;
-    this.options?.update(now, Boolean(state.reduce));
+    if(this.preparedMotionFrame?.now!==now||this.preparedMotionFrame.reduce!==Boolean(state.reduce))
+      this.options?.update(now, Boolean(state.reduce));
+    this.preparedMotionFrame=null;
     if (this.options && !this.options.enabled('followCursor')) {
       state = {...state,gaze:{x:0,y:0},lookTarget:null,cameraFocus:false};
     }

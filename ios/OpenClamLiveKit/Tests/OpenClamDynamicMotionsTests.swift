@@ -6,6 +6,56 @@ import WebKit
 
 @MainActor
 final class OpenClamDynamicMotionsTests: XCTestCase {
+    func testAvatarDeliveryIncludesRevisedFinalsAndCoalescedSentences() throws {
+        let thread = UUID()
+        let user = ConversationMessage(role: .user, text: "Can you sit?")
+        let first = ConversationMessage(role: .assistant, text: "Of course!")
+        var boundary = AvatarReplyDeliveryBoundary()
+        boundary.prime(with: .init(threadID: thread, messages: [user]))
+        XCTAssertEqual(boundary.observe(.init(threadID: thread, messages: [user, first])), first.id)
+        var revised = ConversationMessage(id: first.id, role: .assistant, text: "Of course! I'll sit cross-legged for you right now.")
+        let followup = ConversationMessage(role: .assistant, text: "Anything else you'd like to see?")
+        XCTAssertEqual(boundary.observe(.init(threadID: thread, messages: [user, revised, followup])), followup.id)
+        XCTAssertNil(boundary.observe(.init(threadID: thread, messages: [user, revised, followup])))
+        revised = ConversationMessage(id: first.id, role: .assistant, text: revised.text + " I'll wave too.")
+        XCTAssertEqual(boundary.observe(.init(threadID: thread, messages: [user, revised, followup])), revised.id,
+            "An updated earlier segment must survive an unchanged closing sentence")
+        XCTAssertNil(boundary.observe(.init(threadID: UUID(), messages: [user, revised, followup])), "History navigation does not replay")
+        boundary.prime(with: .init(threadID: thread, messages: [user]))
+        let interruption = ConversationMessage(role: .user, text: "Stop")
+        XCTAssertNil(boundary.observe(.init(threadID: thread, messages: [user, revised, interruption])), "Barge-in cancels late intent")
+    }
+
+    func testLiveTalkVisualReplyCombinesSegmentsAndRevisesOneTurn() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = ConversationModel(historyController: ConversationHistoryController(store:
+            ConversationHistoryStore(fileURL: directory.appendingPathComponent("history.json"))))
+        for _ in 0..<100 where !model.isHistoryReady { await Task.yield() }
+        XCTAssertTrue(model.beginLiveTalkTranscriptSession())
+        model.ingestLiveTalkTranscripts([
+            .init(id: "user", role: .user, text: "Can you smile Can you sit?", isFinal: true),
+            .init(id: "action", role: .agent, text: "Of course! I'll sit cross-legged for you right now.", isFinal: true),
+            .init(id: "followup", role: .agent, text: "Anything else you'd like to see?", isFinal: true)
+        ])
+        let last = try XCTUnwrap(model.messages.last)
+        let combined = model.avatarReactionReplyText(for: last.id)
+        XCTAssertTrue(combined.contains("I'll sit cross-legged"))
+        XCTAssertTrue(combined.contains("Anything else"))
+        let name = "AvatarDelivery.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OpenClam3DOptionsStore(defaults: defaults)
+        let turnID = model.avatarReactionTurnID(for: last.id)
+        store.conversation(last, user: "Can you sit?", for: "tia", deliveredAt: Date(), turnID: turnID, replyText: combined)
+        let first = try XCTUnwrap(store.conversations["tia"])
+        store.conversation(last, user: "Can you sit?", for: "tia", deliveredAt: Date(), turnID: turnID, replyText: combined)
+        XCTAssertEqual(store.conversations["tia"], first, "Repeated SwiftUI delivery is a no-op")
+        store.conversation(last, user: "Can you sit?", for: "tia", deliveredAt: Date(), turnID: turnID, replyText: combined + " I'll stand now.")
+        XCTAssertNotEqual(store.conversations["tia"]?["id"], first["id"])
+        XCTAssertEqual(store.conversations["tia"]?["turnID"], first["turnID"], "Revisions share one logical action boundary")
+    }
+
     func testLiveTalkReactionContextStartsAtTheCallBoundary() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -116,6 +166,10 @@ final class OpenClamDynamicMotionsTests: XCTestCase {
             XCTAssertNil(OpenClam3DReaction.extract("Reply. <<openclam:motion \(cue)>>").suggestion)
         }
         XCTAssertTrue(OpenClam3DReaction.prompt(motions: []).contains("Conversation comes first"))
+        let manualOnly = OpenClam3DReaction.prompt(motions: [], automaticReactions: false)
+        XCTAssertTrue(manualOnly.contains("Automatic mood reactions are off"))
+        XCTAssertTrue(manualOnly.contains("walk-around and run-around"))
+        XCTAssertFalse(manualOnly.contains("user enabled expressive reactions"))
     }
 
     func testDefaultReactionsAndExplicitOffSurviveResetAndRelaunch() throws {

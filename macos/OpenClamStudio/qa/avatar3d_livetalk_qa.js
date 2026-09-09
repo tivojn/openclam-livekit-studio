@@ -16,7 +16,7 @@ let now = 1000;
 const session = {finalTranscriptIDs:new Set(), latestFinalUserTranscript:''};
 const desktop = {avatarCompanionAPI:{avatarIntent:()=>null,motionIntent:()=>null},avatar3d:null,live:session, performance:{now:()=>now},
   beginLiveTalkUserInput(){}, updatePendingLiveTalkUserSegment(){},
-  appendFinalUserTurnSegment(s,text){s.latestFinalUserTranscript=text;},
+  appendFinalUserTurnSegment(s,text){s.latestFinalUserTranscript=text;s.avatarReactionTurnID=text;},
   handleAvatarCommand:async()=>false,
   assistantTranscriptDisposition:()=>({preserveUserTurn:false,suppress:false}),
   makeSpeechExpressionTimeline:()=>[], makeSpeechExpressionPlan:()=>({}), speechExpressionPlanAt:()=>({}),
@@ -33,6 +33,17 @@ now=24000;
 desktop.receive(session,[{id:'user-1',text:'I got the job!',final:true}],{isAgent:false});
 desktop.receive(session,[{id:'reply-1',text:'That’s wonderful news!',final:true}],{isAgent:true});
 assert.equal(desktop.controller.takeReaction(now,clips),'cheer');
+
+now=50000;
+session.avatarReactionTurnID='split-action';session.latestFinalUserTranscript='Can you run around?';
+desktop.receive(session,[{id:'action-start',text:"Of course! I'll run around the screen.",final:true},
+  {id:'action-followup',text:'Would you like anything else?',final:true}],{isAgent:true});
+assert.equal(desktop.controller.takeReaction(now,clips),'action:run-around','a following speech segment cannot erase the pending motion');
+session.avatarReactionTurnID='revised-action';session.latestFinalUserTranscript='Can you sit?';
+desktop.receive(session,[{id:'revised-final',text:'Of course!',final:true}],{isAgent:true});
+assert.equal(desktop.controller.takeReaction(now,clips),null);
+desktop.receive(session,[{id:'revised-final',text:"Of course! I'll sit down.",final:true}],{isAgent:true});
+assert.equal(desktop.controller.takeReaction(now,clips),'action:sit','a growing final also reaches the Mac motion controller');
 
 const iosSource = fs.readFileSync('../../ios/OpenClamLiveKit/App/Avatar3D/avatar-ios.js','utf8')
   .replace(/^import .*;$/gm,'').replace(/export /g,'');
@@ -55,11 +66,13 @@ vm.createContext(ios);
 vm.runInContext(companion + '\n' + iosSource
   + '\navatar=avatarFixture;companion=new CompanionController();latest=frame;globalThis.drawFrame=draw;globalThis.nativeCommand=window.avatarCommand;',ios);
 ios.drawFrame(1000);
+assert.deepEqual(played,[],'the first draw must not consume a reply before the renderer is ready');
+ios.drawFrame(1040);
 assert.deepEqual(played,['cheer'],'a completed Live Talk reply plays while speech is active');
 assert.deepEqual(rendered.visemeWeights,{aa:.7,PP:.3},'motion preserves synchronized mouth weights');
 assert.equal(rendered.speaking,true);
 assert.equal(rendered.expression.smile,.4,'motion and speech expression channels combine');
-ios.drawFrame(1100);
+ios.drawFrame(1140);
 assert.equal(played.length,1,'frame updates do not replay the same final');
 ios.frame.options.dynamicMotions='false';
 ios.frame.conversation={id:'off',user:'',reply:'Hello!',created:Date.now()};
@@ -138,3 +151,9 @@ assert.equal(chosen.length,1,'the LLM action is not replayed each frame');
   assert(Math.abs(crop.w/crop.h-2/3)<1e-9,'keyboard resize preserves the displayed aspect');
   console.log('iOS studio integration: corner/closer/center, manual pinch and keyboard resize passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
+
+for(const [width,height,dpr] of [[393,852,3],[852,393,3],[1024,1366,2]]){
+  const normal=ios.mobileAvatarBudget(width,height,dpr), hot=ios.mobileAvatarBudget(width,height,dpr,{thermal:2});
+  assert(width*height*normal.density**2<=1200001,'mobile render pixels are bounded independently of Retina density');
+  assert(hot.density<=normal.density&&hot.interval>=normal.interval,'thermal pressure reduces GPU work');
+}

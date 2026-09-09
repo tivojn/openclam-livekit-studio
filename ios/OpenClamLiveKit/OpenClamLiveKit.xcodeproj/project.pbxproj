@@ -166,6 +166,7 @@
 		C6D50687AB2C649FFB086EE8 /* ScreenPTTIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA48E262CA3FB14525DBE15 /* ScreenPTTIntents.swift */; };
 		C74FE627891B634A0D79B3F6 /* AvatarUpdates.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 44866215EF0CEF34F408C0C2 /* AvatarUpdates.bundle */; };
 		C84CCB7B6B51D6F767547BA6 /* ScreenVoicePTTVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6601B958F0E45D033058BAC /* ScreenVoicePTTVAD.swift */; };
+		CA25FB9DF04CA890BAFE8D3B /* AvatarReplyDeliveryBoundary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 334D29E2F4A8E5336BB348E4 /* AvatarReplyDeliveryBoundary.swift */; };
 		CAC03FB525F7E3F306BA4232 /* OpenClamAvatarCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 607B13A865C3D8527BA492DA /* OpenClamAvatarCatalogTests.swift */; };
 		CACBA54A6A56DD4162676796 /* AvatarAgentProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6938EB6F48FCE169BACF27A /* AvatarAgentProfileTests.swift */; };
 		CBE366EFEF3D34E2B66FBC50 /* EventKitAgentSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96E9F2B04C41E10042D45C8A /* EventKitAgentSessionTests.swift */; };
@@ -291,6 +292,7 @@
 		3054355C14179FA7475846AA /* OpenClamAvatarLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClamAvatarLibrary.swift; sourceTree = "<group>"; };
 		328ECEC97FAB8877379A8A06 /* CaptainAyerFaceMirrorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptainAyerFaceMirrorController.swift; sourceTree = "<group>"; };
 		32BD90DF9FF7519393BF4A41 /* ScreenVoicePTTCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTCoordinator.swift; sourceTree = "<group>"; };
+		334D29E2F4A8E5336BB348E4 /* AvatarReplyDeliveryBoundary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarReplyDeliveryBoundary.swift; sourceTree = "<group>"; };
 		33DDC7CB83CC5DF26894CCB2 /* ProviderAgentClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAgentClientTests.swift; sourceTree = "<group>"; };
 		35D8B5C8BA0D5F692896B0A8 /* ProviderWebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderWebSearchService.swift; sourceTree = "<group>"; };
 		36888494E866DB0BE5884298 /* AssistantCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantCommand.swift; sourceTree = "<group>"; };
@@ -945,6 +947,7 @@
 			children = (
 				49F08146186E07EFDCF15249 /* avatar-ios.html */,
 				8DDD91B91C0B93988938586B /* avatar-ios.js */,
+				334D29E2F4A8E5336BB348E4 /* AvatarReplyDeliveryBoundary.swift */,
 				553FF2EECECA8BD1495A98CA /* MotionUpdates.bundle */,
 				E4D4D0309DDD5B4EACDBF62E /* OpenClam3DAvatarArtwork.swift */,
 				498591DB2F33B824E3598FE3 /* OpenClam3DAvatarModel.swift */,
@@ -1303,6 +1306,7 @@
 				D7A0A2FB1AD3033B4478129E /* AttachmentPreparationService.swift in Sources */,
 				E3F6C57E50F6FB0D0CD6CD6F /* AvatarAgentProfile.swift in Sources */,
 				5E0DEB632BBC5CE90162768B /* AvatarAgentSettingsView.swift in Sources */,
+				CA25FB9DF04CA890BAFE8D3B /* AvatarReplyDeliveryBoundary.swift in Sources */,
 				D6F2763B5919C3C412AC781C /* CapabilitiesView.swift in Sources */,
 				EDED1BB22A8B258A3E506ED1 /* Capability.swift in Sources */,
 				8C8B34A05E1FD28B1BB4AB34 /* CaptainAyerAvatarOverlay.swift in Sources */,

@@ -108,6 +108,25 @@ const near=(a,b,label)=>assert(Math.abs(a-b)<1e-7,`${label}: ${a} != ${b}`);
   for(let y=0;y<=1;y+=.01){stage.y=y;const fit=stage.project(surface);assert(fit.scale>=size,'lower is continuously larger');size=fit.scale;}
   stage.y=.5;near(stage.project(surface).scale,middleScale,'middle is normal size');
   for(const x of [.04,.5,.96]){stage.x=x;near(stage.project(surface).scale,middleScale,'horizontal movement preserves distance');}
+  // An approaching actor grows below the frame while the crown stays visible.
+  for(const [width,height] of [[393,680],[1000,700],[1600,900]]){
+    const viewport={x:50,y:70,width,height};
+    const shot=new s.Stage({scale:height/1800,x:0,y:0},layout,viewport);
+    shot.entryWeight=0;shot.x=.5;
+    shot.crownAt=()=>layout.bounds[1]+45; // real hair is below the empty corner of its 3D box
+    let priorFeet=-Infinity;
+    for(let depth=.5;depth<=1;depth+=.005){
+      shot.y=depth;const f=shot.project(viewport),crown=f.y+shot.crownAt()*f.scale;
+      const feet=f.y+(layout.bounds[1]+layout.bounds[3])*f.scale;
+      assert(crown>=viewport.y-1e-7,'approach never crops the crown');
+      assert(feet>=priorFeet-1e-7,'approach advances feet downward rather than reversing the apparent gait');priorFeet=feet;
+      if(layout.bounds[3]*f.scale>height){
+        assert(crown<=viewport.y+height*.04,'close-up anchors the head at the upper edge, not the bottom');
+        if((layout.bounds[1]+layout.bounds[3]-shot.crownAt())*f.scale>height)
+          assert(feet>viewport.y+height,'the lower body, not the head, leaves the frame');
+      }
+    }
+  }
   const travelTo=(action,begin)=>{
     const c=new s.Controller();c.command(action);c.destination=stage.destination(action,surface);
     for(let t=begin;t<begin+60000;t+=32){stage.step(c,t,surface);if(!c.destination)return;}

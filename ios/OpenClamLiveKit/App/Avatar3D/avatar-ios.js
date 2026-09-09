@@ -5,6 +5,7 @@ let avatar, latest, loading, reported = false, failed = false;
 let companion, lastConversation = '', actionGeneration = 0, lastMotion = '';
 let travelOffset={x:0,y:0}, travelClip=false, approachWalking=false, approachNativeCrop, lastNativeLayout='';
 let displayedViewport, stagePreparing=false, stageTurning=false, previousSurface;
+let animationFrame = 0, disposed = false;
 const originalError = console.error;
 const generation = Number(new URLSearchParams(location.search).get('generation'));
 const report = body => window.webkit.messageHandlers.avatarStatus.postMessage({...body,generation});
@@ -49,8 +50,13 @@ async function load(frame) {
   }
   report({event:'catalogue', catalogue});
   document.body.append(avatar.canvas);
-  requestAnimationFrame(draw);
+  animationFrame = requestAnimationFrame(draw);
 }
+window.disposeAvatar = () => {
+  disposed = true;
+  cancelAnimationFrame(animationFrame);
+  avatar?.dispose();
+};
 // Upload every wardrobe texture before the first frame allocates morph buffers.
 // ImageBitmaps otherwise retain a second decoded copy of all 51 Tia images.
 // Include hidden outfits and all textures sharing a bitmap before closing it.
@@ -162,20 +168,32 @@ export function fitAvatarViewport(crop, width, height, density = 1) {
     pixelWidth:Math.max(8,Math.round(width*density)),
     pixelHeight:Math.max(8,Math.round(height*density))};
 }
+export function mobileAvatarBudget(width, height, dpr, {lowPower=false, thermal=0} = {}) {
+  const constrained = lowPower || thermal >= 2;
+  const edge = constrained ? 1152 : 1536, pixels = constrained ? 650000 : 1200000;
+  return {interval: 1000 / (thermal >= 3 ? 15 : constrained ? 24 : 30),
+    density: Math.min(dpr || 1, edge / Math.max(width,height,1),
+      Math.sqrt(pixels / Math.max(width*height,1)))};
+}
 function draw(now) {
-  if (failed) return;
-  requestAnimationFrame(draw);
-  if (!latest || document.hidden) return;
-  const state = latest.state, interval = state.reduce ? 250 : state.speaking ? 16 : 33;
-  if (now - previous < interval) return;
+  if (failed || disposed) return;
+  animationFrame = requestAnimationFrame(draw);
+  if (!latest || document.hidden || latest.performance?.active === false) return;
+  const surface = avatar.canvas.getBoundingClientRect();
+  if (!(surface.width > 0 && surface.height > 0)) return;
+  const budget = mobileAvatarBudget(surface.width, surface.height, window.devicePixelRatio, latest.performance);
+  const state = latest.state, interval = state.reduce ? 250 : budget.interval;
+  if (now - previous + .5 < interval) return;
   previous = now;
   avatar.options?.select(latest.options || {}, now);
-  if (companion) {
+  // The first frame establishes readiness. Do not consume a decision before
+  // avatarCommand can accept it, including replies delivered during loading.
+  if (companion && reported) {
     companion.reactions = latest.options?.dynamicMotions !== 'false';
     const turn = latest.conversation;
     if (turn?.id && turn.id !== lastConversation) {
       lastConversation = turn.id;
-      if (Date.now()-Number(turn.created)<15000)
+      if (Date.now()-Number(turn.created)<60000)
         companion.consider(turn.user,turn.reply,turn.suggestion,now,{clips:avatar.motion.clips,turnID:turn.turnID||turn.id});
     }
     const reaction = companion.takeReaction(now,avatar.motion.clips,
@@ -190,9 +208,7 @@ function draw(now) {
     }
   }
   if(!companion?.walking&&!companion?.roam&&!companion?.follow&&!companion?.come&&!companion?.destination&&!stageTurning)avatar.setOrbit(latest.orbit);
-  const surface = avatar.canvas.getBoundingClientRect();
-  if (!(surface.width > 0 && surface.height > 0)) return;
-  const density = Math.min(window.devicePixelRatio || 1, 2048 / Math.max(surface.width,surface.height));
+  const density = budget.density;
   const resized=previousSurface&&(previousSurface.width!==surface.width||previousSurface.height!==surface.height);
   const nativeLayout=JSON.stringify([latest.crop.x,latest.crop.y,latest.crop.w,latest.crop.h,latest.orbit?.yaw,latest.orbit?.pitch]);
   if(lastNativeLayout&&nativeLayout!==lastNativeLayout&&!resized){
@@ -216,10 +232,18 @@ function draw(now) {
     if(now>=companion.pauseUntil&&(companion.roam||companion.follow||companion.come||companion.destination||step.walking||stageTurning)){
       stageTurning=Math.abs(step.yaw)>.005;avatar.setOrbit({yaw:step.yaw,pitch:0});
     }
+    avatar.prepareMotionFrame?.(now,Boolean(state.reduce));
     const fit=stage.project(safe);
     viewport={...viewport,x:-fit.x/fit.scale,y:-fit.y/fit.scale,w:surface.width/fit.scale,h:surface.height/fit.scale};
   }
   previousSurface={width:surface.width,height:surface.height};
+  if(!avatar.studioStage)avatar.prepareMotionFrame?.(now,Boolean(state.reduce));
+  if((avatar.motion?.active||avatar.options?.transition)&&avatar.keepMotionInViewport){
+    const scale=surface.width/viewport.w;
+    const fit=avatar.keepMotionInViewport({scale,x:-viewport.x*scale,y:-viewport.y*scale},
+      {x:0,y:0,width:surface.width,height:surface.height});
+    viewport={...viewport,x:-fit.x/scale,y:-fit.y/scale};
+  }
   displayedViewport={...viewport};
   const lookTarget = latest.pointer ? avatar.gazePoint({
     x:viewport.x + latest.pointer.x * viewport.w,

@@ -87,3 +87,30 @@ class ReactionRouteTests(unittest.TestCase):
                 'Hello <<openclam:motion greeting>>', cfg, suppress_local_tts=True))
         self.assertNotIn('avatar_reaction', result)
         self.assertEqual(result['text'], 'Hello')
+
+    def test_explicit_motion_survives_automatic_reactions_off(self):
+        import asyncio
+        import copy
+        import json
+        from unittest.mock import patch
+        app = self.application
+        cfg = copy.deepcopy(app.P.DEFAULTS)
+        systems = []
+        async def stream(_messages, _cfg, *, system):
+            systems.append(system)
+            yield "I'll run around the screen.\n<<openclam:motion action:run-around>>"
+        async def run():
+            response = await app.reply_stream(app.Turn(
+                history=[{'role': 'user', 'content': 'Can you run around?'}],
+                avatar_reactions=False, avatar_motions=True, suppress_local_tts=True))
+            return [json.loads(event) async for event in response.body_iterator]
+        with patch.object(app.P, 'load', return_value=cfg), \
+             patch.object(app.P, 'chat_stream', stream), \
+             patch.object(app.P, 'last_route', return_value={}):
+            events = asyncio.run(run())
+        self.assertEqual(len(systems), 1, 'The conversational LLM remains the only decision call')
+        self.assertIn('Automatic mood reactions are off', systems[0])
+        self.assertIn('run-around travel', systems[0])
+        self.assertEqual(events[-1]['avatar_reaction'], 'action:run-around')
+        self.assertEqual(events[-1]['text'], "I'll run around the screen.")
+        self.assertTrue(all('<<' not in event['text'] for event in events))

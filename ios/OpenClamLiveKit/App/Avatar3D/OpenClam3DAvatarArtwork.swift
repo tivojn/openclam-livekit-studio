@@ -55,6 +55,7 @@ struct OpenClam3DAvatarArtwork: View {
     var orbit = OpenClam3DOrbit()
     @StateObject private var loader = OpenClam3DAvatarLoader()
     @ObservedObject private var options = OpenClam3DOptionsStore.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     private var usesSharedRenderer: Bool {
 #if DEBUG
@@ -69,9 +70,9 @@ struct OpenClam3DAvatarArtwork: View {
             if usesSharedRenderer {
                 TimelineView(.animation(minimumInterval: OpenClam3DAvatarFramePolicy.minimumInterval(
                     speaking: controller.isExpressionAnimating || faceMirror.isCapturing,
-                    reduceMotion: reduceMotion))) { context in
+                    reduceMotion: reduceMotion), paused: scenePhase != .active)) { context in
                     OpenClam3DWebView(avatar: avatar, pose: pose(at: context.date), orbit: orbit,
-                        visibleRect: Self.visibleRect(crop: crop, in: proxy.size))
+                        visibleRect: Self.visibleRect(crop: crop, in: proxy.size), isActive: scenePhase == .active)
                 }
             } else if let rig = loader.rig {
                 TimelineView(
@@ -197,7 +198,9 @@ struct OpenClam3DAvatarArtwork: View {
 enum OpenClam3DAvatarFramePolicy {
     static func minimumInterval(speaking: Bool, reduceMotion: Bool) -> TimeInterval {
         if reduceMotion { return 1.0 / 4 }
-        return speaking ? 1.0 / 60 : 1.0 / 30
+        // Lip sync and body motion share a mobile budget; speech must not
+        // double the GPU/SwiftUI work while Live Talk is also processing audio.
+        return 1.0 / 30
     }
 }
 

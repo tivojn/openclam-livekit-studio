@@ -13,6 +13,8 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
  const rotate=new THREE.Matrix4().makeRotationZ(.7),shear=new THREE.Matrix4().set(1,.15,0,.1,0,1,0,0,0,0,1,0,0,0,0,1);
  const lib=new sandbox.Library({model,root,bones:{},baseQuaternions:new Map()}, {version:1,rest,defaultOutfit:'original',outfits:[{id:'original',nodes:['coat']},{id:'dress',nodes:['dress']}],props:[{id:'prop',nodes:['prop']}],poses:[{id:'pose',label:'Standing',group:'body',deltas:{shoulder:rows(rotate),hand:rows(rotate),finger:rows(rotate.clone().multiply(shear))}},{id:'fist',group:'rightHand',deltas:{finger:rows(shear)}}]});
  lib.captureIdle();assert(old.visible&&!dress.visible&&!prop.visible);
+ lib.avatar.restBounds=lib.restBounds=new THREE.Box3(new THREE.Vector3(-1,0,-1),new THREE.Vector3(1,2,1));
+ lib.avatar.modelBounds=()=>assert.fail('Playing authored poses must not scan every deformed vertex on the render thread');
  const baseline=lib.bones.map(b=>b.world.clone());
  lib.select({body:'pose',outfit:'dress',prop:'prop'},100);lib.update(425);assert(lib.transition);lib.update(800);
  for(const [i,b] of lib.bones.entries()){const expected=(i===2?rotate.clone().multiply(shear):rotate.clone()).multiply(baseline[i]);assert(Math.max(...expected.elements.map((v,j)=>Math.abs(v-b.node.matrixWorld.elements[j])))<1e-10,'authored affine transforms must survive parent movement');}

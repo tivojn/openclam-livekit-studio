@@ -592,6 +592,21 @@ final class ConversationModel: ObservableObject {
         avatarReactionUsers(for: replyID).map(\.text).joined(separator: " ")
     }
 
+    func avatarReactionReplyText(for replyID: UUID) -> String {
+        guard let index = messages.firstIndex(where: { $0.id == replyID }) else { return "" }
+        let liveIDs = Set(liveTalkTranscriptMessageIDs.values)
+        guard liveIDs.contains(replyID) else { return messages[index].text }
+        // Include the intention sentence even if a following sentence arrived
+        // in the same batch. Keep this inside the current spoken user turn.
+        let before = messages.prefix(index).reversed().prefix(while: {
+            liveIDs.contains($0.id) && $0.role == .assistant
+        }).reversed()
+        let after = messages.dropFirst(index).prefix(while: {
+            liveIDs.contains($0.id) && $0.role == .assistant
+        })
+        return (Array(before) + Array(after)).map(\.text).joined(separator: " ")
+    }
+
     func avatarReactionTurnID(for replyID: UUID) -> String {
         if let first = avatarReactionUsers(for: replyID).first { return first.id.uuidString }
         let liveIDs = Set(liveTalkTranscriptMessageIDs.values)
@@ -3043,13 +3058,12 @@ extension ConversationModel {
                 )
             }
             let motionStore = OpenClam3DOptionsStore.shared
-            let dynamicMotions = !replyOnly && motionStore.enabled("dynamicMotions", for: aiConfiguration.activeAvatarID)
-                && motionStore.catalogues[aiConfiguration.activeAvatarID]?.motions?.isEmpty == false
+            let dynamicMotions = !replyOnly && motionStore.catalogues[aiConfiguration.activeAvatarID]?.motions?.isEmpty == false
             let result = try await client.respondStreaming(
                 input: input,
                 instructions: promptContext.applyingPersona(to: replyOnly
                     ? Self.replyOnlyAgentInstructions
-                    : Self.agentInstructionsWithTrustedClock()) + (dynamicMotions ? "\n" + OpenClam3DReaction.prompt(motions: motionStore.catalogues[aiConfiguration.activeAvatarID]?.motions ?? []) : ""),
+                    : Self.agentInstructionsWithTrustedClock()) + (dynamicMotions ? "\n" + OpenClam3DReaction.prompt(motions: motionStore.catalogues[aiConfiguration.activeAvatarID]?.motions ?? [], automaticReactions: motionStore.enabled("dynamicMotions", for: aiConfiguration.activeAvatarID)) : ""),
                 tools: try Self.agentTools(forLatestUserInput: latestUserInput),
                 executor: executor,
                 onPartialText: { text in
