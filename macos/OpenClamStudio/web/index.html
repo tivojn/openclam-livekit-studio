@@ -522,7 +522,6 @@
     #avatarOptions3D select { width: 100%; padding: 7px; border: 1px solid var(--codex-border, #8884); border-radius: 7px; background: var(--codex-surface, #262626); color: inherit; }
     #motionPicker:has(#avatarOptions3D details[open]) { width: 280px; max-height: calc(100vh - 145px); overflow-y: auto; }
     .avatar-3d-help { font-size: 11px; line-height: 1.5; opacity: .7; margin: 8px 10px; }
-    html.avatar-rotating #stage { cursor: crosshair; }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
     }
@@ -2067,7 +2066,6 @@
     </button>
     <div id="avatar3DControls" hidden>
       <div id="avatarOptions3D"></div>
-      <button id="rotate3DButton" type="button" role="menuitemcheckbox" aria-checked="false">Rotate 3D view</button>
       <button id="reset3DButton" type="button" role="menuitem">Reset 3D view</button>
       <p class="avatar-3d-help">Drag to move · Pinch to resize<br>Two-finger swipe or ⌥ drag to rotate</p>
     </div>
@@ -2487,7 +2485,6 @@
     const considerAvatarReaction = (user,reply,suggestion,turnID='') => {
       avatar3d?.companion?.consider(user,reply,suggestion,performance.now(),{clips:avatar3d?.motion?.clips,turnID});
     };
-    let avatar3dRotateMode = false;
     let avatar3dOrbitUntil = 0;
     let avatarOrbitGesture = false;
     let avatarOrbitTimer = 0;
@@ -2525,10 +2522,8 @@
           disposeAvatarOptions=()=>{disposeCompanion();disposeOptions();};
         }
       }
-      document.getElementById('rotate3DButton').setAttribute('aria-checked', String(avatar3dRotateMode));
       canvas.title = avatar3d ? 'Drag to move · Pinch to resize · Two-finger swipe or Option-drag to rotate' : '';
       root.classList.toggle('avatar-3d', Boolean(avatar3d));
-      root.classList.toggle('avatar-rotating', Boolean(avatar3d && avatar3dRotateMode));
     };
     let avatar3dGazeState = { x: 0, y: 0, at: 0 };
     const is3DRuntime = value => Boolean(value && typeof value === 'object'
@@ -10230,7 +10225,6 @@
       avatar3d.companion?.command('pose');avatar3d.motion?.stop();
       avatar3d.resetCameraApproach();avatar3d.studioStage=null;avatar3d.studioDistance=null;avatar3d.frame();avatar3d.approachSurface=null;avatar3d.approachDisplayView=null;avatar3d.cameraWalkRequested=false;
       setAvatar3DOrbit({});
-      avatar3dRotateMode = false;
       chatAvatarOffsets.standard = { x: 0, y: 0 };
       chatAvatarOffsets.closeUp = { x: 0, y: 0 };
       chatAvatarOffset = { x: 0, y: 0 };
@@ -10241,12 +10235,6 @@
       syncAvatar3DControls();
       lastFrame = 0;
     };
-    document.getElementById('rotate3DButton').addEventListener('click', () => {
-      avatar3dRotateMode = !avatar3dRotateMode;
-      syncAvatar3DControls();
-      closeRailPickers();
-      notify(avatar3dRotateMode ? 'Drag Tia to rotate · Pinch to resize' : 'Drag Tia to move · Two-finger swipe to rotate');
-    });
     document.getElementById('reset3DButton').addEventListener('click', () => {
       closeRailPickers();
       void resetAvatar3DView();
@@ -10362,7 +10350,9 @@
         screenY: event.screenY,
         at: performance.now(),
         talking: false,
-        rotating: Boolean(avatar3d && (event.altKey || avatar3dRotateMode)),
+        // A plain drag always places Tia. Rotation belongs to the two-finger
+        // wheel gesture or this explicit modifier, never a latched UI mode.
+        rotating: Boolean(avatar3d && event.altKey),
         startOrbit: avatar3d ? { ...avatar3d.orbit } : null,
         positionAdjusting: false,
         startOffset: { ...(!root.classList.contains('chat-mode') && shellState.desktopCloseUp
@@ -10773,11 +10763,6 @@
         else if (mode === 'idle') void selectEdgeIdleMode();
         else if (mode === 'moves') void selectMoveMode();
         else if (mode === 'reset-3d') void resetAvatar3DView();
-        else if (mode === 'rotate-3d' && avatar3d) {
-          avatar3dRotateMode = !avatar3dRotateMode;
-          syncAvatar3DControls();
-          notify(avatar3dRotateMode ? 'Drag to rotate · Pinch to resize' : 'Drag to move · Two-finger swipe to rotate');
-        }
       });
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
       if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(toggleLiveTalk);

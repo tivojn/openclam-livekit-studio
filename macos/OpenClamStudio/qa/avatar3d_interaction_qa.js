@@ -9,17 +9,17 @@ const helper = name => {
   assert.ok(start >= 0, name);
   return page.slice(start, page.indexOf('\n    };', start) + 7);
 };
-function gestures(chat) {
+function gestures(chat, desktopCloseUp = false) {
   const listeners = new Map(), calls = [], timers = new Map(); let timer = 0;
   const canvas = { style: { opacity: '1' }, setPointerCapture: id => calls.push(['capture', id]),
     addEventListener: (type, cb) => listeners.set(type, cb) };
   const s = { canvas, console, avatar3d: { orbit: { yaw: 0, pitch: 0 }, setOrbit(value) { this.orbit = value; } },
-    avatar3dRotateMode: false, avatar3dOrbitUntil: 0, avatarOrbitGesture: false, avatarOrbitTimer: 0,
+    avatar3dOrbitUntil: 0, avatarOrbitGesture: false, avatarOrbitTimer: 0,
     ready: true, avatarHit: false, dragging: false, canvasGesture: null, avatarTapTimer: 0,
     avatarZoomGesture: null, avatarZoomSettleTimer: 0, lastFrame: 1,
     root: { classList: { contains: value => value === 'chat-mode' && chat, add() {}, remove() {} } },
     interactionLayer: 'thread', chatWorkspace: { contains: () => true }, getSelection: () => null,
-    shellState: { pet: { enabled: true, opacity: 1, zoom: .6, roam: false } },
+    shellState: { desktopCloseUp, pet: { enabled: true, opacity: 1, zoom: .6, roam: false } },
     chatAvatarOffset: { x: 0, y: 0 }, desktopCloseUpOffset: { x: 0, y: 0 },
     manualMotionKind: null, manualMotionStartedAt: 0, chatWalkState: null,
     markActivity() {}, updateHit: () => calls.push(['hit']), handleGlobalPointer() {},
@@ -84,6 +84,32 @@ for (const chat of [false, true]) {
       assert.equal(control.prevented, undefined, 'text and controls retain their gestures');
       assert.equal(s.canvasGesture, null);
     }
+  }
+}
+// Swiping (including its settling timer) and modifier-dragging must never
+// change the meaning of the next ordinary drag on any placement surface.
+for (const [chat, closeUp] of [[true, false], [false, false], [false, true]]) {
+  const { s, calls, event, move } = gestures(chat, closeUp);
+  for (const rotation of ['swipe', 'option-drag']) {
+    if (rotation === 'swipe') s.handleAvatar3DWheel(event({ deltaX: 20, deltaY: 30, deltaMode: 0 }));
+    else {
+      s.beginCanvasGesture(event({ altKey: true }));
+      move(event({ clientX: 75, clientY: 65 }));
+      s.endCanvasGesture(event());
+    }
+    const orbit = { ...s.avatar3d.orbit };
+    const offset = { ...(closeUp ? s.desktopCloseUpOffset : s.chatAvatarOffset) };
+    const nativeMoves = calls.filter(c => c[0] === 'move').length;
+    s.beginCanvasGesture(event());
+    assert.equal(s.canvasGesture.rotating, false, 'rotation never latches onto the next plain drag');
+    move(event({ clientX: 75, clientY: 65, screenX: 175, screenY: 165 }));
+    assert.deepEqual({ ...s.avatar3d.orbit }, orbit, 'single-finger dragging preserves body orientation');
+    if (chat || closeUp) {
+      const actual = closeUp ? s.desktopCloseUpOffset : s.chatAvatarOffset;
+      assert.deepEqual({ ...actual }, { x: offset.x + 25, y: offset.y + 15 }, 'plain drag moves Tia after rotation');
+    } else assert.equal(calls.filter(c => c[0] === 'move').length, nativeMoves + 1, 'plain drag moves the desktop avatar');
+    s.endCanvasGesture(event());
+    assert.equal(s.dragging, false, 'dropping releases placement');
   }
 }
 (async () => {

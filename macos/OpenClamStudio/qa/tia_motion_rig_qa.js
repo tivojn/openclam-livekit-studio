@@ -101,6 +101,40 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
   assert(maxEye<1,id+' maintains optical eye contact: '+maxEye);
   report.regressions.push({id,cameraFocus:true,maxHeadError:maxHead,maxEyeError:maxEye});
  }
+ // Sample three full locomotion loops, including interpolation and the seam.
+ // The feet need clearance in the pelvis frame even while the body turns;
+ // world-X alone gives false collisions when one foot is farther forward.
+ for(const id of ['walk','hello-run']){
+  const data=JSON.parse(fs.readFileSync(path.join(afterDir,id+'.json')));
+  if(!data.retargeting?.gaitClearance)continue;
+  motionDir=afterDir;avatar.motion.stop({immediate:true});time=0;
+  avatar.setOrbit({yaw:0,pitch:0});
+  avatar.options.select({body:'',followCursor:'false',playTransitions:'false'},0);avatar.options.update(1000);
+  time=1000;await avatar.motion.play(id,{now:time,loop:true});
+  const duration=(data.frames.length-1)/data.fps*1000, rows=[];
+  const point=name=>byName.get(name).getWorldPosition(new THREE.Vector3());
+  for(time=1400;time<1000+3*duration;time+=1000/60){
+   avatar.render(time,{breathe:1,gaze:{x:0,y:0}});
+   const axis=new THREE.Vector3(1,0,0).applyQuaternion(delta('root.x'));axis.y=0;axis.normalize();
+   const left=point('foot.l'),right=point('foot.r');
+   const torso=point('spine_05.x').sub(point('root.x'));
+   const lean=Math.atan2(torso.z,torso.y)*180/Math.PI;
+   const knees=['l','r'].map(side=>{
+    const hip=point('c_thigh_stretch.'+side),knee=point('c_leg_stretch.'+side),ankle=point('foot.'+side);
+    return 180-hip.sub(knee).angleTo(ankle.sub(knee))*180/Math.PI;
+   });
+   rows.push({gap:left.clone().sub(right).dot(axis),distance:left.distanceTo(right),lean,knees});
+  }
+  const minimumGap=Math.min(...rows.map(r=>r.gap)),minimumDistance=Math.min(...rows.map(r=>r.distance));
+  const leanRange=[Math.min(...rows.map(r=>r.lean)),Math.max(...rows.map(r=>r.lean))];
+  const kneeRanges=[0,1].map(side=>[Math.min(...rows.map(r=>r.knees[side])),Math.max(...rows.map(r=>r.knees[side]))]);
+  assert(minimumGap>.12,id+' feet stay on separate sides throughout the loop: '+minimumGap);
+  assert(minimumDistance>.14,id+' boot centers retain physical clearance: '+minimumDistance);
+  for(const [min,max] of kneeRanges)assert(max-min>35&&max>60&&max<100,id+' knees continue flexing instead of locking');
+  if(id==='walk')assert(leanRange[0]>-4.5&&leanRange[1]<5,'walking remains upright');
+  else assert(leanRange[0]>5&&leanRange[1]<22,'running leans forward, never backward');
+  report.regressions.push({id,gaitClearance:true,minimumGap,minimumDistance,leanRange,kneeRanges,samples:rows.length});
+ }
  run('avatar3d-companion.js','globalThis.Stage=AvatarStudioStage;globalThis.Controller=CompanionController');
  for(const id of ['walk','hello-run']){
   avatar.motion.stop({immediate:true});time=0;avatar.options.select({body:'',followCursor:'false',playTransitions:'false'},0);avatar.options.update(1000);

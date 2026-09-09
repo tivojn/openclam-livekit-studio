@@ -21,7 +21,10 @@ for key in ('blend', 'model', 'motion', 'output', 'name'):
     parser.add_argument('--' + key, required=True)
 parser.add_argument('--preset', action='store_true', help='Transfer a Meshy preset rig and preserve airborne motion')
 parser.add_argument('--in-place', action='store_true', help='Remove net locomotion; preserve weight shift for screen-space walking')
+parser.add_argument('--gait-clearance', action='store_true', help='Calibrate locomotion posture and keep the feet in separate anatomical lanes')
 args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
+if args.gait_clearance and not args.in_place:
+    parser.error('--gait-clearance requires --in-place locomotion')
 bpy.ops.wm.open_mainfile(filepath=args.blend)
 scene = bpy.context.scene
 arm = bpy.data.objects['Fem-A_Tia_RIG']
@@ -124,6 +127,60 @@ for side, prefix in [('l', 'L'), ('r', 'R')]:
     for control in ['c_foot_ik.', 'c_hand_ik.']:
         arm.pose.bones[control + side]['ik_fk_switch'] = 1.0
 
+def calibrate_gait(pose_world):
+    # A preset's bind pose may already be leaning/running. Rotation deltas
+    # alone discard that lean; use the donor's actual pelvis-to-chest vector.
+    # Correct the upper-body controls together so arms/head keep their motion.
+    evaluated = arm.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    current = evaluated.pose.bones['spine_05.x'].head - evaluated.pose.bones['root.x'].head
+    desired = arm.matrix_world.inverted().to_3x3() @ (pose_world['Spine3'].translation - pose_world['Pelvis'].translation)
+    correction = current.normalized().rotation_difference(desired.normalized())
+    upper = [(target, arm.pose.bones[target].matrix.copy()) for target, source in mapping
+             if source.startswith('Spine') or source in ('Neck', 'Head')
+             or any(source.endswith('_' + part) for part in ('Collar', 'Shoulder', 'Elbow', 'Wrist'))]
+    for target, original in upper:
+        pb = arm.pose.bones[target]
+        pb.matrix = Matrix.LocRotScale(pb.matrix.translation, correction @ original.to_quaternion(), original.to_scale())
+        bpy.context.view_layer.update()
+
+    # Hello Run's donor crosses the ankles. Proportional FK transfer preserves
+    # that crossing, but Tia's boots then intersect. Solve only the necessary
+    # lateral clearance with the original limb lengths and bend direction.
+    hips = [arm.pose.bones['c_thigh_fk.' + side].matrix.translation.copy() for side in ('l', 'r')]
+    center = (hips[0] + hips[1]) * .5
+    lateral = hips[0] - hips[1]
+    lateral.z = 0
+    half_width = lateral.length * .4
+    lateral.normalize()
+    for side, sign in [('l', 1), ('r', -1)]:
+        thigh, shin, foot = [arm.pose.bones[name + '.' + side] for name in ('c_thigh_fk', 'c_leg_fk', 'c_foot_fk')]
+        originals = [pb.matrix.copy() for pb in (thigh, shin, foot)]
+        hip, knee, ankle = [m.translation.copy() for m in originals]
+        gap = sign * (ankle - center).dot(lateral) - half_width
+        # Smooth max keeps the constraint's entry/exit continuous in the clip.
+        correction_distance = .5 * (math.sqrt(gap * gap + .005 ** 2) - gap)
+        goal = ankle + lateral * (sign * correction_distance)
+        upper_length, lower_length = (knee - hip).length, (ankle - knee).length
+        direction = (goal - hip).normalized()
+        reach = min((goal - hip).length, upper_length + lower_length - .0005)
+        goal = hip + direction * reach
+        along = (upper_length ** 2 - lower_length ** 2 + reach ** 2) / (2 * reach)
+        bend = knee - hip
+        bend -= direction * bend.dot(direction)
+        if bend.length < 1e-6:
+            bend = Vector((0, -1, 0)); bend -= direction * bend.dot(direction)
+        bend.normalize()
+        new_knee = hip + direction * along + bend * math.sqrt(max(0, upper_length ** 2 - along ** 2))
+        swing = (knee - hip).normalized().rotation_difference((new_knee - hip).normalized())
+        thigh.matrix = Matrix.LocRotScale(hip, swing @ originals[0].to_quaternion(), originals[0].to_scale())
+        bpy.context.view_layer.update()
+        actual_knee, actual_ankle = shin.matrix.translation.copy(), foot.matrix.translation.copy()
+        swing = (actual_ankle - actual_knee).normalized().rotation_difference((goal - actual_knee).normalized())
+        shin.matrix = Matrix.LocRotScale(actual_knee, swing @ shin.matrix.to_quaternion(), originals[1].to_scale())
+        bpy.context.view_layer.update()
+        foot.matrix = Matrix.LocRotScale(foot.matrix.translation, originals[2].to_quaternion(), originals[2].to_scale())
+        bpy.context.view_layer.update()
+
 with open(args.model, 'rb') as f:
     f.seek(12)
     length, kind = struct.unpack('<II', f.read(8))
@@ -217,6 +274,8 @@ for frame_index,frame in enumerate(frame_times):
             position += travel*travel_scale
         pb.matrix = Matrix.LocRotScale(position, rotation, control_rest[target].to_scale())
         bpy.context.view_layer.update()
+    if args.gait_clearance:
+        calibrate_gait(pose_world)
     # Keep the supporting foot on the original floor. Retargeted leg lengths
     # differ from the donor; adjust the root, never stretch the geometry.
     deps = bpy.context.evaluated_depsgraph_get()
@@ -267,9 +326,10 @@ if args.in_place and forward_speed < .1:
         speed_source = 'supporting-foot'
 result = {'version': 1, 'id': args.name, 'label': args.name.title(),
           'source': ('Meshy preset' if args.preset else 'Meshy text-to-motion') + ', retargeted to the original Tia rig',
-          'retargeting': {'version': 3, 'pelvisTranslation': 'xyz', 'travelScale': round(travel_scale, 7), 'inPlace': args.in_place,
+          'retargeting': {'version': 4 if args.gait_clearance else 3, 'pelvisTranslation': 'xyz', 'travelScale': round(travel_scale, 7), 'inPlace': args.in_place,
                           'forwardSpeed': round(forward_speed,7) if args.in_place else 0, 'forwardSpeedSource': speed_source,
                           'headReference': 'torso', 'invalidHeadTrack': 'smooth-fallback',
+                          'gaitClearance': args.gait_clearance,
                           'footBasis': 'anatomical-ankle-and-toe'},
           'fps': output_fps, 'bones': bone_names, 'frames': frames,
           'bounds': [[round(v-.12,5) for v in envelope_min], [round(v+.12,5) for v in envelope_max]],

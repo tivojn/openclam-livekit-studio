@@ -2786,7 +2786,7 @@ function activeAvatarWindow() {
 }
 
 function requestAvatarMotion(mode) {
-  if (!['walk', 'idle', 'moves', 'rotate-3d', 'reset-3d'].includes(mode)) return;
+  if (!['walk', 'idle', 'moves', 'reset-3d'].includes(mode)) return;
   const owner = activeAvatarWindow();
   if (owner && !owner.isDestroyed()) post(owner, 'openclam:display-mode-request', mode);
 }
@@ -2851,8 +2851,8 @@ function showPetMenu() {
     ...(avatarRendererKinds.get(owner.webContents) === '3d' ? [
       { name: 'Wardrobe & poses…', click: () => showAvatarOptionsMenu(owner) },
       { name: 'Dynamic motions…', click: () => showAvatarMotionMenu(owner) },
-      { name: 'Rotate 3D view', hint: 'two-finger swipe · ⌥ drag',
-        click: () => requestAvatarMotion('rotate-3d') },
+      { name: 'Drag to move · Pinch to resize', enabled: false },
+      { name: 'Two-finger swipe or ⌥ drag to rotate', enabled: false },
       { name: 'Reset 3D view', hint: 'front · default size and position',
         click: () => requestAvatarMotion('reset-3d') },
       { type: 'separator' },
