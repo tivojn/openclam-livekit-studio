@@ -72,3 +72,19 @@ Mac transcript validator accepted their complete request, OpenClaw returned a
 kung-fu demonstration reply, and LiveKit delivered matching speech. Regression
 tests reject a suffix-only request and preserve explicit claimed-turn and
 interruption boundaries without relying on packet timing.
+
+## iPhone launch follow-up (build 78)
+
+The build 77 TestFlight launch crash was symbolicated using the matching archive
+UUID. It is a main-thread stack-guard fault in Swift's type metadata decoder,
+called from `ConversationView.threadContent(in:)`, before Live Talk begins.
+Apple's reports show the same failure in build 75 on iOS 27 beta. The timeline
+now places each heterogeneous row behind a concrete `ConversationThreadElement`
+boundary; extracting helpers that still return `some View` does not bound that
+recursive metadata graph. Message and email-review IDs stay outside the boundary
+so lazy layout, scroll placement, and review navigation remain intact.
+
+The release audit includes repeated cold launches of the real app, sidebar and
+settings access, and conversation placement at the largest accessibility size.
+The available simulator runs iOS 26.5; the affected physical iOS 27 beta phone
+is not connected to Xcode, so verification on that device remains necessary.

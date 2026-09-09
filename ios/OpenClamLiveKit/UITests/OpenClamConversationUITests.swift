@@ -25,6 +25,28 @@ final class OpenClamConversationUITests: XCTestCase {
         app = nil
     }
 
+    func testColdLaunchRestoresConversationAndRemainsResponsive() throws {
+        // Exercise the real conversation LazyVStack in a new process each time.
+        // A unit-test host can prewarm SwiftUI metadata and hide launch failures.
+        app.buttons["Open sidebar"].tap()
+        app.buttons["New chat"].tap()
+        XCTAssertTrue(app.navigationBars["New chat"].waitForExistence(timeout: 5))
+        for attempt in 1...3 {
+            app.terminate()
+            app.launch()
+            XCTAssertTrue(app.buttons["Open sidebar"].waitForExistence(timeout: 10))
+            XCTAssertEqual(app.state, .runningForeground)
+            XCTAssertTrue(app.descendants(matching: .any)[
+                "openclam-conversation-thread"
+            ].firstMatch.waitForExistence(timeout: 5))
+            app.buttons["Open sidebar"].tap()
+            XCTAssertTrue(app.textFields["Search chats"].waitForExistence(timeout: 5))
+            app.buttons["New chat"].tap()
+            XCTAssertTrue(app.navigationBars["New chat"].waitForExistence(timeout: 5))
+            capture("cold-launch-\(attempt)")
+        }
+    }
+
     func testSidebarNewChatAndSettingsRemainReachable() throws {
         app.buttons["Open sidebar"].tap()
 
@@ -651,7 +673,9 @@ final class OpenClamConversationUITests: XCTestCase {
         for index in 1...5 {
             sendLocalMessage("Thank you — long history turn \(index).")
         }
-        let finalTurn = "Thank you for checking this deliberately long final message at the largest accessibility text size. It should stay on the trailing side and begin near the top while leaving room below for the answer."
+        // Keep this a local acknowledgement; the word "message" in the old
+        // fixture invoked SMS drafting and a contacts prompt during a layout test.
+        let finalTurn = "Thank you. This is a deliberately long acknowledgement with enough words to wrap over several lines at the largest font size, while leaving space underneath for the next answer."
         sendLocalMessage(finalTurn)
 
         let thread = app.scrollViews["openclam-conversation-thread"]
@@ -666,10 +690,15 @@ final class OpenClamConversationUITests: XCTestCase {
             app.frame.midX,
             "The submitted user bubble must remain aligned to the trailing side."
         )
-        XCTAssertGreaterThanOrEqual(latestUser.frame.minY, thread.frame.minY - 4)
+        // The transparent chat scroll surface extends underneath navigation.
+        // Measure against its visible edge, not its offscreen accessibility frame.
+        let visibleThreadTop = max(
+            thread.frame.minY, app.navigationBars.firstMatch.frame.maxY
+        )
+        XCTAssertGreaterThanOrEqual(latestUser.frame.minY, visibleThreadTop - 4)
         XCTAssertLessThanOrEqual(
             latestUser.frame.minY,
-            thread.frame.minY + 128,
+            visibleThreadTop + 128,
             "The newest submitted turn must be placed near the top of the visible thread."
         )
 
@@ -679,7 +708,7 @@ final class OpenClamConversationUITests: XCTestCase {
         XCTAssertTrue(
             !oldGreeting.exists
                 || !oldGreeting.isHittable
-                || oldGreeting.frame.maxY <= thread.frame.minY,
+                || oldGreeting.frame.maxY <= visibleThreadTop,
             "Older entries must be pushed above the visible thread after a new send."
         )
         capture("dynamic-type-user-turn-top-anchor")

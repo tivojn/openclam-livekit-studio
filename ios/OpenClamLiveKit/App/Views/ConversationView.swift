@@ -762,55 +762,83 @@ struct ConversationView: View {
             }
 
             ForEach(conversation.liveTalkStreamingMessages) { message in
-                liveTalkStreamingThreadRow(
-                    message,
-                    viewportWidth: viewport.size.width
-                )
+                ConversationThreadElement {
+                    liveTalkStreamingThreadRow(
+                        message,
+                        viewportWidth: viewport.size.width
+                    )
+                }
+                .id(message.id)
             }
 
             if conversation.messages.count == 1,
                !dynamicTypeSize.isAccessibilitySize {
-                suggestionRow
+                ConversationThreadElement { suggestionRow }
             }
             if let activity = conversation.remoteAgentActivity {
-                remoteAgentActivityCard(activity)
+                ConversationThreadElement { remoteAgentActivityCard(activity) }
             }
             if conversation.isWorking,
                conversation.streamingAssistantReply?.isEmpty == false {
-                workingRow
+                ConversationThreadElement { workingRow }
             }
             if conversation.screenshotData != nil || conversation.pronunciation != nil {
-                pronunciationCard
+                ConversationThreadElement { pronunciationCard }
             }
-            if !conversation.venueResults.isEmpty { venueCard }
-            if conversation.pendingNearbySearchQuery != nil { pendingNearbySearchCard }
+            if !conversation.venueResults.isEmpty {
+                ConversationThreadElement { venueCard }
+            }
+            if conversation.pendingNearbySearchQuery != nil {
+                ConversationThreadElement { pendingNearbySearchCard }
+            }
             if conversation.contactAgentSession.status != .idle {
-                ContactAgentCard(
-                    session: conversation.contactAgentSession,
-                    providerID: aiConfiguration.effectiveSettings.llm.provider,
-                    providerModel: aiConfiguration.effectiveSettings.model,
-                    onSharedReply: { conversation.recordFeatureReply($0) }
-                )
+                ConversationThreadElement {
+                    ContactAgentCard(
+                        session: conversation.contactAgentSession,
+                        providerID: aiConfiguration.effectiveSettings.llm.provider,
+                        providerModel: aiConfiguration.effectiveSettings.model,
+                        onSharedReply: { conversation.recordFeatureReply($0) }
+                    )
+                }
             }
-            EventKitAgentCard(session: conversation.eventKitAgentSession)
-            if !conversation.nearbyPlaceResults.isEmpty { nearbyPlacesCard }
-            if !conversation.replySuggestions.isEmpty { replySuggestionsCard }
-            if conversation.researchRequest != nil { researchCard }
-            if conversation.pendingSMS != nil { messageDraftCard }
+            ConversationThreadElement { EventKitAgentCard(session: conversation.eventKitAgentSession) }
+            if !conversation.nearbyPlaceResults.isEmpty {
+                ConversationThreadElement { nearbyPlacesCard }
+            }
+            if !conversation.replySuggestions.isEmpty {
+                ConversationThreadElement { replySuggestionsCard }
+            }
+            if conversation.researchRequest != nil {
+                ConversationThreadElement { researchCard }
+            }
+            if conversation.pendingSMS != nil {
+                ConversationThreadElement { messageDraftCard }
+            }
             if conversation.pendingEmail != nil {
-                emailDraftCard.id(ConversationReviewRevealPolicy.pendingEmailAnchorID)
+                ConversationThreadElement { emailDraftCard }
+                    .id(ConversationReviewRevealPolicy.pendingEmailAnchorID)
             }
             if let proposal = conversation.pendingAppHandoffProposal {
-                appHandoffCard(proposal)
+                ConversationThreadElement { appHandoffCard(proposal) }
             }
-            if conversation.proposedCommand != nil { proposedCommandCard }
-            if conversation.rideDestination != nil { rideCard }
-            if let confirmedActionNotice { confirmedActionReceipt(confirmedActionNotice) }
-            if let prompt = conversation.pendingShortcutPrompt { pendingSiriPromptCard(prompt) }
+            if conversation.proposedCommand != nil {
+                ConversationThreadElement { proposedCommandCard }
+            }
+            if conversation.rideDestination != nil {
+                ConversationThreadElement { rideCard }
+            }
+            if let confirmedActionNotice {
+                ConversationThreadElement { confirmedActionReceipt(confirmedActionNotice) }
+            }
+            if let prompt = conversation.pendingShortcutPrompt {
+                ConversationThreadElement { pendingSiriPromptCard(prompt) }
+            }
             if let submission = conversation.pendingScreenContextSubmission {
-                pendingScreenContextComposerCard(submission)
+                ConversationThreadElement { pendingScreenContextComposerCard(submission) }
             }
-            if !stagedAttachments.isEmpty || isLoadingAttachments { attachmentTray }
+            if !stagedAttachments.isEmpty || isLoadingAttachments {
+                ConversationThreadElement { attachmentTray }
+            }
             if threadPositioning.anchoredUserMessageID != nil {
                 Color.clear
                     .frame(
@@ -835,7 +863,9 @@ struct ConversationView: View {
         _ message: ConversationMessage,
         viewportWidth: CGFloat
     ) -> some View {
-        messageBubble(message, viewportWidth: viewportWidth)
+        ConversationThreadElement {
+            messageBubble(message, viewportWidth: viewportWidth)
+        }
             .padding(
                 .top,
                 message.id == threadPositioning.anchoredUserMessageID
@@ -895,7 +925,6 @@ struct ConversationView: View {
                 ? "openclam-live-talk-user-transcript"
                 : "openclam-live-talk-agent-transcript"
         )
-        .id(message.id)
     }
 
     @ViewBuilder

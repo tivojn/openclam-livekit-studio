@@ -1,4 +1,4 @@
-# OpenClam Studio 1.0.27 / iOS 1.0.6 (77)
+# OpenClam Studio 1.0.27 / iOS 1.0.6 (78)
 
 Live Talk adds **Connected OpenClaw** as a conversation source on Mac and iPhone.
 Every spoken turn uses the agent selected in the chat, with its existing model,
@@ -23,3 +23,9 @@ Paused speech fragments remain one complete request. Transcript validation uses
 conversation boundaries instead of a 1.2-second packet gap, fixing rejected
 requests such as “Can you do a … kung fu punch?” Rapid follow-ups begin after
 an explicitly claimed request, even before its assistant audio starts.
+
+The iPhone update also fixes a launch crash observed in builds 75 and 77 on
+an iPhone Air running iOS 27 beta. The main thread exhausted its stack while
+SwiftUI resolved the conversation timeline's deeply nested generic view types.
+Concrete, type-erased row boundaries keep each card's metadata separate while
+preserving message identity and scroll anchors. No chat data reset is required.

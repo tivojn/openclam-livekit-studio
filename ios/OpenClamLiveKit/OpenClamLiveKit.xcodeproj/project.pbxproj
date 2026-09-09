@@ -30,6 +30,7 @@
 		16939C3FF3CC5F3F4D059C82 /* PrepareScreenContextIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A849614AD3532D1F9283D4D5 /* PrepareScreenContextIntent.swift */; };
 		176CD78411141FA4FB3E863C /* ConversationAttachmentDescriptor+AgentAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B42DB8D9C2E097F7675C16BB /* ConversationAttachmentDescriptor+AgentAttachment.swift */; };
 		177D436AC89B09442D73AF5B /* OpenClamAvatarStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7EA90413EB570E0098B4467 /* OpenClamAvatarStoreTests.swift */; };
+		17F9EA9A274F5A1493D1B554 /* ConversationThreadElement.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D6A3CC1EEE63E0B64E2F0B /* ConversationThreadElement.swift */; };
 		1ACF040C181B41A5B600AFDF /* AvatarAgentSaveDismissUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FF8C2ED54A3B4E23F09FF5 /* AvatarAgentSaveDismissUITests.swift */; };
 		1AE3846DB4C7291D47C2DA99 /* ScreenContextIntakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C78B0B2E0DEB18AA5FA3663 /* ScreenContextIntakeTests.swift */; };
 		1C806A12966E3B48093617F9 /* GLTFLoader.js in Resources */ = {isa = PBXBuildFile; fileRef = C356E20518F07BE8D97D5942 /* GLTFLoader.js */; };
@@ -395,6 +396,7 @@
 		9DEFC496CDA3A4D300800F02 /* AppAliasRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAliasRegistry.swift; sourceTree = "<group>"; };
 		9EC9FE3AB2F41DB79928C63E /* ios-light-motion-v3-golden.avtr */ = {isa = PBXFileReference; path = "ios-light-motion-v3-golden.avtr"; sourceTree = "<group>"; };
 		A0D4CB9DBE807DB1068E1002 /* AIConfigurationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIConfigurationModel.swift; sourceTree = "<group>"; };
+		A0D6A3CC1EEE63E0B64E2F0B /* ConversationThreadElement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationThreadElement.swift; sourceTree = "<group>"; };
 		A1335C17C1314ACF2879401F /* ContextRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextRootView.swift; sourceTree = "<group>"; };
 		A158ED3D3A3DFD8BAF1DEE03 /* LiveTalkBrokerTokenSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTalkBrokerTokenSource.swift; sourceTree = "<group>"; };
 		A17655AC169B9269BC1A2302 /* ScreenVoicePTTTranscription.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVoicePTTTranscription.swift; sourceTree = "<group>"; };
@@ -682,6 +684,7 @@
 				B1E8C3A7126F7FDF4796B888 /* CapabilitiesView.swift */,
 				5B594FF8B05E358FB39B710C /* ContactAgentCard.swift */,
 				A1335C17C1314ACF2879401F /* ContextRootView.swift */,
+				A0D6A3CC1EEE63E0B64E2F0B /* ConversationThreadElement.swift */,
 				5EDF5045565CED771BE612DD /* ConversationView.swift */,
 				09D7C04EA36D718249FC1122 /* DashboardView.swift */,
 				E2769F0779F8B5C693E59EE1 /* EventKitAgentCard.swift */,
@@ -1329,6 +1332,7 @@
 				3DD74E4AD0A2B150FF83E43D /* ConversationHistoryStore.swift in Sources */,
 				99E8361810AAEDDF81D9629E /* ConversationModel.swift in Sources */,
 				7DBCAD92A8B20E9125775BD9 /* ConversationModels.swift in Sources */,
+				17F9EA9A274F5A1493D1B554 /* ConversationThreadElement.swift in Sources */,
 				1085B41D84B73E3210BFE347 /* ConversationView.swift in Sources */,
 				6AEC1D4610AEEB6043AF67D0 /* DashboardView.swift in Sources */,
 				3FA1809E607334447724D52D /* DeviceActionShortcut.swift in Sources */,
@@ -1446,7 +1450,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1530,7 +1534,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1548,7 +1552,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1619,7 +1623,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1640,7 +1644,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1678,7 +1682,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KeyboardExtension/OpenClamKeyboard.entitlements;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = KeyboardExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1765,7 +1769,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = ScreenVoicePTTWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1789,7 +1793,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/OpenClamLiveKit.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
