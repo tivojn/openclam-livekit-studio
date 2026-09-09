@@ -71,5 +71,16 @@ assert.equal(boneOptions.current[1].q.z,0,'hand layer does not rotate the head')
 boneOptions.current=[grip,idle];boneOptions.selection={prop:'pistol'};
 await handPlayer.play('wave',{now:1000});handPlayer.update(1400);
 assert(Math.abs(boneOptions.current[0].q.z-grip.q.z)<1e-6,'held prop keeps user-selected finger transform');
+// A closed walking cycle must keep its full last support step, rather than
+// spending its final 200 ms crossfading prematurely to the first frame.
+const cyclePlayer=new s.Player(options);
+const cycle={...document,fps:10,frames:Array.from({length:11},()=>rows(new THREE.Matrix4())),retargeting:{loopBlendSeconds:0}};
+s.fetch=async url=>({ok:true,json:async()=>String(url).endsWith('library.json')?{version:1,clips:[{id:'wave',file:'wave.json'}]}:cycle});
+await cyclePlayer.load('/library.json');
+await cyclePlayer.play('wave',{now:0,loop:true});
+let samples=[];cyclePlayer.frame=(_clip,seconds)=>{samples.push(seconds);return [idle];};
+cyclePlayer.update(950);assert.deepEqual(samples,[9,10]);
+cyclePlayer.active.clip.loopBlendSeconds=.1;samples=[];cyclePlayer.update(950);
+assert.deepEqual(samples,[9,10,0],'cropped cycles retain their explicit seam blend');
 console.log('3D motion: clip lifecycle, cancellation, original attachment, affine transforms, rig validation and local-only loading passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

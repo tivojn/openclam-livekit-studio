@@ -40,6 +40,7 @@ import openclaw_acp
 import livekit_bridge as LK
 import avatar_package as AVTR
 import avatar3d as AVATAR3D
+import appearance as APPEARANCE
 import align
 from studio import rig, body as body_authoring
 
@@ -3225,6 +3226,81 @@ async def api_assets(path: str):
         if manifest:
             return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
     return FileResponse(full, headers={"Cache-Control": "no-store"})
+
+
+def _appearance_paths():
+    slug=active_slug()
+    if not slug or not AVATAR3D.is_3d(reg().read_manifest(slug)):
+        raise HTTPException(409,"Choose a 3D avatar first.")
+    folder=os.path.join(reg().AVATARS,slug)
+    return os.path.join(folder,"appearance"),os.path.join(folder,"model.glb")
+
+
+@app.get("/api/avatar/appearance")
+async def api_appearance_index():
+    root,model=_appearance_paths()
+    value=APPEARANCE.index(root)
+    value["baseURL"]="/files/"+active_slug()+"/appearance/"
+    return JSONResponse(value,headers={"Cache-Control":"no-store"})
+
+
+@app.post("/api/avatar/appearance/import")
+async def api_appearance_import(archive:UploadFile=File(...)):
+    root,model=_appearance_paths()
+    descriptor,temporary=tempfile.mkstemp(prefix=".appearance-",suffix=".oclook")
+    try:
+        with os.fdopen(descriptor,"wb")as output:
+            count=0
+            while chunk:=await archive.read(1024*1024):
+                count+=len(chunk)
+                if count>APPEARANCE.MAX_BYTES:raise APPEARANCE.AppearanceError("Appearance pack is too large.")
+                output.write(chunk)
+        result=await asyncio.to_thread(APPEARANCE.install,temporary,root,model)
+        return {"installed":result["label"]}
+    except Exception as error:
+        raise HTTPException(422,str(error) if isinstance(error,APPEARANCE.AppearanceError) else "Invalid appearance pack.")from error
+    finally:
+        await archive.close();_discard_temporary(temporary)
+
+
+class AppearanceDownloadRequest(BaseModel):
+    url:str=Field(min_length=8,max_length=4096)
+
+
+@app.post("/api/avatar/appearance/download")
+async def api_appearance_download(body:AppearanceDownloadRequest):
+    root,model=_appearance_paths()
+    async def stream():
+        loop=asyncio.get_running_loop();events=asyncio.Queue();cancelled=threading.Event()
+        def emit(value):loop.call_soon_threadsafe(events.put_nowait,value)
+        def worker():
+            descriptor,temporary=tempfile.mkstemp(prefix=".appearance-download-",suffix=".oclook");os.close(descriptor)
+            try:
+                APPEARANCE.download(body.url,temporary,cancelled.is_set,lambda received,total:emit({"received":received,"total":total}))
+                if cancelled.is_set():return
+                emit({"status":"Verifying and installing…"})
+                value=APPEARANCE.install(temporary,root,model)
+                emit({"installed":value["label"],"done":True})
+            except Exception as error:
+                emit({"error":str(error) if isinstance(error,APPEARANCE.AppearanceError) else "Download failed. Your installed avatar is unchanged.","done":True})
+            finally:_discard_temporary(temporary)
+        task=asyncio.create_task(asyncio.to_thread(worker))
+        try:
+            while True:
+                value=await events.get();yield json.dumps(value)+"\n"
+                if value.get("done"):break
+        finally:
+            cancelled.set()
+            # The worker observes cancellation between chunks and owns cleanup.
+            task.add_done_callback(lambda done:done.exception() if not done.cancelled() else None)
+    return StreamingResponse(stream(),media_type="application/x-ndjson")
+
+
+@app.delete("/api/avatar/appearance/{pack_id}")
+async def api_appearance_remove(pack_id:str):
+    root,_=_appearance_paths()
+    try:return await asyncio.to_thread(APPEARANCE.remove,root,pack_id)
+    except APPEARANCE.AppearanceError as error:raise HTTPException(422,str(error))from error
 
 
 # ---------------------------------------------------------------- settings

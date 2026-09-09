@@ -54,3 +54,7 @@ ios/OpenClamLiveKit/Config/AgentConnector.local.xcconfig
 xcuserdata/
 config.env
 cloudflared.yml
+
+# Local development environments may be directory symlinks.
+/macos/OpenClamStudio/.venv
+/macos/OpenClamStudio/models

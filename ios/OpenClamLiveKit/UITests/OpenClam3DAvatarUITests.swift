@@ -23,6 +23,79 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         app = nil
     }
 
+    func testAppearanceLightingAndFilesImportFlow() throws {
+        app.terminate()
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed)
+        openWardrobe()
+        let panel = app.buttons["openclam-appearance-panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 8)); panel.tap()
+        let lighting = app.descendants(matching: .any)["openclam-3d-choice-lighting"]
+        for _ in 0 ..< 6 where !lighting.exists || !lighting.isHittable { app.swipeUp() }
+        XCTAssertTrue(lighting.waitForExistence(timeout: 8))
+        lighting.tap(); app.buttons["Studio portrait"].tap()
+        let expression = app.descendants(matching: .any)["openclam-3d-choice-expression"]
+        for _ in 0 ..< 4 where !expression.exists || !expression.isHittable { app.swipeUp() }
+        XCTAssertTrue(expression.exists); expression.tap()
+        let original = app.buttons["Brows · angry"]
+        for _ in 0 ..< 6 where !original.exists || !original.isHittable { app.swipeUp() }
+        XCTAssertTrue(original.exists); original.tap()
+        XCTAssertTrue(expression.label.contains("Brows · angry"))
+        sleep(2)
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        capture("appearance-original-expression")
+        expression.tap(); app.buttons["Automatic · conversation"].tap()
+        capture("appearance-studio-controls")
+        let assets = app.buttons["openclam-appearance-assets"]
+        for _ in 0 ..< 6 where !assets.exists || !assets.isHittable { app.swipeDown() }
+        XCTAssertTrue(assets.exists && assets.isHittable)
+        assets.tap()
+        let importer = app.buttons["openclam-appearance-import"]
+        XCTAssertTrue(importer.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["openclam-appearance-download"].exists)
+        capture("appearance-assets-iphone")
+        importer.tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 8))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(importer.waitForExistence(timeout: 8))
+    }
+
+    func testWalkingStyleControlsAndTravel() throws {
+        app.terminate()
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed)
+        openWardrobe()
+        let style = app.descendants(matching: .any)["openclam-3d-choice-walkStyle"]
+        XCTAssertTrue(style.waitForExistence(timeout: 8)); style.tap()
+        XCTAssertTrue(app.buttons["Casual stroll"].exists)
+        app.buttons["Runway walk"].tap()
+        XCTAssertTrue(style.label.contains("Runway walk"))
+        capture("walking-style-runway")
+        let walk = app.buttons["Walk around"]
+        for _ in 0 ..< 4 where !walk.isHittable { app.swipeUp() }
+        walk.tap()
+        app.buttons["Done"].tap()
+        sleep(5)
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        capture("walking-style-travel")
+        openWardrobe()
+        XCTAssertTrue(style.label.contains("Runway walk"), "Walking style persists while the avatar travels")
+        app.buttons["Stop motion"].tap()
+        style.tap(); app.buttons["Walking Woman (default)"].firstMatch.tap()
+        XCTAssertTrue(style.label.contains("Walking Woman (default)"))
+        app.buttons["Done"].tap()
+    }
+
     func testDynamicMotionsBundledLibraryAndPlayback() throws {
         app.terminate()
         app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,

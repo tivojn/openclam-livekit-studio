@@ -378,6 +378,10 @@ final class OpenClam3DWebAssets: NSObject, WKURLSchemeHandler {
                     }
                     guard let modelURL else { throw URLError(.fileDoesNotExist) }
                     let prepared = try worker.model(url: modelURL, revision: revision, maximum: maximum)
+                    if request.path.hasPrefix("/appearance/"), let prepared {
+                        let resource = try OpenClamAppearanceIndex.resource(path: request.path, modelHash: prepared.modelSHA256)
+                        return (resource.0, resource.1, nil)
+                    }
                     if request.path.hasPrefix("/motions/") {
                         if let pack = worker.motionPack { return (try pack.resource(path: request.path), "application/json", nil) }
                         if request.path == "/motions/library.json" {
@@ -478,6 +482,8 @@ struct OpenClam3DChoice: Codable, Identifiable, Equatable {
     var group: String?
     var pose: String?
     var category: String?
+    var kind: String?
+    var slot: String?
 }
 
 struct OpenClam3DCatalogue: Codable, Equatable {
@@ -485,6 +491,10 @@ struct OpenClam3DCatalogue: Codable, Equatable {
     var outfits: [OpenClam3DChoice] = []
     var props: [OpenClam3DChoice] = []
     var motions: [OpenClam3DChoice]?
+    var expressions: [OpenClam3DChoice]?
+    var lighting: [OpenClam3DChoice]?
+    var walkingStyles: [OpenClam3DChoice]?
+    var assets: [OpenClam3DChoice]?
     var hasChoices: Bool { !poses.isEmpty || !outfits.isEmpty || !props.isEmpty }
 }
 
@@ -577,7 +587,8 @@ final class OpenClam3DOptionsStore: ObservableObject {
     func receive(_ value: Any, for avatarID: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: value), data.count < 100_000,
               let catalogue = try? JSONDecoder().decode(OpenClam3DCatalogue.self, from: data),
-              catalogue.poses.count <= 256, catalogue.outfits.count <= 64, catalogue.props.count <= 64, (catalogue.motions?.count ?? 0) <= 96
+              catalogue.poses.count <= 256, catalogue.outfits.count <= 64, catalogue.props.count <= 64, (catalogue.motions?.count ?? 0) <= 96,
+              (catalogue.expressions?.count ?? 0) <= 1024, (catalogue.assets?.count ?? 0) <= 1024, (catalogue.walkingStyles?.count ?? 0) <= 16
         else { return }
         if catalogues[avatarID] != catalogue { catalogues[avatarID] = catalogue }
     }
@@ -615,11 +626,26 @@ final class OpenClam3DOptionsStore: ObservableObject {
 
     func select(_ id: String, group: String, for avatarID: String) {
         guard let catalogue = catalogues[avatarID] else { return }
-        let choices = group == "outfit" ? catalogue.outfits : group == "prop" ? catalogue.props
-            : catalogue.poses.filter { $0.group == group }
+        if group == "expressionStrength" {
+            guard let strength = Double(id), strength.isFinite, (0...1).contains(strength) else { return }
+            selections[avatarID, default: [:]][group] = id; save(); return
+        }
+        let choices: [OpenClam3DChoice]
+        switch group {
+        case "outfit": choices = catalogue.outfits
+        case "prop": choices = catalogue.props
+        case "expression": choices = catalogue.expressions ?? []
+        case "lighting": choices = catalogue.lighting ?? []
+        case "walkStyle": choices = catalogue.walkingStyles ?? []
+        case "hair", "clothes": choices = (catalogue.assets ?? []).filter { $0.kind == group }
+        default:
+            choices = group.hasPrefix("texture:") ? (catalogue.assets ?? []).filter { $0.kind == "texture" && "texture:" + ($0.slot ?? "color") == group }
+                : catalogue.poses.filter { $0.group == group }
+        }
         guard id.isEmpty || choices.contains(where: { $0.id == id }) else { return }
         var next = selection(for: avatarID)
         next[group] = id.isEmpty ? nil : id
+        if group == "outfit" { next["clothes"] = nil }
         if ["body", "hands", "leftHand", "rightHand"].contains(group) {
             next["playTransitions"] = "false"
         }
@@ -659,8 +685,21 @@ struct OpenClam3DWardrobeSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    NavigationLink {
+                        Form {
+                            Section { appearanceImportLink }
+                            if let library = options.catalogues[avatarID], library.hasChoices {
+                                Section { appearanceChoices(library) }
+                            }
+                        }.navigationTitle("Face, Hair & Colors")
+                    } label: {
+                        Label("Face, hair & colors", systemImage: "face.smiling")
+                    }.accessibilityIdentifier("openclam-appearance-panel")
+                }
                 if let clips = options.catalogues[avatarID]?.motions, !clips.isEmpty {
                     Section("Dynamic motions") {
+                        choices("Walking style", group: "walkStyle", items: options.catalogues[avatarID]?.walkingStyles ?? [], fallback: (options.catalogues[avatarID]?.walkingStyles?.first(where: { $0.id == "walking-woman" })?.label ?? "Natural walk") + " (default)")
                         behavior("React to conversation", key: "dynamicMotions")
                         Button("Stop motion") { playMotion("stay") }
                         NavigationLink("Browse motions (\(clips.count))") {
@@ -771,6 +810,46 @@ struct OpenClam3DWardrobeSheet: View {
             }
         case .failure(let error):
             if (error as NSError).code != NSUserCancelledError { importError = error.localizedDescription }
+        }
+    }
+
+    private var appearanceModel: URL? {
+        guard let avatar = avatarLibrary.avatar(id: avatarID), case let .installedFile(url)? = avatar.asset(.model) else { return nil }
+        return url
+    }
+
+    @ViewBuilder
+    private var appearanceImportLink: some View {
+        if let model = appearanceModel {
+            NavigationLink {
+                OpenClamAppearanceAssetsView(avatarID: avatarID, model: model)
+            } label: {
+                Label("Import or download appearance assets", systemImage: "square.and.arrow.down")
+            }
+            .disabled(!allowsImport || isImporting || avatarLibrary.isMutating)
+            .accessibilityIdentifier("openclam-appearance-assets")
+        }
+    }
+
+    @ViewBuilder
+    private func appearanceChoices(_ library: OpenClam3DCatalogue) -> some View {
+        let assets = library.assets ?? []
+        let textures = assets.filter { $0.kind == "texture" }
+        let slots = Array(Set(textures.map { $0.slot ?? "color" })).sorted()
+        choices("Lighting", group: "lighting", items: library.lighting ?? [], fallback: "Avatar default")
+        choices("Expression", group: "expression", items: library.expressions ?? [], fallback: "Automatic · conversation")
+        if library.expressions?.isEmpty == false {
+            VStack(alignment: .leading) {
+                Text("Expression intensity")
+                Slider(value: Binding(get: { Double(options.selection(for: avatarID)["expressionStrength"] ?? "0.7") ?? 0.7 },
+                    set: { options.select(String($0), group: "expressionStrength", for: avatarID) }), in: 0...1, step: 0.05)
+                    .accessibilityLabel("Expression intensity")
+            }
+        }
+        choices("Hair", group: "hair", items: (library.assets ?? []).filter { $0.kind == "hair" }, fallback: "Original hair")
+        choices("Clothing combination", group: "clothes", items: (library.assets ?? []).filter { $0.kind == "clothes" }, fallback: "From outfit")
+        ForEach(slots, id: \.self) { slot in
+            choices("\(slot.capitalized) color", group: "texture:\(slot)", items: (library.assets ?? []).filter { $0.kind == "texture" && ($0.slot ?? "color") == slot }, fallback: "Original texture")
         }
     }
 

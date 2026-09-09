@@ -444,14 +444,14 @@ export class AvatarStudioStage {
     // let the torso/legs leave below the camera. Blending toward a face center
     // and then placing that center at near-floor depth made the actor sink.
     const bodyY=surface.y+bodyMargin+this.y*(surface.height-2*bodyMargin)
-      -(b[1]+b[3]/2)*scale+(this.entryOffset?.y||0)*(this.entryWeight||0);
+      -(b[1]+b[3]/2)*scale+(this.manualPlacement?0:(this.entryOffset?.y||0)*(this.entryWeight||0));
     const measuredCrown=this.crownAt?.();
     const crown=Number.isFinite(measuredCrown)?measuredCrown:Math.min(b[1],this.face[1]);
     const crownY=surface.y+headroom-crown*scale;
     // Let the crown constraint take over where the full-body framing meets
     // it. An extra size-based blend lifted the frame faster than the actor
     // approached, reversed the projected floor path, and triggered a U-turn.
-    const y=Math.max(crownY,bodyY);
+    const y=Math.max(crownY,bodyY)+(this.manualPlacement?(this.entryOffset?.y||0)*(this.entryWeight||0):0);
     return {scale,x:surface.x+f.mx+this.x*(surface.width-2*f.mx)-f.point.x*scale+(this.entryOffset?.x||0)*(this.entryWeight||0),y};
   }
   // Screen pointer positions map to the whole stage, not only the narrow
@@ -519,11 +519,23 @@ export class AvatarStudioStage {
   manual(fit,surface){
     const previous=this.manualFit;
     if(previous){
-      this.normalRatio*=fit.scale/previous.scale;
-      // Compare the same logical center so pinch does not accidentally pan.
       const b=this.bounds,cx=b[0]+b[2]/2,cy=b[1]+b[3]/2;
-      this.x=this.clamp(this.x+(fit.x+cx*fit.scale-previous.x-cx*previous.scale)/surface.width);
-      this.y=this.clamp(this.y+(fit.y+cy*fit.scale-previous.y-cy*previous.scale)/surface.height);
+      const ratio=fit.scale/previous.scale;
+      const dx=fit.x+cx*fit.scale-previous.x-cx*previous.scale;
+      const dy=fit.y+cy*fit.scale-previous.y-cy*previous.scale;
+      if(Math.abs(dx)+Math.abs(dy)+Math.abs(ratio-1)>1e-9){
+        const shown=this.project(surface),scale=shown.scale*ratio;
+        const target={x:shown.x+cx*(shown.scale-scale)+dx,y:shown.y+cy*(shown.scale-scale)+dy};
+        // A drag is screen placement, not walking toward/away from the camera.
+        // Only pinch changes scale; retain the current studio depth on both axes.
+        this.normalRatio*=ratio;
+        const framing=this.framing(scale,surface);
+        this.x=this.fraction(target.x+framing.point.x*scale,surface.x,surface.width,framing.mx);
+        this.entryWeight=0;
+        const base=this.project(surface);
+        this.entryOffset={x:target.x-base.x,y:target.y-base.y};
+        this.entryWeight=1;this.manualPlacement=true;
+      }
     }
     this.manualFit={...fit};
   }

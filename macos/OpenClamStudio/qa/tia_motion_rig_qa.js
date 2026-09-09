@@ -104,7 +104,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
  // Sample three full locomotion loops, including interpolation and the seam.
  // The feet need clearance in the pelvis frame even while the body turns;
  // world-X alone gives false collisions when one foot is farther forward.
- for(const id of ['walk','hello-run']){
+ for(const id of ['walk','walking-woman','casual-walk','stage-walk','hello-run']){
   const data=JSON.parse(fs.readFileSync(path.join(afterDir,id+'.json')));
   if(!data.retargeting?.gaitClearance)continue;
   motionDir=afterDir;avatar.motion.stop({immediate:true});time=0;
@@ -115,25 +115,72 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
   const point=name=>byName.get(name).getWorldPosition(new THREE.Vector3());
   for(time=1400;time<1000+3*duration;time+=1000/60){
    avatar.render(time,{breathe:1,gaze:{x:0,y:0}});
-   const axis=new THREE.Vector3(1,0,0).applyQuaternion(delta('root.x'));axis.y=0;axis.normalize();
+   const axis=point('c_thigh_twist.l').sub(point('c_thigh_twist.r'));axis.y=0;axis.normalize();
+   const forward=axis.clone().cross(new THREE.Vector3(0,1,0));
    const left=point('foot.l'),right=point('foot.r');
    const torso=point('spine_05.x').sub(point('root.x'));
    const lean=Math.atan2(torso.z,torso.y)*180/Math.PI;
    const knees=['l','r'].map(side=>{
-    const hip=point('c_thigh_stretch.'+side),knee=point('c_leg_stretch.'+side),ankle=point('foot.'+side);
+    const hip=point('c_thigh_twist.'+side),knee=point('c_leg_stretch.'+side),ankle=point('foot.'+side);
     return 180-hip.sub(knee).angleTo(ankle.sub(knee))*180/Math.PI;
    });
-   rows.push({gap:left.clone().sub(right).dot(axis),distance:left.distanceTo(right),lean,knees});
+   const arms=['l','r'].map(side=>{
+    const shoulder=point('c_arm_twist.'+side),elbow=point('c_forearm_stretch.'+side),hand=point('hand.'+side);
+    const upper=elbow.clone().sub(shoulder),lower=hand.clone().sub(elbow);
+    return {elbow:upper.angleTo(lower)*180/Math.PI,outward:Math.atan2(Math.abs(upper.dot(axis)),-upper.y)*180/Math.PI,swing:hand.z-shoulder.z};
+   });
+   const feet=['l','r'].map((side,i)=>{
+    const name='toes_01.'+side,bind=new THREE.Matrix4().set(...doc.extras.openclamAvatar.rest[name].flat());
+    const toe=new THREE.Vector3(0,0,-1).transformDirection(bind).applyQuaternion(delta(name));
+    const shin=point('foot.'+side).sub(point('c_leg_stretch.'+side));
+    return {toeYaw:Math.atan2(toe.dot(axis),toe.dot(forward))*180/Math.PI*(i===0?1:-1),toePitch:Math.atan2(toe.y,Math.hypot(toe.x,toe.z))*180/Math.PI,
+      shinLateral:Math.atan2(shin.dot(axis),Math.hypot(shin.y,shin.dot(forward)))*180/Math.PI*(i===0?1:-1)};
+   });
+   rows.push({gap:left.clone().sub(right).dot(axis),hipWidth:point('c_thigh_twist.l').distanceTo(point('c_thigh_twist.r')),distance:left.distanceTo(right),lean,knees,arms,feet});
   }
   const minimumGap=Math.min(...rows.map(r=>r.gap)),minimumDistance=Math.min(...rows.map(r=>r.distance));
   const leanRange=[Math.min(...rows.map(r=>r.lean)),Math.max(...rows.map(r=>r.lean))];
   const kneeRanges=[0,1].map(side=>[Math.min(...rows.map(r=>r.knees[side])),Math.max(...rows.map(r=>r.knees[side]))]);
-  assert(minimumGap>.12,id+' feet stay on separate sides throughout the loop: '+minimumGap);
-  assert(minimumDistance>.14,id+' boot centers retain physical clearance: '+minimumDistance);
-  for(const [min,max] of kneeRanges)assert(max-min>35&&max>60&&max<100,id+' knees continue flexing instead of locking');
-  if(id==='walk')assert(leanRange[0]>-4.5&&leanRange[1]<5,'walking remains upright');
-  else assert(leanRange[0]>5&&leanRange[1]<22,'running leans forward, never backward');
-  report.regressions.push({id,gaitClearance:true,minimumGap,minimumDistance,leanRange,kneeRanges,samples:rows.length});
+  const walking=id!=='hello-run';
+  const footRanges=[0,1].map(side=>Object.fromEntries(['toeYaw','toePitch','shinLateral'].map(k=>[k,[Math.min(...rows.map(r=>r.feet[side][k])),Math.max(...rows.map(r=>r.feet[side][k]))]])));
+  console.log('GAIT',id,JSON.stringify({minimumGap,maximumGap:Math.max(...rows.map(r=>r.gap)),footRanges,kneeRanges}));
+  assert(minimumGap>(walking?.105:.12),id+' feet stay on separate sides throughout the loop: '+minimumGap);
+  assert(minimumDistance>(walking?.12:.14),id+' boot centers retain physical clearance: '+minimumDistance);
+  const armRanges=[0,1].map(side=>{
+    const values=rows.map(r=>r.arms[side]);
+    return {maxOutward:Math.max(...values.map(v=>v.outward)),maxElbowBend:Math.max(...values.map(v=>v.elbow)),swing:Math.max(...values.map(v=>v.swing))-Math.min(...values.map(v=>v.swing)),swingRange:[Math.min(...values.map(v=>v.swing)),Math.max(...values.map(v=>v.swing))]};
+  });
+  if(walking){
+    // The original bug passed clearance checks while both toe tips pointed
+    // to the same side. Measure anatomical toe frames relative to the true
+    // hip joints; c_thigh_stretch is only the distal third of the thigh.
+    for(const foot of footRanges){
+      assert(foot.toeYaw[0]>0&&foot.toeYaw[1]<10,id+' both shoes retain a small outward turnout: '+JSON.stringify(foot.toeYaw));
+      assert(foot.shinLateral.every(v=>Math.abs(v)<8),id+' lower legs do not splay sideways: '+JSON.stringify(foot.shinLateral));
+    }
+    assert(rows.every(r=>r.gap<r.hipWidth*1.15),id+' walking stance remains proportional to the pelvis');
+    for(const [min,max] of kneeRanges){
+      assert(min<15,id+' support leg extends naturally: '+min);
+      assert(max-min>30&&max>45&&max<80,id+' swing knee bends without crouching through the entire cycle: '+JSON.stringify([min,max]));
+    }
+    assert(leanRange[0]>-4.5&&leanRange[1]<5,id+' walking remains upright');
+    for(const arm of armRanges){
+      assert(arm.maxOutward<18,id+' elbows stay relaxed alongside the torso: '+arm.maxOutward);
+      // Preserve the source elbow articulation; the former 40-degree cap
+      // deleted the forward swing. Source fidelity is checked separately.
+      assert(arm.maxElbowBend<105,id+' elbow remains within an anatomical walking range: '+arm.maxElbowBend);
+      if(['walk','walking-woman'].includes(id))assert(arm.swingRange[0]<-.1&&arm.swingRange[1]>.1,id+' each hand passes both behind and in front of the shoulder: '+JSON.stringify(arm.swingRange));
+      assert(arm.swing>.08,id+' arms retain forward/back swing: '+arm.swing);
+    }
+  }else{
+    for(const [min,max] of kneeRanges)assert(max-min>35&&max>60&&max<100,id+' running knees continue flexing instead of locking');
+    assert(leanRange[0]>5&&leanRange[1]<22,'running leans forward, never backward');
+  }
+  const phaseOffset=Math.round(duration/(1000/60)/2);
+  const phasePairs=rows.slice(0,-phaseOffset).map((r,i)=>({yaw:r.feet[0].toeYaw-rows[i+phaseOffset].feet[1].toeYaw,pitch:r.feet[0].toePitch-rows[i+phaseOffset].feet[1].toePitch}));
+  const phaseSymmetry=Object.fromEntries(['yaw','pitch'].map(k=>[k,{meanAbsolute:phasePairs.reduce((a,v)=>a+Math.abs(v[k]),0)/phasePairs.length,rms:Math.sqrt(phasePairs.reduce((a,v)=>a+v[k]*v[k],0)/phasePairs.length)}]));
+  if(walking)assert(phaseSymmetry.yaw.meanAbsolute<4,id+' left/right toe turnout agrees at corresponding steps: '+phaseSymmetry.yaw.meanAbsolute);
+  report.regressions.push({id,gaitClearance:true,minimumGap,minimumDistance,leanRange,kneeRanges,armRanges,footRanges,phaseSymmetry,samples:rows.length});
  }
  run('avatar3d-companion.js','globalThis.Stage=AvatarStudioStage;globalThis.Controller=CompanionController');
  for(const id of ['walk','hello-run']){

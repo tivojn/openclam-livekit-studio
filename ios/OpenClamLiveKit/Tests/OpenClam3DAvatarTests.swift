@@ -11,6 +11,50 @@ import ZIPFoundation
 
 @MainActor
 final class OpenClam3DAvatarTests: XCTestCase {
+    func testOptionalAppearanceInstallRecoveryAndRemoval() throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let model = temp.appendingPathComponent("model.glb")
+        let bytes = Data(UUID().uuidString.utf8)
+        try bytes.write(to: model)
+        let hash = try OpenClamBundledAvatarUpdate.sha256(at: model)
+        let root = try OpenClamAppearanceIndex.root(for: hash)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = Data("{\"version\":1,\"meshes\":[]}".utf8)
+        let sha = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        var manifest: [String: Any] = ["format": "openclam-appearance", "version": 1, "id": "sample", "label": "Sample", "modelSHA256": hash,
+            "files": ["face.json": ["bytes": payload.count, "sha256": sha]],
+            "items": [["id": "smile", "label": "Smile", "kind": "expression", "file": "face.json", "region": "mouth"]]]
+        func archive(_ name: String) throws -> URL {
+            let source = temp.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: manifest).write(to: source.appendingPathComponent("appearance.json"))
+            try payload.write(to: source.appendingPathComponent("face.json"))
+            let destination = temp.appendingPathComponent(name + ".oclook")
+            try FileManager.default.zipItem(at: source, to: destination, shouldKeepParent: false)
+            return destination
+        }
+        let first = try archive("first")
+        let installed = try OpenClamAppearanceIndex.install(from: first, model: model)
+        XCTAssertEqual(try Data(contentsOf: model), bytes)
+        let index = root.appendingPathComponent("index.json"), prior = try Data(contentsOf: index)
+        manifest["modelSHA256"] = String(repeating: "0", count: 64)
+        XCTAssertThrowsError(try OpenClamAppearanceIndex.install(from: archive("wrong"), model: model))
+        XCTAssertEqual(try Data(contentsOf: index), prior)
+        let resource = "/appearance/" + installed.directory! + "/face.json"
+        XCTAssertEqual(try OpenClamAppearanceIndex.resource(path: resource, modelHash: hash).0, payload)
+        XCTAssertThrowsError(try OpenClamAppearanceIndex.resource(path: "/appearance/../model.glb", modelHash: hash))
+        try Data("corrupt".utf8).write(to: root.appendingPathComponent(installed.directory!).appendingPathComponent("face.json"))
+        let repaired = try OpenClamAppearanceIndex.install(from: first, model: model)
+        XCTAssertNotEqual(repaired.directory, installed.directory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(installed.directory!).path))
+        XCTAssertEqual(try OpenClamAppearanceIndex.resource(path: "/appearance/" + repaired.directory! + "/face.json", modelHash: hash).0, payload)
+        try OpenClamAppearanceIndex.remove("sample", model: model)
+        XCTAssertTrue(try OpenClamAppearanceIndex.read(at: root).packs.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: model), bytes)
+    }
+
     private static let oculusTargets = [
         "vrc.v_sil", "vrc.v_pp", "vrc.v_ff", "vrc.v_th", "vrc.v_dd", "vrc.v_kk",
         "vrc.v_ch", "vrc.v_ss", "vrc.v_nn", "vrc.v_rr", "vrc.v_aa", "vrc.v_ee",

@@ -34,20 +34,21 @@ async function load(frame) {
     window.showAvatarError('Restarting 3D avatar…');
     report({event:'renderer-lost'});
   });
-  await avatar.load('/model.gltf');
+  await avatar.load('/model.gltf',{appearanceLibrary:'/appearance/index.json'});
   if (failed) return;
   const releasedImages = await uploadAvatarTextures(avatar, () => failed);
   report({event:'textures-uploaded', releasedImages});
   if (failed) return;
-  const catalogue = avatar.options?.catalogue() || {poses:[],outfits:[],props:[]};
   if (avatar.options) {
     const motion = await new Avatar3DMotion(avatar.options, {cacheLimit:2}).load('/motions/library.json');
     if (motion.clips.size) {
       avatar.motion = motion;
       companion = new CompanionController();
-      catalogue.motions = [...motion.clips.values()].map(({id,label,category}) => ({id,label,category}));
     }
   }
+  // Walking styles depend on installed clips, so publish after motion loading.
+  const catalogue = avatar.options?.catalogue() || {poses:[],outfits:[],props:[]};
+  catalogue.motions = [...(avatar.motion?.clips.values() || [])].map(({id,label,category}) => ({id,label,category}));
   report({event:'catalogue', catalogue});
   document.body.append(avatar.canvas);
   animationFrame = requestAnimationFrame(draw);
@@ -106,7 +107,7 @@ window.avatarCommand = async (value, isText = false) => {
     if(latest.state.reduce)return 'Turn off Reduce Motion to walk across the stage.';
     const generation=actionGeneration;stagePreparing=true;
     try {
-      await avatar.motion.prepare(action==='run-around'?'hello-run':'walk');
+      await avatar.motion.prepare(action==='run-around'?'hello-run':avatar.options.walkingClip());
       if(generation!==actionGeneration)return null;
       const box=avatar.canvas.getBoundingClientRect(),surface={x:0,y:0,width:box.width,height:box.height};
       const crop=displayedViewport||latest.crop,scale=surface.width/crop.w;
@@ -222,11 +223,11 @@ function draw(now) {
     const stage=avatar.studioStage,safe={x:0,y:0,width:surface.width,height:surface.height};
     const nativeFit={scale:surface.width/viewport.w,x:-viewport.x*surface.width/viewport.w,y:-viewport.y*surface.height/viewport.h};
     if(!resized)stage.manual(nativeFit,safe);else stage.manualFit=nativeFit;
-    const gait=companion.roam==='run-around'?'hello-run':'walk';
+    const gait=companion.roam==='run-around'?'hello-run':avatar.options.walkingClip();
     const step=stage.step(companion,now,safe,{cursorX:(latest.pointer?.x||0)*surface.width,cursorY:(latest.pointer?.y||0)*surface.height,
       strideSpeed:avatar.motion.clips.get(gait)?.ready?.forwardSpeed,
-      seen:Boolean(latest.pointer),blocked:stagePreparing||Boolean(avatar.motion.active&&!['walk','hello-run'].includes(avatar.motion.active.id)),reduce:state.reduce});
-    if(step.walking&&!travelClip){travelClip=true;void avatar.motion.play(gait,{loop:true}).catch(()=>{companion.command('stay');travelClip=false;motionStatus('Could not load motion. Try again.');});}
+      seen:Boolean(latest.pointer),blocked:stagePreparing||Boolean(avatar.motion.active&&!avatar.options.isTravelClip(avatar.motion.active.id)),reduce:state.reduce});
+    if(step.walking&&(!travelClip||(!avatar.motion.pending&&avatar.motion.active?.id!==gait))){travelClip=true;void avatar.motion.play(gait,{loop:true}).catch(()=>{companion.command('stay');travelClip=false;motionStatus('Could not load motion. Try again.');});}
     else if(!step.walking&&travelClip){travelClip=false;avatar.motion.stop();}
     if(travelClip)avatar.motion.setPlaybackRate(step.gaitRate,now);
     if(now>=companion.pauseUntil&&(companion.roam||companion.follow||companion.come||companion.destination||step.walking||stageTurning)){

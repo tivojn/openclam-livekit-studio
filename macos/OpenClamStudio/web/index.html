@@ -2374,7 +2374,7 @@
       const originalFit={...geometry.fit};
       instance.stagePreparing=true;
       try {
-        if(!stationary)await instance.motion.prepare(action==='run-around'?'hello-run':'walk');
+        if(!stationary)await instance.motion.prepare(action==='run-around'?'hello-run':instance.options.walkingClip());
         if(instance!==avatar3d||instance.actionGeneration!==generation)return '';
         const fullChat=root.classList.contains('chat-mode');
         let origin={x:0,y:0};
@@ -2525,6 +2525,9 @@
       canvas.title = avatar3d ? 'Drag to move · Pinch to resize · Two-finger swipe or Option-drag to rotate' : '';
       root.classList.toggle('avatar-3d', Boolean(avatar3d));
     };
+    window.addEventListener('openclam-appearance-changed',()=>{
+      avatar3dOptionsMounted=null;syncAvatar3DControls();lastFrame=0;
+    });
     let avatar3dGazeState = { x: 0, y: 0, at: 0 };
     const is3DRuntime = value => Boolean(value && typeof value === 'object'
       && value.renderer === '3d' && typeof value.model === 'string' && value.model.length > 0);
@@ -3867,7 +3870,7 @@
       const instance = api.create({ width, height });
       try {
         await instance.load(avatar3dModelURL(manifest), { pose: manifest.pose, yaw: manifest.yaw,
-          motionLibrary: manifest.motion_library });
+          motionLibrary: manifest.motion_library,appearanceLibrary:'/api/avatar/appearance' });
         await setupCompanion(instance);
       } catch (error) {
         instance.dispose();
@@ -3902,7 +3905,7 @@
           if (!is3DRuntime(next) || avatar3dIdentity(next) === avatar3dIdentity(manifest)) return;
           const api = await avatar3dApi();
           replacement = api.create({ width: Number(next.w) || 1024, height: Number(next.h) || 1536 });
-          await replacement.load(avatar3dModelURL(next), { pose: next.pose, yaw: next.yaw, motionLibrary: next.motion_library });
+          await replacement.load(avatar3dModelURL(next), { pose: next.pose, yaw: next.yaw, motionLibrary: next.motion_library,appearanceLibrary:'/api/avatar/appearance' });
           if (avatar3d !== previous) return;
           replacement.setOrbit(previous.orbit);
           manifest = next;
@@ -6449,12 +6452,12 @@
           const surface={...safeViewport,x:renderLeft};
           if(manual){stage.manual(fit,surface);stage.facingYaw=avatar3d.orbit.yaw;}else stage.manualFit={...fit};
           const cursor=avatarCanvasPoint(pointer);
-          const gait=controller.roam==='run-around'?'hello-run':'walk';
+          const gait=controller.roam==='run-around'?'hello-run':avatar3d.options.walkingClip();
           const step=stage.step(controller,now,surface,{cursorX:cursor.x,cursorY:cursor.y,seen:pointer.seen,
             strideSpeed:avatar3d.motion.clips.get(gait)?.ready?.forwardSpeed,
             blocked:blocked||Boolean(avatar3d.stagePreparing)||Boolean(avatar3d.companionReactionPending)
-              ||Boolean(avatar3d.motion.active&&!['walk','hello-run'].includes(avatar3d.motion.active.id)),reduce});
-          if(step.walking&&!avatar3d.companionWalkRequested){
+              ||Boolean(avatar3d.motion.active&&!avatar3d.options.isTravelClip(avatar3d.motion.active.id)),reduce});
+          if(step.walking&&(!avatar3d.companionWalkRequested||(!avatar3d.motion.pending&&avatar3d.motion.active?.id!==gait))){
             avatar3d.companionWalkRequested=true;
             void avatar3d.motion.play(gait,{loop:true})
               .catch(error=>{controller.command('stay');notify(error.message);});
@@ -6464,7 +6467,7 @@
           if(avatar3d.companionWalkRequested)avatar3d.motion.setPlaybackRate(step.gaitRate,now);
           if(!manual&&now>=controller.pauseUntil&&(controller.follow||controller.come||controller.roam||controller.destination||avatar3d.companionTurning)){
             avatar3d.companionTurning=Math.abs(step.yaw)>.005;
-            if(!avatar3d.motion.active||['walk','hello-run'].includes(avatar3d.motion.active.id))avatar3d.setOrbit({yaw:step.yaw,pitch:0});
+            if(!avatar3d.motion.active||avatar3d.options.isTravelClip(avatar3d.motion.active.id))avatar3d.setOrbit({yaw:step.yaw,pitch:0});
           }
           fit=stage.project(surface);
         } else if(controller.follow&&!avatar3d.stagePreparing&&lastBodyGeometry){

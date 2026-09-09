@@ -53,7 +53,7 @@ const ios={console,URLSearchParams,location:{search:'?generation=1'},
   requestAnimationFrame(){},
   window:{webkit:{messageHandlers:{avatarStatus:{postMessage:v=>messages.push(v)}}},addEventListener(){},devicePixelRatio:1},
   document:{hidden:false,addEventListener(){},querySelector:()=>({remove(){}})},
-  avatarFixture:{options:{select(){}},restBounds:{min:{y:0},max:{y:2}},studioDistance:5,orbit:{yaw:0,pitch:0},canvas:{getBoundingClientRect:()=>({width:300,height:600})},
+  avatarFixture:{options:{select(){},walkingClip:()=> 'walking-woman',isTravelClip:id=>['walking-woman','walk','casual-walk','stage-walk','hello-run'].includes(id)},restBounds:{min:{y:0},max:{y:2}},studioDistance:5,orbit:{yaw:0,pitch:0},canvas:{getBoundingClientRect:()=>({width:300,height:600})},
     layout:()=>({bounds:[70,80,160,430],faceBounds:[110,90,80,100]}),
     motion:{clips,play:async id=>{played.push(id);return true;},expression:()=>({smile:.4}),setPlaybackRate(rate){assert(rate>=0&&rate<1.2);}},
     studioProjection:()=>({ground:{x:150,y:510},pixelsPerUnit:215,groundDepth:.2}),
@@ -120,7 +120,7 @@ ios.drawFrame(105100);
 assert.equal(chosen.length,1,'the LLM action is not replayed each frame');
 
 (async()=>{
-  const spatialClips=new Map([['walk',{id:'walk'}],['hello-run',{id:'hello-run'}]]);
+  const spatialClips=new Map([['walking-woman',{id:'walking-woman'}],['walk',{id:'walk'}],['hello-run',{id:'hello-run'}]]);
   Object.assign(ios.avatarFixture.motion,{clips:spatialClips,prepare:async()=>{},
     stop(){this.active=null;},play:async function(id){this.active={id};return true;}});
   ios.avatarFixture.lockStudioLens=()=>{};ios.avatarFixture.stopCameraApproach=()=>{};
@@ -143,13 +143,23 @@ assert.equal(chosen.length,1,'the LLM action is not replayed each frame');
   ios.drawFrame(210100);
   assert(crop.w<normal,'manual native pinch resizes the active studio projection');
   assert.equal(crop.w/crop.h,.5,'native pinch preserves proportions');
+  let manualTime=210200;
+  for(const [dx,dy] of [[0,25],[0,-40],[30,0],[-20,20]]){
+    const before={...crop},depth=stage.y,nativeScale=300/ios.frame.crop.w;
+    ios.frame.crop={...ios.frame.crop,x:ios.frame.crop.x+dx,y:ios.frame.crop.y+dy};
+    ios.drawFrame(manualTime);manualTime+=100;
+    assert(Math.abs(crop.w-before.w)<1e-7,'native drag never changes avatar size');
+    assert(Math.abs((-crop.x/crop.w+before.x/before.w)*300+dx*nativeScale)<1e-7,'native drag relocates horizontally');
+    assert(Math.abs((-crop.y/crop.w+before.y/before.w)*300+dy*nativeScale)<1e-7,'native drag relocates vertically');
+    assert(Math.abs(stage.y-depth)<1e-7,'native drag preserves studio depth');
+  }
   await ios.nativeCommand('go-upper-left');
   ios.avatarFixture.canvas.getBoundingClientRect=()=>({width:300,height:450});
   ios.frame.crop={x:25,y:50,w:250,h:375};
   for(let t=211000;t<241000;t+=33)ios.drawFrame(t);
   assert(stage.x<.05&&stage.y<.05,'keyboard/surface resize preserves the destination');
   assert(Math.abs(crop.w/crop.h-2/3)<1e-9,'keyboard resize preserves the displayed aspect');
-  console.log('iOS studio integration: corner/closer/center, manual pinch and keyboard resize passed.');
+  console.log('iOS studio integration: corner/closer/center, two-axis manual drag, pinch and keyboard resize passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 for(const [width,height,dpr] of [[393,852,3],[852,393,3],[1024,1366,2]]){

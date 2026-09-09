@@ -166,6 +166,24 @@ const near=(a,b,label)=>assert(Math.abs(a-b)<1e-7,`${label}: ${a} != ${b}`);
   travelTo('go-upper-right',400000);assert(stage.project(surface).scale<close*.2,'close-up walks to far corner and becomes small');
   travelTo('go-center',500000);assert(Math.abs(stage.project(surface).scale/middleScale-1)<.02,'returning to center restores normal size');
   const stable=stage.project(surface);
+  // Manual drag is two-dimensional placement at a fixed displayed size,
+  // including after coming close. Only an actual pinch changes the scale.
+  for(const depth of [.2,.5,.9]){
+    const placed=new s.Stage(initial,layout,surface);placed.y=depth;placed.entryWeight=0;
+    let input={...initial};placed.manualFit=input;
+    for(const [dx,dy] of [[0,80],[0,-120],[140,0],[-60,50]]){
+      const before=placed.project(surface),previousDepth=placed.y;
+      input={...input,x:input.x+dx,y:input.y+dy};placed.manual(input,surface);
+      const after=placed.project(surface);
+      near(after.x-before.x,dx,'drag follows horizontal displacement');
+      near(after.y-before.y,dy,'drag follows vertical displacement');
+      near(after.scale,before.scale,'drag never changes displayed size');
+      near(placed.y,previousDepth,'drag does not walk to a different studio depth');
+      placed.manual(input,surface);near(placed.project(surface).y,after.y,'stationary native frames do not drift');
+    }
+    const before=placed.project(surface);input={...input,scale:input.scale*1.2};placed.manual(input,surface);
+    near(placed.project(surface).scale/before.scale,1.2,'pinch remains an explicit resize');
+  }
   // Check actual displacement against the displayed heading on every frame,
   // including reversals and diagonals at different perspective distances.
   const turning=new s.Controller(),aligned=new s.Stage(initial,layout,surface);

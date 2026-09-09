@@ -61,7 +61,9 @@ export class Avatar3DMotion {
         bounds=new THREE.Box3(new THREE.Vector3(...data.bounds[0]),new THREE.Vector3(...data.bounds[1]));
       }
       const speed=data.retargeting?.forwardSpeed;
-      clip.ready={frames,indices,fps:data.fps,loop:Boolean(data.loop),bounds,cache:new Map(),
+      const requestedBlend=data.retargeting?.loopBlendSeconds;
+      const loopBlendSeconds=Number.isFinite(requestedBlend)&&requestedBlend>=0&&requestedBlend<=.2?requestedBlend:.2;
+      clip.ready={frames,indices,fps:data.fps,loop:Boolean(data.loop),bounds,cache:new Map(),loopBlendSeconds,
         forwardSpeed:Number.isFinite(speed)&&speed>.01&&speed<20?speed:0};
       const cached=[...this.clips.values()].filter(c=>c.ready).sort((a,b)=>(a.used||0)-(b.used||0));
       while(cached.length>this.cacheLimit){
@@ -154,8 +156,10 @@ export class Avatar3DMotion {
     if(action.reverse)seconds=duration-seconds;
     const f=seconds*clip.fps, i=Math.min(clip.frames.length-1,Math.floor(f));
     let pose=blend(this.frame(clip,i),this.frame(clip,Math.min(i+1,clip.frames.length-1)),f-i);
-    // Join a generated loop over its final 200ms, then blend into an action.
-    if(action.loop&&seconds>duration-.2)pose=blend(pose,this.frame(clip,0),smooth((seconds-duration+.2)/.2));
+    // A complete authored cycle already closes at the same gait phase.
+    // Re-blending its last 200 ms shortens the supporting step and looks like a shuffle.
+    const seam=Math.min(clip.loopBlendSeconds??.2,duration*.25);
+    if(action.loop&&seam>0&&seconds>duration-seam)pose=blend(pose,this.frame(clip,0),smooth((seconds-duration+seam)/seam));
     pose=pose.map((transform,i)=>action.authoredHands[i]||transform);
     pose=blend(action.from,pose,smooth((now-action.start)/350));
     pose=pose.map((transform,i)=>action.hands[i]||transform);

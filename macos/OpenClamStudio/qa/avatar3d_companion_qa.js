@@ -103,17 +103,18 @@ idle.avatar3d.companion.command('stay');idle.avatar3d.motion.active={id:'dance'}
 assert(!idle.isIdle(600000),'a playing clip also owns its presentation');
 const drawStart=page.indexOf('      if (avatar3d.companion) {',page.indexOf('    const drawAvatar3D = '));
 const travel=page.slice(drawStart,page.indexOf('      // The logical portrait',drawStart));
-for(const mirrored of [false,true]){
+for(const gait of ['walking-woman','stage-walk'])for(const mirrored of [false,true]){
   const s={fullChat:true,now:1000,fit:{x:400,y:300,scale:1},previewMetadata:{bounds:[0,0,100,200]},
     renderLeft:200,lastBodyGeometry:{},safeViewport:{x:200,y:80,width:700,height:600},innerWidth:1000,innerHeight:800,
     pointer:{x:280,y:200,seen:true},dragging:false,canvasGesture:null,avatarZoomGesture:null,avatarOrbitGesture:false,
     speaking:false,ptt:null,live:null,peerLiveFrame:null,reduce:false,shellState:{pet:{}},document:{getElementById:()=>null,hidden:false},
     notify:assert.fail,avatarCanvasPoint:p=>({x:mirrored?1100-p.x:p.x,y:p.y}),
     avatar3d:{companion:new sandbox.Controller(),companionOffset:{x:0,y:0},orbit:{yaw:0,pitch:0},
-      options:{selection:{}},motion:{clips:new Map(),play:()=>Promise.resolve(),stop(){},setPlaybackRate(rate){assert(rate>=0&&rate<1.2);}},setOrbit(){}}};
+      options:{selection:{},walkingClip:()=>gait,isTravelClip:id=>['walking-woman','walk','stage-walk','casual-walk','hello-run'].includes(id)},motion:{clips:new Map(),play:id=>{assert.equal(id,gait,'screen travel uses the selected/default walking style');return Promise.resolve();},stop(){},setPlaybackRate(rate){assert(rate>=0&&rate<1.2);}},setOrbit(){}}};
   s.avatar3d.studioStage=new sandbox.Stage(s.fit,{bounds:[0,0,100,200],faceBounds:[25,0,50,40]},s.safeViewport);
   s.avatar3d.companion.command('follow');vm.createContext(s);
-  const frame=()=>{s.fit={x:400,y:300,scale:1};vm.runInContext(travel,s);};
+  let inputFit={x:400,y:300,scale:1};
+  const frame=()=>{s.fit={...inputFit};vm.runInContext(travel,s);};
   for(;s.now<31000;s.now+=32)frame();
   const stage=s.avatar3d.studioStage;
   assert(mirrored?stage.x>.8:stage.x<.15,'mirrored and ordinary chat both approach the visible cursor');
@@ -126,6 +127,14 @@ for(const mirrored of [false,true]){
   const before=[stage.x,stage.y];s.dragging=true;s.pointer={x:880,y:90,seen:true};
   for(;s.now<66000;s.now+=32)frame();
   assert.deepEqual([stage.x,stage.y],before,'manual gesture leaves follow placement untouched');
+  for(const [dx,dy] of [[0,-85],[0,130],[70,0],[-45,-65]]){
+    const shown={...s.fit},depth=stage.y;
+    inputFit={...inputFit,x:inputFit.x+dx,y:inputFit.y+dy};s.now+=32;frame();
+    assert(Math.abs(s.fit.x-shown.x-dx)<1e-6,'production draw translates horizontally');
+    assert(Math.abs(s.fit.y-shown.y-dy)<1e-6,'production draw translates vertically');
+    assert(Math.abs(s.fit.scale-shown.scale)<1e-6,'manual drag cannot zoom after studio travel');
+    assert(Math.abs(stage.y-depth)<1e-6,'manual drag retains camera distance');
+  }
 }
 const start=page.indexOf('    const performAvatarAction = ');
 const source=page.slice(start,page.indexOf('\n    };',start)+7);

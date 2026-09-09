@@ -13,7 +13,7 @@
 import * as THREE from '/vendor/three/three.module.js';
 import { GLTFLoader } from '/vendor/three/GLTFLoader.js';
 import { RoomEnvironment } from '/vendor/three/RoomEnvironment.js';
-import { Avatar3DOptions, mountAvatar3DOptions } from '/avatar3d-options.js';
+import { Avatar3DOptions, Avatar3DAppearance, mountAvatar3DOptions } from '/avatar3d-options.js';
 
 const VISEMES = ['sil', 'PP', 'FF', 'TH', 'DD', 'kk', 'CH', 'SS',
   'nn', 'RR', 'aa', 'E', 'ih', 'oh', 'ou'];
@@ -170,10 +170,14 @@ class Avatar3D {
     fill.position.set(2.4, 1.4, 2.2);
     const rim = new THREE.DirectionalLight(0xffffff, 1.1);
     rim.position.set(.6, 2.4, -2.8);
-    this.scene.add(hemisphere, key, fill, rim);
+    this.studioLights = new THREE.Group();
+    this.studioLights.add(hemisphere, key, fill, rim);
+    this.scene.add(this.studioLights);
     try {
       const pmrem = new THREE.PMREMGenerator(this.renderer);
-      this.scene.environment = pmrem.fromScene(new RoomEnvironment(), .04).texture;
+      const room=new RoomEnvironment();
+      this.roomEnvironmentTarget=pmrem.fromScene(room,.04);
+      this.scene.environment=this.roomEnvironmentTarget.texture;room.dispose();
       this.scene.environmentIntensity = .5;
       pmrem.dispose();
     } catch (_) {
@@ -194,8 +198,11 @@ class Avatar3D {
       const association = gltf.parser && gltf.parser.associations
         ? gltf.parser.associations.get(node) : null;
       const index = association && Number.isInteger(association.nodes) ? association.nodes : -1;
+      const meshNode = index<0 && Number.isInteger(association?.meshes)
+        ? sourceNodes.find(node=>node.mesh===association.meshes) : null;
       node.userData.sourceName = index >= 0 && sourceNodes[index] && sourceNodes[index].name
-        ? String(sourceNodes[index].name) : node.name;
+        ? String(sourceNodes[index].name) : meshNode?.name || node.name;
+      node.userData.sourcePrimitive = association?.primitives || 0;
     });
     this.model.traverse(node => {
       if (!node.isMesh) return;
@@ -220,6 +227,7 @@ class Avatar3D {
     }
     this.collectBones();
     this.resolveChannels();
+    this.appearance = new Avatar3DAppearance(this);
     for (const targets of this.channels.values()) {
       for (const { mesh, index } of targets) {
         if (!this.drivenMorphs.has(mesh)) this.drivenMorphs.set(mesh, new Set());
@@ -231,6 +239,10 @@ class Avatar3D {
     if (library) {
       try { this.options = new Avatar3DOptions(this, library); }
       catch (error) { console.warn('3D options:', error.message); }
+    }
+    if(options.appearanceLibrary) {
+      try {await this.appearance.loadPacks(options.appearanceLibrary);}
+      catch(error){this.appearance.status=error.message;}
     }
     if (options.pose !== 'rest') this.relaxArms();
     this.options?.captureIdle();
@@ -913,6 +925,7 @@ class Avatar3D {
       this.setChannel(weights, 'angry', anger * .4);
     }
 
+    this.appearance?.expression(weights,this.options?.selection||{},Boolean(state.speaking));
     // Write morph influences: zero everything the renderer owns, then apply.
     for (const [mesh, indices] of this.drivenMorphs) {
       for (const index of indices) mesh.morphTargetInfluences[index] = 0;
@@ -1058,6 +1071,7 @@ class Avatar3D {
   dispose() {
     this.disposed = true;
     this.motion?.dispose();
+    this.appearance?.dispose();
     if (this.model) {
       this.model.traverse(node => {
         if (node.geometry) node.geometry.dispose();
@@ -1071,7 +1085,8 @@ class Avatar3D {
         }
       });
     }
-    if (this.scene.environment) this.scene.environment.dispose();
+    if(this.roomEnvironmentTarget)this.roomEnvironmentTarget.dispose();
+    else if(this.scene.environment)this.scene.environment.dispose();
     this.renderer.dispose();
     this.model = null;
     this.morphMeshes = [];
