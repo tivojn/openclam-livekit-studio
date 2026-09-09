@@ -539,53 +539,66 @@ final class ConversationModel: ObservableObject {
         guard let liveTalkTranscriptThreadID,
               liveTalkTranscriptThreadID == historyController.selectedThreadID else { return }
 
-        var finalizedMessages: [ConversationMessage] = []
-        for transcript in transcripts where transcript.isFinal {
+        var updated = messages
+        var streaming: [ConversationMessage] = []
+        for transcript in transcripts {
             let key = liveTalkTranscriptKey(for: transcript)
-            guard committedLiveTalkTranscriptIDs.insert(key).inserted else { continue }
             let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
-            if transcript.role == .agent,
-               consumeExpectedLiveTalkDelegatedAssistantReply(text) {
-                continue
+            let messageID = liveTalkTranscriptMessageIDs[key] ?? UUID()
+            let date = liveTalkTranscriptDates[key] ?? Date()
+            liveTalkTranscriptMessageIDs[key] = messageID
+            liveTalkTranscriptDates[key] = date
+            let alreadyCommitted = committedLiveTalkTranscriptIDs.contains(key)
+            if transcript.isFinal && !alreadyCommitted {
+                committedLiveTalkTranscriptIDs.insert(key)
+                if transcript.role == .agent,
+                   consumeExpectedLiveTalkDelegatedAssistantReply(text) { continue }
             }
-            let messageID = liveTalkTranscriptMessageIDs[key] ?? UUID()
-            let date = liveTalkTranscriptDates[key] ?? Date()
-            liveTalkTranscriptMessageIDs[key] = messageID
-            liveTalkTranscriptDates[key] = date
-            finalizedMessages.append(
-                .init(
-                    id: messageID,
-                    role: transcript.role == .user ? .user : .assistant,
-                    text: text,
-                    date: date,
-                    isEligibleForAIContext: false
-                )
+            let message = ConversationMessage(
+                id: messageID, role: transcript.role == .user ? .user : .assistant,
+                text: text, date: date, isEligibleForAIContext: false,
+                historyPersistence: transcript.isFinal || alreadyCommitted ? .history : .ephemeral
             )
+            if let index = updated.firstIndex(where: { $0.id == messageID }) {
+                // A final may grow or be corrected. Update that same bubble,
+                // including a later partial, instead of dropping the new words.
+                if updated[index] != message { updated[index] = message }
+            } else if transcript.isFinal && !alreadyCommitted {
+                updated.append(message)
+            } else if !alreadyCommitted {
+                streaming.append(message)
+            }
         }
-        if !finalizedMessages.isEmpty {
-            messages.append(contentsOf: finalizedMessages)
-        }
+        if updated != messages { messages = updated }
+        if streaming != liveTalkStreamingMessages { liveTalkStreamingMessages = streaming }
+    }
 
-        liveTalkStreamingMessages = transcripts.compactMap { transcript in
-            let key = liveTalkTranscriptKey(for: transcript)
-            guard !transcript.isFinal,
-                  !committedLiveTalkTranscriptIDs.contains(key) else { return nil }
-            let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
-            let messageID = liveTalkTranscriptMessageIDs[key] ?? UUID()
-            let date = liveTalkTranscriptDates[key] ?? Date()
-            liveTalkTranscriptMessageIDs[key] = messageID
-            liveTalkTranscriptDates[key] = date
-            return .init(
-                id: messageID,
-                role: transcript.role == .user ? .user : .assistant,
-                text: text,
-                date: date,
-                isEligibleForAIContext: false,
-                historyPersistence: .ephemeral
-            )
+    private func avatarReactionUsers(for replyID: UUID) -> [ConversationMessage] {
+        guard let index = messages.firstIndex(where: { $0.id == replyID }) else { return [] }
+        let preceding = messages.prefix(index)
+        let liveIDs = Set(liveTalkTranscriptMessageIDs.values)
+        guard liveIDs.contains(replyID) else {
+            return preceding.last(where: { $0.role == .user }).map { [$0] } ?? []
         }
+        // A spoken reply can have several assistant segments. Skip those,
+        // then join its preceding user segments, staying inside this call.
+        let currentCall = preceding.reversed().prefix(while: { liveIDs.contains($0.id) })
+        return Array(currentCall.drop(while: { $0.role == .assistant })
+            .prefix(while: { $0.role == .user }).reversed())
+    }
+
+    func avatarReactionUserText(for replyID: UUID) -> String {
+        avatarReactionUsers(for: replyID).map(\.text).joined(separator: " ")
+    }
+
+    func avatarReactionTurnID(for replyID: UUID) -> String {
+        if let first = avatarReactionUsers(for: replyID).first { return first.id.uuidString }
+        let liveIDs = Set(liveTalkTranscriptMessageIDs.values)
+        if liveIDs.contains(replyID), let first = messages.first(where: { liveIDs.contains($0.id) }) {
+            return first.id.uuidString
+        }
+        return replyID.uuidString
     }
 
     func endLiveTalkTranscriptSession() {
@@ -1065,19 +1078,6 @@ final class ConversationModel: ObservableObject {
         guard !input.isEmpty else { return }
         stopSpeechOutput()
         pendingScreenContextSubmission = nil
-
-        if let avatarID = aiConfiguration?.activeAvatarID {
-            isWorking = true
-            let answer = await OpenClam3DOptionsStore.shared.command(input, for: avatarID, isText: true)
-            isWorking = false
-            if let answer {
-                messages.append(.init(role: .user, text: input))
-                reply(answer)
-                onSubmissionSaved?()
-                _ = await persistConversationHistory()
-                return
-            }
-        }
 
         if let aiConfiguration,
            let remoteBinding = aiConfiguration.conversationRoute(
@@ -3049,7 +3049,7 @@ extension ConversationModel {
                 input: input,
                 instructions: promptContext.applyingPersona(to: replyOnly
                     ? Self.replyOnlyAgentInstructions
-                    : Self.agentInstructionsWithTrustedClock()) + (dynamicMotions ? "\n" + OpenClam3DReaction.prompt : ""),
+                    : Self.agentInstructionsWithTrustedClock()) + (dynamicMotions ? "\n" + OpenClam3DReaction.prompt(motions: motionStore.catalogues[aiConfiguration.activeAvatarID]?.motions ?? []) : ""),
                 tools: try Self.agentTools(forLatestUserInput: latestUserInput),
                 executor: executor,
                 onPartialText: { text in

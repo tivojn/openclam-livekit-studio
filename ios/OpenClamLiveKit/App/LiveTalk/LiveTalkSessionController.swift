@@ -2089,7 +2089,7 @@ final class LiveTalkSessionController: ObservableObject {
         handleTTSTimingUserMessages(session.messages, session: session)
         cancelAgentTurnIfUserBargedIn(messages: session.messages)
         transcriptWindow.replace(with: Self.boundedTranscripts(from: session.messages))
-        transcripts = transcriptWindow.items
+        if transcripts != transcriptWindow.items { transcripts = transcriptWindow.items }
         if let latest = transcripts.last(where: { $0.role == .agent }),
            !latest.text.isEmpty {
             lastAgentTranscript = latest.text
@@ -2117,20 +2117,35 @@ final class LiveTalkSessionController: ObservableObject {
         from messages: [ReceivedMessage],
         limit: Int = 12
     ) -> [LiveTalkTranscript] {
-        let converted = messages.compactMap { message -> LiveTalkTranscript? in
+        // Recognition segments are transport fragments, not conversation turns.
+        // Keep consecutive spoken user fragments under the first stable ID;
+        // agent output or an explicit text input is a real turn boundary.
+        var converted: [LiveTalkTranscript] = []
+        var joiningSpeech = false
+        for message in messages {
             let role: LiveTalkTranscript.Role
             let rawText: String
+            let spokenUser: Bool
             switch message.content {
             case let .agentTranscript(text):
-                role = .agent
-                rawText = text
-            case let .userTranscript(text), let .userInput(text):
-                role = .user
-                rawText = text
+                role = .agent; rawText = text; spokenUser = false
+            case let .userTranscript(text):
+                role = .user; rawText = text; spokenUser = true
+            case let .userInput(text):
+                role = .user; rawText = text; spokenUser = false
             }
             let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
-            return .init(id: message.id, role: role, text: text, isFinal: message.isFinal)
+            guard !text.isEmpty else { continue }
+            if spokenUser, joiningSpeech, let previous = converted.last {
+                converted[converted.count - 1] = .init(
+                    id: previous.id, role: .user,
+                    text: previous.text + " " + text,
+                    isFinal: previous.isFinal && message.isFinal
+                )
+            } else {
+                converted.append(.init(id: message.id, role: role, text: text, isFinal: message.isFinal))
+            }
+            joiningSpeech = spokenUser
         }
         return Array(converted.suffix(max(1, limit)))
     }

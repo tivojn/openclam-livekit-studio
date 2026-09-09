@@ -1,8 +1,10 @@
 import '/avatar3d.js';
 import {Avatar3DMotion} from '/avatar3d-motion.js';
-import {CompanionController, avatarIntent, motionIntent} from '/avatar3d-companion.js';
+import {CompanionController, AvatarStudioStage, isSpatialAction, avatarIntent, motionIntent} from '/avatar3d-companion.js';
 let avatar, latest, loading, reported = false, failed = false;
 let companion, lastConversation = '', actionGeneration = 0, lastMotion = '';
+let travelOffset={x:0,y:0}, travelClip=false, approachWalking=false, approachNativeCrop, lastNativeLayout='';
+let displayedViewport, stagePreparing=false, stageTurning=false, previousSurface;
 const originalError = console.error;
 const generation = Number(new URLSearchParams(location.search).get('generation'));
 const report = body => window.webkit.messageHandlers.avatarStatus.postMessage({...body,generation});
@@ -82,22 +84,45 @@ window.avatarCommand = async (value, isText = false) => {
   if (!companion || !reported || failed) return null;
   const action = isText ? avatarIntent(value) || motionIntent(value,avatar.motion.clips) : value;
   if (!action) return null;
-  ++actionGeneration;
+  ++actionGeneration;stagePreparing=false;
+  if(action==='reset-view'){
+    companion.command('pose');avatar.motion.stop();avatar.resetCameraApproach();avatar.studioStage=null;avatar.studioDistance=null;avatar.frame();
+    travelOffset={x:0,y:0};travelClip=false;approachWalking=false;approachNativeCrop=null;return '';
+  }
   if (action === 'reactions-on' || action === 'reactions-off') {
     companion.reactions = action === 'reactions-on'; companion.pendingReaction = null;
     preference('dynamicMotions',companion.reactions);
     return companion.reactions ? 'Dynamic motions are on.' : 'Dynamic motions are off.';
   }
   companion.command(action); avatar.motion.stop();
+  travelClip=false;approachWalking=false;
+  if(action!=='stay'&&isSpatialAction(action)){
+    if(latest.state.reduce)return 'Turn off Reduce Motion to walk across the stage.';
+    const generation=actionGeneration;stagePreparing=true;
+    try {
+      await avatar.motion.prepare(action==='run-around'?'hello-run':'walk');
+      if(generation!==actionGeneration)return null;
+      const box=avatar.canvas.getBoundingClientRect(),surface={x:0,y:0,width:box.width,height:box.height};
+      const crop=displayedViewport||latest.crop,scale=surface.width/crop.w;
+      if(!avatar.studioStage){
+        avatar.studioStage=new AvatarStudioStage({scale,x:-crop.x*scale,y:-crop.y*scale},avatar.layout(),surface);
+        avatar.lockStudioLens();travelOffset={x:0,y:0};
+        avatar.studioStage.calibrate(avatar);
+      }
+      companion.yaw=avatar.orbit.yaw;
+      avatar.studioStage.facingYaw=avatar.orbit.yaw;
+      const destination=avatar.studioStage.destination(action,surface);
+      if(destination)companion.destination=destination;
+      preference('followCursor',true);
+      return 'Moving across the stage.';
+    } finally {if(generation===actionGeneration)stagePreparing=false;}
+  }
+  avatar.stopCameraApproach(performance.now());
   if (action === 'stay') {
     preference('dynamicMotions',false); preference('playTransitions',false);
     motionStatus('Stopped'); return 'I’ll stay here.';
   }
   if (latest.state.reduce) return 'Turn off Reduce Motion in Accessibility to play body motions.';
-  if (action === 'follow' || action === 'come') {
-    preference('followCursor',true);
-    return 'I’ll look toward your touch or pointer. Pinch to resize, or use two fingers to move me.';
-  }
   report({event:'motion-framing'});
   const pose = {heart:'Ps001.heart',sit:'Ps004.sit',stand:''}[action];
   if (pose !== undefined) {
@@ -125,7 +150,7 @@ window.avatarCommand = async (value, isText = false) => {
   } catch (_) { motionStatus('Could not load motion. Try again.'); return 'I couldn’t load that motion. Please try again.'; }
 };
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { ++actionGeneration; avatar?.motion?.stop(); if(companion)companion.pendingReaction=null; }
+  if (document.hidden) { ++actionGeneration; avatar?.motion?.stop();avatar?.stopCameraApproach(performance.now());if(companion)companion.pause(performance.now()); }
 });
 // The camera crop and displayed CSS canvas must have the same aspect ratio.
 // Read the actual surface, including keyboard/safe-area layout changes, and
@@ -150,30 +175,59 @@ function draw(now) {
     const turn = latest.conversation;
     if (turn?.id && turn.id !== lastConversation) {
       lastConversation = turn.id;
-      if (Date.now()-Number(turn.created)<15000 && !motionIntent(turn.user,avatar.motion.clips))
-        companion.consider(turn.user,turn.reply,turn.suggestion,now);
+      if (Date.now()-Number(turn.created)<15000)
+        companion.consider(turn.user,turn.reply,turn.suggestion,now,{clips:avatar.motion.clips,turnID:turn.turnID||turn.id});
     }
     const reaction = companion.takeReaction(now,avatar.motion.clips,
-      state.reduce || Boolean(avatar.motion.active || avatar.motion.pending), {hasProp:Boolean(latest.options?.prop)});
-    if (reaction) {
+      state.reduce || Boolean((avatar.motion.active && !companion.pendingReaction?.action && !companion.pendingReaction?.clipID) || avatar.motion.pending), {hasProp:Boolean(latest.options?.prop)});
+    if (reaction?.startsWith('action:')) {
+      void window.avatarCommand(reaction.slice(7),false);
+    } else if (reaction) {
       const generation = actionGeneration;
       void avatar.motion.play(reaction,{loop:false}).then(played => {
         if (played && generation === actionGeneration) motionStatus('Playing: ' + avatar.motion.clips.get(reaction).label);
       }).catch(() => motionStatus('Could not load motion. Try again.'));
     }
   }
-  avatar.setOrbit(latest.orbit);
+  if(!companion?.walking&&!companion?.roam&&!companion?.follow&&!companion?.come&&!companion?.destination&&!stageTurning)avatar.setOrbit(latest.orbit);
   const surface = avatar.canvas.getBoundingClientRect();
   if (!(surface.width > 0 && surface.height > 0)) return;
   const density = Math.min(window.devicePixelRatio || 1, 2048 / Math.max(surface.width,surface.height));
-  const viewport = fitAvatarViewport(latest.crop, surface.width, surface.height, density);
+  const resized=previousSurface&&(previousSurface.width!==surface.width||previousSurface.height!==surface.height);
+  const nativeLayout=JSON.stringify([latest.crop.x,latest.crop.y,latest.crop.w,latest.crop.h,latest.orbit?.yaw,latest.orbit?.pitch]);
+  if(lastNativeLayout&&nativeLayout!==lastNativeLayout&&!resized){
+    stageTurning=false;companion?.pause(now);avatar.stopCameraApproach(now);
+    avatar.setOrbit(latest.orbit);if(avatar.studioStage)avatar.studioStage.facingYaw=avatar.orbit.yaw;
+    if(travelClip||approachWalking)avatar.motion?.stop();travelClip=false;approachWalking=false;
+  }
+  lastNativeLayout=nativeLayout;
+  let viewport = fitAvatarViewport(latest.crop, surface.width, surface.height, density);
+  if(companion&&avatar.studioStage){
+    const stage=avatar.studioStage,safe={x:0,y:0,width:surface.width,height:surface.height};
+    const nativeFit={scale:surface.width/viewport.w,x:-viewport.x*surface.width/viewport.w,y:-viewport.y*surface.height/viewport.h};
+    if(!resized)stage.manual(nativeFit,safe);else stage.manualFit=nativeFit;
+    const gait=companion.roam==='run-around'?'hello-run':'walk';
+    const step=stage.step(companion,now,safe,{cursorX:(latest.pointer?.x||0)*surface.width,cursorY:(latest.pointer?.y||0)*surface.height,
+      strideSpeed:avatar.motion.clips.get(gait)?.ready?.forwardSpeed,
+      seen:Boolean(latest.pointer),blocked:stagePreparing||Boolean(avatar.motion.active&&!['walk','hello-run'].includes(avatar.motion.active.id)),reduce:state.reduce});
+    if(step.walking&&!travelClip){travelClip=true;void avatar.motion.play(gait,{loop:true}).catch(()=>{companion.command('stay');travelClip=false;motionStatus('Could not load motion. Try again.');});}
+    else if(!step.walking&&travelClip){travelClip=false;avatar.motion.stop();}
+    if(travelClip)avatar.motion.setPlaybackRate(step.gaitRate,now);
+    if(now>=companion.pauseUntil&&(companion.roam||companion.follow||companion.come||companion.destination||step.walking||stageTurning)){
+      stageTurning=Math.abs(step.yaw)>.005;avatar.setOrbit({yaw:step.yaw,pitch:0});
+    }
+    const fit=stage.project(safe);
+    viewport={...viewport,x:-fit.x/fit.scale,y:-fit.y/fit.scale,w:surface.width/fit.scale,h:surface.height/fit.scale};
+  }
+  previousSurface={width:surface.width,height:surface.height};
+  displayedViewport={...viewport};
   const lookTarget = latest.pointer ? avatar.gazePoint({
     x:viewport.x + latest.pointer.x * viewport.w,
     y:viewport.y + latest.pointer.y * viewport.h,
   }) : null;
   const expression = {...state.expression}, mood = avatar.motion?.expression(now,state.reduce) || {};
   for (const key of Object.keys(mood)) expression[key] = Math.max(expression[key] || 0,mood[key]);
-  avatar.render(now, {...state,expression,lookTarget}, viewport);
+  avatar.render(now, {...state,expression,lookTarget,cameraFocus:Boolean(companion?.cameraFocus)}, viewport);
   if (!reported) {reported=true;document.querySelector('#status').remove();report({event:'rendered'});}
 }
 report({event:'page-ready'});

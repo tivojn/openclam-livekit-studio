@@ -47,7 +47,8 @@ assert.doesNotMatch(source, /navigator\.userAgent/);
 assert.equal((source.match(/id="liveTalkButton"/g) || []).length, 1);
 assert.match(source, /data-state="idle" aria-label="Start Live Talk"/);
 assert.match(source, /setLiveButton\('connected'\)/);
-assert.match(source, /const toggleLiveTalk = \(\) => \{[\s\S]{0,120}if \(live\) stopLiveTalk\('ended'\);[\s\S]{0,80}else startLiveTalk\(\);/);
+assert.match(source, /const toggleLiveTalk = \(\) => \{\s*markActivity\(\);\s*if \(live\) stopLiveTalk\('ended'\);\s*else if\(sharedLivePhase!=='idle'&&shell\?\.endSharedLiveTalk\)shell\.endSharedLiveTalk\(\);\s*else startLiveTalk\(\);/,
+  'the waveform must hang up the existing call from either view before allowing a new call');
 
 // The old rail chat shortcut is now a local avatar carousel. Chat/PTT remains
 // discoverable before an avatar exists through the canvas/menu and the empty
@@ -1885,7 +1886,8 @@ assert.match(source, /openclam\.chat\.close-up-offset\.v1/,
   'the close-up drag position must persist independently from standard framing');
 assert.match(source, /const chatPoseRevisionChanged = Number\(value\.chatPoseRevision \|\| 0\)[\s\S]{0,160}Number\(shellState\.chatPoseRevision \|\| 0\)/,
   'an explicit close-up or standby selection must remain observable when its Boolean state is unchanged');
-assert.match(source, /if \(closeUpChanged \|\| chatPoseRevisionChanged \|\| factoryResetChanged\) \{[\s\S]{0,220}clearLocalTransientDisplayMode\(\);[\s\S]{0,140}markActivity\(\{ preserveDisplayMode: true \}\);/,
+const savedPoseReset=source.match(/if \(closeUpChanged \|\| chatPoseRevisionChanged \|\| factoryResetChanged\) \{([\s\S]*?)\n      \}/)?.[1] || '';
+assert.match(savedPoseReset, /clearLocalTransientDisplayMode\(\);\s*markActivity\(\{ preserveDisplayMode: true \}\);/,
   're-selecting a saved pose must immediately leave its temporary edge-idle presentation');
 assert.match(source, /const factoryResetChanged = Number\(value\.factoryResetRevision \|\| 0\)[\s\S]{0,180}Number\(shellState\.factoryResetRevision \|\| 0\)/,
   'the explicit factory-reset action must publish a reset revision even when the current mode Boolean is unchanged');
@@ -2174,7 +2176,8 @@ assert.equal(composerDraft.focusCalls, 1);
 assert.deepEqual(composerDraft.restoredSelection, [2, 9, 'forward']);
 assert.equal(composerDraft.value, 'unfinished draft');
 assert.match(source, /if \(avatarOnlyMotion\) \{ event\.preventDefault\(\); return; \}/);
-assert.match(source, /async function startRecording\(\) \{\n      if \(avatarOnlyMotion \|\| ptt \|\| live \|\| turnController\) return;/);
+assert.match(source, /async function startRecording\(\) \{\n      if \(avatarOnlyMotion \|\| ptt \|\| live \|\| liveStarting \|\| liveStopping \|\| sharedLivePhase!=='idle' \|\| turnController\) return;/,
+  'push-to-talk must not open another microphone while a call in either view is starting, active, or ending');
 
 // Cursor attention uses the full desktop feed, but saturates before the edge
 // of the calibrated iris atlas and eases there rather than teleporting. The

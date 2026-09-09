@@ -555,6 +555,16 @@ async def test_xai_timeout_endpoints_two_questions_as_two_complete_turns() -> No
 
     session = create_session(pipeline)
     assert session.options.preemptive_generation["enabled"] is False
+    # Preserve streamed recognition while tolerating a pause in “I mean ... dancing”.
+    from livekit.agents.voice.endpointing import create_endpointing
+    endpoint = create_endpointing(session.options.endpointing)
+    endpoint.on_start_of_speech(1.0)
+    endpoint.on_end_of_speech(1.3)
+    assert endpoint.min_delay > 0.5
+    endpoint.on_start_of_speech(1.8)
+    endpoint.on_end_of_speech(2.3)
+    assert endpoint.min_delay >= 0.65
+    assert endpoint.max_delay <= 2.5
 
 
 @pytest.mark.asyncio

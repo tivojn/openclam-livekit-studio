@@ -213,13 +213,21 @@ SAFETY_INSTRUCTIONS = textwrap.dedent(
     encouraging qualified professional help when appropriate.
 
     Keep ordinary conversation on this low-latency voice model. When the latest
-    spoken turn asks to use an external capability, perform an action, search live
+    spoken turn asks to use an external capability, perform an external action, search live
     or nearby information, create media, work with files, email or message someone,
     or use the user's selected foreground OpenClaw agent, call
     use_foreground_agent exactly once.
     That no-argument tool binds the exact finalized transcript itself; never rewrite
     or broaden it. Do not call it for greetings, casual conversation, creative prose,
-    or stable knowledge you can answer directly. Only repeat the bounded result
+    or stable knowledge you can answer directly. On-screen avatar animation is
+    conversational expression, not an external action: do not call this tool for
+    dancing, poses, gestures, or following the cursor. The LLM owns the reply and
+    decides whether a demonstration fits the whole exchange. A keyword alone does
+    not request a performance. Use the installed animation names in the avatar
+    data only as capability information; do not invent unavailable animations.
+    When choosing a demonstration, speak a natural affirmative intention with its
+    name so the app can accompany your reply. Never substitute a canned reply or
+    claim playback succeeded without confirmation. Only repeat the bounded result
     returned by that trusted foreground route. OpenClaw remains responsible for its
     normal tool and approval policy, and requests are never silently retried with
     another agent. Never independently claim that you completed an external action,
@@ -968,7 +976,8 @@ class OpenClamVoiceAgent(Agent):
         external or device action, search current/local/nearby information, use
         files, create media, email or message someone, or explicitly use OpenClaw.
         Do not call for greetings, casual conversation, creative prose, or stable
-        knowledge. This tool takes no request argument: it securely binds and sends
+        knowledge, or on-screen avatar animations, poses, dances, and cursor following.
+        This tool takes no request argument: it securely binds and sends
         the exact latest finalized user transcript. The foreground app owns every
         approval and confirmation; this tool cannot approve, broaden, or silently
         retry the request.
@@ -1053,6 +1062,9 @@ def create_session(pipeline: Pipeline) -> AgentSession:
         tts=pipeline.tts,
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
+            # Captions still stream immediately. Wait through a short mid-phrase
+            # pause before answering, and learn the speaker's pause pattern.
+            endpointing={"mode": "dynamic", "min_delay": 0.65, "max_delay": 2.5},
             interruption={"mode": "adaptive"},
             preemptive_generation={
                 "enabled": pipeline.preemptive_generation_enabled

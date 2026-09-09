@@ -61,3 +61,29 @@ for (const [, script] of source.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/scrip
 }
 
 console.log('custom menu accessibility QA passed');
+
+// Opening Dynamic motions replaces the root menu. The old native window can
+// deliver blur/load after its replacement exists; it must not close that menu.
+const vm = require('node:vm'), {EventEmitter} = require('node:events');
+const main = fs.readFileSync(path.join(root,'electron/main.cjs'),'utf8');
+const created=[];
+class MenuWindow extends EventEmitter {
+  constructor(){super();this.webContents=new EventEmitter();this.webContents.setZoomFactor=()=>{};
+    this.webContents.setVisualZoomLevelLimits=()=>{};created.push(this);}
+  setAlwaysOnTop(){}setVisibleOnAllWorkspaces(){}loadURL(){}
+  isDestroyed(){return Boolean(this.destroyed);}destroy(){this.destroyed=true;}
+}
+const posted=[];
+const context={BrowserWindow:MenuWindow,screen:{getCursorScreenPoint:()=>({x:10,y:20})},
+  path,__dirname:path.join(root,'electron'),guardNavigation(){},baseUrl:()=>'',post:(...args)=>posted.push(args)};
+vm.createContext(context);
+vm.runInContext(main.slice(main.indexOf('let menuWindow = null;'),main.indexOf('function createSpeechBubbleWindow()'))
+  +'\nthis.open=showMenuWindow;',context);
+context.open([{name:'Root'}]);const old=created[0];
+context.open([{name:'Dynamic motions'}]);const replacement=created[1];
+old.emit('blur');old.webContents.emit('did-finish-load');
+assert(!replacement.isDestroyed(),'an old blur cannot dismiss the replacement menu');
+assert.equal(posted.length,0,'an old load cannot overwrite the replacement menu contents');
+replacement.webContents.emit('did-finish-load');assert.equal(posted[0][0],replacement);
+replacement.emit('blur');assert(replacement.isDestroyed(),'real focus departure still dismisses the active menu');
+console.log('Desktop menu replacement survives late blur/load from its predecessor.');

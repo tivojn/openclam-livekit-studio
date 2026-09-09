@@ -8,6 +8,7 @@ are changed. Private source assets and generated clips stay outside Git.
 import argparse
 import json
 import math
+import statistics
 import struct
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ parser = argparse.ArgumentParser()
 for key in ('blend', 'model', 'motion', 'output', 'name'):
     parser.add_argument('--' + key, required=True)
 parser.add_argument('--preset', action='store_true', help='Transfer a Meshy preset rig and preserve airborne motion')
+parser.add_argument('--in-place', action='store_true', help='Remove net locomotion; preserve weight shift for screen-space walking')
 args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 bpy.ops.wm.open_mainfile(filepath=args.blend)
 scene = bpy.context.scene
@@ -57,6 +59,21 @@ action = donor.animation_data.action
 start, end = map(int, action.frame_range)
 fps = scene.render.fps / scene.render.fps_base
 donor_rest = {b.name: donor.matrix_world @ b.matrix_local for b in donor.data.bones}
+
+def supported_head_delta(chest, rotation, soft_degrees, fallback_degrees):
+    """Fade an impossible source look back to the animated torso.
+
+    Some donor clips keep the head world-facing during a body turn. Copying
+    that track verbatim twists Tia's neck backwards. Preserve ordinary looks,
+    but smoothly inherit the chest for invalid ones. Fading out before 180
+    degrees also avoids a left/right snap at the quaternion branch cut.
+    """
+    relative = chest.inverted() @ rotation
+    angle = math.degrees(relative.angle)
+    angle = min(angle, 360 - angle)
+    u = max(0.0, min(1.0, (angle - soft_degrees) / (fallback_degrees - soft_degrees)))
+    weight = 1 - u*u*(3 - 2*u)
+    return chest @ Quaternion().slerp(relative, weight)
 mapping = [('c_root_master.x', 'Pelvis'), ('c_root.x', 'Pelvis'),
            ('c_spine_01.x', 'Spine1'), ('c_spine_02.x', 'Spine1'),
            ('c_spine_03.x', 'Spine2'), ('c_spine_04.x', 'Spine2'),
@@ -85,6 +102,25 @@ for side, prefix in [('l', 'L'), ('r', 'R')]:
     # The wrist follows the calibrated forearm basis; finger articulation
     # uses Tia's authored neutral hand until a hand pose is selected.
     align['c_hand_fk.' + side] = align['c_forearm_fk.' + side]
+    # A preset FBX's bind pose can be the first running/kicking frame. Its
+    # ankle and toe bases are therefore not necessarily standing flat. Match
+    # the anatomical foot directions too; copying only their deltas makes a
+    # supporting foot curl upwards when the donor leaves that initial pose.
+    foot = arm.pose.bones['foot.' + side]
+    toe = arm.pose.bones['toes_01.' + side]
+    donor_foot = donor_rest[prefix + '_Foot']
+    donor_ankle = donor_rest[prefix + '_Ankle']
+    align['c_foot_fk.' + side] = (foot.tail-foot.head).normalized().rotation_difference(
+        (donor_foot.translation-donor_ankle.translation).normalized())
+    if args.preset:
+        toe_direction = donor_foot.to_3x3() @ Vector((0, 1, 0))
+    else:
+        # SMPL-H terminal joints have arbitrary display-bone tails (often
+        # straight up), not toe-tip landmarks. Their neutral toes point along
+        # the footprint; joint rotation deltas still supply the articulation.
+        toe_direction = donor_foot.translation-donor_ankle.translation
+        toe_direction.z = 0
+    align['c_toes_fk.' + side] = (toe.tail-toe.head).normalized().rotation_difference(toe_direction.normalized())
     for control in ['c_foot_ik.', 'c_hand_ik.']:
         arm.pose.bones[control + side]['ik_fk_switch'] = 1.0
 
@@ -122,6 +158,16 @@ output_fps = (samples-1)*fps/(end-start)
 scene.frame_set(start)
 bpy.context.view_layer.update()
 root_start = (donor.matrix_world @ donor.pose.bones['Pelvis'].matrix).translation.copy()
+# Transfer the pelvis trajectory in all three axes, scaled to Tia's leg
+# length. Keeping X/Y fixed makes planted feet swing around a suspended hip.
+tia_leg = sum((control_rest[b+'.l'].translation-control_rest[a+'.l'].translation).length
+              for a,b in [('c_thigh_fk','c_leg_fk'),('c_leg_fk','c_foot_fk')])
+donor_leg = sum((donor_rest['L_'+b].translation-donor_rest['L_'+a].translation).length
+                for a,b in [('Hip','Knee'),('Knee','Ankle')])
+travel_scale = tia_leg / donor_leg
+
+scene.frame_set(end);bpy.context.view_layer.update()
+root_drift = (donor.matrix_world @ donor.pose.bones['Pelvis'].matrix).translation-root_start
 donor_floor = {}
 if args.preset:
     for frame in frame_times:
@@ -129,6 +175,7 @@ if args.preset:
         donor_floor[frame] = min((donor.matrix_world @ donor.pose.bones[s+'_Ankle'].matrix).translation.z for s in ('L','R'))
     floor_base = min(donor_floor.values())
 min_feet = min(control_rest['c_foot_fk.' + s].translation.z for s in ('l', 'r'))
+foot_samples = []
 for frame_index,frame in enumerate(frame_times):
     scene.frame_set(math.floor(frame),subframe=frame%1)
     for pb in arm.pose.bones:
@@ -139,6 +186,10 @@ for frame_index,frame in enumerate(frame_times):
     pelvis_delta = deltas['Pelvis']
     chest_delta = pelvis_delta @ Quaternion().slerp(pelvis_delta.inverted() @ deltas['Spine3'], .65)
     chest_correction = chest_delta @ deltas['Spine3'].inverted()
+    # Evaluate head and neck in the torso frame, before retargeting the
+    # original controls. Hair, face and eyes then inherit the same rig motion.
+    deltas['Head'] = supported_head_delta(deltas['Spine3'], deltas['Head'], 45, 95)
+    deltas['Neck'] = supported_head_delta(deltas['Spine3'], deltas['Neck'], 25, 65)
     for target, source in mapping:
         pb = arm.pose.bones[target]
         rotation = deltas[source]
@@ -161,7 +212,9 @@ for frame_index,frame in enumerate(frame_times):
         position = current.translation
         if target == 'c_root_master.x':
             position = control_rest[target].translation.copy()
-            position.z += (pose_world['Pelvis'].translation.z - root_start.z)
+            travel = pose_world['Pelvis'].translation-root_start
+            if args.in_place:travel -= root_drift*(frame_index/(samples-1))
+            position += travel*travel_scale
         pb.matrix = Matrix.LocRotScale(position, rotation, control_rest[target].to_scale())
         bpy.context.view_layer.update()
     # Keep the supporting foot on the original floor. Retargeted leg lengths
@@ -176,6 +229,7 @@ for frame_index,frame in enumerate(frame_times):
     root.matrix = m
     bpy.context.view_layer.update()
     evaluated = arm.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    foot_samples.append([(C @ evaluated.matrix_world @ evaluated.pose.bones['foot.'+side].matrix).translation.copy() for side in ('l','r')])
     targets = {}
     for i in bone_ids:
         name = nodes[i]['name']
@@ -196,8 +250,27 @@ for frame_index,frame in enumerate(frame_times):
     frames.append(values)
     if frame_index % 30 == 0:
         print('BAKED', args.name, frame - start, 'of', end - start + 1, flush=True)
+forward_speed = math.hypot(root_drift.x,root_drift.y)*travel_scale/max(.001,(end-start)/fps)
+speed_source = 'root-trajectory'
+if args.in_place and forward_speed < .1:
+    # Some presets are already in place. Their supporting foot travels
+    # backwards relative to the hip at the intended forward running speed.
+    supporting_speeds = []
+    for before,after in zip(foot_samples,foot_samples[1:]):
+        heights = [(before[s].y+after[s].y)/2 for s in (0,1)]
+        for side in (0,1):
+            speed = (before[side].z-after[side].z)*output_fps
+            if speed > .05 and heights[side] <= min(heights)+tia_leg*.06:
+                supporting_speeds.append(speed)
+    if supporting_speeds:
+        forward_speed = statistics.median(supporting_speeds)
+        speed_source = 'supporting-foot'
 result = {'version': 1, 'id': args.name, 'label': args.name.title(),
           'source': ('Meshy preset' if args.preset else 'Meshy text-to-motion') + ', retargeted to the original Tia rig',
+          'retargeting': {'version': 3, 'pelvisTranslation': 'xyz', 'travelScale': round(travel_scale, 7), 'inPlace': args.in_place,
+                          'forwardSpeed': round(forward_speed,7) if args.in_place else 0, 'forwardSpeedSource': speed_source,
+                          'headReference': 'torso', 'invalidHeadTrack': 'smooth-fallback',
+                          'footBasis': 'anatomical-ankle-and-toe'},
           'fps': output_fps, 'bones': bone_names, 'frames': frames,
           'bounds': [[round(v-.12,5) for v in envelope_min], [round(v+.12,5) for v in envelope_max]],
           'loop': args.name in ('walk', 'dance')}

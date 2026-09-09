@@ -21,6 +21,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
+const { LiveTalkOwner } = require('./live-talk-owner.cjs');
 const { companionStep } = require('./companion-move.cjs');
 const {
   boundsForPetZoom,
@@ -119,7 +120,7 @@ let appearancePushAt = 0;
 let petMotionReady = false;
 const avatarRendererKinds = new WeakMap();
 const avatarOptionCatalogues = new WeakMap();
-let liveTalkActive = false;
+const liveTalk = new LiveTalkOwner(() => [mainWindow, chatWindow], post);
 let chatMode = false;
 let chatCloseUp = false;
 let chatCloseUpBaseZoom = 1;
@@ -852,19 +853,8 @@ function chatWindowBounds() {
 function setChatMode(value) {
   if (!mainWindow || mainWindow.isDestroyed()) return shellState();
   const next = Boolean(value);
-  // LiveKit audio, lip-sync, and the avatar gesture session belong to the
-  // Avatar renderer. Switching windows mid-call would move the user away from
-  // the live renderer and make the companion appear silent, so the call owns
-  // Avatar mode until it ends.
-  if (next && liveTalkActive) {
-    chatMode = false;
-    state.interfaceMode = 'avatar';
-    if (chatWindow && !chatWindow.isDestroyed()) chatWindow.hide();
-    if (state.petOpacity > 0.001) mainWindow.showInactive();
-    saveStateSoon();
-    broadcastState();
-    return shellState();
-  }
+  // The call stays in its original renderer. Both presentations share its
+  // controls and visual state; switching never acquires another microphone.
   // Opening an already-open Chat/Talk window is an idempotent focus request.
   // Message submission calls this path before every turn; it must not discard
   // the user's Cmd+Shift+9 presentation or its zoom baseline.
@@ -2202,8 +2192,9 @@ function showMenuWindow(spec, onDismiss = null) {
   menuWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   guardNavigation(menuWindow, 'menu');
   menuWindow.loadURL(`${baseUrl()}/menu?electron=1`);
+  const openedMenu = menuWindow;
   menuWindow.webContents.once('did-finish-load', () => {
-    if (menuWindow && !menuWindow.isDestroyed()) {
+    if (menuWindow === openedMenu && !openedMenu.isDestroyed()) {
       // Chromium persists page zoom PER ORIGIN: a zoomed Settings page (same
       // 127.0.0.1 origin) silently zooms this window too, so the menu renders
       // larger than it measured and the window clips its corners and last
@@ -2214,7 +2205,7 @@ function showMenuWindow(spec, onDismiss = null) {
     }
   });
   // Anywhere else takes focus -> the menu is dismissed, like a native one.
-  menuWindow.on('blur', () => closeMenuWindow());
+  openedMenu.on('blur', () => { if (menuWindow === openedMenu) closeMenuWindow(); });
 }
 
 function createSpeechBubbleWindow() {
@@ -2840,6 +2831,10 @@ function showAvatarMotionMenu(owner) {
   showMenuWindow([
     {name:'React to conversation',type:'checkbox',checked:Boolean(library?.reactions),click:()=>perform('reactions')},
     {name:'Walk with cursor',type:'checkbox',checked:Boolean(library?.follow),click:()=>perform('follow')},
+    ...[['closer','Come closer'],['back','Step back'],['walk-around','Walk around'],['run-around','Run around']]
+      .filter(([id])=>clips.some(c=>c.id===(id==='run-around'?'hello-run':'walk')))
+      .map(([id,name])=>({name,click:()=>perform(id)})),
+    ...(clips.some(c=>c.id==='walk')?[{name:'Walk to…',submenu:[{name:'Upper left',click:()=>perform('go-upper-left')},{name:'Top',click:()=>perform('go-top')},{name:'Upper right',click:()=>perform('go-upper-right')},{name:'Left',click:()=>perform('go-left')},{name:'Center',click:()=>perform('go-center')},{name:'Right',click:()=>perform('go-right')},{name:'Lower left',click:()=>perform('go-lower-left')},{name:'Bottom',click:()=>perform('go-bottom')},{name:'Lower right',click:()=>perform('go-lower-right')}]}]:[]),
     {name:'Stop / stay',click:()=>perform('stay')},
     {type:'separator'},
     ...[...new Set(clips.map(c=>c.group||'Other'))].map(category=>({name:category,
@@ -2864,11 +2859,12 @@ function showPetMenu() {
     ] : []),
     { name: 'Open Chat/Talk', hint: 'full conversation workspace',
       click: showChat },
-    { name: liveTalkActive ? 'End Live Talk' : 'Live Talk',
-      hint: liveTalkActive ? 'hang up now' : 'double-click avatar',
+    { name: liveTalk.active ? 'End Live Talk' : 'Live Talk',
+      hint: liveTalk.active ? 'hang up now' : 'double-click avatar',
       click: () => {
         if (!owner.isDestroyed()) {
-          post(owner, 'openclam:live-toggle');
+          if (liveTalk.active) liveTalk.end(owner.webContents);
+          else post(owner, 'openclam:live-toggle');
         }
       } },
     { type: 'separator' },
@@ -2960,7 +2956,7 @@ function installIpc() {
     const bounds=window.getBounds();
     const remainder=previous&&previous.x===bounds.x&&previous.y===bounds.y&&elapsed<250
       ?previous.remainder:undefined;
-    const next=companionStep(bounds,screen.getDisplayMatching(bounds).workArea,step?.dx,step?.dy,elapsed,remainder);
+    const next=companionStep(bounds,screen.getDisplayMatching(bounds).workArea,step?.dx,step?.dy,elapsed,remainder,step?.running===true);
     if(next){
       companionLastStep.set(window,{at:now,x:next.x,y:next.y,remainder:next.remainder});
       if(next.x!==bounds.x||next.y!==bounds.y){window.setPosition(next.x,next.y,false);saveStateSoon();}
@@ -3010,6 +3006,12 @@ function installIpc() {
   });
   ipcMain.handle('openclam:set-pet-lock', (_event, value) => applyPetLock(value));
   ipcMain.handle('openclam:set-display-mode', (_event, value) => {
+    if (value === 'approach') {
+      const before=!chatMode&&mainWindow&&!mainWindow.isDestroyed()?mainWindow.getBounds():null;
+      if(before)deskCompanionMode();
+      const after=before?mainWindow.getBounds():null;
+      return {...shellState(),approachOrigin:before?{x:before.x-after.x,y:before.y-after.y}:null};
+    }
     if (value === 'standby') return standbyCompanionMode();
     if (value === 'close-up') {
       deskCompanionMode();
@@ -3251,9 +3253,11 @@ function installIpc() {
     petDrag = null;
     saveStateSoon();
   });
-  ipcMain.on('openclam:live-active', (_event, value) => {
-    liveTalkActive = Boolean(value);
-  });
+  ipcMain.handle('openclam:live-claim', event => liveTalk.claim(event.sender));
+  ipcMain.on('openclam:live-active', (event, value) => liveTalk.setPhase(event.sender, value));
+  ipcMain.on('openclam:live-end', event => liveTalk.end(event.sender));
+  ipcMain.handle('openclam:live-state', event => liveTalk.snapshot(event.sender));
+  ipcMain.on('openclam:live-frame', (event, frame) => liveTalk.shareFrame(event.sender, frame));
   ipcMain.handle('openclam:avatar-changed', () => {
     if (state.petRoam) applyPetRoam(false);
     petMotionReady = false;

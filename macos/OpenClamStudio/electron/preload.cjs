@@ -22,6 +22,7 @@ function subscribe(channel, callback) {
   };
 }
 
+let liveTalkLease = null;
 const api = Object.freeze({
   isElectron: true,
   getState: () => ipcRenderer.invoke('openclam:get-state'),
@@ -76,7 +77,18 @@ const api = Object.freeze({
   onDisplayModeRequest: (callback) => subscribe('openclam:display-mode-request', callback),
   onLiveToggle: (callback) => subscribe('openclam:live-toggle', callback),
   onAvatarStoreProgress: (callback) => subscribe('openclam:avatar-store-progress', callback),
-  setLiveTalk: (value) => ipcRenderer.send('openclam:live-active', Boolean(value)),
+  claimLiveTalk: async () => {
+    const lease = await ipcRenderer.invoke('openclam:live-claim');
+    if (lease) liveTalkLease = lease;
+    return Boolean(lease);
+  },
+  onLiveStop: callback => subscribe('openclam:live-stop', callback),
+  endSharedLiveTalk: () => ipcRenderer.send('openclam:live-end'),
+  getLiveTalkState: () => ipcRenderer.invoke('openclam:live-state'),
+  onLiveTalkState: callback => subscribe('openclam:live-state',callback),
+  onLiveTalkFrame: callback => subscribe('openclam:live-frame',callback),
+  shareLiveTalkFrame: frame => ipcRenderer.send('openclam:live-frame',{lease:liveTalkLease,frame}),
+  setLiveTalk: value => ipcRenderer.send('openclam:live-active',{lease:liveTalkLease,value}),
 });
 
 // The product bridge exposes app-local controls only: no device discovery,

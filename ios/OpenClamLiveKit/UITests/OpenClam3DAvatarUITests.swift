@@ -69,25 +69,152 @@ final class OpenClam3DAvatarUITests: XCTestCase {
         app.buttons["Done"].tap()
     }
 
-    func testTypedMotionCommandUsesLocalRenderer() throws {
+    func testKungFuEndingAndRunningFeet() throws {
         app.terminate()
         app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
-            "-captainAyer.overlay.mode", "closeup", "-captainAyer.overlay.opacity", "1"]
+            "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
         app.launch()
         let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
         XCTAssertTrue(renderer.waitForExistence(timeout: 15))
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed)
-        let compact = app.buttons["Message the AI assistant"]
-        if compact.exists { compact.tap() }
-        let composer = app.textFields["Message the AI assistant"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        composer.tap()
-        composer.typeText("Tia, do joyful sway")
-        app.buttons["Send message"].tap()
-        let answer = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Here’s Joyful Sway.")).firstMatch
-        XCTAssertTrue(answer.waitForExistence(timeout: 15), "A named motion must execute locally without asking an AI provider")
-        capture("dynamic-motion-typed-request")
+        openWardrobe()
+        app.buttons["openclam-3d-browse-motions"].tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("Kung Fu")
+        let punch = app.buttons["openclam-3d-motion-kung-fu-punch"]
+        XCTAssertTrue(punch.waitForExistence(timeout: 5))
+        punch.tap()
+        let status = app.staticTexts["openclam-3d-motion-status"].firstMatch
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "Playing: Kung Fu Punch"), object: status)], timeout: 15), .completed)
+        // iOS 26 replaces the navigation bar while search is active.
+        if app.buttons["close"].exists { app.buttons["close"].tap() }
+        app.navigationBars["Dynamic motions"].buttons["BackButton"].tap()
+        app.buttons["Done"].tap()
+        sleep(4)
+        capture("anatomy-kungfu-ending")
+        sleep(4)
+        capture("anatomy-kungfu-return-to-standing")
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        openWardrobe()
+        let run = app.buttons["Run around"]
+        for _ in 0..<5 where !run.isHittable { app.swipeUp() }
+        run.tap()
+        app.buttons["Done"].tap()
+        sleep(2)
+        capture("anatomy-running-feet")
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        openWardrobe()
+        app.buttons["Stop motion"].tap()
+        app.buttons["Done"].tap()
+    }
+
+    func testSpatialMotionsAndCloseApproach() throws {
+        func tapMotion(_ title: String) {
+            let button = app.buttons[title]
+            for _ in 0..<5 where !button.isHittable { app.swipeUp() }
+            XCTAssertTrue(button.waitForExistence(timeout: 5), title)
+            button.tap()
+        }
+        app.terminate()
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed)
+        capture("spatial-standing")
+        openWardrobe()
+        XCTAssertTrue(app.buttons["Walk around"].waitForExistence(timeout: 5))
+        tapMotion("Run around")
+        app.buttons["Done"].tap()
+        sleep(2)
+        capture("spatial-running-first")
+        sleep(3)
+        capture("spatial-running-later")
+        openWardrobe()
+        tapMotion("Come closer")
+        app.buttons["Done"].tap()
+        sleep(8)
+        capture("spatial-close-face")
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        openWardrobe()
+        tapMotion("Step back")
+        app.buttons["Done"].tap()
+        sleep(8)
+        capture("spatial-step-back")
+        openWardrobe()
+        tapMotion("Walk to…")
+        let upperRight = app.buttons["Upper right"]
+        if !upperRight.waitForExistence(timeout: 3) { app.buttons["Walk to…"].tap() }
+        XCTAssertTrue(upperRight.waitForExistence(timeout: 5))
+        upperRight.tap()
+        app.buttons["Done"].tap()
+        sleep(15)
+        capture("studio-upper-right-far")
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        openWardrobe()
+        tapMotion("Walk to…")
+        let center = app.buttons["Center"]
+        if !center.waitForExistence(timeout: 3) { app.buttons["Walk to…"].tap() }
+        XCTAssertTrue(center.waitForExistence(timeout: 5))
+        center.tap()
+        app.buttons["Done"].tap()
+        sleep(15)
+        capture("studio-center-normal")
+        openWardrobe()
+        tapMotion("Stop motion")
+        app.buttons["Done"].tap()
+        XCTAssertEqual(renderer.value as? String, "Ready")
+    }
+
+    func testLiveTalkGreetingDrivesDynamicMotion() throws {
+        app.terminate()
+        app.launchArguments += ["-ai.provider.settings.v2.active-avatar.v1", avatarID,
+            "-captainAyer.overlay.mode", "standby", "-captainAyer.overlay.interactionLayer", "avatar",
+            "-captainAyer.overlay.opacity", "1", "-captainAyer.overlay.hidden", "NO"]
+        app.launch()
+        let renderer = app.descendants(matching: .any)["openclam-shared-3d-renderer"]
+        XCTAssertTrue(renderer.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: renderer)], timeout: 120), .completed)
+        openWardrobe()
+        let reactions = app.switches["openclam-3d-dynamicMotions"]
+        XCTAssertTrue(reactions.exists)
+        if reactions.value as? String != "1" {
+            reactions.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        }
+        app.buttons["Done"].tap()
+        unfoldAvatarRail()
+        let phone = app.buttons["openclam-live-talk-rail-button"]
+        XCTAssertTrue(phone.waitForExistence(timeout: 5))
+        phone.tap()
+        capture("live-talk-start-requested")
+        defer {
+            if phone.label == "Hang up Live Talk" { phone.tap() }
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Live"), object: phone)], timeout: 45), .completed,
+            "The configured LiveKit session must connect to a real agent")
+        capture("live-talk-connected")
+        openWardrobe()
+        let status = app.staticTexts["openclam-3d-motion-status"].firstMatch
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH %@", "Playing:"), object: status)], timeout: 30), .completed,
+            "The actual agent greeting must start a bundled motion without a manual play command")
+        capture("live-talk-greeting-motion-status")
+        app.buttons["Done"].tap()
+        capture("live-talk-greeting-avatar")
+        XCTAssertEqual(renderer.value as? String, "Ready")
+        phone.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Ready"), object: phone)], timeout: 10), .completed)
     }
 
     func testWardrobeAndAuthoredPoses() throws {

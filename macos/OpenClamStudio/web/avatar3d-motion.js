@@ -60,7 +60,9 @@ export class Avatar3DMotion {
           ||data.bounds[0].some((v,i)=>v>data.bounds[1][i]))throw Error('Invalid motion bounds');
         bounds=new THREE.Box3(new THREE.Vector3(...data.bounds[0]),new THREE.Vector3(...data.bounds[1]));
       }
-      clip.ready={frames,indices,fps:data.fps,loop:Boolean(data.loop),bounds,cache:new Map()};
+      const speed=data.retargeting?.forwardSpeed;
+      clip.ready={frames,indices,fps:data.fps,loop:Boolean(data.loop),bounds,cache:new Map(),
+        forwardSpeed:Number.isFinite(speed)&&speed>.01&&speed<20?speed:0};
       const cached=[...this.clips.values()].filter(c=>c.ready).sort((a,b)=>(a.used||0)-(b.used||0));
       while(cached.length>this.cacheLimit){
         const victim=cached.find(c=>c!==clip&&c.ready!==this.active?.clip);
@@ -79,7 +81,7 @@ export class Avatar3DMotion {
     if(clip.cache.size>6)clip.cache.delete(clip.cache.keys().next().value);
     return transforms;
   }
-  async play(id,{loop,now}={}) {
+  async play(id,{loop,now,reverse=false}={}) {
     const generation=++this.generation;
     this.pending=generation;
     try {
@@ -107,7 +109,8 @@ export class Avatar3DMotion {
     const avatar=this.options.avatar;
     const bounds=clip.bounds&&avatar.model?.matrixWorld
       ? clip.bounds.clone().applyMatrix4(avatar.model.matrixWorld).union(this.options.restBounds) : null;
-    this.active={id,clip,loop:loop??clip.loop,start:now??performance.now(),from:this.options.current.slice(),hands,
+    const started=now??performance.now();
+    this.active={id,clip,loop:loop??clip.loop,reverse:Boolean(reverse),start:started,clockAt:started,seconds:0,rate:1,from:this.options.current.slice(),hands,
       fromBounds:avatar.bounds?.clone(),bounds,authoredHands};
     return true;
     } finally {if(this.pending===generation)this.pending=null;}
@@ -116,7 +119,7 @@ export class Avatar3DMotion {
     const action=this.active;
     if(!action||reduce)return {};
     const mood=this.clips.get(action.id)?.expression||{};
-    const elapsed=Math.max(0,(now-action.start)/1000);
+    const elapsed=this.elapsed(now);
     const duration=(action.clip.frames.length-1)/action.clip.fps;
     const gain=smooth(elapsed/.35)*(action.loop?1:smooth((duration-elapsed)/.5));
     return Object.fromEntries(['smile','sad','surprise','anger'].map(key=>
@@ -128,15 +131,27 @@ export class Avatar3DMotion {
     this.active=null;
     if(!immediate)this.options.applyPose(this.options.selection,performance.now());
   }
+  elapsed(now){
+    const action=this.active;
+    return action?Math.max(0,action.seconds+(now-action.clockAt)/1000*action.rate):0;
+  }
+  setPlaybackRate(rate,now=performance.now()){
+    if(!this.active||!Number.isFinite(rate))return;
+    // Integrate the old rate before changing it: braking or turning must
+    // never rewind, jump, or restart the planted-foot cycle.
+    this.active.seconds=this.elapsed(now);this.active.clockAt=now;
+    this.active.rate=Math.max(0,Math.min(3,rate));
+  }
   update(now,reduce=false) {
     if(reduce&&this.pending)this.stop();
     const action=this.active;
     if(!action)return false;
     if(reduce){this.stop();return false;}
     const {clip}=action, duration=(clip.frames.length-1)/clip.fps;
-    let seconds=Math.max(0,(now-action.start)/1000);
+    let seconds=this.elapsed(now);
     if(!action.loop&&seconds>=duration){this.stop();return false;}
     if(action.loop)seconds%=duration;
+    if(action.reverse)seconds=duration-seconds;
     const f=seconds*clip.fps, i=Math.min(clip.frames.length-1,Math.floor(f));
     let pose=blend(this.frame(clip,i),this.frame(clip,Math.min(i+1,clip.frames.length-1)),f-i);
     // Join a generated loop over its final 200ms, then blend into an action.

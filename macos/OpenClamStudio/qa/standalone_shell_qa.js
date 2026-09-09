@@ -182,8 +182,8 @@ assert.match(main, /globalShortcut\.register\(accelerator, standbyCompanionMode\
   'the system-wide Cmd+Shift+0 shortcut must restore the independently remembered Standby size');
 assert.match(preload, /setDisplayMode: \(value\) => ipcRenderer\.invoke\([\s\S]{0,100}'openclam:set-display-mode'/,
   'the isolated renderer bridge must expose one narrow display-mode command');
-assert.match(main, /ipcMain\.handle\('openclam:set-display-mode',[\s\S]{0,260}value === 'standby'[\s\S]{0,100}standbyCompanionMode\(\)[\s\S]{0,160}value === 'close-up'[\s\S]{0,100}deskCompanionMode\(\)/,
-  'Electron must route only remembered Standby and Close-up through the window geometry owner');
+assert.match(main, /ipcMain\.handle\('openclam:set-display-mode',[\s\S]{0,800}value === 'standby'[\s\S]{0,100}standbyCompanionMode\(\)[\s\S]{0,160}value === 'close-up'[\s\S]{0,100}deskCompanionMode\(\)/,
+  'Remembered Standby and Close-up still route through the geometry owner alongside perspective approach');
 assert.match(main, /label: 'Standby', accelerator: 'CommandOrControl\+Shift\+0',[\s\S]{0,120}registerAccelerator: false[\s\S]{0,80}standbyCompanionMode/,
   'the tray must label Cmd+Shift+0 as remembered Standby without registering a duplicate accelerator');
 assert.match(main, /label: 'Reset Avatar Size & Position', click: factoryResetCompanionMode/,
@@ -258,8 +258,8 @@ assert.match(main, /const ignore = !value;\s*mainWindow\.setIgnoreMouseEvents\(i
   'Transparent pixels must always pass input to the layer underneath');
 assert.match(main, /buddyWindow\.setIgnoreMouseEvents\(!value, \{ forward: true \}\);/,
   'The second avatar must share the same permanent gap behavior');
-assert.match(main, /function setChatMode\(value\)[\s\S]{0,1000}if \(next && liveTalkActive\)/,
-  'An active Live Talk must keep the lip-sync renderer in Avatar mode');
+assert.doesNotMatch(main, /if \(next && liveTalkActive\)/,
+  'An active call must allow either presentation while retaining one owner');
 assert.match(main, /const dragCursorPoint = \(point\) => \{[\s\S]{0,260}screen\.getCursorScreenPoint\(\)/,
   'Desktop dragging must use Electron global cursor coordinates');
 

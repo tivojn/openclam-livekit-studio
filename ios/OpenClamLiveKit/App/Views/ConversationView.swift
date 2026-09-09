@@ -3668,9 +3668,14 @@ struct ConversationView: View {
               let message = conversation.messages.first(where: { $0.id == messageID }) else {
             return nil
         }
-        if activeAvatarDescriptor.compatibility.rendersModel,
-           let user = conversation.messages.last(where: { $0.role == .user }) {
-            OpenClam3DOptionsStore.shared.conversation(message, user: user.text, for: activeAvatarDescriptor.id)
+        if activeAvatarDescriptor.compatibility.rendersModel {
+            // Pair with the preceding user, not a later barge-in observed in
+            // the same update. Live Talk's initial greeting has no user yet.
+            let user = conversation.avatarReactionUserText(for: messageID)
+            OpenClam3DOptionsStore.shared.conversation(
+                message, user: user, for: activeAvatarDescriptor.id, deliveredAt: Date(),
+                turnID: conversation.avatarReactionTurnID(for: messageID)
+            )
         }
         AccessibilityNotification.Announcement("Assistant: \(message.text)").post()
         if !liveTalk.phase.isSessionActive, reserveAppAudioLane() {
@@ -3701,7 +3706,8 @@ struct ConversationView: View {
             return
         }
         liveTalk.begin(
-            avatar: aiConfiguration.activeAvatarProfile,
+            avatar: OpenClam3DOptionsStore.shared.liveTalkProfile(
+                aiConfiguration.activeAvatarProfile, for: activeAvatarDescriptor.id),
             sharedSettings: aiConfiguration.settings,
             avatarController: conversation.captainAyerAvatar,
             emailDraftToolHandler: { request in

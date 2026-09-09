@@ -60,9 +60,10 @@ const vm = require('node:vm');
   const drawSource = page.match(/const drawAvatar3D = \(now, presentation = ''\) => \{[\s\S]*?\n    \};/)[0];
   let fit, drawn;
   const drawSandbox = {
+    document: {hidden:false},
     avatar3d: avatar, clearStage() {}, reducedMotion: { matches: true },
     desiredViseme: () => 'sil', currentViseme: 'sil', previousViseme: 'sil', visemeChangedAt: 0,
-    blinkAmounts: () => ({ l: 0, r: 0 }), live: null, agentSpeaking: false, speechSource: null,
+    blinkAmounts: () => ({ l: 0, r: 0 }), live: null, peerLiveFrame: null, agentSpeaking: false, speechSource: null,
     cursorGazeTarget: () => ({ x: 0, y: 0 }), pointer: {}, avatarFaceAnchor: () => ({}),
     smoothCursorGaze: () => ({ x: 0, y: 0 }), avatar3dGazeState: {},
     bodyMotionAt: () => ({ breathe: 1 }), bodyMotionState: {},
@@ -224,8 +225,26 @@ const vm = require('node:vm');
       }
     }
 
+    // A walk can contain an authored sideways head pose. Camera attention
+    // compensates that track and ignores a pointer parked off to the side.
+    for(const authoredYaw of [-.3,.3]){
+      moving.baseQuaternions.set(head,new three.Quaternion().setFromAxisAngle(new three.Vector3(0,1,0),authoredYaw));
+      moving.setOrbit({yaw:0,pitch:0});
+      for(let i=0;i<100;i++)moving.render(gazeTime+=16,{cameraFocus:true,gaze:{x:1,y:1},lookTarget:new three.Vector3(50,50,-50)});
+      const forward=moving.headForward.clone().applyQuaternion(head.getWorldQuaternion(new three.Quaternion()));
+      const expected=moving.camera.position.clone().sub(moving.headCenter).normalize();
+      assert(forward.angleTo(expected)<.035,'head maintains camera contact despite the authored look and pointer');
+      for(const eyeBone of [eye,rightEye]){
+        const optical=moving.eyeForward.get(eyeBone).clone().applyQuaternion(eyeBone.getWorldQuaternion(new three.Quaternion()));
+        const target=moving.camera.position.clone().sub(eyeBone.getWorldPosition(new three.Vector3())).normalize();
+        assert(optical.angleTo(target)<1e-6,'each eye looks at the camera');
+      }
+      const position=hair.getWorldPosition(new three.Vector3());
+      assert(position.distanceTo(new three.Vector3(.1,.2,0).applyMatrix4(head.matrixWorld))<1e-8,'camera attention preserves rigid hair attachment');
+    }
+    moving.baseQuaternions.set(head,new three.Quaternion());
     moving.options = {update() {},enabled:()=>false};
-    moving.render(gazeTime += 1000, {reduce:true,gaze:{x:1,y:1},lookTarget:new three.Vector3(3,4,2)});
+    moving.render(gazeTime += 1000, {reduce:true,gaze:{x:1,y:1},cameraFocus:true,lookTarget:new three.Vector3(3,4,2)});
     assert.ok(Math.abs(heading(head)) < 1e-8, 'cursor opt-out returns the head to its neutral pose');
     assert.ok(Math.abs(heading(eye)) < 1e-8, 'cursor opt-out returns both eyes to neutral');
   }

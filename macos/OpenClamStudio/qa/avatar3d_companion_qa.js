@@ -2,7 +2,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {companionStep}=require('../electron/companion-move.cjs');
 const sandbox={};
-vm.runInNewContext(fs.readFileSync('web/avatar3d-companion.js','utf8').replace(/export /g,'')+'\nglobalThis.Controller=CompanionController;globalThis.intent=avatarIntent;globalThis.motionIntent=motionIntent;globalThis.react=conversationReaction;',sandbox);
+vm.runInNewContext(fs.readFileSync('web/avatar3d-companion.js','utf8').replace(/export /g,'')+'\nglobalThis.Stage=AvatarStudioStage;globalThis.spatial=isSpatialAction;globalThis.Controller=CompanionController;globalThis.intent=avatarIntent;globalThis.motionIntent=motionIntent;globalThis.react=conversationReaction;globalThis.replyAction=replyAvatarAction;',sandbox);
 for(const [text,expected] of [['Tia, wave!','wave'],['Can you show me a heart?','heart'],['sit down','sit'],['Please follow my cursor','follow'],['stay','stay'],['跳舞','dance'],['Tia, come here','come']])assert.equal(sandbox.intent(text),expected);
 for(const text of ['walk with cursor','walk with cusor','Follow the mouse pointer around',
   'Hey Tia, could you please walk with my cursor around the screen?', 'Move with the mouse', 'Track my pointer',
@@ -96,7 +96,7 @@ const idle={avatar3d:{companion:new sandbox.Controller(),motion:{}},root:{classL
   motion:{},roamState:{enabled:false},speechSource:null,agentSpeaking:false,live:null,ptt:null,turnController:null,
   lastActivity:0,standbyIdleDelay:()=>10000};
 vm.createContext(idle);vm.runInContext(idleSource+'\nglobalThis.isIdle=edgeIdleActive;',idle);
-assert(idle.isIdle(20000),'ordinary standby still enters edge idle');
+assert(!idle.isIdle(20000),'3D rest preserves the chosen size and placement');
 idle.avatar3d.companion.command('follow');assert(!idle.isIdle(600000),'following must not shrink/dock after the idle timeout');
 idle.avatar3d.companion.command('come');assert(!idle.isIdle(600000));
 idle.avatar3d.companion.command('stay');idle.avatar3d.motion.active={id:'dance'};
@@ -105,30 +105,34 @@ const drawStart=page.indexOf('      if (avatar3d.companion) {',page.indexOf('   
 const travel=page.slice(drawStart,page.indexOf('      // The logical portrait',drawStart));
 for(const mirrored of [false,true]){
   const s={fullChat:true,now:1000,fit:{x:400,y:300,scale:1},previewMetadata:{bounds:[0,0,100,200]},
-    safeViewport:{x:200,y:80,width:700,height:600},innerWidth:1000,innerHeight:800,
+    renderLeft:200,lastBodyGeometry:{},safeViewport:{x:200,y:80,width:700,height:600},innerWidth:1000,innerHeight:800,
     pointer:{x:280,y:200,seen:true},dragging:false,canvasGesture:null,avatarZoomGesture:null,avatarOrbitGesture:false,
-    speaking:false,ptt:null,reduce:false,shellState:{pet:{}},document:{getElementById:()=>null,hidden:false},
+    speaking:false,ptt:null,live:null,peerLiveFrame:null,reduce:false,shellState:{pet:{}},document:{getElementById:()=>null,hidden:false},
     notify:assert.fail,avatarCanvasPoint:p=>({x:mirrored?1100-p.x:p.x,y:p.y}),
-    avatar3d:{companion:new sandbox.Controller(),companionOffset:{x:0,y:0},
-      options:{selection:{}},motion:{clips:new Map(),play:()=>Promise.resolve(),stop(){}},setOrbit(){}}};
+    avatar3d:{companion:new sandbox.Controller(),companionOffset:{x:0,y:0},orbit:{yaw:0,pitch:0},
+      options:{selection:{}},motion:{clips:new Map(),play:()=>Promise.resolve(),stop(){},setPlaybackRate(rate){assert(rate>=0&&rate<1.2);}},setOrbit(){}}};
+  s.avatar3d.studioStage=new sandbox.Stage(s.fit,{bounds:[0,0,100,200],faceBounds:[25,0,50,40]},s.safeViewport);
   s.avatar3d.companion.command('follow');vm.createContext(s);
   const frame=()=>{s.fit={x:400,y:300,scale:1};vm.runInContext(travel,s);};
-  for(;s.now<11000;s.now+=32)frame();
-  const offset=s.avatar3d.companionOffset;
-  assert(mirrored?offset.x>200:offset.x<-100,'mirrored and ordinary chat both approach the visible cursor');
-  assert(offset.y<-170,'renderer applies vertical travel');
+  for(;s.now<31000;s.now+=32)frame();
+  const stage=s.avatar3d.studioStage;
+  assert(mirrored?stage.x>.8:stage.x<.15,'mirrored and ordinary chat both approach the visible cursor');
+  assert(stage.y<.25,'renderer applies vertical travel');
+  const upperScale=s.fit.scale;
   s.pointer.y=600;
-  for(;s.now<21000;s.now+=32)frame();
-  assert(s.avatar3d.companionOffset.y>140,'same chat avatar can travel down again');
-  const before={...s.avatar3d.companionOffset};s.dragging=true;s.pointer={x:880,y:90,seen:true};
-  for(;s.now<22000;s.now+=32)frame();
-  assert.deepEqual(JSON.parse(JSON.stringify(s.avatar3d.companionOffset)),before,'manual gesture leaves follow placement untouched');
+  for(;s.now<65000;s.now+=32)frame();
+  assert(stage.y>.8,'same chat avatar can travel down again');
+  assert(s.fit.scale>upperScale*2,'travelling down approaches the viewer');
+  const before=[stage.x,stage.y];s.dragging=true;s.pointer={x:880,y:90,seen:true};
+  for(;s.now<66000;s.now+=32)frame();
+  assert.deepEqual([stage.x,stage.y],before,'manual gesture leaves follow placement untouched');
 }
 const start=page.indexOf('    const performAvatarAction = ');
 const source=page.slice(start,page.indexOf('\n    };',start)+7);
-const avatar={companion:new sandbox.Controller(),motion:{stop(){},async prepare(){}},options:{selection:{},select(){}}};
-const actions={avatar3d:avatar,manifest:{avatar:{slug:'tia'}},localStorage:{setItem(){}},
-  publishMotionReadiness(){},companionKey:()=>'',window:{dispatchEvent(){}},Event:class{},closeRailPickers(){},async selectStandbyMode(){}};
+const avatar={companion:new sandbox.Controller(),stopCameraApproach(){},motion:{stop(){},async prepare(){}},options:{selection:{},select(){}}};
+const actions={avatarCompanionAPI:{isSpatialAction:sandbox.spatial},beginAvatarStudioTravel:async()=>{},avatar3d:avatar,live:null,manifest:{avatar:{slug:'tia'}},localStorage:{setItem(){}},
+  performance:{now:()=>1000},clearLocalTransientDisplayMode(){},markActivity(){},
+  publishMotionReadiness(){},companionKey:()=>'',window:{dispatchEvent(){}},Event:class{},closeRailPickers(){},async selectStandbyMode(){assert.fail('motions must preserve framing');}};
 vm.createContext(actions);vm.runInContext(source+'\nglobalThis.perform=performAvatarAction;',actions);
 (async()=>{
   await actions.perform('follow');await actions.perform('follow');assert(avatar.companion.follow);
@@ -143,14 +147,19 @@ const clips=new Map([['heart',{id:'heart',label:'Overhead Heart',aliases:['big h
   ['cheer',{id:'cheer',reactions:['celebration']}]]);
 for(const request of ['Could you please do a happy dance?', 'Tia, play joyful sway', 'can u try some happy dance'])assert.equal(sandbox.motionIntent(request,clips),'clip:happy');
 for(const prose of ['Do not do a happy dance','Why is happy dance named that?','She said play joyful sway','Write about big heart'])assert.equal(sandbox.motionIntent(prose,clips),null);
-assert.equal(sandbox.react('be happy','Let’s brighten things up!','none'),'celebration');
+assert.equal(sandbox.react('be happy','Let’s brighten things up!','none'),null);
 assert.equal(sandbox.motionIntent('do kongfu',new Map([['kungfu',{id:'kungfu',label:'Kung Fu'}]])),'clip:kungfu');
 assert.equal(sandbox.react('I got the job!','Congratulations!','celebration'),'celebration');
+assert.equal(sandbox.react('I got the job!','That’s wonderful news!'),'celebration',
+  'voice transcripts with typographic apostrophes use the same local reactions');
+assert.equal(sandbox.react('Can you please be more cheerful?','Let’s brighten things up!'),'celebration');
+assert.equal(sandbox.react('','Hello! How are you?'),'greeting','the opening Live Talk greeting has no preceding user');
+assert.equal(sandbox.react('I’m not happy','Let’s celebrate!'),null,'normalization must preserve negative-context suppression');
 assert.equal(sandbox.react('I love you','Sending you a hug.','affection'),'affection');
 assert.equal(sandbox.react('What is a heart?','A heart pumps blood.','none'),null);
 assert.equal(sandbox.react('My friend died.','I am sorry. Congratulations was a mistake.','celebration'),null);
 assert.equal(sandbox.react('I am not happy','Let’s celebrate!','celebration'),null);
-assert.equal(sandbox.react('Show me a heart','Of course!','affection'),null);
+assert.equal(sandbox.react('Show me a heart','Of course!','affection'),'affection');
 assert.equal(sandbox.react('Explain dance','Here is the explanation.','run-arbitrary-code'),null);
 const reacting=new sandbox.Controller({random:()=>0});
 reacting.consider('I got the job!','Congratulations!','celebration',1000);
@@ -183,3 +192,38 @@ menuItems.find(item=>item.name==='Dances').submenu[0].click();
 assert.equal(packet[0],owner);assert.equal(packet[1],'openclam:avatar-options-request');
 assert.equal(packet[2].id,'clip:jazz-dance');
 menuItems[0].click();assert.equal(packet[2].id,'reactions');
+
+// Conversation first: input alone never owns speech or selects a motion.
+const conversationClips=new Map([
+  ['kung-fu-punch',{id:'kung-fu-punch',label:'Kung Fu Punch'}],
+  ['jazz-dance',{id:'jazz-dance',label:'Jazz Dance'}]
+]);
+for(const reply of ['', 'Kung fu is a family of Chinese martial arts.', 'Do you want a demonstration?',
+  "I'll explain kung fu.", "I'll show you how to learn kung fu.", "I'll show you a video of kung fu.",
+  "I can't demonstrate kung fu.", "If you like, I'll demonstrate kung fu.", "Would you like me to demonstrate kung fu?"]){
+  assert.equal(sandbox.replyAction('kungfu',reply,undefined,conversationClips),null,reply);
+}
+assert.equal(sandbox.replyAction('kungfu',"I'll demonstrate a kung fu punch.",undefined,conversationClips),'clip:kung-fu-punch');
+assert.equal(sandbox.replyAction('kungfu',"I’ll try a kung fu punch!",undefined,conversationClips),'clip:kung-fu-punch');
+assert.equal(sandbox.replyAction('kungfu','Want a demonstration?','none',conversationClips),null);
+assert.equal(sandbox.replyAction('try that',"Let's give it a try.",'clip:kung-fu-punch',conversationClips),'clip:kung-fu-punch');
+assert.equal(sandbox.replyAction('dance','Sure.','clip:not-installed',conversationClips),null);
+assert.equal(sandbox.replyAction('dance',"I cannot dance.",'clip:jazz-dance',conversationClips),null);
+assert.equal(sandbox.replyAction('go along with my mouse',"I'll walk with your cursor.",'action:follow',conversationClips),'action:follow');
+assert.equal(sandbox.replyAction('hello','Hello','action:open-url',conversationClips),null);
+assert.equal(sandbox.replyAction('Please walk to the upper-right corner.',
+  'Sure, I’ll keep walking to the upper-right corner.',undefined,conversationClips),'action:go-upper-right');
+assert.equal(sandbox.replyAction('run around','I will continue running around the screen.',undefined,conversationClips),'action:run-around');
+assert.equal(sandbox.replyAction('Please walk back to the center.',
+  'Sure, I’ll walk back to the center.',undefined,conversationClips),'action:go-center');
+for(const reply of ['Would you like me to keep walking?', 'I’ll keep walking if you ask later.',
+  'I cannot keep walking.', 'She said “keep walking”.'])
+  assert.equal(sandbox.replyAction('walk to the upper right',reply,undefined,conversationClips),null,reply);
+const conversationController=new sandbox.Controller();
+conversationController.consider('kungfu','Want to talk about it or see a demonstration?','none',1000,{clips:conversationClips,turnID:'k1'});
+assert.equal(conversationController.takeReaction(1001,conversationClips),null);
+conversationController.consider('show me',"I'll demonstrate a kung fu punch.",'clip:kung-fu-punch',2000,{clips:conversationClips,turnID:'k2'});
+assert.equal(conversationController.takeReaction(2001,conversationClips),'action:clip:kung-fu-punch');
+conversationController.consider('show me',"I'll demonstrate a kung fu punch.",'clip:kung-fu-punch',3000,{clips:conversationClips,turnID:'k2'});
+assert.equal(conversationController.takeReaction(3001,conversationClips),null);
+console.log('LLM-owned motion decisions: no input-only playback, discussion/clarification/refusal stay still, validated choices play once.');

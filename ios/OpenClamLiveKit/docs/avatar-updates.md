@@ -92,3 +92,34 @@ wardrobe, hand grips, original geometry, and renderer recovery remain available.
 Private release verification must inspect the signed archive, confirm all clips
 and the model hash, and exercise an existing installed Tia without reimporting.
 The optional legacy wardrobe update remains bundled for earlier installations.
+
+### Live Talk reactions in build 70
+
+Completed Live Talk replies receive a fresh reaction delivery timestamp, separate
+from the history timestamp recorded at the first partial. Long spoken answers no
+longer expire before completion. A new call’s greeting has empty user context;
+subsequent replies use only the preceding user segments from that call. Local
+matching normalizes typographic apostrophes and accepts polite cheerful requests.
+The separate audio-synchronized viseme path is unchanged.
+
+`OpenClam3DAvatarUITests.testLiveTalkGreetingDrivesDynamicMotion` exercises a real
+configured LiveKit call and requires its greeting to start a bundled motion. Run
+this network test explicitly; ordinary unit tests also cover completion time,
+call boundaries, repeated finals, and preserved mouth weights.
+
+
+## Conversation-first motions and captions (build 71)
+
+Text and dictation always reach the selected LLM. The previous local motion
+command interceptor is removed. The AI can choose one installed clip or avatar
+control alongside its ordinary response, using a private bounded cue. Cues never
+enter the visible transcript or TTS. Unsupported IDs cannot start playback.
+Live Talk uses the AI's affirmative performance statement; a user keyword alone
+never plays a motion. Manual wardrobe/motion buttons remain immediate.
+
+Consecutive spoken recognition fragments share a stable caption ID until an
+assistant reply or a typed message separates them. New partial words, final
+extensions and recognition corrections update the same bubble and history.
+This presentation grouping does not modify the exact-transcript authorization
+used by the external-action bridge. The separate voice-service update adds
+adaptive pause handling and keeps animations out of the external-action tool.

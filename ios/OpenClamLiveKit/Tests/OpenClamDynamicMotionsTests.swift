@@ -6,6 +6,73 @@ import WebKit
 
 @MainActor
 final class OpenClamDynamicMotionsTests: XCTestCase {
+    func testLiveTalkReactionContextStartsAtTheCallBoundary() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let history = ConversationHistoryController(store: ConversationHistoryStore(
+            fileURL: directory.appendingPathComponent("history.json")))
+        let model = ConversationModel(historyController: history)
+        for _ in 0..<100 where !model.isHistoryReady { await Task.yield() }
+        XCTAssertTrue(model.beginLiveTalkTranscriptSession())
+        model.ingestLiveTalkTranscripts([
+            .init(id: "old-user", role: .user, text: "Tia, wave", isFinal: true)
+        ])
+        model.endLiveTalkTranscriptSession()
+        XCTAssertTrue(model.beginLiveTalkTranscriptSession())
+        model.ingestLiveTalkTranscripts([
+            .init(id: "greeting", role: .agent, text: "Hello!", isFinal: true)
+        ])
+        let greeting = try XCTUnwrap(model.messages.last)
+        XCTAssertEqual(model.avatarReactionUserText(for: greeting.id), "",
+            "The greeting must not inherit a motion command from the previous call")
+        model.ingestLiveTalkTranscripts([
+            .init(id: "user-a", role: .user, text: "I got", isFinal: true),
+            .init(id: "user-b", role: .user, text: "the job!", isFinal: true),
+            .init(id: "reply", role: .agent, text: "Congratulations!", isFinal: true),
+            .init(id: "barge-in", role: .user, text: "Do not celebrate", isFinal: true),
+        ])
+        let reply = try XCTUnwrap(model.messages.first(where: { $0.text == "Congratulations!" }))
+        XCTAssertEqual(model.avatarReactionUserText(for: reply.id), "I got the job!",
+            "Coalesced updates must pair the reply with its preceding multi-segment user turn")
+    }
+
+    func testLongLiveTalkReplyUsesCompletionTimeWithoutReplayingHistory() throws {
+        let name = "OpenClamLiveTalkReactions.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OpenClam3DOptionsStore(defaults: defaults)
+        let thread = UUID()
+        let user = ConversationMessage(role: .user, text: "I got the job!")
+        // Live Talk preserves the first partial's timestamp when finalizing.
+        let reply = ConversationMessage(role: .assistant, text: "Congratulations!",
+            date: Date(timeIntervalSinceNow: -60), isEligibleForAIContext: false)
+        var boundary = AssistantReplyDeliveryBoundary()
+        boundary.prime(with: .init(threadID: thread, messages: [user]))
+        let final = AssistantReplyDeliverySnapshot(threadID: thread, messages: [user, reply])
+        XCTAssertEqual(boundary.observe(final), reply.id)
+        let completed = Date()
+        store.conversation(reply, user: user.text, for: "tia", deliveredAt: completed)
+        let turn = try XCTUnwrap(store.conversations["tia"])
+        XCTAssertEqual(turn["reply"], "Congratulations!")
+        XCTAssertEqual(try XCTUnwrap(Double(try XCTUnwrap(turn["created"]))),
+            completed.timeIntervalSince1970 * 1000, accuracy: 1)
+        XCTAssertNil(boundary.observe(final), "Repeated final transcripts must not replay motions")
+        XCTAssertNil(boundary.observe(.init(threadID: UUID(), messages: [user, reply])),
+            "Restored history must not become a fresh completion")
+    }
+
+    func testInitialLiveTalkGreetingCanReactWithoutAUserTurn() throws {
+        let name = "OpenClamLiveTalkGreeting.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OpenClam3DOptionsStore(defaults: defaults)
+        let reply = ConversationMessage(role: .assistant, text: "Hello! How are you?",
+            isEligibleForAIContext: false)
+        store.conversation(reply, user: "", for: "tia", deliveredAt: Date())
+        XCTAssertEqual(store.conversations["tia"]?["user"], "")
+        XCTAssertEqual(store.conversations["tia"]?["reply"], reply.text)
+    }
+
     func testNativeCommandAwaitsTheJavaScriptResult() async throws {
         let view = WKWebView(frame: .init(x: 0, y: 0, width: 200, height: 300))
         view.loadHTMLString("<script>window.avatarCommand = async (value,isText) => { await new Promise(r=>setTimeout(r,20)); return isText ? 'Played '+value : null; }</script>", baseURL: nil)
@@ -17,7 +84,7 @@ final class OpenClamDynamicMotionsTests: XCTestCase {
         coordinator.pageReady = true
         coordinator.view = view
         let reply = try await coordinator.command("wave", isText: true)
-        XCTAssertEqual(reply, "Played wave", "The callback overload returns Void and would fall through to the AI route")
+        XCTAssertEqual(reply, "Played wave", "Manual controls must await the actual renderer result")
         let unmatched = try await coordinator.command("ordinary chat", isText: false)
         XCTAssertNil(unmatched)
         view.stopLoading()
@@ -35,6 +102,22 @@ final class OpenClamDynamicMotionsTests: XCTestCase {
         XCTAssertEqual(OpenClam3DReaction.extract("2 < 3", partial: true).text, "2 < 3")
     }
 
+    func testLLMMotionChoicesAreHiddenAndBounded() {
+        for cue in ["clip:kung-fu-punch", "action:follow", "action:stay", "action:closer", "action:back", "action:walk-around", "action:run-around", "action:go-upper-right", "action:go-center"] {
+            let directive = "<<openclam:motion \(cue)>>"
+            for length in 1...directive.count {
+                XCTAssertEqual(OpenClam3DReaction.extract("My reply.\n" + directive.prefix(length), partial: true).text, "My reply.")
+            }
+            let result = OpenClam3DReaction.extract("My reply.\n" + directive)
+            XCTAssertEqual(result.text, "My reply.")
+            XCTAssertEqual(result.suggestion, cue)
+        }
+        for cue in ["action:open-url", "clip:../../file", "clip:https://example.com"] {
+            XCTAssertNil(OpenClam3DReaction.extract("Reply. <<openclam:motion \(cue)>>").suggestion)
+        }
+        XCTAssertTrue(OpenClam3DReaction.prompt(motions: []).contains("Conversation comes first"))
+    }
+
     func testDefaultReactionsAndExplicitOffSurviveResetAndRelaunch() throws {
         let name = "OpenClamDynamicMotionsTests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
@@ -44,11 +127,14 @@ final class OpenClamDynamicMotionsTests: XCTestCase {
         store.setEnabled(false, key: "dynamicMotions", for: "tia")
         store.reset("tia")
         XCTAssertFalse(OpenClam3DOptionsStore(defaults: defaults).enabled("dynamicMotions", for: "tia"))
-        store.conversation(.init(role: .assistant, text: "Hello!"), user: "Hi", for: "tia")
-        XCTAssertNil(store.conversations["tia"])
+        store.conversation(.init(role: .assistant, text: "I'll come closer."), user: "Come closer", for: "tia")
+        XCTAssertEqual(store.conversations["tia"]?["reply"], "I'll come closer.",
+            "Explicit LLM-led requests still reach the shared controller when automatic reactions are off")
+        XCTAssertFalse(store.enabled("dynamicMotions", for: "tia"))
+        let delivered = store.conversations["tia"]
         store.setEnabled(true, key: "dynamicMotions", for: "tia")
         store.conversation(.init(role: .assistant, text: "Hello!", date: Date(timeIntervalSinceNow: -60)), user: "Hi", for: "tia")
-        XCTAssertNil(store.conversations["tia"], "Reopening history must not replay reactions")
+        XCTAssertEqual(store.conversations["tia"], delivered, "Reopening history must not replay reactions")
     }
 
     func testPackRequiresExactModelAndRejectsUnlistedOrDamagedFiles() throws {

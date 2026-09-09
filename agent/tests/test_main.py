@@ -145,6 +145,18 @@ def test_model_prompt_cannot_spoof_foreground_agent_success() -> None:
     assert "Do not call it for greetings, casual conversation" in normalized
 
 
+def test_avatar_expression_stays_in_the_voice_llm_conversation() -> None:
+    instructions = " ".join(build_agent_instructions(
+        persona_name="Tia", persona="Available: Kung Fu Punch, Jazz Dance.",
+        private_expressive_markup_enabled=False,
+    ).split())
+    assert "On-screen avatar animation is conversational expression" in instructions
+    assert "do not call this tool for dancing, poses, gestures, or following the cursor" in instructions
+    assert "A keyword alone does not request a performance" in instructions
+    assert "The LLM owns the reply" in instructions
+    assert "call use_foreground_agent exactly once" in instructions
+
+
 def test_latest_spoken_turn_is_bound_to_authoritative_chat_message() -> None:
     chat_ctx = ChatContext()
     chat_ctx.add_message(role="user", content="Email Emma")

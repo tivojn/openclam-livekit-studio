@@ -2045,6 +2045,58 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertTrue(controller.canStart)
     }
 
+    func testSpeechFragmentsUpdateOneCaptionThroughPartialFinalAndCorrection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let history = ConversationHistoryController(store: ConversationHistoryStore(
+            fileURL: directory.appendingPathComponent("history.json")))
+        let model = ConversationModel(historyController: history)
+        for _ in 0..<100 where !model.isHistoryReady { await Task.yield() }
+        XCTAssertTrue(model.beginLiveTalkTranscriptSession())
+        func segment(_ id: String, _ text: String, final: Bool) -> ReceivedMessage {
+            ReceivedMessage(id: id, timestamp: Date(), content: .userTranscript(text), isFinal: final)
+        }
+        let first = segment("part1", "I mean,", final: true)
+        model.ingestLiveTalkTranscripts(LiveTalkSessionController.boundedTranscripts(from: [first]))
+        let caption = try XCTUnwrap(model.messages.last)
+        let partial = LiveTalkSessionController.boundedTranscripts(from: [first, segment("part2", "dan", final: false)])
+        XCTAssertEqual(partial.map(\.text), ["I mean, dan"])
+        XCTAssertEqual(partial.first?.id, "part1")
+        XCTAssertEqual(partial.first?.isFinal, false)
+        model.ingestLiveTalkTranscripts(partial)
+        XCTAssertTrue(model.liveTalkStreamingMessages.isEmpty, "The ongoing phrase updates the original bubble")
+        XCTAssertEqual(model.messages.last?.id, caption.id)
+        XCTAssertEqual(model.messages.last?.text, "I mean, dan", "Partial words must appear immediately")
+        let final = LiveTalkSessionController.boundedTranscripts(from: [first, segment("part2", "dancing.", final: true)])
+        model.ingestLiveTalkTranscripts(final)
+        model.ingestLiveTalkTranscripts(final)
+        XCTAssertEqual(model.messages.filter { $0.role == .user }.map(\.text), ["I mean, dancing."])
+        model.ingestLiveTalkTranscripts([.init(id: "part1", role: .user, text: "I mean dancing.", isFinal: true)])
+        XCTAssertEqual(model.messages.last?.id, caption.id)
+        XCTAssertEqual(model.messages.last?.date, caption.date)
+        XCTAssertEqual(model.messages.last?.text, "I mean dancing.", "Final corrections are not discarded")
+        let persisted = await model.persistConversationHistory()
+        XCTAssertTrue(persisted)
+        XCTAssertEqual(history.selectedMessages.last?.text, "I mean dancing.")
+    }
+
+    func testCaptionGroupingPreservesConversationAndTextInputBoundaries() {
+        func message(_ id: String, _ content: ReceivedMessage.Content) -> ReceivedMessage {
+            ReceivedMessage(id: id, timestamp: Date(), content: content, isFinal: true)
+        }
+        let source = [message("u1", .userTranscript("I mean")), message("u2", .userTranscript("dancing.")),
+            message("a1", .agentTranscript("Which dance?")), message("u3", .userTranscript("Jazz.")),
+            message("typed", .userInput("Actually hip hop")), message("u4", .userTranscript("Please."))]
+        let turns = LiveTalkSessionController.boundedTranscripts(from: source)
+        XCTAssertEqual(turns.map(\.text), ["I mean dancing.", "Which dance?", "Jazz.", "Actually hip hop", "Please."])
+        XCTAssertEqual(turns.map(\.id), ["u1", "a1", "u3", "typed", "u4"])
+        let many = (0..<30).map { message("p\($0)", .userTranscript("word\($0)")) }
+        let grouped = LiveTalkSessionController.boundedTranscripts(from: many, limit: 12)
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertEqual(grouped.first?.id, "p0", "Bounding must not replace a growing turn's identity")
+        XCTAssertTrue(grouped.first?.text.hasSuffix("word29") == true)
+    }
+
     func testTranscriptPanelIsBoundedAndRemoteSpeechGateDebouncesAudio() throws {
         let messages = (0..<20).map { index in
             ReceivedMessage(

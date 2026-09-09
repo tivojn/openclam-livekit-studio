@@ -2350,7 +2350,6 @@
     let avatar3dOptionsMounted = null;
     let disposeAvatarOptions = () => {};
     let avatarCompanionAPI = null;
-    let lastAvatarCommand = null;
     const companionKey = () => `openclam.3d.companion.${manifest?.avatar?.slug || 'avatar'}`;
     const setupCompanion = async instance => {
       if (!instance.motion) return;
@@ -2370,6 +2369,43 @@
         publishMotionReadiness();window.dispatchEvent(new Event('openclam-avatar-controls-refresh')); }
       catch {}
     });
+    const beginAvatarStudioTravel = async (instance, action, generation) => {
+      if(reducedMotion.matches)throw Error('Turn off Reduce Motion to walk across the stage.');
+      const geometry=lastBodyGeometry;
+      if(!geometry)throw Error('The avatar is still loading.');
+      const originalFit={...geometry.fit};
+      instance.stagePreparing=true;
+      try {
+        await instance.motion.prepare(action==='run-around'?'hello-run':'walk');
+        if(instance!==avatar3d||instance.actionGeneration!==generation)return '';
+        const fullChat=root.classList.contains('chat-mode');
+        let origin={x:0,y:0};
+        if(!fullChat&&!instance.studioStage&&shell?.setDisplayMode){
+          const next=await shell.setDisplayMode('approach');
+          origin=next.approachOrigin||origin;applyShellState(next);
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+        }
+        if(instance!==avatar3d||instance.actionGeneration!==generation)return '';
+        const viewport=fullChat?chatAvatarSafeViewport({reserveComposer:true,reserveRail:true}):{x:0,y:0,width:innerWidth,height:innerHeight};
+        if(fullChat&&avatarMirrored)viewport.x=avatarCanvasPoint({x:viewport.x+viewport.width,y:0}).x;
+        if(!instance.studioStage){
+          instance.studioStage=new avatarCompanionAPI.AvatarStudioStage(
+            {...originalFit,x:originalFit.x+origin.x,y:originalFit.y+origin.y},instance.layout(),viewport);
+          instance.lockStudioLens();
+          instance.studioStage.calibrate(instance);
+          instance.companionOffset={x:0,y:0};
+        }
+        instance.companion.yaw=instance.orbit.yaw;
+        instance.studioStage.facingYaw=instance.orbit.yaw;
+        const destination=instance.studioStage.destination(action,viewport);
+        if(destination){
+          // Named left/right refer to what the user sees, including mirroring.
+          if(fullChat&&avatarMirrored&&avatarCompanionAPI.stageDestinations[action])destination.x=1-destination.x;
+          instance.companion.destination=destination;
+        }
+        return 'Moving across the stage.';
+      } finally {if(instance.actionGeneration===generation)instance.stagePreparing=false;}
+    };
     const performAvatarAction = async (action, {toggleFollow=false}={}) => {
       const instance=avatar3d, controller=instance?.companion;
       if (!controller) throw Error('Interactive motions are not installed for this avatar.');
@@ -2383,24 +2419,33 @@
         return action==='reactions-on'?'Dynamic motions are on.':action==='reactions-off'?'Dynamic motions are off.':'';
       }
       closeRailPickers();
+      const generation=instance.actionGeneration=(instance.actionGeneration||0)+1;
+      if(live){
+        instance.liveMotionAction=['closer','back','walk-around','run-around','follow','come','stay','go-upper-left','go-upper-right','go-lower-left','go-lower-right','go-top','go-bottom','go-left','go-right','go-center'].includes(action)
+          ? {key:`${generation}:${performance.now()}`,action}:null;
+        // The call can remain owned by a hidden window. Its visible peer
+        // performs travel in its own viewport without opening the other mode.
+        if(document.hidden&&instance.liveMotionAction){instance.pendingVisibleAction=action;return '';}
+      }
+      instance.stagePreparing=false;
       const wasFollowing=toggleFollow&&controller.follow;
       controller.command(action==='follow'&&wasFollowing?'pause-follow':action);
       localStorage.setItem(companionKey(),JSON.stringify({follow:controller.follow,gestures:controller.gestures,reactions:controller.reactions}));
       window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
       publishMotionReadiness();
       instance.motion.stop();instance.companionWalkRequested=false;instance.companionReactionPending=null;
+      instance.cameraWalkRequested=false;
+      if(action!=='stay'&&!wasFollowing&&avatarCompanionAPI.isSpatialAction(action))return beginAvatarStudioTravel(instance,action,generation);
+      instance.stopCameraApproach(performance.now());
       if (action==='stay' || (action==='follow'&&wasFollowing)) {
         instance.options.select({...instance.options.selection,playTransitions:'false'});
         localStorage.setItem(`openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,JSON.stringify(instance.options.selection));
         window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
         return 'I’ll stay here.';
       }
-      await selectStandbyMode();
+      clearLocalTransientDisplayMode();
+      markActivity({preserveDisplayMode:true});
       if(instance!==avatar3d)return '';
-      if (action==='follow'||action==='come') {
-        await instance.motion.prepare('walk');
-        return action==='follow'?'I’ll follow your cursor in every direction. Say “stay” to stop.':'Coming over.';
-      }
       if(action==='random-motion'||action==='random-dance'){
         const choices=[...instance.motion.clips.values()].filter(c=>c.id!=='dance'
           &&(action!=='random-dance'||c.category==='Dances')
@@ -2434,20 +2479,8 @@
       }
       return '';
     };
-    const handleAvatarCommand = async (text, options={}) => {
-      if (!avatar3d?.companion || options.attachments?.length) return false;
-      const action=avatarCompanionAPI.avatarIntent(text)||avatarCompanionAPI.motionIntent(text,avatar3d.motion.clips);
-      if(!action)return false;
-      if(!options.userAlreadyRendered)addMessage('user',text,{readable:false});
-      const pending=performAvatarAction(action);
-      lastAvatarCommand={text:String(text).trim().toLowerCase(),at:performance.now(),pending};
-      try { const answer=await pending;if(answer)addMessage('assistant',answer); }
-      catch(error){notify(error.message);}
-      return true;
-    };
-    const considerAvatarReaction = (user,reply,suggestion) => {
-      if(avatar3d?.motion&&avatarCompanionAPI?.motionIntent(user,avatar3d.motion.clips))return;
-      avatar3d?.companion?.consider(user,reply,suggestion,performance.now());
+    const considerAvatarReaction = (user,reply,suggestion,turnID='') => {
+      avatar3d?.companion?.consider(user,reply,suggestion,performance.now(),{clips:avatar3d?.motion?.clips,turnID});
     };
     let avatar3dRotateMode = false;
     let avatar3dOrbitUntil = 0;
@@ -2478,7 +2511,7 @@
         const container = document.getElementById('avatarOptions3D');
         if (avatar3d) disposeAvatarOptions = window.OpenClamAvatar3D.mountOptions(
           container, avatar3d.options, `openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`,
-          () => { avatar3d?.companion?.command('pose');void selectStandbyMode(); lastFrame = 0; },
+          () => { avatar3d?.companion?.command('pose');avatar3d?.stopCameraApproach(performance.now());clearLocalTransientDisplayMode();markActivity({preserveDisplayMode:true});lastFrame = 0; },
           () => { if (shell) void shell.openSettings(); else location.href = '/settings.html'; });
         else container.replaceChildren();
         if (avatar3d?.companion) {
@@ -2590,6 +2623,46 @@
     let previewResource = null;
     let ptt = null;
     let live = null;
+    let liveStarting = false;
+    let liveCancelRequested = false;
+    let liveStopping = null;
+    let sharedLivePhase = 'idle';
+    let peerLiveFrame = null;
+    let peerMotionKey = '';
+    let peerActionKey = '';
+    const receiveSharedLiveFrame = frame => {
+      if(live || sharedLivePhase==='idle')return;
+      peerLiveFrame=frame;
+      const spatial=frame?.action;
+      if(avatar3d?.companion&&spatial&&['closer','back','walk-around','run-around','follow','come','stay','go-upper-left','go-upper-right','go-lower-left','go-lower-right','go-top','go-bottom','go-left','go-right','go-center'].includes(spatial.action)){
+        if(!document.hidden&&spatial.key!==peerActionKey){
+          peerActionKey=spatial.key;
+          void performAvatarAction(spatial.action).catch(error=>notify(error.message));
+        }
+        return;
+      }
+      const motion=frame?.motion;
+      if(avatar3d?.motion && (motion?.key||'')!==peerMotionKey){
+        peerMotionKey=motion?.key||'';
+        if(motion && avatar3d.motion.clips.has(motion.id))
+          void avatar3d.motion.play(motion.id,{loop:motion.loop,now:performance.now()-motion.elapsed}).catch(()=>{});
+        else avatar3d.motion.stop();
+      }
+    };
+    const receiveSharedLiveState = value => {
+      sharedLivePhase=value?.phase||'idle';
+      if(value?.owned)return;
+      if(sharedLivePhase!=='idle')stopSpeech();
+      if(sharedLivePhase==='idle'){
+        if(peerMotionKey)avatar3d?.motion?.stop();
+        peerLiveFrame=null;peerMotionKey='';peerActionKey='';
+      }
+      setLiveButton(sharedLivePhase);
+      pttButton.disabled=sharedLivePhase!=='idle'||Boolean(turnController);
+      sendButton.disabled=sharedLivePhase!=='idle'||Boolean(turnController);
+      setStatus(sharedLivePhase==='connected'?'Live Talk · connected':sharedLivePhase==='connecting'?'Calling Live Talk…':sharedLivePhase==='ending'?'Ending Live Talk…':'Ready',sharedLivePhase==='idle'?'good':'live');
+      if(value?.frame)receiveSharedLiveFrame(value.frame);
+    };
     let audioContext = null;
     let audioAnalyser = null;
     let audioMonitorGain = null;
@@ -6300,6 +6373,10 @@
     /* avatar-3d:begin */
     const drawAvatar3D = (now, presentation = '') => {
       clearStage();
+      if(!document.hidden){
+        if(avatar3d.pendingVisibleAction){const action=avatar3d.pendingVisibleAction;avatar3d.pendingVisibleAction=null;void performAvatarAction(action).catch(error=>notify(error.message));}
+        if(peerLiveFrame?.action)receiveSharedLiveFrame(peerLiveFrame);
+      }
       const reduce = reducedMotion.matches;
       const wanted = desiredViseme(now);
       if (wanted !== currentViseme) {
@@ -6323,7 +6400,7 @@
       // Only the on-screen part of the logical portrait is rendered, at the
       // size it is shown, so close-ups stay sharp and zoom-outs stay cheap.
       const logicalWidth = avatar3d.width, logicalHeight = avatar3d.height;
-      const previewMetadata = {
+      let previewMetadata = {
         bounds: avatar3d.layout().bounds,
         alignment: { face_bounds: avatar3d.layout().faceBounds
           || [logicalWidth * .3, logicalHeight * .04, logicalWidth * .4, logicalHeight * .16] },
@@ -6334,21 +6411,28 @@
         ? chatWindowMotionFit('idle', previewMetadata, logicalWidth, logicalHeight, now, null, chatIdleEdge)
         : cameraFor(previewMetadata, logicalWidth, logicalHeight);
       const fullChat = root.classList.contains('chat-mode');
-      const safeViewport = fullChat ? chatAvatarSafeViewport({ reserveComposer: !shellState.chatCloseUp, reserveRail: true })
+      const safeViewport = fullChat ? chatAvatarSafeViewport({ reserveComposer: Boolean(avatar3d.studioStage)||!shellState.chatCloseUp, reserveRail: true })
         : { x: 0, y: 0, width: innerWidth, height: innerHeight };
+      const approachLeft=avatarCanvasPoint({x:safeViewport.x+safeViewport.width,y:0}).x;
+      const renderLeft=avatarMirrored&&fullChat?approachLeft:safeViewport.x;
       if (avatar3d.companion) {
         const controller=avatar3d.companion;
         const controls=document.getElementById('avatar3DControls');
         const manual=Boolean(dragging||canvasGesture||avatarZoomGesture||avatarOrbitGesture);
         if(manual)controller.pause(now);
-        const blocked=manual||speaking||Boolean(ptt)||document.hidden||Boolean(shellState.pet?.locked)
+        const blocked=manual||(speaking&&!controller.roam&&!controller.destination)||Boolean(ptt)||document.hidden||Boolean(shellState.pet?.locked)
           || (controls && !controls.hidden && controls.matches(':hover'));
-        const body=previewMetadata.bounds;
+        const canvasTravel=fullChat||Boolean(shellState.desktopCloseUp)||Boolean(avatar3d.cameraApproach);
+        let body=previewMetadata.bounds;
+        if(canvasTravel&&(body[2]*fit.scale>safeViewport.width*.95||body[3]*fit.scale>safeViewport.height*.95))
+          body=previewMetadata.alignment?.face_bounds||body;
         const reaction=controller.takeReaction(now,avatar3d.motion.clips,
-          manual||Boolean(ptt)||document.hidden||reduce||Boolean(shellState.pet?.locked)
-          ||controller.walking||Boolean(avatar3d.motion.active)||Boolean(avatar3d.companionReactionPending),
+          manual||Boolean(ptt)||(document.hidden&&!live)||reduce||Boolean(shellState.pet?.locked)||Boolean(peerLiveFrame)
+          ||((controller.walking||Boolean(avatar3d.motion.active)||Boolean(avatar3d.cameraApproach?.moving))&&!controller.pendingReaction?.action&&!controller.pendingReaction?.clipID)||Boolean(avatar3d.companionReactionPending),
           {hasProp:Boolean(avatar3d.options.selection.prop)});
-        if(reaction){
+        if(reaction?.startsWith('action:')) {
+          void performAvatarAction(reaction.slice(7)).catch(error=>notify(error.message));
+        } else if(reaction){
           avatar3d.companionWalkRequested=false;
           avatar3d.setOrbit({yaw:0,pitch:0});
           const instance=avatar3d, pending={};
@@ -6357,60 +6441,45 @@
             if(instance.companionReactionPending===pending)instance.companionReactionPending=null;
           });
         }
-        const offset=fullChat?avatar3d.companionOffset:{x:0,y:0};
-        const centerX=fit.x+(body[0]+body[2]*.5)*fit.scale;
-        const centerY=fit.y+(body[1]+body[3]*.5)*fit.scale;
-        const anchorX=centerX+offset.x, anchorY=centerY+offset.y;
-        const margin=Math.min(safeViewport.width*.45,body[2]*fit.scale*.5+12);
-        // Cursor and travel limits share the canvas coordinates, including
-        // the optional CSS mirror. Keep the crown and feet inside the area.
-        const cursor=avatarCanvasPoint(pointer);
-        const edge1=avatarCanvasPoint({x:safeViewport.x,y:0}).x;
-        const edge2=avatarCanvasPoint({x:safeViewport.x+safeViewport.width,y:0}).x;
-        const minX=fullChat?Math.min(edge1,edge2)+margin:
-          (pointer.companionMinX??-Infinity)+anchorX-innerWidth/2;
-        const maxX=fullChat?Math.max(edge1,edge2)-margin:
-          (pointer.companionMaxX??Infinity)+anchorX-innerWidth/2;
-        const minY=fullChat?safeViewport.y+(body[1]+body[3]*.5)*fit.scale:
-          (pointer.companionMinY??-Infinity)+anchorY-innerHeight/2;
-        const maxY=fullChat?Math.max(minY,safeViewport.y+safeViewport.height-body[3]*fit.scale*.5-12):
-          (pointer.companionMaxY??Infinity)+anchorY-innerHeight/2;
-        const step=controller.step(now,{cursorX:cursor.x,cursorY:cursor.y,anchorX,anchorY,height:body[3]*fit.scale,
-          minX,maxX,minY,maxY,
-          seen:pointer.seen,blocked:blocked||Boolean(avatar3d.companionReactionPending)||Boolean(avatar3d.motion.active&&avatar3d.motion.active.id!=='walk'),reduce});
-        if(step.walking&&!avatar3d.companionWalkRequested){
-          avatar3d.companionWalkRequested=true;
-          void avatar3d.motion.play('walk',{loop:true}).catch(error=>{controller.command('stay');notify(error.message);});
-        } else if(!step.walking&&avatar3d.companionWalkRequested){
-          avatar3d.companionWalkRequested=false;avatar3d.motion.stop();
-        }
-        if(!manual&&now>=controller.pauseUntil&&(controller.follow||controller.come||avatar3d.companionTurning)){
-          avatar3d.companionTurning=Math.abs(step.yaw)>.005;
-          if(!avatar3d.motion.active||avatar3d.motion.active.id==='walk')avatar3d.setOrbit({yaw:step.yaw,pitch:0});
-        }
-        if(fullChat){
-          const next={x:offset.x+step.dx,y:offset.y+step.dy};
-          if(step.walking){
-            next.x=Math.max(minX-centerX,Math.min(maxX-centerX,next.x));
-            next.y=Math.max(minY-centerY,Math.min(maxY-centerY,next.y));
+        const stage=avatar3d.studioStage;
+        if(stage){
+          const surface={...safeViewport,x:renderLeft};
+          if(manual){stage.manual(fit,surface);stage.facingYaw=avatar3d.orbit.yaw;}else stage.manualFit={...fit};
+          const cursor=avatarCanvasPoint(pointer);
+          const gait=controller.roam==='run-around'?'hello-run':'walk';
+          const step=stage.step(controller,now,surface,{cursorX:cursor.x,cursorY:cursor.y,seen:pointer.seen,
+            strideSpeed:avatar3d.motion.clips.get(gait)?.ready?.forwardSpeed,
+            blocked:blocked||Boolean(avatar3d.stagePreparing)||Boolean(avatar3d.companionReactionPending)
+              ||Boolean(avatar3d.motion.active&&!['walk','hello-run'].includes(avatar3d.motion.active.id)),reduce});
+          if(step.walking&&!avatar3d.companionWalkRequested){
+            avatar3d.companionWalkRequested=true;
+            void avatar3d.motion.play(gait,{loop:true})
+              .catch(error=>{controller.command('stay');notify(error.message);});
+          } else if(!step.walking&&avatar3d.companionWalkRequested){
+            avatar3d.companionWalkRequested=false;avatar3d.motion.stop();
           }
-          avatar3d.companionOffset=next;
-          fit.x+=next.x;fit.y+=next.y;
-        } else if((step.dx||step.dy)&&shell?.moveCompanion) shell.moveCompanion({dx:step.dx,dy:step.dy});
+          if(avatar3d.companionWalkRequested)avatar3d.motion.setPlaybackRate(step.gaitRate,now);
+          if(!manual&&now>=controller.pauseUntil&&(controller.follow||controller.come||controller.roam||controller.destination||avatar3d.companionTurning)){
+            avatar3d.companionTurning=Math.abs(step.yaw)>.005;
+            if(!avatar3d.motion.active||['walk','hello-run'].includes(avatar3d.motion.active.id))avatar3d.setOrbit({yaw:step.yaw,pitch:0});
+          }
+          fit=stage.project(surface);
+        } else if(controller.follow&&!avatar3d.stagePreparing&&lastBodyGeometry){
+          void performAvatarAction('follow').catch(error=>{controller.command('stay');notify(error.message);});
+        }
       }
       // The logical portrait already has a conservative camera margin.
       // Keep its top below the header, including saved offsets from old 2D poses.
-      fit = clampChatCameraFit({ ...fit, headSpan: { top: 0 } }, safeViewport);
-      const mirrored = avatarMirrored && fullChat;
-      const clampX = value => Math.max(0, Math.min(logicalWidth, value));
-      const clampY = value => Math.max(0, Math.min(logicalHeight, value));
-      const margin = 2 / Math.max(fit.scale, 1e-6);
-      const view = {
-        x: mirrored ? 0 : clampX((0 - fit.x) / fit.scale - margin),
-        y: clampY((0 - fit.y) / fit.scale - margin),
-      };
-      view.w = (mirrored ? logicalWidth : clampX((innerWidth - fit.x) / fit.scale + margin)) - view.x;
-      view.h = clampY((innerHeight - fit.y) / fit.scale + margin) - view.y;
+      if(!avatar3d.studioStage)fit = clampChatCameraFit({ ...fit, headSpan: { top: 0 } }, safeViewport);
+      // Extend the rendered frustum to the available surface. Raised hands
+      // may leave the standing portrait; render them without zooming out.
+      let view={x:(renderLeft-fit.x)/fit.scale,y:(safeViewport.y-fit.y)/fit.scale,
+        w:safeViewport.width/fit.scale,h:safeViewport.height/fit.scale};
+      if(avatar3d.cameraApproach){
+        view={x:(renderLeft-fit.x)/fit.scale,y:(safeViewport.y-fit.y)/fit.scale,
+          w:safeViewport.width/fit.scale,h:safeViewport.height/fit.scale};
+        avatar3d.approachDisplayView={...view};
+      }
       const cap = 2048 / Math.max(view.w * fit.scale * pixelRatio, view.h * fit.scale * pixelRatio, 1);
       const density = fit.scale * pixelRatio * Math.min(1, cap);
       view.pixelWidth = Math.max(8, Math.round(view.w * density));
@@ -6420,13 +6489,14 @@
         x: (cursor.x - fit.x) / fit.scale,
         y: (cursor.y - fit.y) / fit.scale,
       }) : null;
-      const image = avatar3d.render(now, {
+      const visualState = {
         viseme: currentViseme,
         intensity: speaking ? Math.max(.4, Number(audioSignal && audioSignal.relative) || 0) : 0,
         blink,
         gaze: avatarMirrored && root.classList.contains('chat-mode')
           ? { x: -gaze.x, y: gaze.y } : gaze,
         lookTarget,
+        cameraFocus:Boolean(avatar3d.companion?.cameraFocus),
         brow: microBrow(now, reduce),
         expression: (()=>{
           const speech=avatar3dExpression(speechExpressionPlan,speaking);
@@ -6437,7 +6507,17 @@
         speaking,
         reduce,
         head: avatar3d.companion?.gesture(now,speaking,reduce),
-      }, view);
+        ...(peerLiveFrame?.visual||{}),
+        reduce,
+      };
+      const image = avatar3d.render(now,visualState,view);
+      if(live && shell?.shareLiveTalkFrame){
+        const action=avatar3d.motion.active;
+        shell.shareLiveTalkFrame({visual:{viseme:visualState.viseme,intensity:visualState.intensity,
+          speaking:visualState.speaking,expression:visualState.expression,head:visualState.head},
+          action:avatar3d.liveMotionAction||null,
+          motion:action?{key:`${action.id}:${action.start}`,id:action.id,loop:action.loop,reverse:action.reverse,elapsed:avatar3d.motion.elapsed(now)*1000}:null});
+      }
       const width = logicalWidth, height = logicalHeight;
       const metadata = previewMetadata;
       if (view.w > 0 && view.h > 0) {
@@ -6529,7 +6609,8 @@
     const chatStandbyEdge = value => Number(value && value.x) < 0 ? 'left' : 'right';
     const standbyIdleDelay = inChat => inChat ? 10000 : 12000;
     const edgeIdleActive = now => {
-      if (avatar3d?.companion && (avatar3d.companion.follow || avatar3d.companion.come || avatar3d.motion?.active)) return false;
+      // A 3D companion keeps the user's size and placement even while resting.
+      if (avatar3d) return false;
       const inChat = root.classList.contains('chat-mode');
       return Boolean((motion.idle || inChat) && !roamState.enabled
         && !speechSource && !agentSpeaking && !live && !ptt && !turnController
@@ -6643,7 +6724,7 @@
     };
 
     const frameDelay = now => {
-      if (document.hidden || Number(shellState.pet && shellState.pet.opacity) <= .001) return 250;
+      if (document.hidden || Number(shellState.pet && shellState.pet.opacity) <= .001) return live ? 32 : 250;
       if (avatar3d) return avatar3dFrameDelay(now);
       if (manualMotionKind) {
         const chatWalkIdle = root.classList.contains('chat-mode')
@@ -7150,7 +7231,7 @@
       sendButton.disabled = working
         ? openClawTurnStopRequested
         : (!composer.value.trim() && !pendingComposerAttachments.length)
-          || Boolean(turnController) || Boolean(live);
+          || Boolean(turnController) || Boolean(live) || liveStarting || Boolean(liveStopping) || sharedLivePhase!=='idle';
     };
     const setOpenClawTurnHeading = (controller, active) => {
       if (active) {
@@ -7550,7 +7631,7 @@
     };
 
     async function readAloud(text) {
-      if (live) {
+      if (live || liveStarting || liveStopping || sharedLivePhase!=='idle') {
         notify('Hang up Live Talk before playing a separate read-aloud voice.');
         return;
       }
@@ -8349,7 +8430,7 @@
         chip.append(label, remove);
         pendingAttachmentsNode.appendChild(chip);
       }
-      attachButton.disabled = Boolean(turnController) || Boolean(live)
+      attachButton.disabled = Boolean(turnController) || Boolean(live) || sharedLivePhase!=='idle'
         || pendingComposerAttachments.length >= 8;
     };
 
@@ -8707,7 +8788,6 @@
     async function submitTurn(text, options = {}) {
       const value = String(text || '').trim();
       if (!value || turnController || (avatarOnlyMotion && !options.liveAgentBridge)) return;
-      if(await handleAvatarCommand(value,options))return;
       const agentID = selectedOpenClawAgent();
       if (agentID) return submitOpenClawTurn(value, agentID, options);
       return submitLocalTurn(value, options);
@@ -8718,7 +8798,7 @@
       const typedValue = composer.value.trim();
       const attachments = pendingComposerAttachments.slice(0, 8);
       if (!typedValue && !attachments.length) return;
-      if (live) {
+      if (live || liveStarting || liveStopping || sharedLivePhase!=='idle') {
         notify('Hang up Live Talk before sending a regular chat message.');
         return;
       }
@@ -8738,8 +8818,8 @@
       sendButton.disabled = sendButton.dataset.action === 'stop'
         ? openClawTurnStopRequested
         : (!composer.value.trim() && !pendingComposerAttachments.length)
-          || Boolean(turnController) || Boolean(live);
-      attachButton.disabled = Boolean(turnController) || Boolean(live)
+          || Boolean(turnController) || Boolean(live) || liveStarting || Boolean(liveStopping) || sharedLivePhase!=='idle';
+      attachButton.disabled = Boolean(turnController) || Boolean(live) || sharedLivePhase!=='idle'
         || pendingComposerAttachments.length >= 8;
       syncScrollToLatestOffset();
       reportControlRects(true);
@@ -8767,7 +8847,7 @@
     };
 
     async function startRecording() {
-      if (avatarOnlyMotion || ptt || live || turnController) return;
+      if (avatarOnlyMotion || ptt || live || liveStarting || liveStopping || sharedLivePhase!=='idle' || turnController) return;
       stopSpeech();
       markActivity();
       const session = {
@@ -9166,6 +9246,9 @@
       const interruptsAssistant = session.assistantOutputSinceUser
         || interruptsAgentSpeech || interruptsDelegatedTurn;
       const invalidatesUnseenTiming = interruptsAgentSpeech || interruptsDelegatedTurn;
+      if (startsNewTurn) {
+        session.avatarReactionTurnID = `live:${Date.now()}:${identifier}`;
+      }
       if (startsNewTurn && interruptsAssistant) {
         // A final transcript from the interrupted audio can arrive after the
         // first segment of the new user turn. Keep that older generation
@@ -9345,19 +9428,6 @@
       if (turnController || document.querySelector('.email-review')) {
         return agentTurnRPCAnswer('busy');
       }
-      const avatarAction=avatar3d?.companion && (avatarCompanionAPI.avatarIntent(request.spoken_request)
-        ||avatarCompanionAPI.motionIntent(request.spoken_request,avatar3d.motion.clips));
-      if(avatarAction){
-        if(!claimLiveTalkRPCRequest(session.replayedAgentTurnRequests,request.request_id,128))return agentTurnRPCAnswer('rejected');
-        const text=String(request.spoken_request).trim().toLowerCase();
-        const recent=lastAvatarCommand?.text===text&&performance.now()-lastAvatarCommand.at<8000;
-        try{
-          const answer=await (recent?lastAvatarCommand.pending:performAvatarAction(avatarAction));
-          if(!recent&&answer)addMessage('assistant',answer);
-          rememberExpectedDelegatedAssistantReply(session,answer,performance.now());
-          return agentTurnRPCAnswer('completed',answer);
-        }catch{return agentTurnRPCAnswer('failed');}
-      }
       const agentID = selectedOpenClawAgent();
       if (!agentID) {
         setStatus('Select an OpenClaw agent for Live Talk actions', '');
@@ -9387,9 +9457,10 @@
 
     const setLiveButton = state => {
       liveButton.dataset.state = state;
-      const label = state === 'connected' ? 'Hang up Live Talk' : state === 'connecting' ? 'Cancel Live Talk call' : 'Start Live Talk';
+      const label = state === 'connected' ? 'Hang up Live Talk' : state === 'connecting' ? 'Cancel Live Talk call' : state === 'ending' ? 'Ending Live Talk…' : 'Start Live Talk';
       liveButton.setAttribute('aria-label', label);
       liveButton.title = label;
+      liveButton.disabled = state === 'ending';
     };
 
     const startConnectionSound = session => {
@@ -9417,6 +9488,7 @@
       currentViseme = 'sil';
       clearTimeout(session.guard);
       setLiveButton('connecting');
+      shell?.setLiveTalk?.(true);
       startConnectionSound(session);
       setStatus(status, 'busy');
       session.guard = setTimeout(() => {
@@ -9448,7 +9520,7 @@
       pttButton.disabled = true;
       sendButton.disabled = true;
       setStatus('Live Talk · connected', 'live');
-      if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(true);
+      if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk('connected');
     }
 
     const handleTranscript = (session, segments, participant) => {
@@ -9476,7 +9548,6 @@
           }
           if (role === 'user') {
             appendFinalUserTurnSegment(session, text, segmentID, now);
-            void handleAvatarCommand(text,{userAlreadyRendered:true});
           } else {
             if (!assistantDisposition.preserveUserTurn) {
               session.assistantOutputSinceUser = true;
@@ -9491,7 +9562,8 @@
           const suppressAssistant = role === 'assistant' && assistantDisposition.suppress;
           if (!suppressAssistant) {
             addMessage(role, text, { readable: role === 'assistant' });
-            if(role==='assistant')considerAvatarReaction(session.latestFinalUserTranscript,text);
+            if(role==='assistant'&&!assistantDisposition.preserveUserTurn)
+              considerAvatarReaction(session.latestFinalUserTranscript,text,undefined,session.avatarReactionTurnID||'live:greeting');
           }
         } else if (role === 'assistant') {
           const generation = Number.isFinite(session.agentSpeechGeneration)
@@ -9611,11 +9683,21 @@
 
     async function startLiveTalk() {
       if (live) { stopLiveTalk('ended'); return; }
+      if(liveStarting || liveStopping || sharedLivePhase!=='idle')return;
       if (ptt || turnController) { notify('Finish the current voice or chat turn before starting Live Talk.'); return; }
       const library = window.LivekitClient;
       if (!library || !library.Room) { notify('Live Talk is unavailable in this build.'); return; }
+      liveStarting=true;
+      liveCancelRequested=false;
+      try {
+        if(shell?.claimLiveTalk && !await shell.claimLiveTalk())return;
+      } catch(error){notify('Could not start Live Talk. Try again.');return;}
+      finally{liveStarting=false;}
+      if(liveCancelRequested || sharedLivePhase==='ending'){shell?.setLiveTalk?.(false);return;}
+      try {
       stopSpeech();
       const session = {
+        abort: new AbortController(),
         room: new library.Room({ adaptiveStream: true, dynacast: true }),
         agentReady: false,
         finalTranscriptIDs: new Set(),
@@ -9710,6 +9792,7 @@
         session.remoteAudioState = makeLiveTalkAudioState();
         session.ttsTimingState = makeLiveTalkTTSTimingState();
         setLiveButton('connecting');
+        shell?.setLiveTalk?.(true);
         startConnectionSound(session);
         setStatus('Live Talk · reconnecting…', 'busy');
         clearTimeout(session.guard);
@@ -9726,8 +9809,9 @@
       });
       room.on(library.RoomEvent.Disconnected, () => { if (live === session && !session.ending) stopLiveTalk('ended'); });
 
-      try {
+      session.startup = (async () => {
         const connection = await fetch('/api/livekit/session', {
+          signal: session.abort.signal,
           method: 'POST',
           headers: { 'Accept': 'application/json', 'Cache-Control': 'no-store' },
         }).then(safeJSON);
@@ -9736,20 +9820,32 @@
         if (live !== session) { room.disconnect().catch(() => {}); return; }
         if (!await roomAudioReady(session) || live !== session) return;
         await room.localParticipant.setMicrophoneEnabled(true);
+        if (live !== session || session.ending) {
+          await room.localParticipant.setMicrophoneEnabled(false);
+          return;
+        }
         markAgentReady(session);
+      })();
+      await session.startup;
       } catch (error) {
-        if (live === session) {
+        if (live) {
           notify(liveTalkConnectionError(error));
-          stopLiveTalk('error');
+          void stopLiveTalk('error');
+        } else if (!liveStopping) {
+          shell?.setLiveTalk?.(false);
+          notify(liveTalkConnectionError(error));
         }
       }
     }
 
     function stopLiveTalk(reason) {
+      if (liveStopping) return liveStopping;
       const session = live;
       live = null;
       if (!session) return;
       session.ending = true;
+      session.abort.abort();
+      shell?.setLiveTalk?.('ending');
       if (turnController && turnControllerOrigin === 'live-agent-bridge') {
         const delegatedController = turnController;
         turnController = null;
@@ -9770,17 +9866,32 @@
       session.audioAttachments.clear();
       try { session.room.unregisterRpcMethod(EMAIL_RPC); } catch (_) { /* no registration */ }
       try { session.room.unregisterRpcMethod(AGENT_TURN_RPC); } catch (_) { /* no registration */ }
-      session.room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
-      session.room.disconnect().catch(() => {});
+      // Disconnect immediately to cancel an in-flight connect, then drain the
+      // startup path. If microphone permission resolves late, turn it off again
+      // before releasing the application-wide call lease.
+      setLiveButton('ending');
+      pttButton.disabled = true;
+      sendButton.disabled = true;
+      liveStopping = (async () => {
+        await session.room.disconnect().catch(() => {});
+        await session.startup?.catch(() => {});
+        await session.room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+        await session.room.disconnect().catch(() => {});
+      })().finally(() => {
+        liveStopping = null;
+        shell?.setLiveTalk?.(false);
+        setLiveButton('idle');
+        pttButton.disabled = Boolean(turnController);
+        sendButton.disabled = Boolean(turnController);
+        setStatus(reason === 'timeout' ? 'Live Talk did not answer' : reason === 'error' ? 'Live Talk unavailable' : 'Ready', reason === 'error' || reason === 'timeout' ? '' : 'good');
+      });
       // An unsent draft is useful after the call ends; keep its visible review
       // card until the user explicitly copies or dismisses it.
-      setLiveButton('idle');
-      pttButton.disabled = Boolean(turnController);
       agentModeSelect.disabled = false;
-      if (shell && typeof shell.setLiveTalk === 'function') shell.setLiveTalk(false);
-      setStatus(reason === 'timeout' ? 'Live Talk did not answer' : reason === 'error' ? 'Live Talk unavailable' : 'Ready', reason === 'error' || reason === 'timeout' ? '' : 'good');
+      setStatus('Ending Live Talk…', 'busy');
       resizeComposer();
       reportControlRects(true);
+      return liveStopping;
     }
 
     const selectShellDisplayMode = async mode => {
@@ -9920,6 +10031,11 @@
         applyRailFold(railFolded);
       }
       if (closeUpChanged || chatPoseRevisionChanged || factoryResetChanged) {
+        if(avatar3d?.studioStage){
+          avatar3d.actionGeneration=(avatar3d.actionGeneration||0)+1;
+          avatar3d.stagePreparing=false;avatar3d.studioStage=null;avatar3d.studioDistance=null;
+          avatar3d.companion?.command('pose');avatar3d.motion?.stop();avatar3d.companionWalkRequested=false;avatar3d.frame();
+        }
         clearLocalTransientDisplayMode();
         markActivity({ preserveDisplayMode: true });
         lastFrame = 0;
@@ -10081,6 +10197,9 @@
 
     const resetAvatar3DView = async () => {
       if (!avatar3d) return;
+      avatar3d.actionGeneration=(avatar3d.actionGeneration||0)+1;avatar3d.stagePreparing=false;
+      avatar3d.companion?.command('pose');avatar3d.motion?.stop();
+      avatar3d.resetCameraApproach();avatar3d.studioStage=null;avatar3d.studioDistance=null;avatar3d.frame();avatar3d.approachSurface=null;avatar3d.approachDisplayView=null;avatar3d.cameraWalkRequested=false;
       setAvatar3DOrbit({});
       avatar3dRotateMode = false;
       chatAvatarOffsets.standard = { x: 0, y: 0 };
@@ -10318,6 +10437,7 @@
     const toggleLiveTalk = () => {
       markActivity();
       if (live) stopLiveTalk('ended');
+      else if(sharedLivePhase!=='idle'&&shell?.endSharedLiveTalk)shell.endSharedLiveTalk();
       else startLiveTalk();
     };
 
@@ -10545,6 +10665,7 @@
         else if (selectionActions.classList.contains('show')) hideSelectionActions(true);
         else if (document.querySelector('.email-review')) closeEmailReview();
         else if (live) stopLiveTalk('ended');
+        else if (sharedLivePhase!=='idle') shell?.endSharedLiveTalk?.();
         else if (turnController) {
           if (!requestOpenClawTurnStop()) turnController.abort();
           removeWorking();
@@ -10608,12 +10729,12 @@
           ? {playTransitions:'false',followCursor:avatar3d.options.selection.followCursor}
           : {...avatar3d.options.selection, [group]: id};
         if (['body','hands','leftHand','rightHand'].includes(group)) next.playTransitions = 'false';
-        if (group === 'playTransitions' && id === 'true') void selectStandbyMode();
         if (group === 'body' || (group === 'prop' && id)) {
           delete next.hands; delete next.leftHand; delete next.rightHand;
           if (group === 'prop') next.body = avatar3d.options.props.find(p => p.id === id)?.pose;
-          void selectStandbyMode();
         }
+        avatar3d.companion?.command('pose');avatar3d.stopCameraApproach(performance.now());
+        clearLocalTransientDisplayMode();markActivity({preserveDisplayMode:true});
         avatar3d.options.select(next);
         localStorage.setItem(`openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`, JSON.stringify(avatar3d.options.selection));
         avatar3dOptionsMounted = null; syncAvatar3DControls(); lastFrame = 0;
@@ -10631,12 +10752,19 @@
       });
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
       if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(toggleLiveTalk);
+      shell.onLiveStop?.(() => {
+        liveCancelRequested = true;
+        void stopLiveTalk('ended');
+      });
+      if(shell.onLiveTalkState)shell.onLiveTalkState(receiveSharedLiveState);
+      if(shell.onLiveTalkFrame)shell.onLiveTalkFrame(receiveSharedLiveFrame);
+      if(shell.getLiveTalkState)shell.getLiveTalkState().then(receiveSharedLiveState).catch(()=>{});
     } else {
       root.classList.add('chat-open');
     }
 
     const healthPoll = async () => {
-      if (live || speechSource || turnController || ptt) return;
+      if (live || sharedLivePhase!=='idle' || speechSource || turnController || ptt) return;
       try {
         const health = await fetch('/health', { cache: 'no-store' }).then(safeJSON);
         if (health.provider_ok || health.llm_ok) setStatus(`${manifest && manifest.avatar && manifest.avatar.name || 'OpenClam'} · ready`, 'good');

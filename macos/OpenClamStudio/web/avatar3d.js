@@ -154,6 +154,7 @@ class Avatar3D {
     this.layoutCache = null;
     this.orbit = { yaw: 0, pitch: 0 };
     this.smooth = { gazeYaw: 0, gazePitch: 0, headYaw: 0, headPitch: 0, headRoll: 0, intensity: 0 };
+    this.cameraApproach = null;
     this.disposed = false;
     this.lights();
   }
@@ -240,6 +241,11 @@ class Avatar3D {
       } catch (error) { console.warn('3D motions:', error.message); }
     }
     this.normalise();
+    this.restHeadCenter = this.headCenter?.clone();
+    const eyes=['l','r'].map(side=>this.bones.eye?.[side]).filter(Boolean);
+    this.restFaceCenter=eyes.length?eyes.reduce((sum,eye)=>sum.add(eye.getWorldPosition(new THREE.Vector3())),new THREE.Vector3()).multiplyScalar(1/eyes.length)
+      .add(new THREE.Vector3(0,-this.headRadius*.25,0)):this.restHeadCenter?.clone();
+    this.restBounds = this.bounds.clone();
     this.frame();
     if (this.options) this.options.restBounds = this.bounds.clone();
     this.model.updateMatrixWorld(true);
@@ -249,6 +255,8 @@ class Avatar3D {
     }
     const front = new THREE.Vector3(0, 0, 1)
       .applyQuaternion(this.model.getWorldQuaternion(new THREE.Quaternion()));
+    if(this.bones.head)this.headForward=front.clone()
+      .applyQuaternion(this.bones.head.getWorldQuaternion(new THREE.Quaternion()).invert());
     for (const side of ['l', 'r']) {
       const eye = this.bones.eye[side];
       if (eye) this.eyeForward.set(eye, front.clone()
@@ -437,8 +445,9 @@ class Avatar3D {
   }
 
   frame() {
-    const size = this.bounds.getSize(new THREE.Vector3());
-    const center = this.bounds.getCenter(new THREE.Vector3());
+    const bounds = this.restBounds || this.options?.restBounds || this.bounds;
+    const size = bounds.getSize(new THREE.Vector3());
+    const center = bounds.getCenter(new THREE.Vector3());
     const height = Math.max(1e-4, size.y);
     const width = Math.max(1e-4, size.x);
     const vertical = THREE.MathUtils.degToRad(this.camera.fov) / 2;
@@ -454,9 +463,9 @@ class Avatar3D {
     const up = new THREE.Vector3().crossVectors(outward, right);
     // Fit every corner from the chosen direction, including its depth. A
     // front-only bounding rectangle clips the crown in elevated/side views.
-    for (const x of [this.bounds.min.x, this.bounds.max.x]) {
-      for (const y of [this.bounds.min.y, this.bounds.max.y]) {
-        for (const z of [this.bounds.min.z, this.bounds.max.z]) {
+    for (const x of [bounds.min.x, bounds.max.x]) {
+      for (const y of [bounds.min.y, bounds.max.y]) {
+        for (const z of [bounds.min.z, bounds.max.z]) {
           const point = new THREE.Vector3(x, y, z).sub(center);
           distance = Math.max(distance, point.dot(outward)
             + Math.max(Math.abs(point.dot(up)) * 1.08 / Math.tan(vertical),
@@ -464,8 +473,9 @@ class Avatar3D {
         }
       }
     }
-    distance = Math.max(distance, this.bounds.max.z - center.z
+    distance = Math.max(distance, bounds.max.z - center.z
       + Math.max(height * .5 * 1.06 / Math.tan(vertical), width * .5 * 1.12 / Math.tan(horizontal)));
+    if(this.studioDistance>0)distance=this.studioDistance;
     this.camera.position.copy(center).addScaledVector(outward, distance);
     this.camera.lookAt(center.x, center.y, center.z);
     this.camera.updateMatrixWorld(true);
@@ -476,6 +486,22 @@ class Avatar3D {
     this.layoutCache = null;
   }
 
+  lockStudioLens() {
+    const center=(this.restBounds||this.bounds).getCenter(new THREE.Vector3());
+    this.studioDistance=this.camera.position.distanceTo(center);
+  }
+
+  studioProjection() {
+    const bounds=this.restBounds||this.bounds,center=bounds.getCenter(new THREE.Vector3());
+    const distance=this.studioDistance||this.camera.position.distanceTo(center);
+    const focal=this.height/(2*Math.tan(THREE.MathUtils.degToRad(this.camera.fov)/2));
+    const groundDepth=(center.y-bounds.min.y)/distance;
+    // Walking uses a level camera. The ground's projection is invariant to
+    // yaw; forward strides foreshorten vertically by groundDepth.
+    return {ground:{x:this.width/2,y:this.height/2+focal*groundDepth},
+      pixelsPerUnit:focal/distance,groundDepth};
+  }
+
   setOrbit({ yaw = 0, pitch = 0 } = {}) {
     const finite = value => Number.isFinite(Number(value)) ? Number(value) : 0;
     const next = { yaw: Math.atan2(Math.sin(finite(yaw)), Math.cos(finite(yaw))),
@@ -484,6 +510,117 @@ class Avatar3D {
         && Math.abs(next.pitch - this.orbit.pitch) < 1e-6) return;
     this.orbit = next;
     this.frame();
+  }
+
+  // Locomotion toward the viewer uses perspective distance, never changes
+  // the GLB, bone scale, or the relative shape of the face and hair. The
+  // camera tracks up to eye level as the figure enters a close conversation.
+  approachCamera(action, now, view) {
+    if (!this.headCenter || !view || !(view.w > 0 && view.h > 0)) return false;
+    const previous = this.cameraApproach;
+    const current = previous ? this.approachFrame(now) : null;
+    const initialCamera = this.camera.clone();
+    initialCamera.clearViewOffset(); initialCamera.updateProjectionMatrix();
+    const origin = previous?.origin || { camera: initialCamera.clone(), view: {...view} };
+    const fromCamera = current?.camera.clone() || initialCamera;
+    const fromView = {...view};
+    const level = action === 'back' ? Math.max(-3, (previous?.level || 0) - 1)
+      : Math.min(4, (previous?.level || 0) + 1);
+    if (level === (previous?.level || 0) && !previous?.moving) return false;
+    const focus = previous?.focus.clone() || (this.restFaceCenter || this.restHeadCenter || this.headCenter).clone();
+    const aspect = view.w / view.h;
+    const targetView = level>0 ? {x:0, y:0, w:this.width, h:this.width/aspect} : {...origin.view};
+    targetView.x = level>0 ? (this.width-targetView.w)/2 : targetView.x;
+    targetView.y = level>0 ? (this.height-targetView.h)/2 : targetView.y;
+    const targetCamera = origin.camera.clone();
+    if (level>0) {
+      const fill = [.0,.82,.96,1.08,1.18][level];
+      const vertical = Math.tan(THREE.MathUtils.degToRad(targetCamera.fov)/2);
+      const horizontal = vertical * this.width/this.height;
+      const distance = Math.max(this.headRadius*2.5,
+        this.headRadius*this.width/(horizontal*targetView.w*fill),
+        this.headRadius*this.height/(vertical*targetView.h*fill));
+      targetCamera.position.copy(focus).add(new THREE.Vector3(0,0,distance));
+      targetCamera.quaternion.identity();
+      targetCamera.near = Math.max(.005, this.headRadius*.08);
+      targetCamera.far = Math.max(origin.camera.far, distance+10);
+      targetCamera.updateMatrixWorld(true);
+    } else if(level<0) {
+      const outward=origin.camera.getWorldDirection(new THREE.Vector3()).negate();
+      const distance=origin.camera.position.distanceTo(focus);
+      targetCamera.position.addScaledVector(outward,distance*(Math.pow(1.45,-level)-1));
+      targetCamera.far=Math.max(origin.camera.far,targetCamera.position.distanceTo(focus)*3);
+      targetCamera.updateMatrixWorld(true);
+    }
+    const travel = fromCamera.position.distanceTo(targetCamera.position);
+    const height = Math.max(this.headRadius*12, .01);
+    this.cameraApproach = {origin, focus, level, fromCamera, targetCamera, fromView,
+      targetView, started:now, duration:Math.max(1400,Math.min(6500,travel/height*1500)),
+      moving:true, direction:action==='back'?-1:1, baseOrbit:{...this.orbit},
+      camera:fromCamera.clone(), view:{...fromView}};
+    return true;
+  }
+
+  approachFrame(now, {aspect, zoom=1, panX=0, panY=0, reduce=false} = {}) {
+    const move = this.cameraApproach;
+    if (!move) return null;
+    if (reduce) this.stopCameraApproach(now);
+    const t = move.moving ? clamp((now-move.started)/move.duration,0,1) : 1;
+    const u = t*t*(3-2*t);
+    const camera = move.fromCamera.clone();
+    camera.position.lerp(move.targetCamera.position,u);
+    camera.quaternion.slerp(move.targetCamera.quaternion,u);
+    camera.near = Math.min(move.fromCamera.near,move.targetCamera.near);
+    camera.far = Math.max(move.fromCamera.far,move.targetCamera.far);
+    camera.updateMatrixWorld(true);
+    const view = Object.fromEntries(['x','y','w','h'].map(k=>[k,move.fromView[k]+(move.targetView[k]-move.fromView[k])*u]));
+    // Resizing a window or showing a keyboard changes the crop uniformly.
+    if (aspect > 0 && Number.isFinite(aspect)) {
+      const w = Math.max(view.w,view.h*aspect), h = w/aspect;
+      view.x -= (w-view.w)/2; view.y -= (h-view.h)/2; view.w=w; view.h=h;
+    }
+    const z = clamp(Number.isFinite(zoom)?zoom:1,.2,5);
+    view.x += view.w*(1-1/z)/2; view.y += view.h*(1-1/z)/2;
+    view.w /= z; view.h /= z;
+    view.x += Number.isFinite(panX)?panX:0; view.y += Number.isFinite(panY)?panY:0;
+    const yaw = this.orbit.yaw-move.baseOrbit.yaw, pitch = this.orbit.pitch-move.baseOrbit.pitch;
+    if (Math.abs(yaw)+Math.abs(pitch)>1e-6) {
+      const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch,yaw,0,'YXZ'));
+      camera.position.sub(move.focus).applyQuaternion(rotation).add(move.focus);
+      camera.quaternion.premultiply(rotation); camera.updateMatrixWorld(true);
+    }
+    camera.clearViewOffset(); camera.updateProjectionMatrix();
+    move.camera=camera; move.view=view;
+    if (t===1) move.moving=false;
+    this.camera.copy(camera); this.layoutCamera=null;
+    return {camera,view,moving:move.moving,level:move.level};
+  }
+
+  stopCameraApproach(now) {
+    const move = this.cameraApproach;
+    if (!move?.moving) return;
+    const frame = this.approachFrame(now);
+    move.fromCamera=frame.camera.clone(); move.targetCamera=frame.camera.clone();
+    move.fromView={...frame.view}; move.targetView={...frame.view};
+    move.baseOrbit={...this.orbit}; move.moving=false;
+  }
+
+  resetCameraApproach() {
+    this.cameraApproach=null;
+    this.frame();
+  }
+
+  approachLayout() {
+    const camera=this.cameraApproach?.camera;
+    if (!camera) return this.layout();
+    const project = p => {const n=p.clone().project(camera);return [(n.x+1)*this.width/2,(1-n.y)*this.height/2];};
+    const rect = points => {const xs=points.map(p=>p[0]),ys=points.map(p=>p[1]);return [Math.min(...xs),Math.min(...ys),Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys)];};
+    const body=[],face=[];
+    const bounds=this.restBounds||this.bounds;
+    for(const x of [bounds.min.x,bounds.max.x])for(const y of [bounds.min.y,bounds.max.y])for(const z of [bounds.min.z,bounds.max.z])body.push(project(new THREE.Vector3(x,y,z)));
+    const center=this.cameraApproach.focus, r=this.headRadius;
+    for(const x of [-r,r])for(const y of [-r,r])face.push(project(center.clone().add(new THREE.Vector3(x,y,0))));
+    return {bounds:rect(body),faceBounds:rect(face)};
   }
 
   resize(width, height) {
@@ -512,6 +649,10 @@ class Avatar3D {
     // a plane in front of the face gives the 2D cursor a stable 3D depth.
     // Its projection is exact at any crop, zoom, placement or orbit angle.
     this.project(this.headCenter);
+    if (this.cameraApproach) {
+      this.layoutCamera=this.cameraApproach.camera.clone();
+      this.layoutCamera.clearViewOffset(); this.layoutCamera.updateProjectionMatrix();
+    }
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2(point.x / this.width * 2 - 1,
       1 - point.y / this.height * 2), this.layoutCamera);
@@ -569,10 +710,13 @@ class Avatar3D {
   // Pixel boxes the compositor uses for framing, close-up and gaze anchoring.
   layout() {
     if (this.layoutCache) return this.layoutCache;
+    // Motion extents remain available for hit testing, but a raised arm,
+    // kick, or seated pose must not shrink the entire character to fit.
+    const bounds = this.restBounds || this.options?.restBounds || this.bounds;
     const corners = [];
-    for (const x of [this.bounds.min.x, this.bounds.max.x]) {
-      for (const y of [this.bounds.min.y, this.bounds.max.y]) {
-        for (const z of [this.bounds.min.z, this.bounds.max.z]) {
+    for (const x of [bounds.min.x, bounds.max.x]) {
+      for (const y of [bounds.min.y, bounds.max.y]) {
+        for (const z of [bounds.min.z, bounds.max.z]) {
           corners.push(this.project(new THREE.Vector3(x, y, z)));
         }
       }
@@ -588,7 +732,7 @@ class Avatar3D {
       const r = this.headRadius;
       for (const dx of [-r, r]) {
         for (const dy of [-r, r]) {
-          face.push(this.project(this.headCenter.clone().add(new THREE.Vector3(dx, dy, 0))));
+          face.push(this.project((this.restHeadCenter || this.headCenter).clone().add(new THREE.Vector3(dx, dy, 0))));
         }
       }
     }
@@ -608,9 +752,13 @@ class Avatar3D {
     if (this.disposed || !this.model) return this.canvas;
     this.options?.update(now, Boolean(state.reduce));
     if (this.options && !this.options.enabled('followCursor')) {
-      state = {...state,gaze:{x:0,y:0},lookTarget:null};
+      state = {...state,gaze:{x:0,y:0},lookTarget:null,cameraFocus:false};
     }
+    if (this.cameraApproach) this.camera.copy(this.cameraApproach.camera);
     this.applyView(view);
+    // An explicit approach attends to the viewer, independently of the last
+    // pointer position. Manual controls/new actions release this attention.
+    if(state.cameraFocus)state={...state,gaze:{x:0,y:0},lookTarget:this.camera.position.clone()};
     const elapsed = this.lastFrameAt > 0 ? clamp(now - this.lastFrameAt, 1, 120) : 16;
     this.lastFrameAt = now;
     const reduce = Boolean(state.reduce);
@@ -653,7 +801,7 @@ class Avatar3D {
     const attentionY = clamp(Number(gaze.y) || 0, -1, 1);
     const { x: gx, y: gy } = this.pose(now, elapsed, {
       gx: attentionX, gy: attentionY, reduce, speaking: Boolean(state.speaking),
-      breathe: Number(state.breathe) || 1, head: state.head || {}, target: state.lookTarget,
+      breathe: Number(state.breathe) || 1, head: state.head || {}, target: state.lookTarget,cameraFocus:state.cameraFocus,
     });
     // +x is the viewer's right, which is the character's own left.
     if (!(state.lookTarget && this.bones.eye.l && this.bones.eye.r)) {
@@ -736,19 +884,29 @@ class Avatar3D {
     bone.quaternion.copy(base).premultiply(localDelta);
   }
 
-  pose(now, elapsed, { gx, gy, reduce, speaking, breathe, head, target }) {
+  pose(now, elapsed, { gx, gy, reduce, speaking, breathe, head, target, cameraFocus=false }) {
     const t = now / 1000;
     const idle = reduce ? 0 : 1;
     // The eyes acquire the cursor first; the head catches up over ~180 ms.
     // As it turns, the eyes settle back toward the middle of their sockets.
     let wantedYaw = gx * .46, wantedPitch = gy * .28;
+    if(cameraFocus){
+      // Measure the authored gait, never last frame's added gaze. Otherwise
+      // compensating a sideways head track creates a feedback oscillation.
+      for(const [bone,base] of this.baseQuaternions)bone.quaternion.copy(base);
+      this.root.updateMatrixWorld(true);
+      if(this.headReferencePoint&&this.bones.head)this.headCenter.copy(this.headReferencePoint).applyMatrix4(this.bones.head.matrixWorld);
+    }
     if (target) {
       const direction = new THREE.Vector3(target.x, target.y, target.z).sub(this.headCenter);
-      const front = new THREE.Vector3(0, 0, 1)
-        .applyQuaternion(this.model.getWorldQuaternion(new THREE.Quaternion()));
+      const front = cameraFocus&&this.headForward&&this.bones.head
+        ? this.headForward.clone().applyQuaternion(this.bones.head.getWorldQuaternion(new THREE.Quaternion()))
+        : new THREE.Vector3(0, 0, 1).applyQuaternion(this.model.getWorldQuaternion(new THREE.Quaternion()));
       const relativeYaw = Math.atan2(direction.x, direction.z) - Math.atan2(front.x, front.z);
-      wantedYaw = clamp(Math.atan2(Math.sin(relativeYaw), Math.cos(relativeYaw)) * .65, -.55, .55);
-      wantedPitch = clamp(Math.atan2(-direction.y, Math.hypot(direction.x, direction.z)) * .65, -.35, .35);
+      const gain=cameraFocus?1:.65;
+      wantedYaw = clamp(Math.atan2(Math.sin(relativeYaw), Math.cos(relativeYaw)) * gain, -.55, .55);
+      const frontPitch=cameraFocus?Math.atan2(-front.y,Math.hypot(front.x,front.z)):0;
+      wantedPitch = clamp((Math.atan2(-direction.y, Math.hypot(direction.x, direction.z))-frontPitch) * gain, -.35, .35);
     }
     this.smooth.gazeYaw = approach(this.smooth.gazeYaw, wantedYaw, elapsed, reduce ? 1 : 180);
     this.smooth.gazePitch = approach(this.smooth.gazePitch, wantedPitch, elapsed, reduce ? 1 : 210);

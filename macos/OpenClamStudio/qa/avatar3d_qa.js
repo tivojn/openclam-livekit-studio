@@ -56,7 +56,8 @@ assert.match(index, /disposeAvatar3D\(\);/);
 // The 3D draw reuses the shared timing, blink, gaze and camera helpers.
 for (const helper of ['desiredViseme(now)', 'blinkAmounts(now, reduce)', 'cursorGazeTarget(pointer',
   'smoothCursorGaze(avatar3dGazeState', 'bodyMotionAt(now, speaking', 'cameraFor(previewMetadata, logicalWidth, logicalHeight)',
-  "chatWindowMotionFit('idle', previewMetadata", 'avatar3d.render(now, {']) {
+  "chatWindowMotionFit('idle', previewMetadata", 'const visualState = {',
+  'avatar3d.render(now,visualState,view)']) {
   const block = index.slice(index.indexOf('const drawAvatar3D ='), index.indexOf('const avatar3dFrameDelay'));
   assert.ok(block.includes(helper), `drawAvatar3D must use ${helper}`);
 }

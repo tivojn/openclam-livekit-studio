@@ -1340,7 +1340,6 @@ struct CaptainAyerAvatarOverlay: View {
         }
         .onChange(of: modelOptions.motionPresentationRequests[avatar.id]) { _, _ in
             guard avatar.compatibility.rendersModel else { return }
-            selectAvatarMode(.standby)
             enableModelControls()
         }
         .onChange(of: avatar.id) { _, _ in
@@ -1805,6 +1804,7 @@ struct CaptainAyerAvatarOverlay: View {
             Button("Zoom In") { zoomModel(by: 1.2) }
             Button("Zoom Out") { zoomModel(by: 1 / 1.2) }
             Button("Reset 3D View", systemImage: "arrow.counterclockwise") {
+                Task { _ = await modelOptions.command("reset-view", for: avatar.id) }
                 setModelView(yaw: 0, pitch: 0)
                 resetStandbyTransform()
             }
@@ -1820,7 +1820,6 @@ struct CaptainAyerAvatarOverlay: View {
             OpenClam3DWardrobeSheet(avatarID: avatar.id, name: avatar.displayName,
                 allowsImport: LiveTalkAvatarSwitchPolicy.allowsSwitch(during: liveTalkPhase),
                 onImport: onSelectAvatar) {
-                selectAvatarMode(.standby)
                 enableModelControls()
             }
             .presentationDetents([.medium, .large])
