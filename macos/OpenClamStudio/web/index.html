@@ -10219,7 +10219,9 @@
       updateHit(true);
       clearTimeout(avatarOrbitTimer);
       avatarOrbitTimer = setTimeout(() => { avatarOrbitGesture = false; updateHit(true); }, 180);
-      setAvatar3DOrbit({ yaw: avatar3d.orbit.yaw - dx * .006, pitch: avatar3d.orbit.pitch + dy * .006 });
+      // Wheel deltas describe scrolling, opposite to direct finger/drag
+      // displacement. Keep the model attached to the two-finger swipe.
+      setAvatar3DOrbit({ yaw: avatar3d.orbit.yaw + dx * .006, pitch: avatar3d.orbit.pitch - dy * .006 });
     };
 
     const resetAvatar3DView = async () => {

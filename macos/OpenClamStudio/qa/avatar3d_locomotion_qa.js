@@ -132,6 +132,31 @@ const near=(a,b,label)=>assert(Math.abs(a-b)<1e-7,`${label}: ${a} != ${b}`);
     for(let t=begin;t<begin+60000;t+=32){stage.step(c,t,surface);if(!c.destination)return;}
     assert.fail('destination did not settle: '+action);
   };
+  // An approach/retreat must not stop and turn again after the initial turn.
+  // Exercise the full-body/crown handoff, the middle-distance boundary and
+  // saved placements that require a camera adjustment on the first walk.
+  for(const [width,height] of [[393,680],[1100,760],[1600,980]])for(const fps of [30,60])
+    for(const ratio of [.4,.72,.95])for(const offset of [-.12,0,.2]){
+      const area={x:40,y:60,width,height},scale=height*ratio/layout.bounds[3];
+      const shot=new s.Stage({scale,x:area.x+width*.35-510*scale,
+        y:area.y+height*(.5+offset)-760*scale},layout,area);
+      shot.crownAt=()=>layout.bounds[1]+45;
+      const c=new s.Controller();let at=1000;
+      for(const action of ['closer','back','back','back','closer']){
+        c.command(action);c.destination=shot.destination(action,area);
+        const goal=c.destination.y,direction=Math.sign(goal-shot.y);let moving=false;
+        for(let frames=0;frames<fps*90;frames++,at+=1000/fps){
+          const y=shot.y,step=shot.step(c,at,area),progress=(shot.y-y)*direction;
+          assert(progress>=-1e-9,'camera reframing cannot reverse studio travel');
+          if(moving&&step.walking)assert(progress>1e-9&&step.gaitRate>0,
+            'no halfway pause or U-turn: '+JSON.stringify({width,height,fps,ratio,offset,action,y,step}));
+          if(progress>1e-7)moving=true;
+          if(!c.destination)break;
+        }
+        assert(!c.destination,'approach and retreat finish across framing/depth boundaries');
+        assert(Math.abs(shot.y-goal)<.006,'arrive at the requested depth');
+      }
+    }
   for(const [action,target] of Object.entries(s.destinations)){
     travelTo(action,200000);
     assert(Math.abs(stage.x-target.x)<.006&&Math.abs(stage.y-target.y)<.006,'arrive directly without cursor: '+action);
@@ -147,6 +172,7 @@ const near=(a,b,label)=>assert(Math.abs(a-b)<1e-7,`${label}: ${a} != ${b}`);
   avatar.resetCameraApproach();avatar.setOrbit({yaw:0,pitch:0});
   avatar.lockStudioLens();
   aligned.calibrate(avatar);
+  aligned.entryWeight=0; // measure gait after the separate initial camera adjustment
   const ground=avatar.restBounds.getCenter(new THREE.Vector3());ground.y=avatar.restBounds.min.y;
   const screen=(point=ground)=>{const p=avatar.project(point),fit=aligned.project(surface);return {x:p.x*fit.scale+fit.x,y:p.y*fit.scale+fit.y};};
   let at=700000,translated=0,turnFrames=0;

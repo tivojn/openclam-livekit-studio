@@ -59,9 +59,15 @@ for (const chat of [false, true]) {
   assert.ok(s.avatar3d.orbit.yaw < 0 && s.avatar3d.orbit.pitch > 0, 'Option-drag rotates in both axes');
   assert.equal(calls.filter(c => c[0] === 'move').length, movesBefore, 'orbit does not move the window');
   s.endCanvasGesture(event());
+  const beforeSwipe = { ...s.avatar3d.orbit };
   const scroll = event({ deltaY: 30, deltaX: 20, deltaMode: 0 });
   s.handleAvatar3DWheel(scroll);
   assert.equal(scroll.prevented, true);
+  assert.ok(s.avatar3d.orbit.yaw > beforeSwipe.yaw && s.avatar3d.orbit.pitch < beforeSwipe.pitch,
+    'two-finger scrolling uses the opposite signs to direct dragging on both axes');
+  s.handleAvatar3DWheel(event({ deltaY: -30, deltaX: -20, deltaMode: 0 }));
+  assert.ok(Math.abs(s.avatar3d.orbit.yaw - beforeSwipe.yaw) < 1e-8
+    && Math.abs(s.avatar3d.orbit.pitch - beforeSwipe.pitch) < 1e-8, 'reverse swipe restores the original view');
   assert.equal(s.avatarOrbitGesture, true, 'orbit keeps desktop wheel delivery after silhouette moves');
   const pinch = event({ ctrlKey: true, deltaY: -20, deltaMode: 0 });
   s.handleAvatarPinch(pinch);

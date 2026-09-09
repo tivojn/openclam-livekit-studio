@@ -448,9 +448,10 @@ export class AvatarStudioStage {
     const measuredCrown=this.crownAt?.();
     const crown=Number.isFinite(measuredCrown)?measuredCrown:Math.min(b[1],this.face[1]);
     const crownY=surface.y+headroom-crown*scale;
-    const closeBlend=this.clamp((b[3]*scale/surface.height-.85)/.15);
-    const eased=closeBlend*closeBlend*(3-2*closeBlend);
-    const y=Math.max(crownY,bodyY+(crownY-bodyY)*eased);
+    // Let the crown constraint take over where the full-body framing meets
+    // it. An extra size-based blend lifted the frame faster than the actor
+    // approached, reversed the projected floor path, and triggered a U-turn.
+    const y=Math.max(crownY,bodyY);
     return {scale,x:surface.x+f.mx+this.x*(surface.width-2*f.mx)-f.point.x*scale+(this.entryOffset?.x||0)*(this.entryWeight||0),y};
   }
   // Screen pointer positions map to the whole stage, not only the narrow
@@ -474,7 +475,9 @@ export class AvatarStudioStage {
     const propose=factor=>{
       const depth=this.clamp(1-(before.z+result.dy*factor)/cameraDistance,1/this.nearScale,3);
       this.x=this.clamp((before.x+result.dx*factor)/(width*depth)+.5);this.y=this.depthForScale(1/depth);
-      this.entryWeight=oldEntry*(result.walking?Math.exp(-dt*factor/.45):1);
+      // Hold the camera's entry adjustment fixed while measuring the gait.
+      // Reframing a saved placement is not a change in walking direction.
+      this.entryWeight=oldEntry;
       return foot(this.project(surface));
     };
     const candidate=propose(1),vx=candidate.x-startFoot.x,vy=candidate.y-startFoot.y;
@@ -509,6 +512,7 @@ export class AvatarStudioStage {
       factor=lo;finish=propose(factor);
     }
     const actualRate=dt>0&&pixelsPerStride>0?Math.hypot(finish.x-startFoot.x,finish.y-startFoot.y)/dt/pixelsPerStride:0;
+    this.entryWeight=oldEntry*(result.walking?Math.exp(-dt*factor/.45):1);
     return {...result,dx:(this.x-oldX)*surface.width,dy:(this.y-oldY)*surface.height,
       yaw:this.facingYaw,gaitRate:actualRate};
   }

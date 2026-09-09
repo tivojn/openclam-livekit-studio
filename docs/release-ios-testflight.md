@@ -1,8 +1,8 @@
 # iOS TestFlight runbook
 
 Builds 56 and 57 were archived by hand in Xcode. This is the same flow written
-down so it can be audited before an upload, current release build 72 (1.0.5,
-Studio movement, calibrated walking direction and anatomical motion corrections).
+down so it can be audited before an upload, current release build 73 (1.0.5,
+Continuous studio approach, reliable reply motions and reduced renderer work).
 
 ## 1. Version
 
@@ -70,9 +70,9 @@ Manual checks on a simulator or device before archiving:
 cd ios/OpenClamLiveKit
 xcodebuild -project OpenClamLiveKit.xcodeproj -scheme OpenClamLiveKit \
   -configuration Release -destination 'generic/platform=iOS' \
-  -archivePath build/OpenClam-1.0.5-72.xcarchive archive
-xcodebuild -exportArchive -archivePath build/OpenClam-1.0.5-72.xcarchive \
-  -exportOptionsPlist ExportOptions-AppStore.plist -exportPath build/export-72
+  -archivePath build/OpenClam-1.0.5-73.xcarchive archive
+xcodebuild -exportArchive -archivePath build/OpenClam-1.0.5-73.xcarchive \
+  -exportOptionsPlist ExportOptions-AppStore.plist -exportPath build/export-73
 ```
 
 `ExportOptions-AppStore.plist` has `destination: upload`, so the second
@@ -83,6 +83,6 @@ out of the repository (`*.xcarchive/` is ignored).
 
 ## 4. After upload
 
-- Note the build in the release commit (`release(ios): ship build 72`).
+- Note the build in the release commit (`release(ios): ship build 73`).
 - Keep `contracts/release-feature-contract-v1.json` in step with any catalog
   tag change (none for 3D avatars; the Store still lists sprite packages).
