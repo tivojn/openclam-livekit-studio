@@ -1230,6 +1230,50 @@ final class LiveTalkTests: XCTestCase {
         XCTAssertFalse(LiveTalkAgentTurnInvocationPolicy.acceptsResponseTimeout(.nan))
     }
 
+    func testAgentTurnKeepsPausedSpeechSegmentsUntilAConversationBoundary() {
+        let messages = [
+            ReceivedMessage(id: "kungfu-head", timestamp: Date(timeIntervalSince1970: 10),
+                            content: .userTranscript("Can you do a"), isFinal: true),
+            ReceivedMessage(id: "kungfu-tail", timestamp: Date(timeIntervalSince1970: 12.5),
+                            content: .userTranscript("kung fu punch?"), isFinal: true),
+        ]
+        XCTAssertTrue(LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            "Can you do a kung fu punch?", messages: messages))
+        XCTAssertFalse(LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            "kung fu punch?", messages: messages))
+        let negated = [
+            ReceivedMessage(id: "prefix", timestamp: Date(timeIntervalSince1970: 10),
+                            content: .userTranscript("Do not"), isFinal: true),
+            ReceivedMessage(id: "tail", timestamp: Date(timeIntervalSince1970: 12.5),
+                            content: .userTranscript("delete that file"), isFinal: true),
+        ]
+        XCTAssertFalse(LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            "delete that file", messages: negated))
+        XCTAssertTrue(LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            "Do not delete that file", messages: negated))
+    }
+
+    func testAgentTurnClaimIsABoundaryBeforeTheAssistantSpeaks() {
+        let messages = [
+            ReceivedMessage(id: "claimed-turn", timestamp: Date(timeIntervalSince1970: 10),
+                            content: .userTranscript("What is the weather?"), isFinal: true),
+            ReceivedMessage(id: "new-head", timestamp: Date(timeIntervalSince1970: 11),
+                            content: .userTranscript("Actually, can you do a"), isFinal: true),
+            ReceivedMessage(id: "new-tail", timestamp: Date(timeIntervalSince1970: 14),
+                            content: .userTranscript("kung fu punch?"), isFinal: true),
+        ]
+        let claimed: Set<String> = ["claimed-turn"]
+        XCTAssertTrue(LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            "Actually, can you do a kung fu punch?", messages: messages,
+            excludingClaimedUserMessageIDs: claimed))
+        XCTAssertFalse(LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            "What is the weather?", messages: messages,
+            excludingClaimedUserMessageIDs: claimed))
+        XCTAssertFalse(LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
+            "kung fu punch?", messages: messages,
+            excludingClaimedUserMessageIDs: claimed))
+    }
+
     func testAgentTurnRevalidatesAuthorityAfterWaitingForFinalTranscript() {
         XCTAssertTrue(
             LiveTalkAgentTurnInvocationPolicy.canStartAfterTranscriptWait(

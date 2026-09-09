@@ -8971,7 +8971,6 @@
     const AGENT_TURN_RPC = 'openclam.submitAgentTurn.v1';
     const MAX_RPC_BYTES = 12000;
     const MAX_AGENT_TURN_REPLY_BYTES = 6000;
-    const LIVE_TALK_USER_SEGMENT_JOIN_MS = 1200;
     const LIVE_TALK_DELEGATED_REPLY_EXPIRY_MS = 45000;
     const LIVE_TALK_AGENT_RPC_DEADLINE_MARGIN_MS = 1500;
     const LIVE_TALK_OPENCLAW_REQUIRED_MESSAGE = 'Live Talk actions need a selected and connected OpenClaw agent. Choose one in the conversation agent menu, then try again.';
@@ -9236,8 +9235,6 @@
         }
       }
       const priorFinal = session.finalUserTurnSegments.length > 0;
-      const separatedByTime = Number.isFinite(session.lastUserFinalAt)
-        && now - session.lastUserFinalAt > LIVE_TALK_USER_SEGMENT_JOIN_MS;
       const interruptsDelegatedTurn = Boolean(
         turnController && turnControllerOrigin === 'live-agent-bridge'
       );
@@ -9253,7 +9250,7 @@
       }
       const startsNewTurn = interruptsDelegatedTurn || interruptsAgentSpeech
         || !session.userTurnOpen
-        || session.assistantOutputSinceUser || (priorFinal && separatedByTime);
+        || session.assistantOutputSinceUser || session.userTurnClaimed;
       const interruptsAssistant = session.assistantOutputSinceUser
         || interruptsAgentSpeech || interruptsDelegatedTurn;
       const invalidatesUnseenTiming = interruptsAgentSpeech || interruptsDelegatedTurn;
@@ -9285,17 +9282,20 @@
       currentViseme = 'sil';
       if (priorFinal && (!session.userTurnOpen
           || session.assistantOutputSinceUser || interruptsAgentSpeech
-          || interruptsDelegatedTurn
-          || separatedByTime)) {
+          || interruptsDelegatedTurn || session.userTurnClaimed)) {
         session.finalUserTurnSegments = [];
         session.latestFinalUserTranscript = '';
         session.userTurnFinalSegmentIDs.clear();
       }
+      // A pause or delayed STT packet is not a conversation boundary. Keep
+      // every final fragment until assistant output or a real interruption
+      // closes the turn; the RPC must match the entire finalized request.
       // Keep a bounded exact delegated-reply expectation across a barge-in.
       // LiveKit can finalize the old TTS transcript after the new user has
       // started speaking; consuming it later is safer than letting it mutate
       // the new turn boundary. Expiry and exact text matching bound this state.
       session.userTurnOpen = true;
+      session.userTurnClaimed = false;
       session.assistantOutputSinceUser = false;
       return true;
     };
@@ -9321,6 +9321,7 @@
     const matchesFinalLiveTalkUserTurn = (session, spokenRequest) => {
       const expected = canonicalWords(spokenRequest);
       return Boolean(expected
+        && !session.userTurnClaimed
         && !(session.pendingUserTranscriptSegments
           && session.pendingUserTranscriptSegments.size)
         && canonicalWords(session.latestFinalUserTranscript) === expected);
@@ -9447,6 +9448,9 @@
       if (!claimLiveTalkRPCRequest(
         session.replayedAgentTurnRequests, request.request_id, 128,
       )) return agentTurnRPCAnswer('rejected');
+      // An accepted request closes its input boundary even if another user
+      // turn arrives after completion but before TTS/captions begin.
+      session.userTurnClaimed = true;
 
       const result = await submitOpenClawTurn(request.spoken_request, agentID, {
         keepAvatarMode: true,
@@ -9728,6 +9732,7 @@
         agentReady: false,
         finalTranscriptIDs: new Set(),
         finalUserTurnSegments: [],
+        userTurnClaimed: false,
         userTurnFinalSegmentIDs: new Set(),
         seenUserTranscriptSegments: new Set(),
         pendingUserTranscriptSegments: new Set(),

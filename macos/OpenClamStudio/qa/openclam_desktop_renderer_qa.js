@@ -3002,7 +3002,7 @@ const turnAssembly = inline[1].match(
 assert.ok(turnAssembly, 'Live Talk turn-boundary helpers must remain independently testable');
 const turnHelpers = new Function(
   'canonicalWords', 'resetLiveTalkTTSTimingState', 'reactiveMouthState',
-  'LIVE_TALK_USER_SEGMENT_JOIN_MS', 'LIVE_TALK_DELEGATED_REPLY_EXPIRY_MS',
+  'LIVE_TALK_DELEGATED_REPLY_EXPIRY_MS',
   `'use strict'; let currentViseme = 'sil'; let agentSpeaking = false; `
     + 'let turnController = null; let turnControllerOrigin = null; '
     + 'const agentModeSelect = { disabled: false }; '
@@ -3018,7 +3018,6 @@ const turnHelpers = new Function(
   value => String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' '),
   state => { state.reset = true; },
   { viseme: 'sil', audibleUntil: 0 },
-  1200,
   45000,
 );
 const splitTurn = {
@@ -3047,6 +3046,25 @@ turnHelpers.beginLiveTalkUserInput(splitTurn, 'u2-tail', 450);
 turnHelpers.appendFinalUserTurnSegment(splitTurn, 'nearby.', 'u2-tail', 460);
 assert.equal(splitTurn.latestFinalUserTranscript, "Search for McDonald's nearby.",
   'a barge-in must start a new exact user turn while preserving its split final segments');
+
+// The turn detector can keep an incomplete phrase open across a pause, and
+// network delivery can also space final STT chunks more than 1.2 seconds apart.
+splitTurn.assistantOutputSinceUser = true;
+turnHelpers.beginLiveTalkUserInput(splitTurn, 'kungfu-head', 2000);
+turnHelpers.appendFinalUserTurnSegment(splitTurn, 'Can you do a', 'kungfu-head', 2100);
+turnHelpers.beginLiveTalkUserInput(splitTurn, 'kungfu-tail', 4500);
+turnHelpers.appendFinalUserTurnSegment(splitTurn, 'kung fu punch?', 'kungfu-tail', 4600);
+assert.equal(turnHelpers.matchesFinalLiveTalkUserTurn(splitTurn, 'Can you do a kung fu punch?'), true,
+  'a delivery-time gap must not discard the prefix of one finalized spoken request');
+assert.equal(turnHelpers.matchesFinalLiveTalkUserTurn(splitTurn, 'kung fu punch?'), false,
+  'the RPC must still match the whole request, never just a suffix');
+splitTurn.userTurnClaimed = true;
+assert.equal(turnHelpers.matchesFinalLiveTalkUserTurn(splitTurn, 'Can you do a kung fu punch?'), false,
+  'an already claimed turn cannot authorize another request before speech starts');
+turnHelpers.beginLiveTalkUserInput(splitTurn, 'after-claim', 4700);
+turnHelpers.appendFinalUserTurnSegment(splitTurn, 'Actually, wave.', 'after-claim', 4800);
+assert.equal(turnHelpers.matchesFinalLiveTalkUserTurn(splitTurn, 'Actually, wave.'), true,
+  'a claimed turn is a real boundary even before its assistant audio starts');
 
 const activeSpeechTurn = {
   finalUserTurnSegments: ['Old request.'], userTurnFinalSegmentIDs: new Set(['old']),

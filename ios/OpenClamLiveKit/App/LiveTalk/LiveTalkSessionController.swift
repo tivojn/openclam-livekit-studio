@@ -94,9 +94,7 @@ enum LiveTalkEmailDraftToolBridge {
     }
 
     static func latestFinalUserTranscript(in messages: [ReceivedMessage]) -> String? {
-        let maximumSegmentGap: TimeInterval = 1.2
         var reversedSegments: [String] = []
-        var newerSegmentDate: Date?
         messageLoop: for message in messages.reversed() {
             switch message.content {
             case let .userTranscript(rawText):
@@ -108,12 +106,10 @@ enum LiveTalkEmailDraftToolBridge {
                     guard !reversedSegments.isEmpty else { return nil }
                     break messageLoop
                 }
-                if let newerSegmentDate,
-                   newerSegmentDate.timeIntervalSince(message.timestamp) > maximumSegmentGap {
-                    break messageLoop
-                }
+                // STT delivery timestamps do not define a spoken turn. The
+                // server can keep an incomplete phrase open across a pause;
+                // retain its prefix and require the full exact transcript.
                 reversedSegments.append(text)
-                newerSegmentDate = message.timestamp
             case .agentTranscript, .userInput:
                 // Once either side produces a different message, an older user
                 // segment cannot belong to the latest spoken turn. Non-final
@@ -387,11 +383,22 @@ enum LiveTalkAgentTurnToolBridge {
 
     static func matchesLatestFinalUserTranscript(
         _ spokenRequest: String,
-        messages: [ReceivedMessage]
+        messages: [ReceivedMessage],
+        excludingClaimedUserMessageIDs: Set<String> = []
     ) -> Bool {
-        LiveTalkEmailDraftToolBridge.matchesLatestFinalUserTranscript(
+        // A dispatched turn is an explicit boundary even when a barge-in
+        // cancels it before an assistant caption arrives. Never infer that
+        // boundary from the time between STT packets.
+        let unclaimedMessages = messages.filter { message in
+            switch message.content {
+            case .userTranscript, .userInput:
+                !excludingClaimedUserMessageIDs.contains(message.id)
+            case .agentTranscript: true
+            }
+        }
+        return LiveTalkEmailDraftToolBridge.matchesLatestFinalUserTranscript(
             spokenRequest,
-            messages: messages
+            messages: unclaimedMessages
         )
     }
 
@@ -1459,6 +1466,7 @@ final class LiveTalkSessionController: ObservableObject {
     private var activeAgentTurnTask: Task<LiveTalkAgentTurnToolDisposition, Never>?
     private var activeAgentTurnRequestID: String?
     private var activeAgentTurnSourceMessageIDs: Set<String> = []
+    private var claimedAgentTurnUserMessageIDs: Set<String> = []
 
     init(
         credentialVault: ProviderCredentialVault = KeychainProviderCredentialVault(),
@@ -1514,6 +1522,7 @@ final class LiveTalkSessionController: ObservableObject {
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
         agentTurnReplayWindow.clear()
+        claimedAgentTurnUserMessageIDs.removeAll(keepingCapacity: false)
         transition(.start)
         activityTitle = "Requesting a private session"
 
@@ -1880,6 +1889,7 @@ final class LiveTalkSessionController: ObservableObject {
         activeAgentTurnSourceMessageIDs = Self.userMessageIDs(
             in: currentSession.messages
         )
+        claimedAgentTurnUserMessageIDs = activeAgentTurnSourceMessageIDs
         let timeoutTask = Task { @MainActor in
             let remaining = max(
                 0.05,
@@ -1963,7 +1973,8 @@ final class LiveTalkSessionController: ObservableObject {
             guard session === expectedSession else { return false }
             if LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
                 spokenRequest,
-                messages: expectedSession.messages
+                messages: expectedSession.messages,
+                excludingClaimedUserMessageIDs: claimedAgentTurnUserMessageIDs
             ) {
                 return true
             }
@@ -1971,7 +1982,8 @@ final class LiveTalkSessionController: ObservableObject {
         } while ProcessInfo.processInfo.systemUptime < matchingDeadline
         return LiveTalkAgentTurnToolBridge.matchesLatestFinalUserTranscript(
             spokenRequest,
-            messages: expectedSession.messages
+            messages: expectedSession.messages,
+            excludingClaimedUserMessageIDs: claimedAgentTurnUserMessageIDs
         )
     }
 
@@ -2291,6 +2303,7 @@ final class LiveTalkSessionController: ObservableObject {
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
         agentTurnReplayWindow.clear()
+        claimedAgentTurnUserMessageIDs.removeAll(keepingCapacity: false)
         avatarController?.cancelAll()
         avatarIsSpeaking = false
         remoteSpeechGate.reset()
@@ -2331,6 +2344,7 @@ final class LiveTalkSessionController: ObservableObject {
         clearSessionTranscripts()
         emailDraftReplayWindow.clear()
         agentTurnReplayWindow.clear()
+        claimedAgentTurnUserMessageIDs.removeAll(keepingCapacity: false)
         avatarController?.cancelAll()
         avatarController = nil
         avatarIsSpeaking = false

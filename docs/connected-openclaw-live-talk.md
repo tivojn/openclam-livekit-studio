@@ -50,7 +50,7 @@ agent failures are reported instead of silently falling back to another LLM.
 ## Validation
 
 The Python agent suite passed 275 tests, the broker passed TypeScript validation
-and 68 tests, and the iOS Live Talk simulator suite passed 71 tests. Mac validation
+and 68 tests, and the iOS Live Talk simulator suite passed 73 tests. Mac validation
 passed 1,386 Python tests plus renderer, call ownership, routing and release QA.
 New tests cover exact transcript routing, small talk, Chinese input, replay,
 failure, cancellation, selected-agent pinning and one speech owner.
@@ -65,3 +65,10 @@ not capture a microphone or exercise the physical iPhone microphone/UI.
 Server rollout on 2026-09-09: LiveKit agent `7LYaYaPpCnDy` and broker version
 `348d469b-f6f9-4858-8607-0e49bdd6b49c`. Existing managed/BYOK clients remain
 compatible. A new client build is required to select Connected OpenClaw.
+
+A second deployed probe used “Can you do a” followed by a pause and “kung fu
+punch?” The two final STT fragments arrived 3.01 seconds apart. The production
+Mac transcript validator accepted their complete request, OpenClaw returned a
+kung-fu demonstration reply, and LiveKit delivered matching speech. Regression
+tests reject a suffix-only request and preserve explicit claimed-turn and
+interruption boundaries without relying on packet timing.
