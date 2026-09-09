@@ -908,3 +908,24 @@ def test_pipeline_repr_does_not_recurse_into_secret_bearing_plugins() -> None:
     payload["credentials"]["llm"]["api_key"] = "sentinel-plugin-key"
     pipeline = create_pipeline(claim_for(payload))
     assert "sentinel-plugin-key" not in repr(pipeline)
+
+
+def test_connected_openclaw_uses_no_cloud_llm_and_waits_for_final_transcript(monkeypatch):
+    from dataclasses import replace
+
+    from openclam_livekit_agent.contract import StageSelection
+    from openclam_livekit_agent.pipeline import ConnectedOpenClawLLM
+
+    claim = managed_claim()
+    claim = replace(claim, profile=replace(claim.profile, llm=StageSelection.from_payload(
+        StageName.LLM, {"source": "connected", "provider": "openclaw", "model": "selected-agent"}
+    )))
+    monkeypatch.setattr(inference, "LLM", lambda **kw: pytest.fail("cloud LLM was constructed"))
+    pipeline = create_pipeline(claim)
+    assert isinstance(pipeline.llm, ConnectedOpenClawLLM)
+    assert pipeline.llm.provider == "openclaw"
+    assert pipeline.preemptive_generation_enabled is False
+    assert pipeline.expressive is False
+    assert pipeline.private_expressive_markup_enabled is False
+    assert isinstance(pipeline.stt, inference.STT)
+    assert isinstance(pipeline.tts, inference.TTS)

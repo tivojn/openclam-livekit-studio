@@ -25,8 +25,8 @@ struct AvatarAgentProfile: Identifiable, Codable, Equatable, Sendable {
     var languageModelOverride: AIServiceSelection?
     var voiceOverride: AIServiceSelection?
     var speechRecognitionOverride: AIServiceSelection?
-    /// Optional remote chat route. Speech recognition, read-aloud, and Live Talk remain local
-    /// app features; only typed/PTT text turns use this connector.
+    /// Optional remote chat route. Connected OpenClaw Live Talk uses the selected
+    /// conversation route too; listening and speaking remain app-managed services.
     var agentConnectorBinding: AvatarAgentConnectorBinding?
     /// New local preference model. Optional so every profile written by earlier TestFlight builds
     /// decodes without migration loss; nil is interpreted from the legacy exact configuration.

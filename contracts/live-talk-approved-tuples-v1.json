@@ -13,6 +13,7 @@
     ["llm", "byok", "openai", "gpt-5.6-terra", null, null],
     ["llm", "byok", "xai", "grok-4.3", null, null],
     ["llm", "byok", "xai", "grok-4.5", null, null],
+    ["llm", "connected", "openclaw", "selected-agent", null, null],
     ["llm", "managed", "livekit", "google/gemma-4-31b-it", null, null],
     ["stt", "byok", "deepgram", "nova-3", null, "en"],
     ["stt", "byok", "deepgram", "nova-3", null, "multi"],

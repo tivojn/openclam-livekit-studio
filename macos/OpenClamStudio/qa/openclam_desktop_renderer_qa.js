@@ -2768,7 +2768,7 @@ assert.match(source, /waitForMatchingFinalUserTurn\(\s*session, request\.spoken_
 assert.match(source, /replayedAgentTurnRequests\.has\(request\.request_id\)/);
 assert.match(source, /claimLiveTalkRPCRequest\(\s*session\.replayedAgentTurnRequests, request\.request_id, 128/);
 assert.match(source,
-  /const agentID = selectedOpenClawAgent\(\);[\s\S]{0,180}!agentID[\s\S]{0,260}LIVE_TALK_OPENCLAW_REQUIRED_MESSAGE/,
+  /const agentID = session\.connectedAgentID \|\| selectedOpenClawAgent\(\);[\s\S]{0,180}!agentID[\s\S]{0,260}LIVE_TALK_OPENCLAW_REQUIRED_MESSAGE/,
   'agentic Live Talk must fail closed with recovery guidance when OpenClaw is not selected');
 assert.match(source,
   /submitOpenClawTurn\(request\.spoken_request, agentID, \{[\s\S]{0,180}liveAgentBridge: true,[\s\S]{0,100}userAlreadyRendered: true/,

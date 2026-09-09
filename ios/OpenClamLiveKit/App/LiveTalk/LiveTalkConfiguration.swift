@@ -17,11 +17,13 @@ enum LiveTalkStage: String, Codable, CaseIterable, Sendable {
 enum LiveTalkCredentialSource: String, Codable, Sendable {
     case managed
     case byok
+    case connected
 
     var title: String {
         switch self {
         case .managed: "LiveKit managed"
         case .byok: "My API key"
+        case .connected: "Connected OpenClaw"
         }
     }
 }
@@ -227,6 +229,11 @@ struct LiveTalkProviderOption: Identifiable, Equatable, Sendable {
 }
 
 enum LiveTalkCatalog {
+    static let connectedOpenClaw = option(
+        .llm, .connected, "openclaw", "selected-agent",
+        "Connected OpenClaw", "OpenClaw",
+        "Every spoken turn uses this chat’s selected OpenClaw agent and its conversation. LiveKit still handles listening and speaking; OpenClaw credentials stay on this device."
+    )
     static let managedLLM = option(
         .llm, .managed, "livekit", "google/gemma-4-31b-it",
         "LiveKit managed", "Managed LLM", "Gemma 4 31B through LiveKit Inference"
@@ -277,6 +284,7 @@ enum LiveTalkCatalog {
     ]
 
     private static let llmOptions: [LiveTalkProviderOption] = [
+        connectedOpenClaw,
         managedLLM,
         option(.llm, .byok, "openai", "gpt-5.6-luna", "OpenAI", "GPT-5.6 Luna", "OpenAI GPT-5.6 Luna", credential: .openAI),
         option(.llm, .byok, "openai", "gpt-5.6-terra", "OpenAI", "GPT-5.6 Terra", "OpenAI GPT-5.6 Terra", credential: .openAI),

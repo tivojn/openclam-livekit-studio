@@ -3705,6 +3705,21 @@ struct ConversationView: View {
             return
         }
 
+        let liveTalkAvatar = OpenClam3DOptionsStore.shared.liveTalkProfile(
+            aiConfiguration.activeAvatarProfile, for: activeAvatarDescriptor.id)
+        let connectedConversation = (try? LiveTalkConfigurationResolver.resolve(
+            profile: liveTalkAvatar, sharedSettings: aiConfiguration.settings
+        ))?.llm == LiveTalkCatalog.connectedOpenClaw.selection
+        let selectedBinding = aiConfiguration.conversationRoute(
+            for: conversation.historyController.selectedThreadID
+        ).connectorBinding
+        if connectedConversation {
+            guard let selectedBinding,
+                  agentConnections.connection(for: selectedBinding) != nil else {
+                liveTalkPTTNotice = "Choose a paired OpenClaw agent for this chat before starting Live Talk."
+                return
+            }
+        }
         guard reserveAppAudioLane() else { return }
         speech.cancel()
         conversation.stopSpeechOutput()
@@ -3714,8 +3729,7 @@ struct ConversationView: View {
             return
         }
         liveTalk.begin(
-            avatar: OpenClam3DOptionsStore.shared.liveTalkProfile(
-                aiConfiguration.activeAvatarProfile, for: activeAvatarDescriptor.id),
+            avatar: liveTalkAvatar,
             sharedSettings: aiConfiguration.settings,
             avatarController: conversation.captainAyerAvatar,
             emailDraftToolHandler: { request in
@@ -3732,9 +3746,10 @@ struct ConversationView: View {
                 // the connector reuses its visible user bubble instead of adding
                 // a duplicate message.
                 conversation.ingestLiveTalkTranscripts(liveTalk.transcripts)
-                guard let binding = aiConfiguration.conversationRoute(
+                let currentBinding = aiConfiguration.conversationRoute(
                     for: conversation.historyController.selectedThreadID
-                ).connectorBinding else {
+                ).connectorBinding
+                guard let binding = (connectedConversation ? selectedBinding : currentBinding) else {
                     return .completed(
                         "Choose a paired OpenClaw agent for this chat before asking Live Talk to run actions."
                     )
@@ -3742,7 +3757,8 @@ struct ConversationView: View {
                 return await conversation.submitLiveTalkAgentTurn(
                     request.spokenRequest,
                     binding: binding,
-                    agentConnections: agentConnections
+                    agentConnections: agentConnections,
+                    voiceAvatar: liveTalkAvatar
                 )
             }
         )

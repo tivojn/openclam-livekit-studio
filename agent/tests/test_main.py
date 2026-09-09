@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from inspect import getsource
@@ -540,6 +541,7 @@ def _deterministic_email_agent(
     )
     agent = object.__new__(OpenClamVoiceAgent)
     agent._room = room
+    agent._connected_openclaw = False
     agent._staged_user_turn_ids = set()
     agent._intercepted_user_turn_ids = set()
     agent._delegated_user_turn_ids = set()
@@ -835,6 +837,70 @@ def test_only_generic_foreground_tool_is_exposed_to_the_model(
     assert captured["model_settings"] is model_settings
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [
+    "Hello", "I had a happy day", "Could you dance?", "What did we discuss?",
+    "Email Emma", "Yes", "你好，可以走近一点吗？",  # noqa: RUF001 — exact Chinese transcript
+])
+async def test_connected_openclaw_owns_every_voice_turn_once(text, monkeypatch):
+    agent, _session, rpc, interrupt, say, _added = _deterministic_email_agent()
+    agent._connected_openclaw = True
+    cloud_node = Mock(side_effect=AssertionError("must not call a voice LLM"))
+    monkeypatch.setattr(Agent.default, "llm_node", cloud_node)
+    ctx = ChatContext()
+    message = ctx.add_message(role="user", content=text)
+    await agent.on_user_turn_completed(ctx, message)
+    chunks = [chunk async for chunk in agent.llm_node(ctx, [], ModelSettings())]
+    assert chunks == ["The selected agent completed the turn."]
+    assert json.loads(rpc.call_args.kwargs["payload"])["spoken_request"] == text
+    assert rpc.call_args.kwargs["method"] == "openclam.submitAgentTurn.v1"
+    assert [chunk async for chunk in agent.llm_node(ctx, [], ModelSettings())] == []
+    rpc.assert_awaited_once()
+    cloud_node.assert_not_called()
+    say.assert_not_called()  # The normal speech pipeline owns a single voice.
+    interrupt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connected_openclaw_interruption_cancels_pending_rpc_without_audio():
+    agent, _session, rpc, _interrupt, say, _added = _deterministic_email_agent()
+    agent._connected_openclaw = True
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def waiting(**kwargs):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    rpc.side_effect = waiting
+    ctx = ChatContext()
+    ctx.add_message(role="user", content="Tell me about our project")
+    stream = agent.llm_node(ctx, [], ModelSettings())
+    pending = asyncio.create_task(anext(stream))
+    await started.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert cancelled.is_set()
+    say.assert_not_called()
+    assert [c async for c in agent.llm_node(ctx, [], ModelSettings())] == []
+
+
+@pytest.mark.asyncio
+async def test_connected_openclaw_failure_does_not_fall_back_or_retry():
+    agent, _session, rpc, _interrupt, _say, _added = _deterministic_email_agent()
+    agent._connected_openclaw = True
+    rpc.side_effect = RuntimeError("unavailable")
+    ctx = ChatContext()
+    ctx.add_message(role="user", content="Hi")
+    assert [c async for c in agent.llm_node(ctx, [], ModelSettings())] == [AGENT_TURN_FAILURE_MESSAGE]
+    assert [c async for c in agent.llm_node(ctx, [], ModelSettings())] == []
+    rpc.assert_awaited_once()
+
+
 def test_pinned_agents_hook_stops_before_any_generative_reply() -> None:
     source = getsource(AgentActivity._user_turn_completed_task)
     stop_handler = source.index("except StopResponse:")
@@ -860,6 +926,7 @@ def _decorated_email_tool_context(
     )
     agent = object.__new__(OpenClamVoiceAgent)
     agent._room = room
+    agent._connected_openclaw = False
     agent._staged_user_turn_ids = set()
     context = SimpleNamespace(
         session=SimpleNamespace(
@@ -911,6 +978,7 @@ async def test_pinned_livekit_executor_suppresses_generative_post_tool_reply() -
     )
     agent = object.__new__(OpenClamVoiceAgent)
     agent._room = room
+    agent._connected_openclaw = False
     agent._staged_user_turn_ids = set()
     Agent.__init__(agent, instructions="test", chat_ctx=chat_ctx)
 

@@ -1,7 +1,7 @@
 export const STAGES = ["llm", "stt", "tts"] as const;
 
 export type Stage = (typeof STAGES)[number];
-export type CredentialSource = "managed" | "byok";
+export type CredentialSource = "managed" | "byok" | "connected";
 export type XaiAuthMode = "api_key" | "oauth2";
 
 export interface StageSelection {

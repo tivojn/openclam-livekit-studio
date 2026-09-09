@@ -70,6 +70,8 @@ def route_test_application():
     }
     fake_rig.DENTAL_DONORS = {"upper": ("SS",), "lower": ("ih",)}
     fake_studio.rig = fake_rig
+    fake_body = types.ModuleType("studio.body")
+    fake_studio.body = fake_body
     name = f"_openclam_livekit_route_app_{id(fake_studio)}"
     spec = importlib.util.spec_from_file_location(
         name, os.path.join(ROOT, "server", "app.py")
@@ -78,6 +80,7 @@ def route_test_application():
     with patch.dict(sys.modules, {
         "studio": fake_studio,
         "studio.rig": fake_rig,
+        "studio.body": fake_body,
         name: module,
     }):
         spec.loader.exec_module(module)
@@ -1178,3 +1181,47 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConnectedOpenClawTests(unittest.TestCase):
+    def test_connected_conversation_requires_selected_agent_before_creating_cloud_room(self):
+        from fastapi import HTTPException
+        application = route_test_application()
+        config = managed_config()
+        config['llm'] = {'source': 'connected', 'provider': 'openclaw', 'model': 'selected-agent'}
+        starter = AsyncMock(return_value={'server_url': 'wss://example.test', 'participant_token': 'test'})
+        with patch.dict(os.environ, DEPLOYMENT_ENV, clear=False), \
+             patch.object(application.P, 'load_nonsecret', return_value={'livekit': config}), \
+             patch.object(application, '_active_livekit_persona', return_value=('Tia', 'Be warm.')), \
+             patch.object(application.openclaw_acp, 'public_agents', return_value=[{'agent_id': 'main'}]), \
+             patch.object(application.LK, 'create_session', new=starter):
+            for body in (None, {}, {'agent_id': 'gone'}):
+                try:
+                    asyncio.run(application.api_livekit_session(body))
+                    raise AssertionError('missing connection was accepted')
+                except HTTPException as error:
+                    assert error.status_code == 422
+            starter.assert_not_awaited()
+            response = asyncio.run(application.api_livekit_session({'agent_id': 'main'}))
+            assert json.loads(response.body)['connected_agent_id'] == 'main'
+            assert starter.call_args.args[0]['llm'] == config['llm']
+            starter.assert_awaited_once()
+
+
+    def test_connected_llm_bridge_does_not_resolve_or_transmit_provider_keys(self):
+        config = managed_config()
+        config['llm'] = {'source': 'connected', 'provider': 'openclaw', 'model': 'selected-agent'}
+        assert LK.validated_selection('llm', config['llm']) == config['llm']
+        accounts = []
+        payloads = []
+        def getter(account):
+            accounts.append(account)
+            assert account == 'livekit.pilot_app_token'
+            return PILOT_TOKEN
+        def handler(request):
+            payloads.append(json.loads(request.content))
+            return success_response(request)
+        LiveKitSessionTests().run_session(config, handler, getter)
+        assert accounts == ['livekit.pilot_app_token']
+        assert payloads[0]['credentials'] == {}
+        assert payloads[0]['profile']['llm'] == config['llm']

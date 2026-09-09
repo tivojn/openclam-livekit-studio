@@ -414,7 +414,7 @@ for (const required of [
   "ICON_PNG_SHA='d1e65d2fa4658d8c13559b78cae3339f3286e4d59433b261148e8f6b1928ec2f'",
   "RINGTONE_SHA='471bc3d821be0bffaaddc089347c7006d31215d20ff4d5eb5da2440d67edcea4'",
   "LIVEKIT_CLIENT_SHA='a77a2f4c363e93099d7c135721c9ec81d6c5bacc691796dad799222e33cbfb31'",
-  "LIVEKIT_TUPLES_SHA='ea285d07a250275c543a02647227f0dbf1890d099f245c0b90fac0d4515b8daf'",
+  "LIVEKIT_TUPLES_SHA='0968941c85fc02a650a43ffe82604c3c7b2f0424ca57b14f1c3f7c2db05cc3cf'",
   'PACKAGED_ASSETS_VERIFIED=1',
   'node qa/third_party_licenses_qa.js',
   'node qa/third_party_licenses_qa.js "$APP_PATH"',

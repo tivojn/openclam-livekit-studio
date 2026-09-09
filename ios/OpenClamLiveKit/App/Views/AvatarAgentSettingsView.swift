@@ -642,6 +642,9 @@ struct AvatarAgentEditorView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Picker(stage.title, selection: liveTalkModeBinding(for: stage)) {
                             Text("LiveKit managed").tag(LiveTalkEditorMode.managed)
+                            if stage == .llm {
+                                Text("Connected OpenClaw").tag(LiveTalkEditorMode.connectedOpenClaw)
+                            }
                             Text("Follow this avatar")
                                 .tag(LiveTalkEditorMode.followAvatar)
                                 .disabled(!canFollowAvatar(for: stage))
@@ -692,7 +695,7 @@ struct AvatarAgentEditorView: View {
                 Text("Continuous Live Talk")
                     .accessibilityIdentifier("openclam-avatar-live-talk-section")
             } footer: {
-                Text("Tap the phone button to start a continuous LiveKit call. LiveKit managed uses the included services; choose a Fish voice here. Follow this avatar uses that avatar’s model, tap-to-talk microphone service, or read-aloud voice. If you choose a service marked YOUR API KEY, only its matching saved key is shared securely for that call. Unsupported choices are blocked instead of silently replaced.")
+                Text("Connected OpenClaw sends every spoken turn to this chat’s selected paired agent. Choose the agent in the chat before calling. LiveKit managed uses the included services; choose a Fish voice here. Follow this avatar uses that avatar’s model, tap-to-talk microphone service, or read-aloud voice. If you choose a service marked YOUR API KEY, only its matching saved key is shared securely for that call. Unsupported choices are blocked instead of silently replaced.")
             }
 
             Section {
@@ -982,13 +985,20 @@ struct AvatarAgentEditorView: View {
                 switch draft.effectiveLiveTalkPreferences[stage] {
                 case .managed: .managed
                 case .followAvatar: .followAvatar
-                case .fixed: .previousChoice
+                case let .fixed(selection):
+                    selection == LiveTalkCatalog.connectedOpenClaw.selection
+                        ? .connectedOpenClaw : .previousChoice
                 }
             },
             set: { mode in
                 guard mode != .previousChoice else { return }
                 var preferences = draft.effectiveLiveTalkPreferences
-                preferences[stage] = mode == .managed ? .managed : .followAvatar
+                if mode == .connectedOpenClaw {
+                    guard stage == .llm else { return }
+                    preferences[stage] = .fixed(LiveTalkCatalog.connectedOpenClaw.selection)
+                } else {
+                    preferences[stage] = mode == .managed ? .managed : .followAvatar
+                }
                 draft.liveTalkPreferences = preferences
                 draft.liveTalkConfiguration = nil
             }
@@ -1234,8 +1244,8 @@ struct AvatarAgentEditorView: View {
     }
 
     private func isLegacyFixedSelection(_ stage: LiveTalkStage) -> Bool {
-        if case .fixed = draft.effectiveLiveTalkPreferences[stage] {
-            return true
+        if case let .fixed(selection) = draft.effectiveLiveTalkPreferences[stage] {
+            return selection != LiveTalkCatalog.connectedOpenClaw.selection
         }
         return false
     }
@@ -1440,5 +1450,6 @@ struct AvatarAgentEditorView: View {
 private enum LiveTalkEditorMode: Hashable {
     case managed
     case followAvatar
+    case connectedOpenClaw
     case previousChoice
 }

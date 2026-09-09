@@ -101,7 +101,7 @@ function parseSelection(value: unknown, stage: Stage): StageSelection {
   }
   exactKeys(value, ["source", "provider", "model"], ["voice", "language"]);
 
-  if (value.source !== "managed" && value.source !== "byok") {
+  if (value.source !== "managed" && value.source !== "byok" && value.source !== "connected") {
     unprocessable("invalid_credential_source");
   }
   const source = value.source;
@@ -189,7 +189,7 @@ function parseCredentials(
 
   for (const stage of STAGES) {
     const candidate = credentialsValue[stage];
-    if (profile[stage].source === "managed") {
+    if (profile[stage].source !== "byok") {
       if (candidate !== undefined) {
         unprocessable("credential_for_managed_stage");
       }

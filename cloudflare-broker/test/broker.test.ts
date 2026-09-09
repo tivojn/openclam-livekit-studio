@@ -7,6 +7,7 @@ import { PROFILE_CATALOG } from "../src/catalog";
 import { canonicalJson, sha256Hex } from "../src/crypto";
 import worker from "../src/index";
 import type { ModelPolicy } from "../src/types";
+import { parseSessionStartRequest } from "../src/validation";
 
 const APP_TOKEN = "test-pilot-app-token-that-is-long-enough";
 const NEXT_APP_TOKEN = "test-next-pilot-token-that-is-long-enough";
@@ -119,7 +120,7 @@ function allXaiBody(
 type SelectableStage = "llm" | "stt" | "tts";
 type CatalogTuple = [
   SelectableStage,
-  "managed" | "byok",
+  "managed" | "byok" | "connected",
   string,
   string,
   string | null,
@@ -158,7 +159,7 @@ function boundedValues(
 function flattenedWorkerCatalog(): CatalogTuple[] {
   const tuples: CatalogTuple[] = [];
   for (const stage of ["llm", "stt", "tts"] as const) {
-    for (const source of ["managed", "byok"] as const) {
+    for (const source of ["managed", "byok", "connected"] as const) {
       const providers = PROFILE_CATALOG[stage][source] as Record<
         string,
         Record<string, ModelPolicy>
@@ -1035,5 +1036,23 @@ describe("broker", () => {
     });
     expect(denied.status).toBe(403);
     expect(denied.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+});
+
+describe("connected OpenClaw conversation source", () => {
+  const connected = {source: "connected", provider: "openclaw", model: "selected-agent"};
+  it("accepts the exact route without OpenClaw credentials", () => {
+    const profile = {...managedProfile(), llm: connected};
+    const parsed = parseSessionStartRequest({profile});
+    expect(parsed.profile.llm).toEqual(connected);
+    expect(parsed.credentials).toEqual({});
+  });
+  it("rejects credentials, arbitrary models and connected speech stages", () => {
+    const profile = {...managedProfile(), llm: connected};
+    expect(() => parseSessionStartRequest({profile, credentials: {llm: {api_key: "must-stay-in-the-app"}}})).toThrow();
+    expect(() => parseSessionStartRequest({profile: {...profile, llm: {...connected, model: "arbitrary-url"}}})).toThrow();
+    for (const stage of ["stt", "tts"]) {
+      expect(() => parseSessionStartRequest({profile: {...profile, [stage]: connected}})).toThrow();
+    }
   });
 });

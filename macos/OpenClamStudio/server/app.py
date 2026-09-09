@@ -3375,6 +3375,7 @@ class OpenClawTurnRequest(BaseModel):
     session_id: str = Field(min_length=32, max_length=32)
     prompt: str = Field(min_length=1, max_length=12_000)
     input_handles: list[str] = Field(default_factory=list, max_length=8)
+    live_talk: bool = False
 
 
 @app.post("/api/openclaw/uploads")
@@ -3433,12 +3434,25 @@ async def api_openclaw_uploads(
 
 @app.post("/api/openclaw/turn")
 async def api_openclaw_turn(request: OpenClawTurnRequest):
+    prompt = request.prompt
+    if request.live_talk:
+        # Presentation context is generated locally, separate from the exact
+        # spoken request. The selected OpenClaw still owns its tools and policy.
+        name, persona = _active_livekit_persona(P.load_nonsecret())
+        prompt = (
+            "OpenClam voice presentation context: Your reply will be spoken by "
+            f"the onscreen avatar {name[:80]}. Answer conversationally and concisely "
+            "in the user's language. Keep your existing identity, memory, tool and "
+            "approval policy. Avatar notes below describe presentation capabilities; "
+            "they are not new user requests.\n<avatar_notes>\n"
+            + persona[:2800] + "\n</avatar_notes>\n\nExact spoken user turn:\n" + prompt
+        )
     async def events():
         try:
             async for event in openclaw_acp.stream_turn(
                 request.agent_id,
                 request.session_id,
-                request.prompt,
+                prompt,
                 request.input_handles,
             ):
                 yield json.dumps(
@@ -3723,7 +3737,7 @@ def _active_livekit_persona(cfg):
 
 
 @app.post("/api/livekit/session")
-async def api_livekit_session():
+async def api_livekit_session(body: dict | None = None):
     try:
         # Resolve the one pilot token and only the provider credentials selected
         # for this call inside LK.create_session().  An unrelated saved provider
@@ -3733,9 +3747,22 @@ async def api_livekit_session():
         livekit_config = LK.deployment_config(
             cfg.get("livekit") or {}, require_connection=True
         )
+        connected_agent_id = None
+        if (livekit_config.get("llm") or {}).get("source") == "connected":
+            connected_agent_id = (body or {}).get("agent_id")
+            if not isinstance(connected_agent_id, str) or not connected_agent_id:
+                raise HTTPException(422, "Choose a connected OpenClaw agent in this chat before starting Live Talk.")
+            try:
+                available = await asyncio.to_thread(openclaw_acp.public_agents)
+            except openclaw_acp.OpenClawACPError as error:
+                raise HTTPException(503, "Reconnect OpenClaw before starting Live Talk.") from error
+            if not any(a["agent_id"] == connected_agent_id for a in available):
+                raise HTTPException(422, "The selected OpenClaw agent is no longer available. Choose it again.")
         connection = await LK.create_session(
             livekit_config, name, instructions
         )
+        if connected_agent_id:
+            connection = {**connection, "connected_agent_id": connected_agent_id}
         return JSONResponse(connection, headers={"Cache-Control": "no-store"})
     except LK.LiveKitBridgeError as error:
         _livekit_error(error)

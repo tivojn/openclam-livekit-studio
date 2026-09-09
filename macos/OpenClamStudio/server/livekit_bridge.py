@@ -26,7 +26,7 @@ import httpx
 
 CONTRACT_NAME = "live-talk-approved-tuples-v1.json"
 STAGES = ("llm", "stt", "tts")
-SOURCES = ("managed", "byok")
+SOURCES = ("managed", "byok", "connected")
 MAX_BROKER_RESPONSE_BYTES = 16_384
 MAX_PARTICIPANT_TOKEN_BYTES = 16_000
 MAX_PROVIDER_KEY_BYTES = 4_096

@@ -25,6 +25,7 @@ class ContractError(ValueError):
 class ModelSource(StrEnum):
     MANAGED = "managed"
     BYOK = "byok"
+    CONNECTED = "connected"
 
 
 class XaiAuthMode(StrEnum):
@@ -47,6 +48,7 @@ _CATALOG_SELECTIONS: dict[
 ] = {
     StageName.LLM: frozenset(
         {
+            ("connected", "openclaw", "selected-agent", None, None),
             ("managed", "livekit", "google/gemma-4-31b-it", None, None),
             ("byok", "anthropic", "claude-haiku-4-5", None, None),
             ("byok", "anthropic", "claude-sonnet-4-6", None, None),

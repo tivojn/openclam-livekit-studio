@@ -31,7 +31,7 @@ from livekit.agents.voice.room_io import RoomOptions, TextOutputOptions
 
 from .broker import claim_session
 from .contract import DispatchEnvelope
-from .pipeline import Pipeline, create_pipeline
+from .pipeline import ConnectedOpenClawLLM, Pipeline, create_pipeline
 from .tts_timing import LiveTalkTTSTimingOutput
 
 load_dotenv(".env.local")
@@ -761,6 +761,7 @@ class OpenClamVoiceAgent(Agent):
         room: rtc.Room,
     ) -> None:
         self._room = room
+        self._connected_openclaw = isinstance(pipeline.llm, ConnectedOpenClawLLM)
         self._staged_user_turn_ids: set[str] = set()
         self._intercepted_user_turn_ids: set[str] = set()
         self._delegated_user_turn_ids: set[str] = set()
@@ -781,6 +782,8 @@ class OpenClamVoiceAgent(Agent):
         tools: list[llm.Tool],
         model_settings: ModelSettings,
     ):
+        if self._connected_openclaw:
+            return self._connected_openclaw_reply(chat_ctx)
         # Explicit email turns are intercepted deterministically before model
         # generation and use the review-only RPC supported by both clients. The
         # model sees only the exact-transcript generic foreground tool for other
@@ -793,6 +796,27 @@ class OpenClamVoiceAgent(Agent):
             visible_tools,
             model_settings,
         )
+
+    async def _connected_openclaw_reply(self, chat_ctx: ChatContext):
+        """Every finalized turn goes to OpenClaw exactly once, including small talk.
+
+        The normal Agents speech task owns cancellation and playback. No voice
+        model selects a tool, rewrites the request, or reinterprets the answer.
+        Client RPC validation binds this to the same visible conversation turn.
+        """
+        try:
+            user_turn_id, spoken_request = latest_spoken_user_turn(chat_ctx)
+            # An SDK retry or generation after interruption must not repeat an
+            # external request, nor produce an extra failure utterance.
+            if user_turn_id in self._delegated_user_turn_ids:
+                return
+            reply = await self._run_foreground_agent_turn(
+                user_turn_id=user_turn_id, spoken_request=spoken_request
+            )
+        except ToolError:
+            yield AGENT_TURN_FAILURE_MESSAGE
+            return
+        yield reply
 
     def _commit_intercepted_user_turn(self, new_message: ChatMessage) -> None:
         # Pinned Agents returns immediately when this hook raises StopResponse,
@@ -890,6 +914,10 @@ class OpenClamVoiceAgent(Agent):
     ) -> None:
         del turn_ctx  # The authoritative finalized message is the only routing input.
         if new_message.role != "user":
+            return
+        if self._connected_openclaw:
+            # The connected agent owns conversation and tool policy. Existing
+            # client approval controls still apply to consequential actions.
             return
         spoken_request = (new_message.text_content or "").strip()
         if not is_email_control_turn(
@@ -1119,6 +1147,10 @@ async def openclam_livekit(ctx: JobContext) -> None:
         record=False,
     )
     await ctx.connect()
+    if isinstance(pipeline.llm, ConnectedOpenClawLLM):
+        # The connection chime confirms readiness. Do not invent a user turn
+        # or ask a second LLM to greet on behalf of the selected agent.
+        return
     await session.generate_reply(
         instructions=(
             "Greet the user briefly using the avatar identity in the trusted "

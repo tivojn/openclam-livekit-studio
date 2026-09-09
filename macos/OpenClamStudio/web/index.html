@@ -8565,6 +8565,7 @@
             session_id: ensureOpenClawSessionID(),
             prompt: value,
             input_handles: inputAttachments.map(attachment => attachment.handle),
+            live_talk: Boolean(options.liveAgentBridge),
           }),
           signal: controller.signal,
         });
@@ -9438,7 +9439,7 @@
       if (turnController || document.querySelector('.email-review')) {
         return agentTurnRPCAnswer('busy');
       }
-      const agentID = selectedOpenClawAgent();
+      const agentID = session.connectedAgentID || selectedOpenClawAgent();
       if (!agentID) {
         setStatus('Select an OpenClaw agent for Live Talk actions', '');
         return agentTurnRPCAnswer('completed', LIVE_TALK_OPENCLAW_REQUIRED_MESSAGE);
@@ -9838,9 +9839,11 @@
         const connection = await fetch('/api/livekit/session', {
           signal: session.abort.signal,
           method: 'POST',
-          headers: { 'Accept': 'application/json', 'Cache-Control': 'no-store' },
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+          body: JSON.stringify({ agent_id: selectedOpenClawAgent() || null }),
         }).then(safeJSON);
         if (live !== session) return;
+        session.connectedAgentID = connection.connected_agent_id || null;
         await room.connect(connection.server_url, connection.participant_token);
         if (live !== session) { room.disconnect().catch(() => {}); return; }
         if (!await roomAudioReady(session) || live !== session) return;

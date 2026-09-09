@@ -4,6 +4,7 @@ import type { ProfileCatalog } from "./types";
 // change, not a value the phone can smuggle into agent plugin constructors.
 export const PROFILE_CATALOG = {
   llm: {
+    connected: { openclaw: { "selected-agent": {} } },
     managed: {
       livekit: {
         "google/gemma-4-31b-it": {},
@@ -32,6 +33,7 @@ export const PROFILE_CATALOG = {
     },
   },
   stt: {
+    connected: {},
     managed: {
       livekit: {
         "deepgram/nova-3": {
@@ -79,6 +81,7 @@ export const PROFILE_CATALOG = {
     },
   },
   tts: {
+    connected: {},
     managed: {
       livekit: {
         "fishaudio/s2.1-pro": {

@@ -1141,8 +1141,7 @@ document.documentElement.dataset.design='quiet';</script>
 
   <h2>Continuous Live Talk · LiveKit</h2>
   <div class="card" id="blk-live">
-    <p class="note" style="margin:0 0 16px">This is independent from Chat
-      &amp; PTT above. Managed speech recognition defaults to Deepgram Nova-3
+    <p class="note" style="margin:0 0 16px">Choose Connected OpenClaw for Thinking to use this chat’s selected agent for every spoken turn, including conversation and avatar motions. Its model and conversation stay with OpenClaw. Other Thinking choices use a separate voice model. Managed speech recognition defaults to Deepgram Nova-3
       Auto multilingual, including Chinese and English. Choose an approved
       provider, model, language, and voice
       for each stage. Managed choices use LiveKit infrastructure; personal-account
@@ -1150,7 +1149,7 @@ document.documentElement.dataset.design='quiet';</script>
     <div class="livekit-stage" data-livekit-stage="llm">
       <div class="livekit-stage-head"><strong>Thinking</strong><span>Language model</span></div>
       <div class="row">
-        <div class="f"><label for="livekit-llm-source">Credential mode</label><select id="livekit-llm-source"></select></div>
+        <div class="f"><label for="livekit-llm-source">Conversation source</label><select id="livekit-llm-source"></select></div>
         <div class="f"><label for="livekit-llm-provider">Provider</label><select id="livekit-llm-provider"></select></div>
         <div class="f"><label for="livekit-llm">Model</label><select id="livekit-llm"></select></div>
       </div>
@@ -6339,7 +6338,7 @@ const LIVEKIT_VOICE_NAMES = {
 const LIVEKIT_PROVIDER_NAMES = {
   livekit: 'LiveKit Inference', openai: 'OpenAI', xai: 'xAI',
   gemini: 'Gemini', deepgram: 'Deepgram', elevenlabs: 'ElevenLabs',
-  anthropic: 'Anthropic',
+  anthropic: 'Anthropic', openclaw: 'Connected OpenClaw',
 };
 let LIVEKIT_VIEW = null;
 const LIVEKIT_SELECTIONS = {};
@@ -6399,10 +6398,11 @@ function renderLiveKitStage(stage, preferred=null) {
   const providerSelect = $(`#livekit-${stage}-provider`);
   const modelSelect = $(`#livekit-${stage}`);
   sourceSelect.innerHTML = liveKitOptions(sources, selected.source, value =>
-    value === 'managed' ? 'LiveKit managed' : 'Use my provider account');
+    value === 'connected' ? 'Connected OpenClaw' : value === 'managed' ? 'LiveKit managed' : 'Use my provider account');
   providerSelect.innerHTML = liveKitOptions(providers, selected.provider, value =>
     LIVEKIT_PROVIDER_NAMES[value] || value);
-  modelSelect.innerHTML = liveKitOptions(models, selected.model);
+  modelSelect.innerHTML = liveKitOptions(models, selected.model, value =>
+    value === 'selected-agent' ? 'Selected chat agent’s model' : value);
 
   const detailKey = stage === 'tts' ? 'voice' : stage === 'stt' ? 'language' : '';
   if (detailKey) {
@@ -6420,7 +6420,9 @@ function renderLiveKitStage(stage, preferred=null) {
   disclosure.className = 'livekit-disclosure'
     + (selected.source === 'managed' ? ' managed' : '')
     + (selected.source === 'byok' && !credentialReady ? ' missing' : '');
-  const credentialDisclosure = selected.source === 'managed'
+  const credentialDisclosure = selected.source === 'connected'
+    ? 'Every spoken turn uses the OpenClaw agent selected in the chat. Select that agent before calling. OpenClaw credentials stay on this Mac; listening and speaking use the services chosen below.'
+    : selected.source === 'managed'
     ? 'Managed by LiveKit. No personal provider key is needed for this stage.'
     : sharedXai && credentialReady
       ? `${providerName} uses the shared ${xaiModeName(XAI_ACCOUNT.status.auth_mode)} mode from xAI Account. No credential is placed in room metadata.`

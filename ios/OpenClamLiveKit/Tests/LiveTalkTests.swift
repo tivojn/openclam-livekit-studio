@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class LiveTalkTests: XCTestCase {
+    func testConnectedOpenClawRoundTripsWithoutChangingSpeechServices() throws {
+        let profile = AvatarAgentProfile(id: "tia", displayName: "Tia",
+            liveTalkPreferences: .init(llm: .fixed(LiveTalkCatalog.connectedOpenClaw.selection)))
+        let restored = try JSONDecoder().decode(AvatarAgentProfile.self,
+            from: JSONEncoder().encode(profile))
+        let config = try LiveTalkConfigurationResolver.resolve(profile: restored, sharedSettings: .init())
+        XCTAssertEqual(config.llm, LiveTalkCatalog.connectedOpenClaw.selection)
+        XCTAssertEqual(config.stt, LiveTalkConfiguration.managedDefault.stt)
+        XCTAssertEqual(config.tts, LiveTalkConfiguration.managedDefault.tts)
+        XCTAssertNil(LiveTalkCatalog.connectedOpenClaw.credentialProvider)
+        var invalid = config
+        invalid.tts = config.llm
+        XCTAssertThrowsError(try invalid.validated())
+    }
+
+    func testConnectedVoicePresentationRetainsExactSpokenTurn() {
+        let input = "你好，can you dance?"
+        let avatar = AvatarAgentProfile(id: "tia", displayName: "Tia", systemPrompt: "Animations: Wave, Heart, Dance.")
+        let prompt = ConversationModel.connectedVoicePrompt(input, avatar: avatar)
+        XCTAssertTrue(prompt.hasSuffix("Exact spoken user turn:\n" + input))
+        XCTAssertTrue(prompt.contains("Animations: Wave, Heart, Dance."))
+        XCTAssertTrue(prompt.contains("Keep your existing identity, memory, tool and approval policy"))
+        XCTAssertEqual(ConversationModel.connectedVoicePrompt(input, avatar: nil), input)
+    }
+
     func testDefaultConfigurationUsesManagedLiveKitForEveryStage() throws {
         let configuration = try LiveTalkConfiguration.managedDefault.validated()
 

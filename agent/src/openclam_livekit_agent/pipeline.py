@@ -226,6 +226,25 @@ class _OwnedXaiTTS(xai.TTS):
             await self._openclam_speech_session.close()
 
 
+class ConnectedOpenClawLLM(llm.LLM):
+    """Local route marker; the voice agent's LLM node owns the client RPC.
+
+    Keeping an LLM here makes the pinned Agents SDK schedule its normal
+    cancellable speech pipeline without constructing a cloud inference client.
+    """
+
+    @property
+    def model(self) -> str:
+        return "selected-agent"
+
+    @property
+    def provider(self) -> str:
+        return "openclaw"
+
+    def chat(self, **kwargs):
+        raise PipelineConfigurationError("Connected OpenClaw requires its foreground LLM node")
+
+
 @dataclass(frozen=True, slots=True)
 class Pipeline:
     llm: llm.LLM = field(repr=False)
@@ -248,7 +267,8 @@ def create_pipeline(claim: ClaimedSession) -> Pipeline:
     speech = _build_tts(claim.profile.tts, claim)
     # Agents 1.6.x translates expressive markup only for supported Inference TTS.
     expressive: bool | dict[str, Any] = (
-        EXPRESSIVE_OPTIONS if isinstance(speech, inference.TTS) else False
+        EXPRESSIVE_OPTIONS if isinstance(speech, inference.TTS)
+        and not isinstance(language_model, ConnectedOpenClawLLM) else False
     )
     private_expressive_markup_enabled = (
         claim.profile.tts.source is ModelSource.MANAGED
@@ -261,6 +281,7 @@ def create_pipeline(claim: ClaimedSession) -> Pipeline:
     # cannot churn speculative speech or leak stale audio into the next turn.
     preemptive_generation_enabled = not (
         claim.profile.stt.provider == "xai" or claim.profile.tts.provider == "xai"
+        or isinstance(language_model, ConnectedOpenClawLLM)
     )
     return Pipeline(
         llm=language_model,
@@ -274,6 +295,8 @@ def create_pipeline(claim: ClaimedSession) -> Pipeline:
 
 def _build_llm(selection: StageSelection, claim: ClaimedSession) -> llm.LLM:
     _require_catalog_selection(StageName.LLM, selection)
+    if selection.source is ModelSource.CONNECTED:
+        return ConnectedOpenClawLLM()
     if selection.source is ModelSource.MANAGED:
         _require_managed(selection, model=MANAGED_LLM)
         return inference.LLM(model=selection.model)

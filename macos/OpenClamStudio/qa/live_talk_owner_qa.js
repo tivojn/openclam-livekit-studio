@@ -41,6 +41,7 @@ function renderer(window) {
     },
     AbortController, setTimeout, clearTimeout, performance, Map, Set,
     fetch: async () => ({ server_url: 'mock', participant_token: 'mock' }), safeJSON: x => x,
+    selectedOpenClawAgent: () => 'main',
     live: null, liveStarting: false, liveStopping: null, liveCancelRequested: false, sharedLivePhase: 'idle', ptt: null,
     turnController: null, turnControllerOrigin: null, speechExpressionTimeline: [], agentSpeaking: false,
     speechExpressionPlan: {}, reactiveMouthState: {}, currentViseme: 'sil',
