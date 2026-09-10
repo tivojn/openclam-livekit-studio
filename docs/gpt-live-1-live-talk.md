@@ -84,6 +84,11 @@ Differences from the pipeline engine:
 - iOS is unchanged: its three-stage catalog does not list the new rows, and
   its tuple-matrix test still passes.
 
+Server rollout on 2026-09-11: LiveKit agent `openclam-livekit-pilot`
+(`CA_5LeZwApfAxus`, deployed from tree `fa5d9a5` on `codex/tia-interactive`)
+and broker version `d482300c-e348-43fe-aca2-23bd2ebc9ea0`. Existing pipeline
+clients remain compatible. Mac 1.0.31 is required to select GPT-Live-1.
+
 ## Validation
 
 - Agent: `pytest` — 309 tests, including per-voice construction of
