@@ -185,18 +185,29 @@ includes('Other provider keys · Mac Keychain');
 includes('stored values are never returned to this page');
 
 for (const id of [
+  'livekit-engine', 'livekit-engine-disclosure',
   'livekit-llm-source', 'livekit-llm-provider', 'livekit-llm',
+  'livekit-llm-voice', 'livekit-llm-voice-field',
   'livekit-stt-source', 'livekit-stt-provider', 'livekit-stt',
   'livekit-stt-language', 'livekit-tts-source', 'livekit-tts-provider',
   'livekit-tts', 'livekit-tts-voice', 'livekit-pilot-token',
 ]) includes(`id="${id}"`);
 for (const id of [
+  'livekit-engine',
   'livekit-llm-source', 'livekit-llm-provider', 'livekit-llm',
+  'livekit-llm-voice',
   'livekit-stt-source', 'livekit-stt-provider', 'livekit-stt',
   'livekit-stt-language', 'livekit-tts-source', 'livekit-tts-provider',
   'livekit-tts', 'livekit-tts-voice', 'livekit-broker-url',
   'livekit-server-host', 'livekit-pilot-token', 'newname', 'pname', 'psys',
 ]) includes(`for="${id}"`);
+// The Live Talk engine picker offers both engines and derives its state from
+// the Thinking choice; a full-duplex engine idles the speech stages.
+includes('<option value="pipeline">LiveKit pipeline · listen, think, speak</option>');
+includes('<option value="duplex">OpenAI GPT-Live-1 · full duplex</option>');
+includes("value === 'gpt-live-1' ? 'GPT-Live-1 · full duplex'");
+includes('Not used while GPT-Live-1 is the engine; this choice is kept for the LiveKit pipeline.');
+includes("? {llm: LIVEKIT_SELECTIONS.llm} : LIVEKIT_SELECTIONS;");
 includes('id="livekit-state" role="status" aria-live="polite"');
 includes('id="msg" role="status" aria-live="polite"');
 

@@ -114,6 +114,11 @@ broker minimizes this exposure by validating a closed catalog and issuing a
 short-lived, encrypted, one-use lease; credentials never enter room or dispatch
 metadata. See [`cloudflare-broker/README.md`](cloudflare-broker/README.md).
 
+On macOS, Live Talk can also run on **OpenAI GPT-Live-1**, a full-duplex voice
+model that listens and speaks in one model using the user's OpenAI key. It is
+chosen as the Live Talk engine in Settings before a call; the pipeline engine
+remains the default. See [`docs/gpt-live-1-live-talk.md`](docs/gpt-live-1-live-talk.md).
+
 The checked-in pilot authentication mode is not a public-production identity
 system. Replace it with App Attest or equivalent installation authentication
 and account-level rate limiting before opening the broker to untrusted clients.

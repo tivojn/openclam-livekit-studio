@@ -785,6 +785,7 @@ describe("broker", () => {
       "gpt-5.6-luna",
       "gpt-5.6-terra",
       "gpt-5.6-sol",
+      "gpt-live-1",
     ]);
     expect(Object.keys(PROFILE_CATALOG.llm.byok.xai)).toEqual([
       "grok-4.3",
@@ -1036,6 +1037,59 @@ describe("broker", () => {
     });
     expect(denied.status).toBe(403);
     expect(denied.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+});
+
+describe("GPT-Live-1 full-duplex conversation source", () => {
+  const gptLiveVoices = [
+    "beacon", "bossa", "cinder", "delta", "gleam", "marin", "meridian",
+    "quartz", "ripple", "stone", "tempo", "vesper", "willow",
+  ];
+  const duplex = (voice: string) => ({
+    source: "byok", provider: "openai", model: "gpt-live-1", voice,
+  });
+  it("is the only LLM row that carries a closed voice list", () => {
+    expect(PROFILE_CATALOG.llm.byok.openai["gpt-live-1"]).toEqual({
+      default_voice: "marin",
+      voices: gptLiveVoices,
+    });
+    for (const [model, policy] of Object.entries(PROFILE_CATALOG.llm.byok.openai)) {
+      if (model !== "gpt-live-1") expect(policy).toEqual({});
+    }
+  });
+  it.each(gptLiveVoices)("accepts reviewed GPT-Live voice %s with an OpenAI key", async (voice) => {
+    const response = await start(bodyForSelection("llm", duplex(voice)));
+    expect(response.status).toBe(201);
+  });
+  it("defaults the voice to marin and keeps placeholder speech stages managed", () => {
+    const profile = {
+      ...managedProfile(),
+      llm: { source: "byok", provider: "openai", model: "gpt-live-1" },
+    };
+    const parsed = parseSessionStartRequest({
+      profile,
+      credentials: { llm: { api_key: "openai-provider-test-key" } },
+    });
+    expect(parsed.profile.llm).toEqual(duplex("marin"));
+    expect(parsed.profile.stt).toEqual(managedProfile().stt);
+    expect(parsed.profile.tts).toEqual(managedProfile().tts);
+    expect(Object.keys(parsed.credentials)).toEqual(["llm"]);
+  });
+  it("rejects unknown voices, voices on other LLM rows, and a missing key", () => {
+    const credentials = { llm: { api_key: "openai-provider-test-key" } };
+    expect(() => parseSessionStartRequest({
+      profile: { ...managedProfile(), llm: duplex("custom-voice") }, credentials,
+    })).toThrow();
+    expect(() => parseSessionStartRequest({
+      profile: {
+        ...managedProfile(),
+        llm: { source: "byok", provider: "openai", model: "gpt-5.6-luna", voice: "marin" },
+      },
+      credentials,
+    })).toThrow();
+    expect(() => parseSessionStartRequest({
+      profile: { ...managedProfile(), llm: duplex("marin") },
+    })).toThrow();
   });
 });
 

@@ -1178,7 +1178,10 @@ def _filter_models(kind, provider, values):
         # would have hidden every non-gpt-named model). Drop what clearly
         # is not a chat model and keep everything else.
         excluded = ("audio", "realtime", "tts", "transcribe", "whisper", "embedding",
-                    "image", "moderation", "dall-e", "sora", "davinci", "babbage")
+                    "image", "moderation", "dall-e", "sora", "davinci", "babbage",
+                    # GPT-Live is a Live Sessions voice model, not a chat model;
+                    # it is offered only as a Live Talk engine.
+                    "gpt-live")
         return [value for value in values
                 if not any(word in value.lower() for word in excluded)]
     if kind == "tts" and provider == "openai":

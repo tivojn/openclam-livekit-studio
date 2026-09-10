@@ -25,6 +25,28 @@ export const PROFILE_CATALOG = {
         "gpt-5.6-luna": {},
         "gpt-5.6-terra": {},
         "gpt-5.6-sol": {},
+        // GPT-Live-1 is OpenAI's full-duplex voice model. It replaces the
+        // listening and speaking stages for the whole call, so it is the one
+        // LLM row that carries a voice. The Mac app sends managed placeholder
+        // stt/tts selections with it; the agent never constructs those.
+        "gpt-live-1": {
+          default_voice: "marin",
+          voices: [
+            "beacon",
+            "bossa",
+            "cinder",
+            "delta",
+            "gleam",
+            "marin",
+            "meridian",
+            "quartz",
+            "ripple",
+            "stone",
+            "tempo",
+            "vesper",
+            "willow",
+          ],
+        },
       },
       xai: {
         "grok-4.3": {},

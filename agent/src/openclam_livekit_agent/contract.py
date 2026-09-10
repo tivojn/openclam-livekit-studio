@@ -39,6 +39,14 @@ class StageName(StrEnum):
     TTS = "tts"
 
 
+# Full-duplex voice models replace the listening and speaking stages for the
+# whole call. They are the only LLM selections that carry a voice, and the
+# profile's stt/tts selections are inert placeholders beside them.
+FULL_DUPLEX_LLM_MODELS: frozenset[tuple[str, str, str]] = frozenset(
+    {("byok", "openai", "gpt-live-1")}
+)
+
+
 # This is a second, agent-side copy of the broker's reviewed catalog. The
 # credential broker is the first enforcement boundary; this closed tuple set
 # ensures that a compromised or accidentally loosened broker still cannot feed
@@ -59,6 +67,24 @@ _CATALOG_SELECTIONS: dict[
             ("byok", "openai", "gpt-5.6-luna", None, None),
             ("byok", "openai", "gpt-5.6-terra", None, None),
             ("byok", "openai", "gpt-5.6-sol", None, None),
+            *(
+                ("byok", "openai", "gpt-live-1", voice, None)
+                for voice in (
+                    "beacon",
+                    "bossa",
+                    "cinder",
+                    "delta",
+                    "gleam",
+                    "marin",
+                    "meridian",
+                    "quartz",
+                    "ripple",
+                    "stone",
+                    "tempo",
+                    "vesper",
+                    "willow",
+                )
+            ),
             ("byok", "xai", "grok-4.3", None, None),
             ("byok", "xai", "grok-4.5", None, None),
         }
@@ -228,7 +254,13 @@ class StageSelection:
         language = _optional_identifier(
             payload.get("language"), f"{stage.value} language"
         )
-        if stage is not StageName.TTS and voice is not None:
+        if voice is not None and not (
+            stage is StageName.TTS
+            or (
+                stage is StageName.LLM
+                and (source.value, provider, model) in FULL_DUPLEX_LLM_MODELS
+            )
+        ):
             raise ContractError(f"{stage.value} cannot select a voice")
         if source is ModelSource.MANAGED and provider != "livekit":
             raise ContractError(f"managed {stage.value} must use LiveKit")
@@ -243,6 +275,11 @@ class StageSelection:
         )
         validate_catalog_selection(stage, selection)
         return selection
+
+    @property
+    def full_duplex(self) -> bool:
+        """True for a voice model that listens and speaks for the whole call."""
+        return (self.source.value, self.provider, self.model) in FULL_DUPLEX_LLM_MODELS
 
     def to_payload(self) -> dict[str, str]:
         payload = {

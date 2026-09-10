@@ -13,6 +13,7 @@ from livekit.agents.voice.agent_session import (
     resolve_expressive_options,
 )
 from livekit.plugins import anthropic, deepgram, elevenlabs, google, openai, xai
+from livekit.plugins.openai.realtime import GPTLiveModel
 from livekit.plugins.xai import stt as xai_stt_plugin
 from test_contract import (
     all_xai_claim_payload,
@@ -31,6 +32,7 @@ from openclam_livekit_agent.contract import (
     StageSelection,
     XaiAuthMode,
 )
+from openclam_livekit_agent.duplex import DUPLEX_BACKEND_MODEL
 from openclam_livekit_agent.main import OpenClamVoiceAgent, create_session
 from openclam_livekit_agent.pipeline import (
     MANAGED_LLM,
@@ -929,3 +931,107 @@ def test_connected_openclaw_uses_no_cloud_llm_and_waits_for_final_transcript(mon
     assert pipeline.private_expressive_markup_enabled is False
     assert isinstance(pipeline.stt, inference.STT)
     assert isinstance(pipeline.tts, inference.TTS)
+
+
+def duplex_claim(voice: str = "marin") -> ClaimedSession:
+    profile = profile_payload()
+    profile["llm"] = {
+        "source": "byok",
+        "provider": "openai",
+        "model": "gpt-live-1",
+        "voice": voice,
+    }
+    # The Mac sends managed placeholders for the speech stages, so the claim
+    # carries exactly one credential.
+    profile["stt"] = {
+        "source": "managed",
+        "provider": "livekit",
+        "model": MANAGED_STT,
+        "language": "multi",
+    }
+    profile["tts"] = {
+        "source": "managed",
+        "provider": "livekit",
+        "model": MANAGED_TTS,
+        "voice": MANAGED_TTS_VOICE,
+    }
+    return claim_for(
+        {
+            "schema_version": 1,
+            "profile": profile,
+            "credentials": {"llm": {"api_key": "openai-live-key-per-job"}},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "voice",
+    [
+        "beacon", "bossa", "cinder", "delta", "gleam", "marin", "meridian",
+        "quartz", "ripple", "stone", "tempo", "vesper", "willow",
+    ],
+)
+def test_gpt_live_full_duplex_builds_one_voice_model_and_no_speech_plugins(
+    voice: str,
+) -> None:
+    pipeline = create_pipeline(duplex_claim(voice))
+    assert pipeline.full_duplex is True
+    assert isinstance(pipeline.llm, GPTLiveModel)
+    assert pipeline.stt is None
+    assert pipeline.tts is None
+    assert pipeline.expressive is False
+    assert pipeline.private_expressive_markup_enabled is False
+    assert pipeline.preemptive_generation_enabled is False
+
+    options = pipeline.llm._opts
+    assert options.model == "gpt-live-1"
+    assert options.voice == voice
+    assert options.delegation == "responses"
+    assert options.api_key == "openai-live-key-per-job"
+    assert options.responses["model"] == DUPLEX_BACKEND_MODEL
+    assert options.responses["reasoning"] == {"effort": "none"}
+    assert options.responses["max_output_tokens"] == 700
+    backend = options.responses["instructions"]
+    assert "use_foreground_agent exactly once" in backend
+    assert '"name": "Captain Ayer"' in backend
+    assert backend.rstrip().endswith("be candid about uncertainty.")
+
+
+@pytest.mark.asyncio
+async def test_gpt_live_session_has_vad_but_no_stt_tts_or_turn_detector() -> None:
+    pipeline = create_pipeline(duplex_claim())
+    session = create_session(pipeline)
+    assert session.stt is None
+    assert session.tts is None
+    assert session.vad is not None
+    assert session._using_default_vad is False
+    # The model owns turn detection and barge-in; LiveKit only cuts playback.
+    assert session.turn_detection == "realtime_llm"
+
+    cascade = create_session(create_pipeline(managed_claim()))
+    assert cascade.stt is not None and cascade.tts is not None
+
+
+def test_gpt_live_rejects_a_missing_voice_or_other_openai_models() -> None:
+    claim = duplex_claim()
+    voiceless = replace(claim.profile.llm, voice=None)
+    with pytest.raises(PipelineConfigurationError, match="approved provider catalog"):
+        create_pipeline(
+            replace(claim, profile=replace(claim.profile, llm=voiceless))
+        )
+    profile = profile_payload()
+    profile["llm"] = {
+        "source": "byok",
+        "provider": "openai",
+        "model": "gpt-5.6-luna",
+        "voice": "marin",
+    }
+    with pytest.raises(Exception, match="cannot select a voice"):
+        claim_for({
+            "schema_version": 1,
+            "profile": profile,
+            "credentials": {
+                "llm": {"api_key": "k" * 12},
+                "tts": {"api_key": "g" * 12},
+            },
+        })

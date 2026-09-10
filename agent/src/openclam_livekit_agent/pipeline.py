@@ -10,6 +10,7 @@ import httpx
 import openai as openai_sdk
 from livekit.agents import inference, llm, stt, tts
 from livekit.plugins import anthropic, deepgram, elevenlabs, google, openai, xai
+from livekit.plugins.openai.realtime import GPTLiveModel
 
 from .contract import (
     ClaimedSession,
@@ -19,6 +20,12 @@ from .contract import (
     StageSelection,
     XaiAuthMode,
     validate_catalog_selection,
+)
+from .duplex import (
+    DUPLEX_BACKEND_MAX_OUTPUT_TOKENS,
+    DUPLEX_BACKEND_MODEL,
+    DUPLEX_MODEL,
+    build_duplex_backend_instructions,
 )
 
 MANAGED_LLM = "google/gemma-4-31b-it"
@@ -247,12 +254,15 @@ class ConnectedOpenClawLLM(llm.LLM):
 
 @dataclass(frozen=True, slots=True)
 class Pipeline:
-    llm: llm.LLM = field(repr=False)
-    stt: stt.STT = field(repr=False)
-    tts: tts.TTS = field(repr=False)
+    llm: llm.LLM | GPTLiveModel = field(repr=False)
+    stt: stt.STT | None = field(repr=False)
+    tts: tts.TTS | None = field(repr=False)
     expressive: bool | dict[str, Any]
     private_expressive_markup_enabled: bool
     preemptive_generation_enabled: bool
+    # GPT-Live-1 listens and speaks for the whole call; stt/tts are None and the
+    # profile's speech selections are inert placeholders.
+    full_duplex: bool = False
 
 
 def create_pipeline(claim: ClaimedSession) -> Pipeline:
@@ -263,6 +273,20 @@ def create_pipeline(claim: ClaimedSession) -> Pipeline:
     except ContractError as exc:
         raise PipelineConfigurationError(str(exc)) from exc
     language_model = _build_llm(claim.profile.llm, claim)
+    if isinstance(language_model, GPTLiveModel):
+        # The duplex model owns listening, speaking, turn detection and
+        # barge-in. Never construct the placeholder speech plugins: their
+        # credentials are not leased, and LiveKit's expressive markup and
+        # preemptive generation only exist for the cascade.
+        return Pipeline(
+            llm=language_model,
+            stt=None,
+            tts=None,
+            expressive=False,
+            private_expressive_markup_enabled=False,
+            preemptive_generation_enabled=False,
+            full_duplex=True,
+        )
     recognizer = _build_stt(claim.profile.stt, claim)
     speech = _build_tts(claim.profile.tts, claim)
     # Agents 1.6.x translates expressive markup only for supported Inference TTS.
@@ -293,7 +317,9 @@ def create_pipeline(claim: ClaimedSession) -> Pipeline:
     )
 
 
-def _build_llm(selection: StageSelection, claim: ClaimedSession) -> llm.LLM:
+def _build_llm(
+    selection: StageSelection, claim: ClaimedSession
+) -> llm.LLM | GPTLiveModel:
     _require_catalog_selection(StageName.LLM, selection)
     if selection.source is ModelSource.CONNECTED:
         return ConnectedOpenClawLLM()
@@ -301,6 +327,8 @@ def _build_llm(selection: StageSelection, claim: ClaimedSession) -> llm.LLM:
         _require_managed(selection, model=MANAGED_LLM)
         return inference.LLM(model=selection.model)
     key = claim.key_for(StageName.LLM)
+    if selection.full_duplex:
+        return _build_duplex_llm(selection, claim, key)
     if selection.provider == "openai":
         return openai.responses.LLM(
             model=selection.model,
@@ -337,6 +365,34 @@ def _build_llm(selection: StageSelection, claim: ClaimedSession) -> llm.LLM:
             max_tokens=700,
         )
     raise AssertionError("unreachable LLM provider")
+
+
+def _build_duplex_llm(
+    selection: StageSelection, claim: ClaimedSession, key: str
+) -> GPTLiveModel:
+    if selection.provider != "openai" or selection.model != DUPLEX_MODEL:
+        raise PipelineConfigurationError("unreachable full-duplex model")
+    if not selection.voice:
+        raise PipelineConfigurationError("selected GPT-Live voice is missing")
+    persona = claim.profile.persona
+    return GPTLiveModel(
+        model=selection.model,
+        voice=selection.voice,
+        # Responses delegation keeps the foreground-agent function tool on a
+        # backend model the voice model never sees; client delegation would
+        # have no tool channel at all.
+        delegation="responses",
+        responses_options={
+            "model": DUPLEX_BACKEND_MODEL,
+            "instructions": build_duplex_backend_instructions(
+                persona_name=persona.name, persona=persona.instructions
+            ),
+            # Same low-latency voice-chat behavior as the cascade's OpenAI rows.
+            "reasoning": {"effort": "none"},
+            "max_output_tokens": DUPLEX_BACKEND_MAX_OUTPUT_TOKENS,
+        },
+        api_key=key,
+    )
 
 
 def _build_stt(selection: StageSelection, claim: ClaimedSession) -> stt.STT:

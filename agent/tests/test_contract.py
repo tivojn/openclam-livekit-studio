@@ -30,6 +30,25 @@ EXPECTED_CATALOG_SELECTIONS = {
             ("byok", "openai", "gpt-5.6-luna", None, None),
             ("byok", "openai", "gpt-5.6-sol", None, None),
             ("byok", "openai", "gpt-5.6-terra", None, None),
+            # GPT-Live-1 is full duplex: the one LLM row that carries a voice.
+            *(
+                ("byok", "openai", "gpt-live-1", voice, None)
+                for voice in (
+                    "beacon",
+                    "bossa",
+                    "cinder",
+                    "delta",
+                    "gleam",
+                    "marin",
+                    "meridian",
+                    "quartz",
+                    "ripple",
+                    "stone",
+                    "tempo",
+                    "vesper",
+                    "willow",
+                )
+            ),
             ("byok", "xai", "grok-4.3", None, None),
             ("byok", "xai", "grok-4.5", None, None),
         }

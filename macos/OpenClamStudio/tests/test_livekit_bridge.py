@@ -638,6 +638,160 @@ class LiveKitSessionTests(unittest.TestCase):
         self.assertNotIn(PILOT_TOKEN, visible)
 
 
+class FullDuplexLiveTalkTests(unittest.TestCase):
+    """GPT-Live-1 listens and speaks itself; the saved speech stages go inert."""
+
+    GPT_LIVE_VOICES = (
+        "beacon", "bossa", "cinder", "delta", "gleam", "marin", "meridian",
+        "quartz", "ripple", "stone", "tempo", "vesper", "willow",
+    )
+
+    def duplex_config(self, voice="marin"):
+        config = managed_config()
+        config["llm"] = {
+            "source": "byok", "provider": "openai", "model": "gpt-live-1",
+            "voice": voice,
+        }
+        # Saved personal-account speech choices that must stay untouched and
+        # must not be resolved for a full-duplex call.
+        config["stt"] = {
+            "source": "byok", "provider": "deepgram", "model": "nova-3",
+            "language": "multi",
+        }
+        config["tts"] = {
+            "source": "byok", "provider": "gemini",
+            "model": "gemini-3.1-flash-tts-preview", "voice": "Kore",
+        }
+        return config
+
+    def test_catalog_marks_gpt_live_as_the_full_duplex_thinking_choice(self):
+        catalog = LK.catalog()
+        self.assertEqual(catalog["full_duplex"], [
+            {"source": "byok", "provider": "openai", "model": "gpt-live-1"},
+        ])
+        rows = [
+            row for row in catalog["stages"]["llm"]
+            if row["model"] == "gpt-live-1"
+        ]
+        self.assertEqual(
+            [row["voice"] for row in rows], list(self.GPT_LIVE_VOICES)
+        )
+        self.assertTrue(all(row["source"] == "byok" for row in rows))
+        other_llm_rows_with_voice = [
+            row for row in catalog["stages"]["llm"]
+            if row["model"] != "gpt-live-1" and "voice" in row
+        ]
+        self.assertEqual(other_llm_rows_with_voice, [])
+        self.assertTrue(LK.is_full_duplex(rows[0]))
+        self.assertFalse(LK.is_full_duplex(LK.MANAGED_DEFAULT["llm"]))
+        self.assertFalse(LK.is_full_duplex({
+            "source": "byok", "provider": "openai", "model": "gpt-5.6-luna",
+        }))
+
+    def test_every_gpt_live_voice_is_an_approved_thinking_selection(self):
+        for voice in self.GPT_LIVE_VOICES:
+            self.assertEqual(
+                LK.validated_selection("llm", {
+                    "source": "byok", "provider": "openai",
+                    "model": "gpt-live-1", "voice": voice,
+                }),
+                {
+                    "source": "byok", "provider": "openai",
+                    "model": "gpt-live-1", "voice": voice,
+                },
+            )
+        with self.assertRaisesRegex(
+            LK.LiveKitBridgeError, "livekit_selection_not_allowed"
+        ):
+            LK.validated_selection("llm", {
+                "source": "byok", "provider": "openai", "model": "gpt-live-1",
+            })
+        with self.assertRaisesRegex(
+            LK.LiveKitBridgeError, "livekit_selection_not_allowed"
+        ):
+            LK.validated_selection("llm", {
+                "source": "byok", "provider": "openai", "model": "gpt-live-1",
+                "voice": "cloned-voice",
+            })
+
+    def test_full_duplex_call_sends_only_the_openai_key_and_managed_placeholders(self):
+        config = self.duplex_config("willow")
+        accounts = []
+        captured = {}
+
+        def getter(account):
+            accounts.append(account)
+            return {
+                "keys.openai": "openai-live-provider-key",
+                "keys.deepgram": "must-not-be-read",
+                "keys.gemini": "must-not-be-read",
+                "livekit.pilot_app_token": PILOT_TOKEN,
+            }[account]
+
+        def handler(request):
+            captured.update(json.loads(request.content))
+            return success_response(request)
+
+        result = LiveKitSessionTests.run_session(self, config, handler, getter)
+        self.assertEqual(result["participant_token"], PARTICIPANT_TOKEN)
+        self.assertEqual(
+            sorted(accounts), ["keys.openai", "livekit.pilot_app_token"]
+        )
+        self.assertEqual(
+            captured["credentials"], {"llm": {"api_key": "openai-live-provider-key"}}
+        )
+        self.assertEqual(captured["profile"]["llm"], config["llm"])
+        self.assertEqual(captured["profile"]["stt"], LK.MANAGED_DEFAULT["stt"])
+        self.assertEqual(captured["profile"]["tts"], LK.MANAGED_DEFAULT["tts"])
+        # The persisted speech choices survive for the pipeline engine.
+        self.assertEqual(LK.validated_config(config)["stt"], config["stt"])
+        self.assertEqual(LK.validated_config(config)["tts"], config["tts"])
+
+    def test_full_duplex_call_ignores_saved_xai_speech_stages(self):
+        config = self.duplex_config()
+        config["stt"] = {
+            "source": "byok", "provider": "xai", "model": "grok-transcribe",
+            "language": "en",
+        }
+        captured = {}
+
+        def handler(request):
+            captured.update(json.loads(request.content))
+            return success_response(request)
+
+        async def failing_resolver():
+            raise AssertionError("xAI auth must not be resolved for GPT-Live")
+
+        result = LiveKitSessionTests.run_session(
+            self, config, handler,
+            lambda account: {
+                "keys.openai": "openai-live-provider-key",
+                "livekit.pilot_app_token": PILOT_TOKEN,
+            }.get(account, ""),
+            xai_resolver=failing_resolver,
+        )
+        self.assertEqual(result["participant_token"], PARTICIPANT_TOKEN)
+        self.assertEqual(captured["profile"]["stt"], LK.MANAGED_DEFAULT["stt"])
+        self.assertEqual(list(captured["credentials"]), ["llm"])
+
+    def test_full_duplex_call_needs_the_openai_key_before_network(self):
+        network_calls = []
+
+        def handler(request):
+            network_calls.append(request)
+            return success_response(request)
+
+        with self.assertRaisesRegex(
+            LK.LiveKitBridgeError, "livekit_missing_openai_key"
+        ):
+            LiveKitSessionTests.run_session(
+                self, self.duplex_config(), handler,
+                lambda account: PILOT_TOKEN
+                if account == "livekit.pilot_app_token" else "",
+            )
+        self.assertEqual(network_calls, [])
+
+
 class LiveKitPersistenceAndAPITests(unittest.TestCase):
     def tearDown(self):
         credentials._memo.clear()

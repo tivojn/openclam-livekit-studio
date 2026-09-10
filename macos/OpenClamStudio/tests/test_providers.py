@@ -598,6 +598,7 @@ class ModelCatalogueTests(unittest.TestCase):
     def test_language_model_filter_excludes_media_and_realtime_models(self):
         values = P._filter_models("llm", "openai", [
             "gpt-5-mini", "gpt-image-1", "gpt-realtime", "text-embedding-3",
+            "gpt-live-1",
         ])
         self.assertEqual(["gpt-5-mini"], values)
 

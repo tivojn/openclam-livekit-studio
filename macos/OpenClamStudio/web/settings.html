@@ -735,6 +735,7 @@ body{padding-bottom:84px}
 .livekit-stage:first-of-type{padding-top:0;border-top:0}
 .livekit-stage-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
 .livekit-stage-head strong{font-size:14px}.livekit-stage-head span{color:var(--dim);font-size:12px}
+.livekit-stage.inert{opacity:.55}
 .livekit-disclosure{margin:10px 0 0;padding:9px 11px;border-radius:7px;
   background:var(--bg-sub);color:var(--dim);font-size:12px}
 .livekit-disclosure.managed{color:var(--ok-text);background:var(--ok-bg)}
@@ -1141,17 +1142,26 @@ document.documentElement.dataset.design='quiet';</script>
 
   <h2>Continuous Live Talk · LiveKit</h2>
   <div class="card" id="blk-live">
-    <p class="note" style="margin:0 0 16px">Choose Connected OpenClaw for Thinking to use this chat’s selected agent for every spoken turn, including conversation and avatar motions. Its model and conversation stay with OpenClaw. Other Thinking choices use a separate voice model. Managed speech recognition defaults to Deepgram Nova-3
+    <p class="note" style="margin:0 0 16px">Choose the Live Talk engine first. The LiveKit pipeline uses separate listening, thinking and speaking services chosen below. OpenAI GPT-Live-1 listens and speaks in one full-duplex model with your OpenAI key, so the Listening and Voice choices are not used with it. Choose Connected OpenClaw for Thinking to use this chat’s selected agent for every spoken turn, including conversation and avatar motions. Its model and conversation stay with OpenClaw. Other Thinking choices use a separate voice model. Managed speech recognition defaults to Deepgram Nova-3
       Auto multilingual, including Chinese and English. Choose an approved
       provider, model, language, and voice
       for each stage. Managed choices use LiveKit infrastructure; personal-account
       choices use a matching Keychain key or the one shared xAI Account mode.</p>
+    <div class="row" style="margin-bottom:14px">
+      <div class="f"><label for="livekit-engine">Live Talk engine</label>
+        <select id="livekit-engine">
+          <option value="pipeline">LiveKit pipeline · listen, think, speak</option>
+          <option value="duplex">OpenAI GPT-Live-1 · full duplex</option>
+        </select></div>
+    </div>
+    <p class="livekit-disclosure" id="livekit-engine-disclosure" style="margin:0 0 18px"></p>
     <div class="livekit-stage" data-livekit-stage="llm">
       <div class="livekit-stage-head"><strong>Thinking</strong><span>Language model</span></div>
       <div class="row">
         <div class="f"><label for="livekit-llm-source">Conversation source</label><select id="livekit-llm-source"></select></div>
         <div class="f"><label for="livekit-llm-provider">Provider</label><select id="livekit-llm-provider"></select></div>
         <div class="f"><label for="livekit-llm">Model</label><select id="livekit-llm"></select></div>
+        <div class="f hidden" id="livekit-llm-voice-field"><label for="livekit-llm-voice">Voice</label><select id="livekit-llm-voice"></select></div>
       </div>
       <p class="livekit-disclosure" id="livekit-llm-disclosure"></p>
     </div>
@@ -6334,6 +6344,13 @@ const LIVEKIT_VOICE_NAMES = {
   'aura-2-andromeda-en': 'Andromeda', alloy: 'Alloy',
   ara: 'Ara', eve: 'Eve', leo: 'Leo', rex: 'Rex', sal: 'Sal',
   Kore: 'Kore · firm', Sadachbia: 'Sadachbia · lively',
+  marin: 'Marin · default', beacon: 'Beacon · Filipino English',
+  bossa: 'Bossa · Brazilian Portuguese', cinder: 'Cinder · Southern U.S.',
+  delta: 'Delta · Southern U.S.', gleam: 'Gleam · North American',
+  meridian: 'Meridian · North American', quartz: 'Quartz · Australian',
+  ripple: 'Ripple · Australian', stone: 'Stone · Irish',
+  tempo: 'Tempo · Brazilian Portuguese', vesper: 'Vesper · British',
+  willow: 'Willow · Irish',
 };
 const LIVEKIT_PROVIDER_NAMES = {
   livekit: 'LiveKit Inference', openai: 'OpenAI', xai: 'xAI',
@@ -6342,6 +6359,51 @@ const LIVEKIT_PROVIDER_NAMES = {
 };
 let LIVEKIT_VIEW = null;
 const LIVEKIT_SELECTIONS = {};
+// The engine is derived from the Thinking choice: a full-duplex model (GPT-Live-1)
+// listens and speaks itself, so the Listening and Voice stages go inert. The
+// last pipeline Thinking choice and GPT-Live voice are remembered on this page
+// so switching engines round-trips without re-picking.
+let LIVEKIT_PIPELINE_LLM = null;
+let LIVEKIT_DUPLEX_VOICE = '';
+function isFullDuplexSelection(selection) {
+  const models = (((LIVEKIT_VIEW || {}).catalog || {}).full_duplex) || [];
+  return Boolean(selection) && models.some(model => model.source === selection.source
+    && model.provider === selection.provider && model.model === selection.model);
+}
+function liveKitEngine() {
+  return isFullDuplexSelection(LIVEKIT_SELECTIONS.llm) ? 'duplex' : 'pipeline';
+}
+function liveKitDuplexChoice(voice) {
+  const rows = ((((LIVEKIT_VIEW || {}).catalog || {}).stages || {}).llm || [])
+    .filter(isFullDuplexSelection);
+  return rows.find(row => row.voice === voice) || rows.find(row => row.voice === 'marin')
+    || rows[0] || null;
+}
+function applyLiveKitEngine() {
+  const duplex = liveKitEngine() === 'duplex';
+  const engineSelect = $('#livekit-engine');
+  if (engineSelect) engineSelect.value = duplex ? 'duplex' : 'pipeline';
+  for (const stage of ['stt', 'tts']) {
+    const block = document.querySelector(`.livekit-stage[data-livekit-stage="${stage}"]`);
+    if (!block) continue;
+    block.classList.toggle('inert', duplex);
+    block.querySelectorAll('select').forEach(select => { select.disabled = duplex; });
+    const disclosure = $(`#livekit-${stage}-disclosure`);
+    if (disclosure) {
+      const prefix = 'Not used while GPT-Live-1 is the engine; this choice is kept for the LiveKit pipeline. ';
+      const base = disclosure.textContent.startsWith(prefix)
+        ? disclosure.textContent.slice(prefix.length) : disclosure.textContent;
+      disclosure.textContent = duplex ? prefix + base : base;
+    }
+  }
+  const engineDisclosure = $('#livekit-engine-disclosure');
+  if (engineDisclosure) {
+    engineDisclosure.className = 'livekit-disclosure' + (duplex ? '' : ' managed');
+    engineDisclosure.textContent = duplex
+      ? 'GPT-Live-1 listens and speaks for the whole call in one OpenAI full-duplex model, so it can answer while you are still talking. It uses the OpenAI key stored in this Mac’s Keychain; OpenAI bills the session per minute plus backend model usage. Lip-sync follows the audio.'
+      : 'The LiveKit pipeline runs separate listening, thinking and speaking services chosen below. Connected OpenClaw and every managed or personal-account choice stay available.';
+  }
+}
 /* qa:livekit-key-readiness:start */
 function missingLiveKitKeyProviders(selections, hasKeys, xaiConnected=false) {
   const stored = hasKeys && typeof hasKeys === 'object' ? hasKeys : {};
@@ -6402,9 +6464,13 @@ function renderLiveKitStage(stage, preferred=null) {
   providerSelect.innerHTML = liveKitOptions(providers, selected.provider, value =>
     LIVEKIT_PROVIDER_NAMES[value] || value);
   modelSelect.innerHTML = liveKitOptions(models, selected.model, value =>
-    value === 'selected-agent' ? 'Selected chat agent’s model' : value);
+    value === 'selected-agent' ? 'Selected chat agent’s model'
+      : value === 'gpt-live-1' ? 'GPT-Live-1 · full duplex' : value);
 
-  const detailKey = stage === 'tts' ? 'voice' : stage === 'stt' ? 'language' : '';
+  const detailKey = stage === 'tts' ? 'voice' : stage === 'stt' ? 'language'
+    : modelRows.some(choice => choice.voice) ? 'voice' : '';
+  const llmVoiceField = $('#livekit-llm-voice-field');
+  if (stage === 'llm' && llmVoiceField) llmVoiceField.classList.toggle('hidden', detailKey !== 'voice');
   if (detailKey) {
     const detailSelect = $(`#livekit-${stage}-${detailKey}`);
     const details = uniqueValues(modelRows, detailKey);
@@ -6420,7 +6486,12 @@ function renderLiveKitStage(stage, preferred=null) {
   disclosure.className = 'livekit-disclosure'
     + (selected.source === 'managed' ? ' managed' : '')
     + (selected.source === 'byok' && !credentialReady ? ' missing' : '');
-  const credentialDisclosure = selected.source === 'connected'
+  const duplexSelection = stage === 'llm' && isFullDuplexSelection(selected);
+  const credentialDisclosure = duplexSelection
+    ? (keyStored
+      ? 'GPT-Live-1 replaces the Listening and Voice stages for the whole call and uses the OpenAI key stored in this Mac’s Keychain. The key is never placed in room metadata.'
+      : 'Add an OpenAI key under Provider keys before calling. GPT-Live-1 listens and speaks with that account for the whole call.')
+    : selected.source === 'connected'
     ? 'Every spoken turn uses the OpenClaw agent selected in the chat. Select that agent before calling. OpenClaw credentials stay on this Mac; listening and speaking use the services chosen below.'
     : selected.source === 'managed'
     ? 'Managed by LiveKit. No personal provider key is needed for this stage.'
@@ -6463,6 +6534,11 @@ function renderLiveKitStage(stage, preferred=null) {
         && choice.model === LIVEKIT_SELECTIONS[stage].model
         && choice[detailKey] === detailSelect.value));
   }
+  if (stage === 'llm') {
+    if (isFullDuplexSelection(selected)) LIVEKIT_DUPLEX_VOICE = selected.voice || LIVEKIT_DUPLEX_VOICE;
+    else LIVEKIT_PIPELINE_LLM = selected;
+  }
+  applyLiveKitEngine();
   updateLiveKitReadiness();
   if (CFG && CAT) renderKeysPreservingDraft();
 }
@@ -6500,8 +6576,12 @@ function liveKitErrorMessage(value, fallback='LiveKit settings are unavailable.'
 function updateLiveKitReadiness() {
   const config = LIVEKIT_VIEW && LIVEKIT_VIEW.config;
   if (!config) return;
+  // A full-duplex engine only needs the Thinking credential; the inert
+  // speech stages must not block readiness.
+  const activeSelections = liveKitEngine() === 'duplex'
+    ? {llm: LIVEKIT_SELECTIONS.llm} : LIVEKIT_SELECTIONS;
   const missing = missingLiveKitKeyProviders(
-    LIVEKIT_SELECTIONS, CFG && CFG.has_keys, XAI_ACCOUNT.status.connected);
+    activeSelections, CFG && CFG.has_keys, XAI_ACCOUNT.status.connected);
   const needs = [];
   if (!config.broker_url || !config.expected_server_host) {
     needs.push('install a build with the Live Talk service configured');
@@ -6535,6 +6615,17 @@ async function renderLiveKitBlock(response=null) {
       throw failure;
     }
     ['llm', 'stt', 'tts'].forEach(stage => renderLiveKitStage(stage));
+    const engineSelect = $('#livekit-engine');
+    engineSelect.onchange = () => {
+      if (engineSelect.value === 'duplex') {
+        const choice = liveKitDuplexChoice(LIVEKIT_DUPLEX_VOICE);
+        if (!choice) { applyLiveKitEngine(); return; }
+        renderLiveKitStage('llm', choice);
+      } else {
+        renderLiveKitStage('llm', LIVEKIT_PIPELINE_LLM
+          || ((LIVEKIT_VIEW.catalog || {}).managed_default || {}).llm || null);
+      }
+    };
     const config = LIVEKIT_VIEW.config;
     $('#livekit-broker-url').value = config.broker_url || '';
     $('#livekit-server-host').value = config.expected_server_host || '';

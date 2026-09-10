@@ -11,7 +11,9 @@ responses. LiveKit carries all realtime media.
 2. When the user starts Live Talk, iOS sends only the keys required by the three
    selected stages to `POST /v1/live-talk/sessions` over HTTPS.
 3. This Worker validates every provider/model/voice/language against the closed
-   catalog in `src/catalog.ts`.
+   catalog in `src/catalog.ts`. The full-duplex `gpt-live-1` LLM row is the
+   one LLM selection that carries a voice; a client pairing it with the
+   managed speech placeholders sends only the OpenAI key.
 4. Credentials are encrypted using AES-256-GCM and a Worker secret KEK, then
    stored in a dedicated Durable Object with a 30–300 second alarm.
 5. The LiveKit dispatch metadata contains exactly

@@ -19,6 +19,7 @@ from livekit.agents import (
 from livekit.agents.llm.tool_context import ToolFlag
 from livekit.agents.voice.agent_activity import AgentActivity
 
+from openclam_livekit_agent.duplex import build_duplex_voice_instructions
 from openclam_livekit_agent.main import (
     AGENT_TURN_FAILURE_MESSAGE,
     DIRECT_TTS_DELIVERY_INSTRUCTIONS,
@@ -42,10 +43,12 @@ from openclam_livekit_agent.main import (
     is_email_control_turn,
     is_explicit_new_email_request,
     latest_spoken_user_turn,
+    live_talk_room_options,
     parse_agent_turn_rpc_response,
     parse_email_rpc_response,
     parse_explicit_email_draft_request,
 )
+from openclam_livekit_agent.tts_timing import LiveTalkTTSTimingOutput
 
 
 def test_managed_prompt_allows_only_private_livekit_expressive_tags() -> None:
@@ -1011,7 +1014,12 @@ async def test_pinned_livekit_executor_suppresses_generative_post_tool_reply() -
     )
 
     assert isinstance(result.raw_exception, StopResponse)
-    assert result.fnc_call_out is None
+    # Agents 1.8 records the silenced call as an empty, non-error output that
+    # requires no generative reply, instead of dropping the output entirely.
+    assert result.fnc_call_out is not None
+    assert result.fnc_call_out.output == ""
+    assert result.fnc_call_out.is_error is False
+    assert result.fnc_call_out.reply_required is False
     say.assert_called_once_with(
         EMAIL_DRAFT_SUCCESS_MESSAGE,
         allow_interruptions=False,
@@ -1072,3 +1080,111 @@ async def test_actual_decorated_email_tool_rejects_replay_of_the_same_turn() -> 
 
     perform_rpc.assert_awaited_once()
     say.assert_called_once()
+
+
+def _duplex_agent() -> OpenClamVoiceAgent:
+    agent = object.__new__(OpenClamVoiceAgent)
+    agent._room = SimpleNamespace(
+        remote_participants={
+            "user-test": SimpleNamespace(metadata='{"role":"human","schema_version":1}')
+        },
+        local_participant=SimpleNamespace(
+            perform_rpc=AsyncMock(return_value=json.dumps({
+                "schema_version": 1,
+                "status": "completed",
+                "spoken_reply": "Your agent found three results.",
+            }))
+        ),
+    )
+    agent._connected_openclaw = False
+    agent._full_duplex = True
+    agent._staged_user_turn_ids = set()
+    agent._intercepted_user_turn_ids = set()
+    agent._delegated_user_turn_ids = set()
+    Agent.__init__(
+        agent,
+        instructions=build_duplex_voice_instructions(
+            persona_name="Tia", persona="Be warm."
+        ),
+    )
+    return agent
+
+
+def test_duplex_agent_exposes_only_the_bounded_foreground_tool() -> None:
+    agent = _duplex_agent()
+    assert [tool.id for tool in agent.tools] == ["use_foreground_agent"]
+    # The cascade agent still carries both decorated tools; llm_node hides one.
+    cascade = object.__new__(OpenClamVoiceAgent)
+    cascade._full_duplex = False
+    Agent.__init__(cascade, instructions="test")
+    assert {tool.id for tool in cascade.tools} == {
+        "use_foreground_agent",
+        "prepare_email_draft",
+    }
+
+
+def test_duplex_voice_instructions_delegate_without_naming_tools() -> None:
+    agent = _duplex_agent()
+    instructions = agent.instructions
+    assert "use_foreground_agent" not in instructions
+    assert "Delegate to the backend when:" in instructions
+    assert "Do not delegate to the backend when:" in instructions
+    assert "Backchannel policy:" in instructions
+    persona_start = instructions.index(UNTRUSTED_PERSONA_BEGIN)
+    assert instructions.index("FINAL SAFETY RULES") > persona_start
+    assert '"name": "Tia"' in instructions
+
+
+@pytest.mark.asyncio
+async def test_duplex_agent_never_intercepts_email_turns() -> None:
+    agent = _duplex_agent()
+    session = SimpleNamespace(
+        interrupt=AsyncMock(), say=Mock(), _conversation_item_added=Mock()
+    )
+    agent._activity = SimpleNamespace(session=session)
+    message = ChatMessage(role="user", content=["Email Emma that I am late"])
+    await agent.on_user_turn_completed(ChatContext(), message)
+    session.say.assert_not_called()
+    session.interrupt.assert_not_awaited()
+    assert agent._intercepted_user_turn_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_duplex_foreground_tool_returns_bounded_reply_instead_of_say() -> None:
+    agent = _duplex_agent()
+    chat_ctx = ChatContext()
+    chat_ctx.add_message(role="user", content="Search nearby cafes")
+    say = Mock()
+    context = SimpleNamespace(
+        session=SimpleNamespace(
+            current_agent=SimpleNamespace(chat_ctx=chat_ctx), say=say
+        ),
+        speech_handle=SimpleNamespace(interrupted=False),
+    )
+    reply = await agent.use_foreground_agent(context)
+    assert reply == "Your agent found three results."
+    say.assert_not_called()
+    agent._room.local_participant.perform_rpc.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_duplex_email_tool_fails_closed_without_rpc() -> None:
+    agent = _duplex_agent()
+    context = SimpleNamespace(
+        session=SimpleNamespace(current_agent=agent, say=Mock()),
+        function_call=SimpleNamespace(call_id="tool-call-1"),
+    )
+    with pytest.raises(ToolError, match="unavailable in GPT-Live"):
+        await agent.prepare_email_draft(context, "Emma", "", "")
+    agent._room.local_participant.perform_rpc.assert_not_awaited()
+    context.session.say.assert_not_called()
+
+
+def test_duplex_room_options_publish_no_word_timing() -> None:
+    room = SimpleNamespace()
+    options = live_talk_room_options(room, full_duplex=True)
+    assert options.text_output.sync_transcription is False
+    assert options.text_output.next_in_chain is None
+    cascade = live_talk_room_options(room)
+    assert cascade.text_output.sync_transcription is True
+    assert isinstance(cascade.text_output.next_in_chain, LiveTalkTTSTimingOutput)

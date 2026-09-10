@@ -33,6 +33,11 @@ from the Mac and explicit import on the iPhone.
   bounded result and never silently substitutes another agent. Explicit email
   requests on both clients keep using the deterministic review-only RPC: it can
   stage an editable unsent draft, but it cannot send one.
+- A second Live Talk engine, **OpenAI GPT-Live-1**, selectable in Settings
+  before a call. One full-duplex model listens and speaks for the whole call
+  with the user's OpenAI key and delegates actions to the same foreground
+  OpenClaw route; the Listening and Voice stages are not used while it is
+  selected. Email drafts are unavailable in that engine.
 - A Settings panel that creates and copies a one-time OpenClaw iPhone pairing
   code without Terminal or another OpenClaw bootstrap secret.
 - A guided **Install & connect** action for a new OpenClaw setup. The signed
@@ -229,3 +234,62 @@ Read [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and
 
 OpenClam Studio is licensed under the [MIT License](LICENSE), preserving the
 attribution of the OpenClam and avatar-runtime sources from which it was built.
+
+## Performer: use Tia as your camera avatar
+
+Choose **Performer · Camera & OBS…** from OpenClam's tray or avatar menu.
+Right-click Tia in Chat/Talk or Avatar mode to open that menu. Within the
+camera output, right-click to bring Performer settings back to the front.
+The panel follows OpenClam's light/dark theme and groups settings into
+Camera, Appearance, Tracking, and Meeting setup. Output preferences,
+wardrobe, manual camera angles, and tracking options are remembered;
+camera capture always starts off when opening a new session.
+Start the webcam, face forward, and choose **Calibrate**. Face expressions
+(including mouth shapes, blinking and brows), head orientation and visible
+upper-body/arm movement drive Tia. Optional hand tracking adds finger motion;
+fingers must be visible. Calibrate learns neutral head orientation, gaze and
+relaxed open eyelids; other expressions remain live. Eyelids also calibrate
+automatically at camera startup. Use **Blink sensitivity → Less sensitive**
+if resting eyelids trigger blinks. Raised arms include clavicle movement and
+distributed upper-arm twist. Behind-head reaches use body-tracker depth and
+briefly hold through occlusion; a fully hidden hand cannot supply fresh finger
+tracking. Single-camera tracking is an estimate, not full-body motion
+capture. Legs remain in the authored standing pose in this first version.
+
+**Expression strength** defaults to Lively and **Mouth movement** to Clear,
+boosting subtle facial cues with a bounded response and faster mouth response.
+Both can be reduced to Natural or increased independently; neither amplifies
+blink or eye-gaze values.
+
+Performer separates unchanged body vertices from facial morph calculations
+without changing triangles, skin weights, normals or expressions. Balanced
+rendering uses 720p at 30 fps with textures selected for that output size.
+Low power uses 540p at 24 fps and smaller textures; Maximum texture detail
+retains original texture resolution. Camera-off output stops redrawing after
+the pose settles, while OBS can continue displaying the last frame.
+The same pause applies when the camera detects no face, upper body, or hands;
+tracking continues locally so rendering resumes as soon as the performer returns.
+
+The camera is off on entry. Raw video stays inside the local tracking worker;
+only landmark coordinates and expression coefficients pass to the avatar.
+No webcam frames are uploaded or saved. Stop or close either Performer window
+to release the camera and tracking worker. A lost face relaxes to neutral.
+Live Talk ends when entering Performer, and automatic avatar gestures and
+cursor following do not compete with tracked movement. Existing wardrobe
+and rig assets are preserved.
+
+In OBS (30+ on macOS 13+), add a **macOS Screen Capture** source, select
+**Window Capture**, and choose **Tia · OBS Output**. Disable capture of the
+cursor; crop window decoration if your OBS capture settings include it.
+Then start **OBS Virtual Camera**. In Teams, Google Meet or Zoom, choose
+**OBS Virtual Camera** as the camera and your normal microphone as audio.
+Virtual Camera transports video, not microphone audio. Green-screen output
+is available for OBS chroma key. Do not capture the controls or the desktop
+if you want a clean Tia-only feed. Some organization-managed meeting clients
+may restrict virtual cameras.
+
+Tracking uses a local worker at an adaptive rate; Balanced output is capped
+at 30 fps and 1280 × 720. With the camera off it rests after settling. Face/pose processing
+and hand tracking can be enabled independently; fewer enabled trackers use
+less CPU. `npm run stage:performer` stages the pinned offline runtime and
+verified model files for development and packaging.

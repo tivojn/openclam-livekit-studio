@@ -33,6 +33,11 @@ MAX_PROVIDER_KEY_BYTES = 4_096
 MAX_PERSONA_NAME_BYTES = 80
 MAX_PERSONA_INSTRUCTIONS_BYTES = 4_096
 SESSION_PATH = "/v1/live-talk/sessions"
+# Full-duplex voice models listen and speak for the whole call.  Choosing one
+# for the Thinking stage makes the saved Listening and Voice stages inert:
+# they stay saved for the pipeline engine, but a call never resolves their
+# credentials and the broker profile carries managed placeholders instead.
+FULL_DUPLEX_LLM = (("byok", "openai", "gpt-live-1"),)
 BROKER_URL_ENV = "OPENCLAM_LIVEKIT_BROKER_URL"
 SERVER_HOST_ENV = "OPENCLAM_LIVEKIT_SERVER_HOST"
 
@@ -203,6 +208,27 @@ def _migrate_persisted_config(config: object) -> dict:
     return source
 
 
+def is_full_duplex(selection: object) -> bool:
+    if not isinstance(selection, Mapping):
+        return False
+    key = (selection.get("source"), selection.get("provider"), selection.get("model"))
+    return key in FULL_DUPLEX_LLM
+
+
+def effective_stage_selections(settings: Mapping[str, object]) -> dict:
+    """The three stage selections a call actually uses.
+
+    A full-duplex Thinking choice replaces Listening and Voice with the managed
+    placeholders, so the shared three-stage profile stays valid without
+    resolving any speech credential.  The persisted choices are untouched.
+    """
+    result = {stage: copy.deepcopy(settings[stage]) for stage in STAGES}
+    if is_full_duplex(result["llm"]):
+        result["stt"] = copy.deepcopy(MANAGED_DEFAULT["stt"])
+        result["tts"] = copy.deepcopy(MANAGED_DEFAULT["tts"])
+    return result
+
+
 def catalog() -> dict:
     version, tuples = _contract()
     stages = {stage: [] for stage in STAGES}
@@ -216,6 +242,10 @@ def catalog() -> dict:
     return {
         "schema_version": version,
         "managed_default": copy.deepcopy(MANAGED_DEFAULT),
+        "full_duplex": [
+            {"source": source, "provider": provider, "model": model}
+            for source, provider, model in FULL_DUPLEX_LLM
+        ],
         "stages": stages,
     }
 
@@ -414,9 +444,10 @@ def session_payload(
     xai_auth_mode: str | None = None,
 ) -> tuple[dict, str, str]:
     settings = validated_config(config, require_connection=True)
+    stage_selections = effective_stage_selections(settings)
     credentials = {}
     for stage in STAGES:
-        selection = settings[stage]
+        selection = stage_selections[stage]
         if selection["source"] != "byok":
             continue
         provider = selection["provider"]
@@ -452,7 +483,7 @@ def session_payload(
     payload = {
         "participant_name": "OpenClam User",
         "profile": {
-            **{stage: settings[stage] for stage in STAGES},
+            **stage_selections,
             "persona": _persona(persona_name, persona_instructions),
         },
         "credentials": credentials,
@@ -519,9 +550,10 @@ async def create_session(
     )
     xai_bearer = None
     xai_auth_mode = None
+    active_selections = effective_stage_selections(pinned_config)
     if any(
-        pinned_config[stage]["source"] == "byok"
-        and pinned_config[stage]["provider"] == "xai"
+        active_selections[stage]["source"] == "byok"
+        and active_selections[stage]["provider"] == "xai"
         for stage in STAGES
     ):
         if xai_auth_resolver is None:
