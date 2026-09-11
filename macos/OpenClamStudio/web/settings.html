@@ -6539,6 +6539,7 @@ function renderLiveKitStage(stage, preferred=null) {
     else LIVEKIT_PIPELINE_LLM = selected;
   }
   applyLiveKitEngine();
+  if (liveKitSelectionsChanged()) dirty();
   updateLiveKitReadiness();
   if (CFG && CAT) renderKeysPreservingDraft();
 }
@@ -6643,7 +6644,13 @@ async function renderLiveKitBlock(response=null) {
     setLiveKitState(liveKitErrorMessage(error, 'Could not load LiveKit settings.'), false, true);
   }
 }
-$('#livekit-save').onclick = async () => {
+function liveKitSelectionsChanged() {
+  const saved = (LIVEKIT_VIEW && LIVEKIT_VIEW.config) || null;
+  if (!saved) return false;
+  return ['llm', 'stt', 'tts'].some(stage => LIVEKIT_SELECTIONS[stage]
+    && liveKitSelectionKey(LIVEKIT_SELECTIONS[stage]) !== liveKitSelectionKey(saved[stage] || {}));
+}
+async function saveLiveKit() {
   const button = $('#livekit-save');
   button.disabled = true;
   setLiveKitState('Saving…');
@@ -6666,12 +6673,22 @@ $('#livekit-save').onclick = async () => {
       throw failure;
     }
     await renderLiveKitBlock(response);
+    return true;
   } catch (error) {
     setLiveKitState(liveKitErrorMessage(error, 'LiveKit settings were not saved.'), false, true);
+    return false;
   } finally {
     button.disabled = false;
   }
-};
+}
+// The page-level Save settings button also commits unsaved Live Talk choices
+// (a separate request: the generic config body never carries livekit), so a
+// voice or engine picked here is not lost to the wrong Save button.
+async function saveLiveKitIfChanged() {
+  if (!liveKitSelectionsChanged()) return true;
+  return saveLiveKit();
+}
+$('#livekit-save').onclick = () => { void saveLiveKit(); };
 
 /* ---------------------------------------------------------------- OpenAI account */
 function openaiModeName(mode) {
@@ -7722,6 +7739,7 @@ $('#save').onclick = async () => {
   }
   CFG = r.config;
   ['llm', 'tts', 'stt'].forEach(resetModelState);
+  await saveLiveKitIfChanged();
   KEYS_CLEARED = new Set();
   Object.values(MEDIA_CLEANUP_NOTES).forEach(notes => { notes.length = 0; });
   DIRTY = false;

@@ -1278,6 +1278,37 @@ class LiveKitPersistenceAndAPITests(unittest.TestCase):
             config, "Emma", "Emma's own persona"
         )
 
+    def test_session_route_tells_the_renderer_when_the_engine_is_full_duplex(self):
+        application = route_test_application()
+        for llm, expected in (
+            (LK.MANAGED_DEFAULT["llm"], False),
+            ({"source": "byok", "provider": "openai", "model": "gpt-live-1",
+              "voice": "vesper"}, True),
+        ):
+            config = managed_config()
+            config["llm"] = llm
+            starter = AsyncMock(return_value={
+                "server_url": f"wss://{EXPECTED_HOST}",
+                "participant_token": PARTICIPANT_TOKEN,
+            })
+            with patch.dict(os.environ, DEPLOYMENT_ENV, clear=False), \
+                 patch.object(application, "AUTH_TOKEN", "local-auth-token"), \
+                 patch.object(
+                     application.P, "load_nonsecret",
+                     return_value={"livekit": config,
+                                   "persona": {"name": "Tia", "system": "Be warm."}},
+                 ), patch.object(application, "active_slug", return_value=None), \
+                 patch.object(application.LK, "create_session", new=starter):
+                response = self.request(
+                    application,
+                    "POST",
+                    "/api/livekit/session",
+                    headers={"X-OpenClam-Token": "local-auth-token"},
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["full_duplex"], expected)
+            self.assertEqual(response.json()["participant_token"], PARTICIPANT_TOKEN)
+
     def test_pinned_renderer_resources_are_same_origin_no_store(self):
         application = route_test_application()
 

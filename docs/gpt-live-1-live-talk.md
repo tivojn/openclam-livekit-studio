@@ -65,6 +65,15 @@ Differences from the pipeline engine:
   so the agent publishes no word-timing packets; the Mac's audio-driven
   viseme fallback and the transcript-driven expressions handle the avatar.
   Captions are forwarded as soon as each transcript lands.
+- **Speech over agent audio is conversation, not a barge-in.** The session
+  route reports `full_duplex`, and the Mac renderer then skips the pipeline's
+  barge-in tombstoning: a duplex model's reply often shares the audio
+  generation of its own greeting or backchannel, and tombstoning it discarded
+  the awaited reply, so spoken motion requests such as "do a kung fu punch"
+  never reached the avatar. The Live Talk QA replays the recorded packet
+  order for both engines.
+- **The generic Save settings button also commits Live Talk choices.** A
+  voice or engine picked in the card is saved by either button.
 - **The greeting is a request, not an utterance.** The model may decline the
   opening greeting; the call is still connected and it answers when the user
   speaks.

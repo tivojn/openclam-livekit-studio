@@ -3763,6 +3763,13 @@ async def api_livekit_session(body: dict | None = None):
         )
         if connected_agent_id:
             connection = {**connection, "connected_agent_id": connected_agent_id}
+        # A full-duplex engine listens while it speaks and answers at once, so
+        # the renderer must not treat user speech over agent audio as a
+        # barge-in that tombstones the very reply it is waiting for.
+        connection = {
+            **connection,
+            "full_duplex": LK.is_full_duplex(livekit_config.get("llm")),
+        }
         return JSONResponse(connection, headers={"Cache-Control": "no-store"})
     except LK.LiveKitBridgeError as error:
         _livekit_error(error)

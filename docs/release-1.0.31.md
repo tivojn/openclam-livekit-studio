@@ -1,4 +1,4 @@
-# OpenClam Studio 1.0.31
+# OpenClam Studio 1.0.31 / 1.0.32
 
 Live Talk gains a second engine, **OpenAI GPT-Live-1**, selectable in
 Settings → AI & Voice → Continuous Live Talk → Live Talk engine before a call.
@@ -16,3 +16,8 @@ model usage.
 Server rollout: the LiveKit agent moves to LiveKit Agents 1.8.1 with Silero VAD
 and the credential broker catalog gains the GPT-Live-1 rows. Existing pipeline
 clients remain compatible. See [details](gpt-live-1-live-talk.md).
+
+1.0.32 follows the first GPT-Live-1 calls: the page-level Save settings button
+now also commits Live Talk choices (a picked voice was lost to the wrong Save),
+and the renderer no longer tombstones a full-duplex reply as an interrupted
+transcript, which had kept spoken motion requests from reaching the avatar.

@@ -9222,6 +9222,10 @@
       return matchesFinalLiveTalkUserTurn(session, spokenRequest);
     };
 
+    // A full-duplex session (session.fullDuplex) never treats speech over
+    // agent audio as a barge-in and never tombstones the audio generation:
+    // the model listens while it speaks, and its reply usually shares the
+    // generation of its own greeting or backchannel.
     const beginLiveTalkUserInput = (session, segmentID, now) => {
       const identifier = String(segmentID || '').slice(0, 240);
       const firstForSegment = !identifier || !session.seenUserTranscriptSegments.has(identifier);
@@ -9243,7 +9247,7 @@
       const interruptedGeneration = Number.isFinite(session.interruptedAgentSpeechGeneration)
         ? session.interruptedAgentSpeechGeneration : -1;
       const interruptsAgentSpeech = Boolean(
-        agentSpeaking && interruptedGeneration !== speechGeneration
+        !session.fullDuplex && agentSpeaking && interruptedGeneration !== speechGeneration
       );
       if (interruptsAgentSpeech) {
         session.interruptedAgentSpeechGeneration = speechGeneration;
@@ -9251,8 +9255,8 @@
       const startsNewTurn = interruptsDelegatedTurn || interruptsAgentSpeech
         || !session.userTurnOpen
         || session.assistantOutputSinceUser || session.userTurnClaimed;
-      const interruptsAssistant = session.assistantOutputSinceUser
-        || interruptsAgentSpeech || interruptsDelegatedTurn;
+      const interruptsAssistant = !session.fullDuplex && (session.assistantOutputSinceUser
+        || interruptsAgentSpeech || interruptsDelegatedTurn);
       const invalidatesUnseenTiming = interruptsAgentSpeech || interruptsDelegatedTurn;
       if (startsNewTurn) {
         session.avatarReactionTurnID = `live:${Date.now()}:${identifier}`;
@@ -9752,6 +9756,7 @@
         pendingDraft: null,
         ending: false,
         ringtone: null,
+        fullDuplex: false,
       };
       live = session;
       ensureAudioGraph();
@@ -9845,10 +9850,11 @@
           signal: session.abort.signal,
           method: 'POST',
           headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-          body: JSON.stringify({ agent_id: selectedOpenClawAgent() || null }),
+          body: JSON.stringify({ agent_id: requestedAgentID }),
         }).then(safeJSON);
         if (live !== session) return;
         session.connectedAgentID = connection.connected_agent_id || null;
+        session.fullDuplex = Boolean(connection.full_duplex);
         await room.connect(connection.server_url, connection.participant_token);
         if (live !== session) { room.disconnect().catch(() => {}); return; }
         if (!await roomAudioReady(session) || live !== session) return;

@@ -167,3 +167,63 @@ for(const [width,height,dpr] of [[393,852,3],[852,393,3],[1024,1366,2]]){
   assert(width*height*normal.density**2<=1200001,'mobile render pixels are bounded independently of Retina density');
   assert(hot.density<=normal.density&&hot.interval>=normal.interval,'thermal pressure reduces GPU work');
 }
+
+// Full-duplex Live Talk: the production user-turn tracker and assistant
+// disposition, driven by the packet order a GPT-Live call actually produces.
+// The model keeps its audio active while it listens and answers at once, so
+// without the session flag the reply is tombstoned as a late interrupted
+// transcript and the requested motion never reaches the controller.
+(() => {
+  const grab = (start, end) => {
+    const a = page.indexOf(start); const b = page.indexOf(end, a);
+    assert(a >= 0 && b > a, 'production turn tracker must exist');
+    return page.slice(a, b);
+  };
+  const canonical = page.match(/const canonicalWords = [^\n]*\n/)[0];
+  const turnFns = grab('    const beginLiveTalkUserInput = ', '    const claimLiveTalkRPCRequest = ');
+  const tia = new Map([['kung-fu-punch', {id:'kung-fu-punch', label:'Kung Fu Punch'}], ['wave', {id:'wave', label:'Wave', reactions:['greeting']}]]);
+  const run = fullDuplex => {
+    let now = 0;
+    const ctx = {console, performance:{now:()=>now}, Date,
+      turnController:null, turnControllerOrigin:null, agentSpeaking:false,
+      reactiveMouthState:{}, currentViseme:'sil', resetLiveTalkTTSTimingState(){}, makeLiveTalkTTSTimingState:()=>({}),
+      agentModeSelect:{disabled:false}, LIVE_TALK_DELEGATED_REPLY_EXPIRY_MS:45000,
+      avatarPresented:()=>true, shell:null, live:null, avatar3d:null,
+      speechExpressionTimeline:null, speechExpressionPlan:null,
+      makeSpeechExpressionTimeline:()=>[], makeSpeechExpressionPlan:()=>({}), speechExpressionPlanAt:()=>({}),
+      addMessage(){}, setStatus(){}, handleAvatarCommand:async()=>false, avatarCompanionAPI:{}};
+    vm.createContext(ctx);
+    vm.runInContext(companion + '\n' + canonical + '\n' + turnFns + '\n' + handler + `
+      globalThis.controller = new CompanionController();
+      globalThis.avatar3d = { companion: controller, motion: { clips: null } };
+      globalThis.considerAvatarReaction = (user, reply, suggestion, turnID='') =>
+        avatar3d.companion.consider(user, reply, suggestion, performance.now(), {clips: avatar3d.motion.clips, turnID});
+      globalThis.receive = handleTranscript;`, ctx);
+    ctx.avatar3d.motion.clips = tia;
+    const session = {finalTranscriptIDs:new Set(), finalUserTurnSegments:[], userTurnClaimed:false,
+      userTurnFinalSegmentIDs:new Set(), seenUserTranscriptSegments:new Set(), pendingUserTranscriptSegments:new Set(),
+      userTurnOpen:false, latestFinalUserTranscript:'', lastUserFinalAt:-Infinity, assistantOutputSinceUser:false,
+      agentSpeechGeneration:0, interruptedAgentSpeechGeneration:-1, expectedDelegatedAssistantReplies:[], ttsTimingState:{}, fullDuplex};
+    ctx.live = session;
+    const agent = {isAgent:true}, user = {isAgent:false};
+    const speakers = on => { if (on && !ctx.agentSpeaking) session.agentSpeechGeneration += 1; ctx.agentSpeaking = on; };
+    const A = (t, id, text, final) => { now = t; ctx.receive(session, [{id, text, final}], agent); };
+    const U = (t, id, text, final) => { now = t; ctx.receive(session, [{id, text, final}], user); };
+    now = 5000; speakers(true);
+    A(5200, 'SG_greet', " Hi, it's Tia.", false);
+    A(7600, 'SG_greet', " Hi, it's Tia. What's on your mind?", true);
+    // the user answers while the greeting audio is still active; the agent
+    // backchannels and replies without its audio ever going inactive
+    [' Hi', ' Hi Tia, can you do a Kung Fu', ' Hi Tia, can you do a Kung Fu punch for me'].forEach((t, i) => U(10000 + i * 500, 'SG_user', t, false));
+    A(12700, 'SG_reply', " Sure, I'll", false);
+    U(13300, 'SG_user', ' Hi Tia, can you do a Kung Fu punch for me', true);
+    A(13400, 'SG_reply', " Sure, I'll try a kung fu punch.", false);
+    now = 15300; speakers(false);
+    A(15400, 'SG_reply', " Sure, I'll try a kung fu punch.", true);
+    now = 15500;
+    return ctx.controller.takeReaction(now, tia, false, {hasProp:false});
+  };
+  assert.equal(run(false), 'wave', 'pipeline sessions keep treating speech over agent audio as a barge-in (stale greeting reaction only)');
+  assert.equal(run(true), 'action:clip:kung-fu-punch', 'a full-duplex session must not tombstone the reply it is waiting for');
+  console.log('Full-duplex Live Talk: a request spoken over active agent audio still drives the requested motion.');
+})();
