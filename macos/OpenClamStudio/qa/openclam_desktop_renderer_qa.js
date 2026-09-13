@@ -47,7 +47,7 @@ assert.doesNotMatch(source, /navigator\.userAgent/);
 assert.equal((source.match(/id="liveTalkButton"/g) || []).length, 1);
 assert.match(source, /data-state="idle" aria-label="Start Live Talk"/);
 assert.match(source, /setLiveButton\('connected'\)/);
-assert.match(source, /const toggleLiveTalk = \(\) => \{\s*markActivity\(\);\s*if \(live\) stopLiveTalk\('ended'\);\s*else if\(sharedLivePhase!=='idle'&&shell\?\.endSharedLiveTalk\)shell\.endSharedLiveTalk\(\);\s*else startLiveTalk\(\);/,
+assert.match(source, /const toggleLiveTalk = \(\) => \{\s*markActivity\(\);\s*if \(liveStarting\) liveCancelRequested=true;\s*else if \(live\) stopLiveTalk\('ended'\);\s*else if\(sharedLivePhase!=='idle'&&shell\?\.endSharedLiveTalk\)shell\.endSharedLiveTalk\(\);\s*else startLiveTalk\(\);/,
   'the waveform must hang up the existing call from either view before allowing a new call');
 
 // The old rail chat shortcut is now a local avatar carousel. Chat/PTT remains
@@ -2715,12 +2715,12 @@ assert.match(source, /if \(!geometry \|\| !paintedAvatarAt\(\{ \.\.\.point, insi
 assert.match(source, /if \(action === 'opacity-up'\) void adjustAvatarOpacity\(1\);/);
 assert.match(source, /else if \(action === 'opacity-down'\) void adjustAvatarOpacity\(-1\);/);
 assert.match(source, /const state = await shell\.setPetOpacity\(next\);/);
-assert.match(source, /canvas\.addEventListener\('dblclick', event => \{\n      clearTimeout\(avatarTapTimer\);/,
+assert.match(source, /const handleAvatarDoubleClick = event => \{\n      clearTimeout\(avatarTapTimer\);/,
   'the first opacity tap must not fire beneath a double-click Live Talk gesture');
-assert.match(source, /canvas\.addEventListener\('dblclick',[\s\S]{0,360}paintedAvatarAt\([\s\S]{0,180}toggleLiveTalk\(\);/,
-  'double-clicking any painted avatar pixel must own Live Talk');
-assert.match(source, /if \(!gesture\.rotating && pointOnHead\([\s\S]{0,260}startRecording\(\);/,
-  'holding the avatar head must retain push to talk');
+assert.match(source, /const handleAvatarDoubleClick[\s\S]{0,500}pointOnHead\(point\)[\s\S]{0,180}toggleLiveTalk\(\);/,
+  'double-clicking the painted head owns Live Talk');
+assert.match(source, /if \(!gesture\.rotating && !pointOnHead\([\s\S]{0,320}startRecording\(\);/,
+  'holding the avatar body starts push to talk');
 assert.doesNotMatch(source, /avatarTapTimer = setTimeout\(\(\) => \{[\s\S]{0,180}openChat\(false\);/,
   'a body tap must no longer expose chat chrome in pure Avatar mode');
 

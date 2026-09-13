@@ -15,7 +15,7 @@ const windowFor = () => {
 const chat = windowFor(), avatar = windowFor(), outsider = windowFor();
 const owner = new LiveTalkOwner(() => [chat, avatar], (w, ch, value) => w.webContents.send(ch, value));
 const rooms = [];
-let microphoneGate = null, failConstructor = false, leaseGate = null;
+let microphoneGate = null, failConstructor = false, leaseGate = null, routeGate = null;
 function renderer(window) {
   let lease;
   class Room {
@@ -42,6 +42,7 @@ function renderer(window) {
     AbortController, setTimeout, clearTimeout, performance, Map, Set,
     fetch: async () => ({ server_url: 'mock', participant_token: 'mock' }), safeJSON: x => x,
     selectedOpenClawAgent: () => 'main',
+    syncConversationForVoice: async () => {if(routeGate)await routeGate.promise;},
     live: null, liveStarting: false, liveStopping: null, liveCancelRequested: false, sharedLivePhase: 'idle', ptt: null,
     turnController: null, turnControllerOrigin: null, speechExpressionTimeline: [], agentSpeaking: false,
     speechExpressionPlan: {}, reactiveMouthState: {}, currentViseme: 'sil',
@@ -100,6 +101,10 @@ function renderer(window) {
   assert.equal(owner.phase, 'idle');
   failConstructor = true; await a.startLiveTalk(); failConstructor = false;
   assert.equal(owner.phase, 'idle', 'failed setup releases its lease');
+  routeGate=deferred();const beforeRoute=rooms.length;
+  const routing=a.startLiveTalk();await tick();a.toggleLiveTalk();routeGate.resolve();await routing;routeGate=null;
+  assert.equal(rooms.length,beforeRoute,'cancel while restoring a conversation must not open a microphone');
+  assert.equal(owner.phase,'idle');
   const stale = owner.claim(chat.webContents);
   chat.webContents.emit('did-start-navigation', {}, '/frame', false, false);
   assert.equal(owner.phase, 'connecting', 'iframe navigation does not end the call');

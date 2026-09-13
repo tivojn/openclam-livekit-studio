@@ -22,12 +22,16 @@ license inventory ship inside the Electron framework. The embedded Python
 ## three.js 0.185.1
 
 The 3D avatar renderer ships the published `three` ES modules
-(`three.module.js`, `three.core.js`, the glTF loader, its two helper modules,
-and the room environment) copied by `scripts/stage-three-assets.mjs` with
+(the core, glTF and KTX2 loaders, their helpers, and the room environment) copied by `scripts/stage-three-assets.mjs` with
 their bare `'three'` import specifiers rewritten to same-origin paths. three.js
 is MIT licensed; the retained license text is `docs/LICENSES/THREE_MIT.txt`.
 
 - Project: https://github.com/mrdoob/three.js
+
+GPU texture decoding additionally includes the Basis Universal transcoder
+(Apache-2.0), ktx-parse (MIT), and zstddec (MIT), distributed with three.js.
+Retained notices are in `docs/LICENSES/`. The offline Basis encoder is an
+authoring dependency and is not included in the application.
 
 ## LiveKit client 2.21.0
 
@@ -167,3 +171,19 @@ Cloud-backed providers such as Edge TTS and user-selected model or media
 services have service terms separate from their client-library software
 licenses. Users are responsible for the terms of services they choose and the
 content they submit.
+
+## Optional Codex agent engine
+
+The Tasks workspace interoperates with the separately installed OpenAI Codex
+CLI/app-server over its published protocol. OpenClam does not bundle that
+executable or claim affiliation with OpenAI. Source and license information:
+https://github.com/openai/codex. Model and account services retain their own terms.
+
+## Performer camera tracking
+
+Performer mode uses Google MediaPipe Tasks Vision 0.10.22-rc.20250304
+(Apache-2.0) and the MediaPipe face, pose-lite and hand landmark models
+(Apache-2.0). These run locally. The pinned runtime, model checksums and
+Apache license are staged by `scripts/stage-performer.mjs` and included in
+`backend/web/vendor/performer/`. Source: https://github.com/google-ai-edge/mediapipe
+Models: https://developers.google.com/edge/mediapipe/solutions/vision

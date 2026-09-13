@@ -11,11 +11,15 @@ const helper = name => {
 };
 function gestures(chat, desktopCloseUp = false) {
   const listeners = new Map(), calls = [], timers = new Map(); let timer = 0;
+  const documentEvents = new Map(), windowEvents = new Map();
   const canvas = { style: { opacity: '1' }, setPointerCapture: id => calls.push(['capture', id]),
     addEventListener: (type, cb) => listeners.set(type, cb) };
   const s = { canvas, console, avatar3d: { orbit: { yaw: 0, pitch: 0 }, setOrbit(value) { this.orbit = value; } },
+    document: { addEventListener: (type, cb) => documentEvents.set(type, cb) },
+    window: { addEventListener: (type, cb) => windowEvents.set(type, cb) },
     avatar3dOrbitUntil: 0, avatarOrbitGesture: false, avatarOrbitTimer: 0,
     ready: true, avatarHit: false, dragging: false, canvasGesture: null, avatarTapTimer: 0,
+    live:null,sharedLivePhase:'idle',startRecording:()=>calls.push(['record']),stopRecording:cancel=>calls.push(['release',cancel]),toggleLiveTalk:()=>calls.push(['live']),
     avatarZoomGesture: null, avatarZoomSettleTimer: 0, lastFrame: 1,
     root: { classList: { contains: value => value === 'chat-mode' && chat, add() {}, remove() {} } },
     interactionLayer: 'thread', chatWorkspace: { contains: () => true }, getSelection: () => null,
@@ -35,14 +39,57 @@ function gestures(chat, desktopCloseUp = false) {
   vm.createContext(s);
   for (const name of ['boundedChatAvatarOffset','numericAvatarZoom','pinchZoomValue','activeAvatarZoom',
     'holdAvatarZoom','publishAvatarZoom','finishAvatarZoom','avatar3DGestureTarget','setAvatar3DOrbit',
-    'handleAvatar3DWheel','handleAvatarPinch','endCanvasGesture','beginCanvasGesture']) {
+    'handleAvatar3DWheel','handleAvatarPinch','endCanvasGesture','beginCanvasGesture','handleAvatarDoubleClick']) {
     vm.runInContext(helper(name) + `\nglobalThis.${name} = ${name};`, s);
   }
   const start = page.indexOf("    canvas.addEventListener('pointermove', event => {");
-  vm.runInContext(page.slice(start, page.indexOf("    canvas.addEventListener('pointerup'", start)), s);
+  vm.runInContext(page.slice(start, page.indexOf("    canvas.addEventListener('wheel'", start)), s);
   const event = (more = {}) => ({ button: 0, pointerId: 1, clientX: 50, clientY: 50, screenX: 150, screenY: 150,
     target: chat ? { closest: () => null } : canvas, preventDefault() { this.prevented = true; }, ...more });
-  return { s, calls, timers, event, move: listeners.get('pointermove') };
+  return { s, calls, timers, event, listeners, documentEvents, windowEvents, move: listeners.get('pointermove') };
+}
+// Speech regions remain consistent in both presentations. Moving wins over
+// holding, head double-clicks never open ASR, and cancellation discards audio.
+for(const chat of [false,true]) {
+  const {s,calls,event,move,timers,documentEvents}=gestures(chat);
+  s.pointOnHead=p=>p.y<30;
+  s.beginCanvasGesture(event({clientY:50}));
+  timers.get(s.canvasGesture.holdTimer)();
+  assert(calls.some(c=>c[0]==='record'),'body hold starts ASR in either mode');
+  move(event({clientX:80}));assert.equal(s.dragging,false,'recording owns a held body');
+  documentEvents.get('pointerup')(event({type:'pointerup'}));
+  assert.deepEqual(calls.at(-1),['release',false],'release on another surface submits ASR');
+  s.beginCanvasGesture(event());timers.get(s.canvasGesture.holdTimer)();
+  documentEvents.get('pointercancel')(event({type:'pointercancel'}));
+  assert.deepEqual(calls.at(-1),['release',true],'cancel never submits an unintended voice turn');
+  const recordings=calls.filter(c=>c[0]==='record').length;
+  s.beginCanvasGesture(event());const hold=s.canvasGesture.holdTimer;move(event({clientX:80}));
+  assert(!timers.has(hold),'drag cancels the pending body hold');s.endCanvasGesture(event());
+  assert.equal(calls.filter(c=>c[0]==='record').length,recordings);
+  s.beginCanvasGesture(event({clientY:15}));assert.equal(s.canvasGesture.holdTimer,0,'head is reserved for Live Talk');s.endCanvasGesture(event());
+  s.handleAvatarDoubleClick(event({clientY:15}));assert.equal(calls.filter(c=>c[0]==='live').length,1);
+  s.handleAvatarDoubleClick(event({clientY:50}));s.handleAvatarDoubleClick(event({clientX:-1,clientY:15}));
+  if(chat)s.handleAvatarDoubleClick(event({clientY:15,target:{closest:()=> 'textarea'}}));
+  assert.equal(calls.filter(c=>c[0]==='live').length,1,'body, transparent pixels and controls do not start Live Talk');
+  s.avatarHit=true;s.beginCanvasGesture(event({clientX:-1}));assert.equal(s.canvasGesture,null,'stale hover cannot acquire a transparent pixel');
+}
+// A moving alpha surface can deliver release to the thread, or lose capture
+// when a native window takes focus. Neither may leave reactions paused forever.
+for (const [chat, closeUp] of [[true,false],[false,false],[false,true]]) {
+  for (const release of ['thread-up','thread-cancel','lost-capture','blur']) {
+    const {s,event,move,listeners,documentEvents,windowEvents,calls}=gestures(chat,closeUp);
+    s.beginCanvasGesture(event());move(event({clientX:75,clientY:65}));
+    assert.equal(s.dragging,true);
+    documentEvents.get('pointerup')(event({pointerId:99}));
+    assert.equal(s.dragging,true,'an unrelated pointer cannot end placement');
+    if(release==='blur')windowEvents.get('blur')();
+    else if(release==='lost-capture')listeners.get('lostpointercapture')(event());
+    else documentEvents.get(release==='thread-up'?'pointerup':'pointercancel')(event());
+    assert.equal(s.canvasGesture,null);assert.equal(s.dragging,false,'released input must not block automatic motions');
+    assert(calls.some(c=>c[0]===(chat||closeUp?'save':'end')),'preserve placement and end native drag');
+    // Duplicate native release/capture events are harmless.
+    listeners.get('lostpointercapture')(event());documentEvents.get('pointerup')(event());
+  }
 }
 for (const chat of [false, true]) {
   const { s, calls, event, move } = gestures(chat);
@@ -119,7 +166,7 @@ for (const [chat, closeUp] of [[true, false], [false, false], [false, true]]) {
     setOrbit(value) { this.orbit = value; }, dispose() { this.disposed = true; } };
   const initial = { renderer: '3d', model: 'assets/model.glb', model_revision: 'old', avatar: { slug: 'tia' } };
   const next = { ...initial, model_revision: 'new' };
-  const s = { ready: true, avatar3d: old, avatar3dRefresh: null, manifest: initial, assetRevision: 1,
+  const s = { avatarPresented:()=>true, residentModelURL:async()=>'assets/resident/model.gltf', ready: true, avatar3d: old, avatar3dRefresh: null, manifest: initial, assetRevision: 1,
     location: { href: 'http://localhost/' }, URL, Date, lastFrame: 1, avatar3dGazeState: {},
     syncAvatar3DControls() {}, setupCompanion: async () => {}, avatar3dApi: async () => ({ create: () => replacement }),
     fetch: async () => ({ ok: true, json: async () => next }), };

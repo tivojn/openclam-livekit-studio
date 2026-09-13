@@ -3,6 +3,10 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const {companionStep}=require('../electron/companion-move.cjs');
 const sandbox={};
 vm.runInNewContext(fs.readFileSync('web/avatar3d-companion.js','utf8').replace(/export /g,'')+'\nglobalThis.Stage=AvatarStudioStage;globalThis.spatial=isSpatialAction;globalThis.Controller=CompanionController;globalThis.intent=avatarIntent;globalThis.motionIntent=motionIntent;globalThis.react=conversationReaction;globalThis.replyAction=replyAvatarAction;',sandbox);
+assert.equal(sandbox.react('', '👋 Hello, everyone! —Tia'),'greeting');
+assert.equal(sandbox.react('', '  👋🏽 你好！'),'greeting');
+assert.equal(sandbox.react('Hello', 'Let’s discuss what a greeting means.'),null,'user greeting words alone do not trigger a wave');
+assert.equal(sandbox.react('', '“Hello” is a greeting.'),null,'quoted examples are not greetings');
 for(const [text,expected] of [['Tia, wave!','wave'],['Can you show me a heart?','heart'],['sit down','sit'],['Please follow my cursor','follow'],['stay','stay'],['跳舞','dance'],['Tia, come here','come']])assert.equal(sandbox.intent(text),expected);
 for(const text of ['walk with cursor','walk with cusor','Follow the mouse pointer around',
   'Hey Tia, could you please walk with my cursor around the screen?', 'Move with the mouse', 'Track my pointer',
@@ -53,7 +57,7 @@ let nativeNow=1000, handler, nativeBounds={...bounds,x:400}, locked=false, shown
 const sender={}, nativeWindow={isDestroyed:()=>false,isVisible:()=>shown,getBounds:()=>nativeBounds,
   setPosition(x,y){nativeBounds={...nativeBounds,x,y};}};
 const ipcContext={WeakMap,Date:{now:()=>nativeNow},companionStep,
-  ipcMain:{on:(name,callback)=>{handler=callback;}},BrowserWindow:{fromWebContents:()=>nativeWindow},
+  ipcMain:{handle(){},on:(name,callback)=>{handler=callback;}},BrowserWindow:{fromWebContents:()=>nativeWindow},
   isBuddySender:()=>false,mainWindow:nativeWindow,state:{get petLocked(){return locked;}},petDrag:false,desktopCloseUp:false,
   avatarRendererKinds:new Map([[sender,'3d']]),screen:{getDisplayMatching:()=>({workArea:area})},saveStateSoon(){}};
 vm.runInNewContext(ipcSource,ipcContext);
@@ -104,7 +108,7 @@ assert(!idle.isIdle(600000),'a playing clip also owns its presentation');
 const drawStart=page.indexOf('      if (avatar3d.companion) {',page.indexOf('    const drawAvatar3D = '));
 const travel=page.slice(drawStart,page.indexOf('      // The logical portrait',drawStart));
 for(const gait of ['walking-woman','stage-walk'])for(const mirrored of [false,true]){
-  const s={fullChat:true,now:1000,fit:{x:400,y:300,scale:1},previewMetadata:{bounds:[0,0,100,200]},
+  const s={avatarPresented:()=>true,fullChat:true,now:1000,fit:{x:400,y:300,scale:1},previewMetadata:{bounds:[0,0,100,200]},
     renderLeft:200,lastBodyGeometry:{},safeViewport:{x:200,y:80,width:700,height:600},innerWidth:1000,innerHeight:800,
     pointer:{x:280,y:200,seen:true},dragging:false,canvasGesture:null,avatarZoomGesture:null,avatarOrbitGesture:false,
     speaking:false,ptt:null,live:null,peerLiveFrame:null,reduce:false,shellState:{pet:{}},document:{getElementById:()=>null,hidden:false},
@@ -139,7 +143,7 @@ for(const gait of ['walking-woman','stage-walk'])for(const mirrored of [false,tr
 const start=page.indexOf('    const performAvatarAction = ');
 const source=page.slice(start,page.indexOf('\n    };',start)+7);
 const avatar={companion:new sandbox.Controller(),stopCameraApproach(){},motion:{stop(){},async prepare(){}},options:{selection:{},select(){}}};
-const actions={avatarCompanionAPI:{isSpatialAction:sandbox.spatial},beginAvatarStudioTravel:async()=>{},avatar3d:avatar,live:null,manifest:{avatar:{slug:'tia'}},localStorage:{setItem(){}},
+const actions={avatarPresented:()=>true,avatarCompanionAPI:{isSpatialAction:sandbox.spatial},beginAvatarStudioTravel:async()=>{},avatar3d:avatar,live:null,manifest:{avatar:{slug:'tia'}},localStorage:{setItem(){}},
   performance:{now:()=>1000},clearLocalTransientDisplayMode(){},markActivity(){},
   publishMotionReadiness(){},companionKey:()=>'',window:{dispatchEvent(){}},Event:class{},closeRailPickers(){},async selectStandbyMode(){assert.fail('motions must preserve framing');}};
 vm.createContext(actions);vm.runInContext(source+'\nglobalThis.perform=performAvatarAction;',actions);

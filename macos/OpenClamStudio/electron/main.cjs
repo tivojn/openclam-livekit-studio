@@ -21,7 +21,11 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
+const { isPresented, watchPresentation, relayAvatarEvent } = require('./avatar-resources.cjs');
 const { LiveTalkOwner } = require('./live-talk-owner.cjs');
+const { PerformerWindows } = require('./performer.cjs');
+const { TaskWindow } = require('./tasks.cjs');
+const { CompanionBubble } = require('./companion-bubble.cjs');
 const { companionStep } = require('./companion-move.cjs');
 const {
   boundsForPetZoom,
@@ -121,6 +125,21 @@ let petMotionReady = false;
 const avatarRendererKinds = new WeakMap();
 const avatarOptionCatalogues = new WeakMap();
 const liveTalk = new LiveTalkOwner(() => [mainWindow, chatWindow], post);
+const tasks = new TaskWindow({BrowserWindow,ipcMain,dialog,shell,path,baseUrl:()=>baseUrl(),showChat});
+const companionBubble = new CompanionBubble({
+  windows:()=>[mainWindow,chatWindow],main:()=>mainWindow,bubble:()=>bubbleWindow,
+  create:createSpeechBubbleWindow,chatMode:()=>chatMode,liveOwner:()=>liveTalk.owner,
+  area:point=>screen.getDisplayNearestPoint(point).workArea,post,openChat:showChat,
+});
+const performer = new PerformerWindows({BrowserWindow,ipcMain,path,baseUrl:()=>baseUrl(),
+  enter:()=>{
+    liveTalk.end(liveTalk.owner);
+    stopPetRoamMotion(false);
+    for(const w of [mainWindow,chatWindow,buddyWindow,bubbleWindow,appearanceWindow,settingsWindow])
+      if(w&&!w.isDestroyed())w.hide();
+  },
+  leave:()=>{if(!quitting){if(chatMode)showChat();else showMain();}},
+});
 let chatMode = false;
 let chatCloseUp = false;
 let chatCloseUpBaseZoom = 1;
@@ -832,6 +851,7 @@ function broadcastState() {
   // opacity, and motion profile spliced in.
   pushBuddyState();
   buildTrayMenu();
+  companionBubble.refresh();
 }
 
 function chatWindowBounds() {
@@ -1982,6 +2002,7 @@ function createBuddyWindow(slug) {
     },
   });
   guardManualPetBounds(buddyWindow, () => !chatMode && !buddyRoam);
+  watchPresentation(buddyWindow, post);
   buddyWindow.on('page-title-updated', event => event.preventDefault());
   buddyWindow.setOpacity(buddyOpacityValue() > 0 ? buddyOpacityValue() : 0.5);
   setBuddyHit(false);
@@ -2222,7 +2243,7 @@ function createSpeechBubbleWindow() {
     resizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    focusable: false,
+    focusable: true,
     alwaysOnTop: true,
     webPreferences: {
       preload: path.join(__dirname, 'bubble-preload.cjs'),
@@ -2235,13 +2256,20 @@ function createSpeechBubbleWindow() {
       spellcheck: false,
     },
   });
-  bubbleWindow.setAlwaysOnTop(true, 'floating');
+  // Keep the card above the transparent avatar canvas even when a motion
+  // resizes or raises that canvas; neither window takes keyboard focus.
+  bubbleWindow.setAlwaysOnTop(true, 'floating', 1);
   bubbleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  // Interactive (but never focusable): long markdown replies scroll, and a
-  // wheel can only reach a window that accepts mouse events.
+  // Show inactive; keyboard focus is acquired only when the user opens a
+  // follow-up or clicks the card. The same window also renders long replies.
   guardNavigation(bubbleWindow, 'bubble');
   bubbleWindow.loadURL(`${baseUrl()}/bubble?electron=1`);
-  bubbleWindow.webContents.once('did-finish-load', sendPendingBubble);
+  bubbleWindow.webContents.once('did-finish-load', () => {
+    bubbleWindow.webContents.setZoomFactor(1);
+    bubbleWindow.webContents.setVisualZoomLevelLimits(1, 1);
+    if(!companionBubble.mode)sendPendingBubble();
+    companionBubble.refresh();
+  });
   bubbleWindow.on('closed', () => { bubbleWindow = null; });
   return bubbleWindow;
 }
@@ -2256,7 +2284,7 @@ function showSpeechBubble(value) {
   bubbleTimer = null;
   pendingBubble = text;
   if (!text) {
-    if (bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
+    if (!companionBubble.mode && bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
     return;
   }
   const window = createSpeechBubbleWindow();
@@ -2264,7 +2292,7 @@ function showSpeechBubble(value) {
   const visibleMs = Math.max(5000, Math.min(18_000, 3500 + text.length * 48));
   bubbleTimer = setTimeout(() => {
     pendingBubble = '';
-    if (bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
+    if (!companionBubble.mode && bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
   }, visibleMs);
   bubbleTimer.unref?.();
 }
@@ -2276,12 +2304,12 @@ function holdSpeechBubble(reading) {
   bubbleTimer = null;
   if (reading) return;
   if (!pendingBubble) {
-    if (bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
+    if (!companionBubble.mode && bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
     return;
   }
   bubbleTimer = setTimeout(() => {
     pendingBubble = '';
-    if (bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
+    if (!companionBubble.mode && bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.hide();
   }, 4000);
   bubbleTimer.unref?.();
 }
@@ -2392,11 +2420,12 @@ function createChatWindow() {
       spellcheck: true,
     },
   });
+  watchPresentation(chatWindow, post);
   chatWindow.on('page-title-updated', event => event.preventDefault());
   guardNavigation(chatWindow, 'main');
   chatWindow.loadURL(`${baseUrl()}/?electron=1&chat=1&app=${encodeURIComponent(app.getVersion())}`);
   chatWindow.once('ready-to-show', () => {
-    if (!chatMode || !chatWindow || chatWindow.isDestroyed()) return;
+    if (performer.active || !chatMode || !chatWindow || chatWindow.isDestroyed()) return;
     chatWindow.show();
     chatWindow.focus();
     post(chatWindow, 'openclam:pet-chat');
@@ -2446,6 +2475,10 @@ function createMainWindow() {
   });
   guardManualPetBounds(mainWindow,
     () => !state.petRoam && !chatMode && !desktopCloseUp && !preDockBounds);
+  watchPresentation(mainWindow, post);
+  for(const event of ['show','hide','minimize','restore','move','resize']) {
+    mainWindow.on(event,()=>companionBubble.refresh());
+  }
   mainWindow.on('page-title-updated', event => event.preventDefault());
   mainWindow.setOpacity(state.petOpacity > 0 ? state.petOpacity : 0.5);
   petPointerInteractive = null;
@@ -2458,7 +2491,7 @@ function createMainWindow() {
     // Startup may enter Chat/Talk before this transparent renderer finishes
     // loading. Never let its delayed ready event reveal a miniature duplicate
     // chat surface beside the real chat window.
-    if (chatMode) {
+    if (chatMode || performer.active) {
       mainWindow.hide();
       return;
     }
@@ -2470,7 +2503,7 @@ function createMainWindow() {
     if (!chatMode && state.petOpacity > 0.001) mainWindow.showInactive();
   });
   mainWindow.on('show', () => {
-    if (chatMode) {
+    if (chatMode || performer.active) {
       mainWindow.hide();
       return;
     }
@@ -2493,6 +2526,7 @@ function createMainWindow() {
 }
 
 function showMain() {
+  performer.close(false);
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.hide();
   if (chatMode) setChatMode(false);
@@ -2507,6 +2541,7 @@ function showMain() {
 }
 
 function showChat() {
+  performer.close(false);
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.hide();
   const value = setChatMode(true);
@@ -2739,6 +2774,8 @@ function buildTrayMenu() {
         else if (chatMode) showChat();
         else showMain();
       } },
+    { label: 'Tasks · Agent workspace…', click: () => tasks.open() },
+    { label: 'Performer · Camera & OBS…', click: () => performer.open() },
     { label: 'Settings…', accelerator: 'CommandOrControl+,', click: openSettings },
     { label: 'Size & Opacity…', click: showAppearanceWindow },
     { type: 'separator' },
@@ -2857,10 +2894,12 @@ function showPetMenu() {
         click: () => requestAvatarMotion('reset-3d') },
       { type: 'separator' },
     ] : []),
+    { name: 'Tasks · Agent workspace…', click: () => tasks.open() },
+    { name: 'Performer · Camera & OBS…', click: () => performer.open() },
     { name: 'Open Chat/Talk', hint: 'full conversation workspace',
       click: showChat },
     { name: liveTalk.active ? 'End Live Talk' : 'Live Talk',
-      hint: liveTalk.active ? 'hang up now' : 'double-click avatar',
+      hint: liveTalk.active ? 'hang up now' : 'double-click head',
       click: () => {
         if (!owner.isDestroyed()) {
           if (liveTalk.active) liveTalk.end(owner.webContents);
@@ -2962,6 +3001,8 @@ function installIpc() {
       if(next.x!==bounds.x||next.y!==bounds.y){window.setPosition(next.x,next.y,false);saveStateSoon();}
     }
   });
+  ipcMain.handle('openclam:get-presentation', event => ({visible:isPresented(BrowserWindow.fromWebContents(event.sender))}));
+  ipcMain.handle('openclam:avatar-event', (event,value) => relayAvatarEvent([chatWindow,mainWindow],event.sender,value,post));
   ipcMain.handle('openclam:get-state', (event) => (
     isBuddySender(event) ? buddyShellState() : shellState()));
   ipcMain.handle('openclam:copy-settings-text', writeSettingsClipboard);
@@ -2972,6 +3013,10 @@ function installIpc() {
   ipcMain.handle('openclam:avatar-store-download', downloadAvatarStoreItem);
   ipcMain.handle('openclam:avatar-store-cancel', cancelAvatarStoreItem);
   ipcMain.handle('openclam:open-settings', () => { openSettings(); return shellState(); });
+  ipcMain.handle('openclam:open-tasks', event => {
+    const owned = [mainWindow,chatWindow].some(w => w && !w.isDestroyed() && w.webContents === event.sender);
+    if (owned && event.senderFrame === event.sender.mainFrame) tasks.open();
+  });
   ipcMain.handle('openclam:open-appearance', () => { showAppearanceWindow(); return shellState(); });
   ipcMain.handle('openclam:show-main', () => { showMain(); return shellState(); });
   ipcMain.handle('openclam:show-chat', () => {
@@ -3023,7 +3068,17 @@ function installIpc() {
     isBuddySender(event) ? applyBuddyRoam(value) : applyPetRoam(value)));
   ipcMain.on('openclam:bubble-hold', (event, value) => {
     if (!bubbleWindow || event.sender !== bubbleWindow.webContents) return;
-    holdSpeechBubble(Boolean(value));
+    if(companionBubble.mode)companionBubble.hold(value);
+    else holdSpeechBubble(Boolean(value));
+  });
+  ipcMain.on('openclam:companion-state', (event,value) => companionBubble.update(event.sender,value));
+  ipcMain.on('openclam:companion-anchor', (event,value) => companionBubble.setAnchor(event.sender,value));
+  ipcMain.handle('openclam:bubble-action', (event,value) => {
+    if(!bubbleWindow||event.sender!==bubbleWindow.webContents)return false;
+    return companionBubble.action(value);
+  });
+  ipcMain.on('openclam:bubble-size', (event,height) => {
+    if(bubbleWindow&&event.sender===bubbleWindow.webContents&&companionBubble.mode)companionBubble.resize(height);
   });
   ipcMain.on('openclam:show-speech-bubble', (event, value) => {
     if (isBuddySender(event)
@@ -3253,7 +3308,7 @@ function installIpc() {
     petDrag = null;
     saveStateSoon();
   });
-  ipcMain.handle('openclam:live-claim', event => liveTalk.claim(event.sender));
+  ipcMain.handle('openclam:live-claim', event => performer.active ? null : liveTalk.claim(event.sender));
   ipcMain.on('openclam:live-active', (event, value) => liveTalk.setPhase(event.sender, value));
   ipcMain.on('openclam:live-end', event => liveTalk.end(event.sender));
   ipcMain.handle('openclam:live-state', event => liveTalk.snapshot(event.sender));
@@ -3635,6 +3690,8 @@ async function boot() {
   if (!metadata || !metadata.active) openSettings();
   if (metadata && metadata.companion) createBuddyWindow(metadata.companion);
   scheduleRollbackRetirement();
+  if(process.argv.includes('--performer'))performer.open();
+  if(process.argv.includes('--tasks'))tasks.open();
 }
 
 const lock = app.requestSingleInstanceLock();
@@ -3645,14 +3702,16 @@ if (!lock) {
   app.whenReady().then(boot);
 }
 
-app.on('activate', () => { if (chatMode) showChat(); else showMain(); });
+app.on('activate', () => { if(performer.active){performer.open();return;} if (chatMode) showChat(); else showMain(); });
 app.on('before-quit', () => {
   quitting = true;
+  performer.close(false);
   cancelAllAvatarStoreJobs();
   globalShortcut.unregisterAll();
   stopPetPointerTracking();
   closeBuddyWindow();
   clearTimeout(bubbleTimer);
+  companionBubble.dispose();
   if (bubbleWindow && !bubbleWindow.isDestroyed()) bubbleWindow.destroy();
   if (appearanceWindow && !appearanceWindow.isDestroyed()) appearanceWindow.destroy();
   stopBackend();

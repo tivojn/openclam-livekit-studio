@@ -99,13 +99,22 @@ Accessibility, or Apple Events automation.
 
 ## Camera and chat files
 
-Camera capture starts only after the user chooses **Take a Photo** in the chat
+Photo capture starts only after the user chooses **Take a Photo** in the chat
 composer and stops when the photo is used, the camera sheet is cancelled, or
 the app closes. A chosen or captured file is copied into OpenClam's private
 application data and is supplied only to the OpenClaw agent selected for that
 chat. OpenClam never adds files from the Mac without an explicit composer
 choice. Received and sent chat files remain available to that Mac's chat
 history until their OpenClam application data is removed.
+
+Performer camera capture starts only when the user starts the camera in
+**Performer · Camera & OBS…**. Webcam frames are processed locally and are not
+saved or uploaded. Only tracking landmarks and expression coefficients pass
+to the avatar output window. Stopping the camera or closing either Performer
+window releases the camera and tracking worker. Presentation preferences are
+remembered, but camera capture starts off in each new Performer session.
+When the user configures OBS or a meeting app to capture the avatar output,
+that application's recording and transmission settings govern the output.
 
 ## AVTR exports
 
@@ -118,6 +127,20 @@ Directly imported AVTR packages use the same strict validation and remain local
 after installation. The Mac accepts only the `macos-full` authoring variant;
 the iPhone accepts only `ios-light`. Neither app silently substitutes the other
 platform's package.
+
+## Agent tasks
+
+The optional Tasks workspace runs the locally installed Codex app-server. Codex
+retains control of sign-in and model requests; OpenClam does not read or copy its
+OAuth tokens. Task prompts, supplied files, and tool results can be sent to the
+selected model service or configured MCP services as needed for the user's work.
+OpenClam keeps its own task registry and display history locally under
+`agent-workspace/`; Codex also retains its native conversation history. Archiving
+an OpenClam task hides it from the active list and does not delete either history.
+Tasks use project-write or read-only sandbox access and explicit additional
+permission requests. Closing the Tasks window leaves active work running;
+quitting the app stops the local engine. Tasks and attachments are not included
+in public builds or avatar exports.
 
 ## Deletion
 

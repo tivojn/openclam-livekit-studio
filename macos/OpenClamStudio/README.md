@@ -15,6 +15,9 @@ from the Mac and explicit import on the iPhone.
 
 ## What it includes
 
+- Persistent agent **Tasks**, powered by the official Codex engine: project folders,
+  tool execution, approvals, file changes, follow-ups, reviews and configured skills.
+  See [agent workspace setup, verification and scope](docs/agent-workspace.md).
 - Regular chat with user-selected local or BYOK language models.
 - OpenClaw chat mode with a live, expandable Work timeline and generated-file
   delivery. Only user-facing summaries and sanitized tool labels appear;

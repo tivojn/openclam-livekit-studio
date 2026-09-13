@@ -126,7 +126,7 @@ class MoveRuntime(unittest.TestCase):
         self.assertIn("const selectMoveMode = async () => {", renderer)
         self.assertIn("if (!await prepareTransientDisplayMode('move')) return", renderer)
         self.assertIn("moveUntil = performance.now() +", renderer)
-        self.assertIn("canvas.addEventListener('dblclick', event => {", renderer)
+        self.assertIn("canvas.addEventListener('dblclick', handleAvatarDoubleClick)", renderer)
         self.assertIn("toggleLiveTalk();", renderer)
         self.assertIn(
             "movesButton.addEventListener('click', () => {",

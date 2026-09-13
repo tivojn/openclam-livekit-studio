@@ -35,11 +35,13 @@ import providers as P
 import credentials
 import xai_oauth
 import openai_account
+import agent_routes
 import openclaw_pairing
 import openclaw_acp
 import livekit_bridge as LK
 import avatar_package as AVTR
 import avatar3d as AVATAR3D
+import avatar_resources as AVATAR_RESOURCES
 import appearance as APPEARANCE
 import align
 from studio import rig, body as body_authoring
@@ -77,10 +79,15 @@ UI_SYMBOL_ASSETS = frozenset({
 @asynccontextmanager
 async def lifespan(_application):
     _start()
-    yield
+    try:
+        yield
+    finally:
+        await close_agent_workspace()
 
 
 app = FastAPI(title="OpenClam Studio", lifespan=lifespan)
+agent_router, close_agent_workspace = agent_routes.make_router(P.DATA_ROOT, WEB)
+app.include_router(agent_router)
 APP_ID = "com.lionheart.openclam.macos"
 
 
@@ -110,7 +117,7 @@ SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,62})$"
 # model links to; scripts stay same-origin only.
 CSP = ("default-src 'self'; img-src 'self' data: blob: https:; "
        "media-src 'self' blob: https:; "
-       "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+       "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; "
        # 'self' does not cover the ws: scheme, and live dictation streams
        # over a local WebSocket to this same server. blob: lets the 3D avatar
        # renderer decode the textures embedded in a .glb (three.js hands them
@@ -4335,6 +4342,27 @@ async def livekit_client_script():
     )
 
 
+@app.get("/performer")
+async def performer_page():
+    return HTMLResponse(open(os.path.join(WEB, "performer.html")).read(),
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/performer/{name}")
+async def performer_asset(name: str):
+    scripts = {"performer.js", "performer-worker.js", "performer-rig.js", "performer-view.js"}
+    vendor = {"vision.js", "vision_wasm_internal.js", "vision_wasm_internal.wasm",
+              "vision_wasm_nosimd_internal.js", "vision_wasm_nosimd_internal.wasm",
+              "face_landmarker.task", "pose_landmarker_lite.task", "hand_landmarker.task"}
+    if name not in scripts | vendor:
+        raise HTTPException(404, "not found")
+    path = os.path.join(WEB, name) if name in scripts else os.path.join(WEB, "vendor", "performer", name)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Performer runtime is not installed")
+    media = "application/javascript" if name.endswith(".js") else "application/wasm" if name.endswith(".wasm") else "application/octet-stream"
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/avatar3d.js")
 async def avatar3d_script():
     path = os.path.join(WEB, "avatar3d.js")
@@ -4342,6 +4370,27 @@ async def avatar3d_script():
         raise HTTPException(404, "3D avatar renderer is not installed")
     return FileResponse(path, media_type="application/javascript",
                         headers={"Cache-Control": "no-store"})
+
+
+@app.get("/avatar3d-resources.js")
+async def avatar3d_resources_script():
+    return FileResponse(os.path.join(WEB, "avatar3d-resources.js"), media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/avatar/resident")
+async def avatar_resident_model(slug: str = Query(...)):
+    if not re.fullmatch(SLUG_PATTERN, slug):
+        raise HTTPException(422, "Invalid avatar")
+    root = runtime_dir(slug)
+    source = _safe_file(root, "model.glb")
+    if not source:
+        raise HTTPException(404, "3D model is not available")
+    try:
+        await asyncio.to_thread(AVATAR_RESOURCES.build, source, os.path.join(root, "resident"))
+    except Exception as error:
+        raise HTTPException(422, "Could not prepare efficient 3D assets") from error
+    return {"model": f"/c/{slug}/assets/resident/model.gltf"}
 
 
 @app.get("/avatar3d-options.js")
@@ -4363,12 +4412,12 @@ async def avatar3d_companion_module():
 @app.get("/vendor/three/{name}")
 async def three_module(name: str):
     """The staged three.js ES modules (scripts/stage-three-assets.mjs)."""
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.js", name):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.(?:js|wasm)", name):
         raise HTTPException(404, "not found")
     path = os.path.join(WEB, "vendor", "three", name)
     if not os.path.isfile(path):
         raise HTTPException(404, "three.js runtime is not staged")
-    return FileResponse(path, media_type="application/javascript",
+    return FileResponse(path, media_type="application/wasm" if name.endswith(".wasm") else "application/javascript",
                         headers={"Cache-Control": "no-store"})
 
 

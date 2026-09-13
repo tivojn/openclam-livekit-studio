@@ -2091,6 +2091,10 @@
           <span>New chat</span>
           <svg class="workspace-nav-add" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>
         </button>
+        <button id="agentTasksButton" type="button" aria-label="Open agent tasks">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4V4Zm2 2v12h12V6H6Zm2 2h8v2H8V8Zm0 4h5v2H8v-2Z"/></svg>
+          <span>Tasks</span>
+        </button>
         <button id="chatHeaderAvatarModeButton" type="button" aria-label="Switch to Avatar mode" title="Leave Chat/Talk">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v2H6v4H4V4Zm10 0h6v6h-2V6h-4V4ZM4 14h2v4h4v2H4v-6Zm14 0h2v6h-6v-2h4v-4ZM12 7a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm-5 10c.4-2.2 2.05-3.3 5-3.3s4.6 1.1 5 3.3H7Z"/></svg>
           <span>Avatar mode</span>
@@ -2345,6 +2349,75 @@
        canvas through the same camera, zoom, mirror and hit-test paths. */
     let avatar3d = null;
     let avatar3dRefresh = null;
+    let presentationVisible = !shell?.getPresentation && !document.hidden;
+    const avatarPresented = () => shell?.getPresentation ? presentationVisible : !document.hidden;
+    let avatarUnloadTimer = 0, avatarLoadTask = null, avatarLoadGeneration = 0;
+    let avatarSleepingState = null, avatarCapability = null;
+    let renderRequest = 0, maintenanceTimer = 0;
+    const pendingAvatarEvents = [];
+    const wakeRenderLoop = () => {
+      if (!renderRequest && avatarPresented()) renderRequest = requestAnimationFrame(renderLoop);
+    };
+    const captureAvatarState = instance => ({
+      identity:avatar3dIdentity(manifest),orbit:{...instance.orbit},
+      stage:instance.studioStage ? JSON.parse(JSON.stringify(instance.studioStage)) : null,
+      studioDistance:instance.studioDistance,
+      companion:instance.companion ? JSON.parse(JSON.stringify(instance.companion)) : null,
+      offset:instance.companionOffset ? {...instance.companionOffset} : null,
+    });
+    const restoreAvatarState = instance => {
+      const saved=avatarSleepingState;
+      avatarSleepingState=null;
+      if (!saved || saved.identity!==avatar3dIdentity(manifest)) return;
+      instance.setOrbit(saved.orbit);
+      if(saved.companion&&instance.companion)Object.assign(instance.companion,saved.companion,
+        {at:0,pendingReaction:null,walking:false});
+      if(saved.offset)instance.companionOffset=saved.offset;
+      if(saved.stage&&avatarCompanionAPI){
+        instance.studioDistance=saved.studioDistance;
+        instance.studioStage=Object.assign(Object.create(avatarCompanionAPI.AvatarStudioStage.prototype),saved.stage);
+        instance.studioStage.calibrate(instance);
+      }
+    };
+    const unloadHiddenAvatar = () => {
+      if(avatarPresented()||!is3DRuntime(manifest))return;
+      if(avatar3d){avatarSleepingState=captureAvatarState(avatar3d);disposeAvatar3D();}
+      ready=false;
+      // Release large 2D backing stores as well as the WebGL scene.
+      for(const target of [canvas,faceCanvas,headCanvas])target.width=target.height=1;
+      lastBodyGeometry=null;
+    };
+    const ensurePresentedAvatar = () => {
+      if(!avatarPresented()||!is3DRuntime(manifest)||avatar3d)return Promise.resolve();
+      if(avatarLoadTask)return avatarLoadTask;
+      avatarLoadTask=loadAvatar3D().catch(error=>{
+        setStatus(error.message,'bad');emptyState.textContent='Could not load the 3D avatar. Open 3D controls to retry.';
+        emptyState.classList.add('show');
+      }).finally(()=>{avatarLoadTask=null;wakeRenderLoop();});
+      return avatarLoadTask;
+    };
+    const receiveAvatarEvent = value => {
+      if(!value||!avatarPresented())return;
+      if(!avatar3d||!lastBodyGeometry){
+        if(pendingAvatarEvents.length>=16)pendingAvatarEvents.shift();
+        pendingAvatarEvents.push(value);void ensurePresentedAvatar();return;
+      }
+      if(value.kind==='reaction')considerAvatarReaction(value.user,value.reply,value.suggestion,value.turnID);
+      else if(value.kind==='action')void performAvatarAction(value.action,value.options||{}).catch(error=>notify(error.message));
+    };
+    const setPresentation = value => {
+      presentationVisible=Boolean(value?.visible);
+      clearTimeout(avatarUnloadTimer);
+      if(!avatarPresented()){
+        cancelAnimationFrame(renderRequest);renderRequest=0;
+        avatarUnloadTimer=setTimeout(unloadHiddenAvatar,45000);
+      }else{
+        lastFrame=0;
+        if(conversationReady&&!live&&!ptt&&!turnController)void syncConversationForVoice().catch(()=>{});
+        void ensurePresentedAvatar().then(()=>{if(avatar3d)void refreshAvatar3D();});
+        wakeRenderLoop();
+      }
+    };
     let avatar3dOptionsMounted = null;
     let disposeAvatarOptions = () => {};
     let avatarCompanionAPI = null;
@@ -2405,6 +2478,11 @@
       } finally {if(instance.actionGeneration===generation)instance.stagePreparing=false;}
     };
     const performAvatarAction = async (action, {toggleFollow=false}={}) => {
+      if(!avatarPresented()&&shell?.relayAvatarEvent){
+        const delivered=await shell.relayAvatarEvent({kind:'action',action,options:{toggleFollow}});
+        if(delivered)return '';
+        return ''; // A hidden scene never moves a native window or allocates a GPU scene.
+      }
       const instance=avatar3d, controller=instance?.companion;
       if (!controller) throw Error('Interactive motions are not installed for this avatar.');
       if(['gestures','reactions','reactions-on','reactions-off'].includes(action)){
@@ -2423,7 +2501,7 @@
           ? {key:`${generation}:${performance.now()}`,action}:null;
         // The call can remain owned by a hidden window. Its visible peer
         // performs travel in its own viewport without opening the other mode.
-        if(document.hidden&&instance.liveMotionAction){instance.pendingVisibleAction=action;return '';}
+        if(!avatarPresented()&&instance.liveMotionAction){instance.pendingVisibleAction=action;return '';}
       }
       instance.stagePreparing=false;
       const wasFollowing=toggleFollow&&controller.follow;
@@ -2441,14 +2519,9 @@
         window.dispatchEvent(new Event('openclam-avatar-controls-refresh'));
         return 'I’ll stay here.';
       }
-      clearLocalTransientDisplayMode();
-      markActivity({preserveDisplayMode:true});
-      if(instance!==avatar3d)return '';
-      // Any body clip can translate or extend beyond the standing portrait.
-      // Give it the same full-screen/chat-area surface as walking, preserving
-      // the current actor scale and position when expanding the native window.
-      await beginAvatarStudioTravel(instance,action,generation,{stationary:true});
-      if(instance!==avatar3d||instance.actionGeneration!==generation)return '';
+      let clipID=action.startsWith('clip:')?action.slice(5)
+        :action==='dance'&&instance.motion.clips.has('joyful-sway')?'joyful-sway'
+        :['wave','dance'].includes(action)?action:null;
       if(action==='random-motion'||action==='random-dance'){
         const choices=[...instance.motion.clips.values()].filter(c=>c.id!=='dance'
           &&(action!=='random-dance'||c.category==='Dances')
@@ -2456,21 +2529,22 @@
         const fresh=choices.filter(c=>c.id!==instance.lastRequestedMotion);
         const pool=fresh.length?fresh:choices;
         if(!pool.length)throw Error('No matching motions are installed.');
-        const clip=pool[Math.floor(Math.random()*pool.length)];
-        instance.lastRequestedMotion=clip.id;
-        await instance.motion.play(clip.id,{loop:false});
-        return `Here’s ${clip.label||clip.id}.`;
+        clipID=pool[Math.floor(Math.random()*pool.length)].id;
       }
-      if (action==='wave'||action==='dance') {
-        const id=action==='dance'&&instance.motion.clips.has('joyful-sway')?'joyful-sway':action;
-        await instance.motion.play(id,{loop:false});
-        return action==='wave'?'Hello! 👋':'Let’s dance.';
+      if(clipID&&!instance.motion.clips.has(clipID))throw Error('This motion is not installed.');
+      // An arm-only greeting belongs in the current portrait. Preserve the
+      // user's position, zoom and viewing angle; expand only full-body clips.
+      if(!instance.motion.isPortraitGesture(clipID)){
+        clearLocalTransientDisplayMode();
+        markActivity({preserveDisplayMode:true});
+        if(instance!==avatar3d)return '';
+        await beginAvatarStudioTravel(instance,action,generation,{stationary:true});
       }
-      if(action.startsWith('clip:')){
-        const id=action.slice(5),clip=instance.motion.clips.get(id);
-        if(!clip)throw Error('This motion is not installed.');
-        await instance.motion.play(id,{loop:false});
-        return `Here’s ${clip.label||id}.`;
+      if(instance!==avatar3d||instance.actionGeneration!==generation)return '';
+      if(clipID){
+        instance.lastRequestedMotion=clipID;
+        await instance.motion.play(clipID,{loop:false});
+        return action==='wave'?'Hello! 👋':action==='dance'?'Let’s dance.':`Here’s ${instance.motion.clips.get(clipID).label||clipID}.`;
       }
       const id={heart:'Ps001.heart',sit:'Ps004.sit',stand:''}[action];
       if(id!==undefined){
@@ -2483,6 +2557,9 @@
       return '';
     };
     const considerAvatarReaction = (user,reply,suggestion,turnID='') => {
+      if(!avatarPresented()&&shell?.relayAvatarEvent){
+        void shell.relayAvatarEvent({kind:'reaction',user,reply,suggestion,turnID});return;
+      }
       avatar3d?.companion?.consider(user,reply,suggestion,performance.now(),{clips:avatar3d?.motion?.clips,turnID});
     };
     let avatar3dOrbitUntil = 0;
@@ -2501,6 +2578,13 @@
       url.searchParams.set('revision', value.model_revision || value.built || assetRevision);
       return url.href;
     };
+    const residentModelURL = async value => {
+      try {
+        const response=await fetch('/api/avatar/resident?slug='+encodeURIComponent(value.avatar.slug));
+        if(response.ok){const result=await response.json();return result.model;}
+      } catch {}
+      return avatar3dModelURL(value);
+    };
     const restoreAvatar3DOrbit = instance => {
       try { instance.setOrbit(JSON.parse(localStorage.getItem(avatar3dOrbitKey()) || '{}')); }
       catch (_) { instance.setOrbit({}); }
@@ -2509,6 +2593,7 @@
       document.getElementById('avatar3DControls').hidden = !avatar3d;
       if (avatar3dOptionsMounted !== avatar3d) {
         disposeAvatarOptions();
+        disposeAvatarOptions=()=>{};
         avatar3dOptionsMounted = avatar3d;
         const container = document.getElementById('avatarOptions3D');
         if (avatar3d) disposeAvatarOptions = window.OpenClamAvatar3D.mountOptions(
@@ -2522,7 +2607,7 @@
           disposeAvatarOptions=()=>{disposeCompanion();disposeOptions();};
         }
       }
-      canvas.title = avatar3d ? 'Drag to move · Pinch to resize · Two-finger swipe or Option-drag to rotate' : '';
+      canvas.title = avatar3d ? 'Hold body to talk · Double-click head for Live Talk · Drag to move · Pinch to resize · Two-finger swipe or Option-drag to rotate' : '';
       root.classList.toggle('avatar-3d', Boolean(avatar3d));
     };
     window.addEventListener('openclam-appearance-changed',()=>{
@@ -2630,15 +2715,17 @@
     let liveCancelRequested = false;
     let liveStopping = null;
     let sharedLivePhase = 'idle';
+    let sharedLiveOwned = false;
     let peerLiveFrame = null;
     let peerMotionKey = '';
     let peerActionKey = '';
     const receiveSharedLiveFrame = frame => {
       if(live || sharedLivePhase==='idle')return;
       peerLiveFrame=frame;
+      if(!avatarPresented()||frame?.visualOnly)return;
       const spatial=frame?.action;
       if(avatar3d?.companion&&spatial&&['closer','back','walk-around','run-around','follow','come','stay','go-upper-left','go-upper-right','go-lower-left','go-lower-right','go-top','go-bottom','go-left','go-right','go-center'].includes(spatial.action)){
-        if(!document.hidden&&spatial.key!==peerActionKey){
+        if(avatarPresented()&&spatial.key!==peerActionKey){
           peerActionKey=spatial.key;
           void performAvatarAction(spatial.action).catch(error=>notify(error.message));
         }
@@ -2654,6 +2741,7 @@
     };
     const receiveSharedLiveState = value => {
       sharedLivePhase=value?.phase||'idle';
+      sharedLiveOwned=Boolean(value?.owned && sharedLivePhase!=='idle');
       if(value?.owned)return;
       if(sharedLivePhase!=='idle')stopSpeech();
       if(sharedLivePhase==='idle'){
@@ -2793,6 +2881,7 @@
       } catch (_) { return [freshThread()]; }
     };
     let chatThreads = loadChatThreads();
+    let conversationReady = null, conversationSync = null;
     let activeThreadID = localStorage.getItem(ACTIVE_CHAT_KEY) || chatThreads[0].id;
     if (!chatThreads.some(thread => thread.id === activeThreadID)) activeThreadID = chatThreads[0].id;
     let history = [];
@@ -3037,9 +3126,30 @@
     const LIVE_RIG_KEY = 'openclam-live-rig';
     let liveRigOverride = {};
 
+    let companionMessage = null, companionMessageID = 0, companionPacket = '', companionStatusAt = 0;
+    const publishCompanionState = () => {
+      if(!shell?.setCompanionState)return;
+      const status=String(statusText.textContent||'');
+      const activeCall=Boolean(live)||sharedLivePhase!=='idle';
+      const working=statusLine.dataset.tone==='busy'&&status!=='OpenClaw mode';
+      const activity=ptt?'Listening…':turnController||working?status
+        :agentSpeaking||speechSource?'Speaking…':activeCall&&/^Hearing /.test(status)&&performance.now()-companionStatusAt<4000?status:'';
+      const packet={title:manifest?.avatar?.name||'OpenClam',theme:root.dataset.theme,status,activity,
+        busy:Boolean(turnController||ptt||liveStarting||working),live:activeCall,
+        canStop:Boolean(turnController||ptt||speechSource||activeCall),message:companionMessage};
+      const encoded=JSON.stringify(packet);
+      if(encoded!==companionPacket){companionPacket=encoded;shell.setCompanionState(packet);}
+    };
+    const publishCompanionMessage = (role,text) => {
+      if(!String(text||'').trim())return;
+      companionMessage={id:String(++companionMessageID),role,text:String(text).slice(0,2000)};
+      publishCompanionState();
+    };
     const setStatus = (text, tone = '') => {
+      companionStatusAt=performance.now();
       statusText.textContent = text;
       statusLine.dataset.tone = tone;
+      publishCompanionState();
     };
 
     const conversationLatestGap = () => Math.max(
@@ -3071,6 +3181,7 @@
       clearTimeout(threadNoticeTimer);
       toast.classList.remove('show');
       const message = String(text || '').trim();
+      publishCompanionMessage('notice',message);
       if (root.classList.contains('chat-mode')) {
         if (!threadNoticeNode || !threadNoticeNode.isConnected) {
           threadNoticeNode = document.createElement('div');
@@ -3646,6 +3757,8 @@
 
     const publishMotionReadiness = () => {
       if (!shell || typeof shell.setPetMotionReady !== 'function') return;
+      if(avatar3d)avatarCapability={reactions:Boolean(avatar3d.companion?.reactions),motions:Boolean(avatar3d.motion?.clips.size)};
+      if(!avatar3d&&is3DRuntime(manifest))return;
       shell.setPetMotionReady({ ...(motion.walk ? motionPlaybackProfile() : { ready: false }),
         renderer: avatar3d ? '3d' : '2d', options: avatar3d ? {
           ...avatar3d.options?.catalogue(),
@@ -3841,6 +3954,8 @@
     };
 
     async function loadAvatar3D() {
+      if(!avatarPresented())return;
+      const generation=++avatarLoadGeneration;
       const api = await avatar3dApi();
       if (!api || typeof api.create !== 'function') throw new Error('3D renderer unavailable');
       if (!api.supported()) throw new Error('WebGL is unavailable');
@@ -3869,16 +3984,19 @@
       updateMotionControlsAvailability();
       const instance = api.create({ width, height });
       try {
-        await instance.load(avatar3dModelURL(manifest), { pose: manifest.pose, yaw: manifest.yaw,
+        await instance.load(await residentModelURL(manifest), { resources:true, pose: manifest.pose, yaw: manifest.yaw,
+          performance:JSON.parse(localStorage.getItem(`openclam.3d.options.${manifest?.avatar?.slug || 'avatar'}`)||'{}').performance,
           motionLibrary: manifest.motion_library,appearanceLibrary:'/api/avatar/appearance' });
         await setupCompanion(instance);
       } catch (error) {
         instance.dispose();
         throw error;
       }
+      if(generation!==avatarLoadGeneration||!avatarPresented()) {instance.dispose();return;}
       avatar3d = instance;
       restoreAvatar3DOrbit(instance);
       syncAvatar3DControls();
+      restoreAvatarState(instance);
       avatar3dGazeState = { x: 0, y: 0, at: 0 };
       publishMotionReadiness();
       ready = true;
@@ -3886,7 +4004,7 @@
       setStatus(`${manifest.avatar && manifest.avatar.name ? manifest.avatar.name : 'OpenClam'} · ready`, 'good');
       void refreshAvatarCarousel();
       if (manifest.thumbnail_pending && !isCompanion) setTimeout(publishAvatar3DThumbnail, 1500);
-      requestAnimationFrame(renderLoop);
+      wakeRenderLoop();
     }
     /* avatar-3d:end */
 
@@ -3894,7 +4012,7 @@
     // Revalidate only the small manifest, then atomically swap the 3D scene.
     // Keep the existing render loop, conversation, draft and placement alive.
     const refreshAvatar3D = () => {
-      if (!ready || !avatar3d || avatar3dRefresh) return avatar3dRefresh;
+      if (!avatarPresented() || !ready || !avatar3d || avatar3dRefresh) return avatar3dRefresh;
       const previous = avatar3d;
       avatar3dRefresh = (async () => {
         let replacement = null;
@@ -3905,8 +4023,8 @@
           if (!is3DRuntime(next) || avatar3dIdentity(next) === avatar3dIdentity(manifest)) return;
           const api = await avatar3dApi();
           replacement = api.create({ width: Number(next.w) || 1024, height: Number(next.h) || 1536 });
-          await replacement.load(avatar3dModelURL(next), { pose: next.pose, yaw: next.yaw, motionLibrary: next.motion_library,appearanceLibrary:'/api/avatar/appearance' });
-          if (avatar3d !== previous) return;
+          await replacement.load(await residentModelURL(next), { resources:true, pose: next.pose, yaw: next.yaw, motionLibrary: next.motion_library,appearanceLibrary:'/api/avatar/appearance' });
+          if (avatar3d !== previous || !avatarPresented()) return;
           replacement.setOrbit(previous.orbit);
           manifest = next;
           await setupCompanion(replacement);
@@ -3927,11 +4045,12 @@
     };
     addEventListener('focus', () => { void refreshAvatar3D(); });
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) void refreshAvatar3D();
+      if(!shell?.getPresentation)setPresentation({visible:!document.hidden});
     });
 
     async function loadAvatar() {
       setStatus('Loading avatar…', 'busy');
+      ++avatarLoadGeneration;avatarSleepingState=null;avatarCapability=null;
       disposeAvatar3D();
       try {
         const response = await fetch(`assets/manifest.json?v=${assetRevision}`, { cache: 'no-store' });
@@ -4022,7 +4141,7 @@
         emptyState.classList.remove('show');
         setStatus(`${manifest.avatar && manifest.avatar.name ? manifest.avatar.name : 'OpenClam'} · ready`, 'good');
         void refreshAvatarCarousel();
-        requestAnimationFrame(renderLoop);
+        wakeRenderLoop();
       } catch (_) {
         manifest = null;
         disposeAvatar3D();
@@ -4095,7 +4214,7 @@
     };
 
     const resizeCanvas = () => {
-      pixelRatio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      pixelRatio = Math.max(1, Math.min(avatar3d?.options?.selection.performance==='eco'?1:2, window.devicePixelRatio || 1));
       const width = Math.max(1, Math.round(innerWidth * pixelRatio));
       const height = Math.max(1, Math.round(innerHeight * pixelRatio));
       if (canvas.width !== width || canvas.height !== height) {
@@ -6376,7 +6495,7 @@
     /* avatar-3d:begin */
     const drawAvatar3D = (now, presentation = '') => {
       clearStage();
-      if(!document.hidden){
+      if(avatarPresented()){
         if(avatar3d.pendingVisibleAction){const action=avatar3d.pendingVisibleAction;avatar3d.pendingVisibleAction=null;void performAvatarAction(action).catch(error=>notify(error.message));}
         if(peerLiveFrame?.action)receiveSharedLiveFrame(peerLiveFrame);
       }
@@ -6423,25 +6542,26 @@
         const controls=document.getElementById('avatar3DControls');
         const manual=Boolean(dragging||canvasGesture||avatarZoomGesture||avatarOrbitGesture);
         if(manual)controller.pause(now);
-        const blocked=manual||(speaking&&!controller.roam&&!controller.destination)||Boolean(ptt)||document.hidden||Boolean(shellState.pet?.locked)
+        const blocked=manual||(speaking&&!controller.roam&&!controller.destination)||Boolean(ptt)||!avatarPresented()||Boolean(shellState.pet?.locked)
           || (controls && !controls.hidden && controls.matches(':hover'));
         const canvasTravel=fullChat||Boolean(shellState.desktopCloseUp)||Boolean(avatar3d.cameraApproach);
         let body=previewMetadata.bounds;
         if(canvasTravel&&(body[2]*fit.scale>safeViewport.width*.95||body[3]*fit.scale>safeViewport.height*.95))
           body=previewMetadata.alignment?.face_bounds||body;
         const reaction=controller.takeReaction(now,avatar3d.motion.clips,
-          manual||Boolean(ptt)||(document.hidden&&!live)||reduce||Boolean(shellState.pet?.locked)||Boolean(peerLiveFrame)
+          manual||Boolean(ptt)||(!avatarPresented()&&!live)||reduce||Boolean(shellState.pet?.locked)||Boolean(peerLiveFrame&&!peerLiveFrame.visualOnly)
           ||((controller.walking||Boolean(avatar3d.motion.active)||Boolean(avatar3d.cameraApproach?.moving))&&!controller.pendingReaction?.action&&!controller.pendingReaction?.clipID)||Boolean(avatar3d.companionReactionPending),
           {hasProp:Boolean(avatar3d.options.selection.prop)});
         if(reaction?.startsWith('action:')) {
           void performAvatarAction(reaction.slice(7)).catch(error=>notify(error.message));
         } else if(reaction){
           avatar3d.companionWalkRequested=false;
-          avatar3d.setOrbit({yaw:0,pitch:0});
           const instance=avatar3d, pending={};
+          const portrait=instance.motion.isPortraitGesture(reaction);
+          if(!portrait)instance.setOrbit({yaw:0,pitch:0});
           instance.companionReactionPending=pending;
           const generation=instance.actionGeneration=(instance.actionGeneration||0)+1;
-          void beginAvatarStudioTravel(instance,'pose',generation,{stationary:true}).then(()=>{
+          void (portrait?Promise.resolve():beginAvatarStudioTravel(instance,'pose',generation,{stationary:true})).then(()=>{
             if(instance===avatar3d&&instance.actionGeneration===generation)return instance.motion.play(reaction,{loop:false});
           }).catch(error=>notify(error.message)).finally(()=>{
             if(instance.companionReactionPending===pending)instance.companionReactionPending=null;
@@ -6489,8 +6609,9 @@
           w:safeViewport.width/fit.scale,h:safeViewport.height/fit.scale};
         avatar3d.approachDisplayView={...view};
       }
-      const cap = 2048 / Math.max(view.w * fit.scale * pixelRatio, view.h * fit.scale * pixelRatio, 1);
+      const cap = (avatar3d.options?.selection.performance==='eco'?1280:2048) / Math.max(view.w * fit.scale * pixelRatio, view.h * fit.scale * pixelRatio, 1);
       const density = fit.scale * pixelRatio * Math.min(1, cap);
+      view.projectedHeight = logicalHeight * fit.scale;
       view.pixelWidth = Math.max(8, Math.round(view.w * density));
       view.pixelHeight = Math.max(8, Math.round(view.h * density));
       const cursor = avatarCanvasPoint(pointer);
@@ -6545,14 +6666,15 @@
     };
 
     const avatar3dFrameDelay = now => {
-      const active = speechSource || hasAttachedAgentAudio() || agentSpeaking || ptt
-        || dragging || avatarZoomGesture;
-      if (active) return shellState.onBattery ? 50 : 32;
-      if (reducedMotion.matches) return STANDBY_MAINTENANCE_MS;
-      const pointerRecent = pointer.seen && now - Number(pointer.at) < STANDBY_GAZE_SETTLE_MS;
-      if (pointerRecent || blinkStartedAt) return shellState.onBattery ? 50 : 32;
-      // Idle breathing and sway stay continuous but cheap.
-      return shellState.onBattery ? 66 : 40;
+      const profile=avatar3d?.options?.selection.performance||'balanced';
+      const active=Boolean(speechSource||hasAttachedAgentAudio()||agentSpeaking||ptt
+        ||dragging||avatarZoomGesture||avatarOrbitGesture||avatar3d?.motion?.active
+        ||avatar3d?.options?.transition||avatar3d?.companion?.walking);
+      const eyeMotion=Boolean(blinkStartedAt||(pointer.seen&&now-Number(pointer.at)<STANDBY_GAZE_SETTLE_MS));
+      if(reducedMotion.matches&&!active&&!eyeMotion)return STANDBY_MAINTENANCE_MS;
+      if(profile==='eco')return active||eyeMotion?1000/24:125;
+      if(profile==='quality')return active||eyeMotion?1000/30:1000/24;
+      return active||eyeMotion?1000/(shellState.onBattery?24:30):1000/(shellState.onBattery?10:15);
     };
     /* avatar-3d:end */
 
@@ -6733,7 +6855,7 @@
     };
 
     const frameDelay = now => {
-      if (document.hidden || Number(shellState.pet && shellState.pet.opacity) <= .001) return live ? 32 : 250;
+      if (!avatarPresented() || Number(shellState.pet && shellState.pet.opacity) <= .001) return live ? 32 : 250;
       if (avatar3d) return avatar3dFrameDelay(now);
       if (manualMotionKind) {
         const chatWalkIdle = root.classList.contains('chat-mode')
@@ -6790,12 +6912,7 @@
       return { due: true, next: previous + steps * interval };
     };
 
-    function renderLoop(now) {
-      requestAnimationFrame(renderLoop);
-      if (!ready) return;
-      const clock = advanceFrameClock(lastFrame, now, frameDelay(now));
-      if (!clock.due) return;
-      lastFrame = clock.next;
+    const sampleAudioSignal = () => {
       if (audioAnalyser) {
         if (!audioTimeData || audioTimeData.length !== audioAnalyser.fftSize) audioTimeData = new Uint8Array(audioAnalyser.fftSize);
         if (!audioFrequencyData || audioFrequencyData.length !== audioAnalyser.frequencyBinCount) audioFrequencyData = new Uint8Array(audioAnalyser.frequencyBinCount);
@@ -6807,16 +6924,48 @@
       } else {
         audioSignal = { rms: 0, relative: 0, low: 0, mid: 0, high: 0, centroid: 0, zcr: 0 };
       }
+    };
+
+    function renderLoop(now) {
+      renderRequest=0;
+      if(!avatarPresented())return;
+      wakeRenderLoop();
+      if (!ready) return;
+      const clock = advanceFrameClock(lastFrame, now, frameDelay(now));
+      if (!clock.due) return;
+      lastFrame = clock.next;
+      sampleAudioSignal();
       if (live) syncLiveTalkAudioStatus(live, now);
       if (ptt) updateRecordingMeter(now);
       paintFrame(now);
+      if(avatar3d&&lastBodyGeometry)for(const event of pendingAvatarEvents.splice(0))receiveAvatarEvent(event);
       updateHit(false);
       syncPetEngagement();
       if (!avatarOnlyMotion && now - lastControlReport > 200) {
         lastControlReport = now;
         reportControlRects();
       }
+      reportCompanionAnchor(now);
     }
+
+    const maintainHiddenAudio = () => {
+      if(!avatarPresented()){
+        const now=performance.now();
+        if(live){
+          sampleAudioSignal();
+          syncLiveTalkAudioStatus(live,now);
+          const audio=live.remoteAudioState;
+          shell?.shareLiveTalkFrame?.({visualOnly:true,visual:{
+            viseme:desiredViseme(now),intensity:audio?.speaking?Math.max(.4,audioSignal.relative||0):0,
+            speaking:Boolean(audio?.speaking),expression:avatar3dExpression(speechExpressionPlan,Boolean(audio?.speaking)),
+          }});
+        }
+        if(ptt)updateRecordingMeter(now);
+      }
+      publishCompanionState();
+      maintenanceTimer=setTimeout(maintainHiddenAudio,live&&!avatarPresented()?50:500);
+    };
+    maintenanceTimer=setTimeout(maintainHiddenAudio,500);
 
     const pointInsideRect = (point, rectangle) => point.x >= rectangle.left && point.x <= rectangle.right && point.y >= rectangle.top && point.y <= rectangle.bottom;
 
@@ -7100,6 +7249,18 @@
       return button;
     };
 
+    let lastCompanionAnchor='',lastCompanionAnchorAt=0;
+    const reportCompanionAnchor = now => {
+      if(!shell?.setCompanionAnchor||root.classList.contains('chat-mode')||now-lastCompanionAnchorAt<200)return;
+      lastCompanionAnchorAt=now;
+      const g=lastBodyGeometry,face=g?.metadata?.alignment?.face_bounds,bounds=g?.metadata?.bounds;
+      const packet=g&&Array.isArray(bounds)?{
+        x:Math.round(g.fit.x+(Array.isArray(face)?face[0]+face[2]/2:bounds[0]+bounds[2]/2)*g.fit.scale),
+        y:Math.round(g.fit.y+(Array.isArray(face)?face[1]-face[3]*.6:bounds[1])*g.fit.scale),
+      }:null;
+      const key=JSON.stringify(packet);
+      if(key!==lastCompanionAnchor){lastCompanionAnchor=key;shell.setCompanionAnchor(packet);}
+    };
     let lastControlPacket = '';
     function reportControlRects(force = false) {
       if (!shell || typeof shell.setPetControlRects !== 'function') return;
@@ -7132,7 +7293,7 @@
     };
 
     const pointOnHead = point => {
-      if (!lastBodyGeometry) return true;
+      if (!lastBodyGeometry) return false;
       const geometry = lastBodyGeometry;
       const local = avatarLocalPoint(point);
       if (!local) return false;
@@ -7381,6 +7542,7 @@
         thread.title = boundedText(normalized.text.replace(/\s+/g, ' ').trim(), 64) || 'New chat';
       }
       saveChatThreads();
+      if(normalized.kind==='message')publishCompanionMessage(normalized.role,normalized.text);
     };
     const workspaceSidebarIsOverlay = () => innerWidth <= 920;
     const workspaceSidebarOpen = () => workspaceSidebarIsOverlay()
@@ -7732,6 +7894,7 @@
         || localStorage.getItem('openclam.agent.mode') || 'local';
       try {
         const result = await fetch('/api/openclaw/agents', { cache: 'no-store' }).then(safeJSON);
+        for (const existing of [...agentModeSelect.options]) if(existing.value.startsWith('openclaw:')) existing.remove();
         for (const agent of Array.isArray(result.agents) ? result.agents : []) {
           if (!agent || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(agent.agent_id || ''))) continue;
           const option = document.createElement('option');
@@ -8212,8 +8375,11 @@
         ? thread.agentMode : 'local';
       if (agentModeSelect.value !== savedMode) {
         agentModeSelect.value = savedMode;
-        agentModeSelect.dispatchEvent(new Event('change'));
       }
+      // Restoring another view's conversation must not persist a temporary
+      // fallback while the connected-agent catalogue is still loading.
+      composer.placeholder = selectedOpenClawAgent() ? 'Message this OpenClaw agent…' : 'Ask anything…';
+      void refreshAttachmentRouteCapability();
       let lastUserHistoryIndex = -1;
       try {
         for (const record of thread.records) {
@@ -8249,6 +8415,29 @@
       if (history.length > 24) history = history.slice(-24);
       renderChatThreadHeading();
       followConversationLatest({ force: true });
+    };
+
+    const syncConversationForVoice = () => {
+      if(conversationSync)return conversationSync;
+      conversationSync=(async()=>{
+        await conversationReady;
+        // Chat and Avatar share one selected conversation, but keep separate
+        // renderer DOMs. Read the latest selection before claiming voice.
+        const threads=loadChatThreads();
+        const selected=localStorage.getItem(ACTIVE_CHAT_KEY);
+        const thread=threads.find(item=>item.id===selected)||threads[0];
+        if(!thread)return;
+        const changed=JSON.stringify(thread)!==JSON.stringify(activeChatThread())
+          || agentModeSelect.value!==thread.agentMode;
+        chatThreads=threads;activeThreadID=thread.id;
+        if(changed) {
+          await loadOpenClawAgents();
+          await restoreChatThread(thread);
+          renderChatHistory();
+        }
+      })().catch(error=>{notify('Could not restore the selected conversation. Please reopen Chat/Talk.');throw error;})
+        .finally(()=>{conversationSync=null;});
+      return conversationSync;
     };
 
     switchChatThread = async id => {
@@ -8705,8 +8894,8 @@
           body: JSON.stringify({
             history,
             suppress_local_tts: Boolean(options.liveAgentBridge),
-            avatar_reactions: Boolean(avatar3d?.companion?.reactions),
-            avatar_motions: Boolean(avatar3d?.motion?.clips.size),
+            avatar_reactions: Boolean(avatar3d?.companion?.reactions ?? avatarCapability?.reactions),
+            avatar_motions: Boolean(avatar3d?.motion?.clips.size || avatarCapability?.motions),
           }),
           signal: controller.signal,
         });
@@ -8841,6 +9030,7 @@
     const setDictationFeedback = (text = '', state = 'idle', duration = 0) => {
       clearTimeout(dictationStatusTimer);
       const message = String(text || '').slice(0, 180);
+      if(state==='error'&&message)publishCompanionMessage('notice',message);
       recordingLabel.textContent = message;
       recordingChip.dataset.state = state;
       recordingChip.dataset.visible = message ? 'true' : 'false';
@@ -8869,7 +9059,7 @@
         recorder: null,
         meterContext: null,
         analyser: null,
-        // A head-hold in Avatar mode is a voice gesture on the companion,
+        // A body-hold in Avatar mode is a voice gesture on the companion,
         // not an implicit navigation command into the Chat/Talk window.
         keepAvatarMode: !root.classList.contains('chat-mode'),
       };
@@ -8880,6 +9070,8 @@
       setDictationFeedback('Listening…', 'listening');
       setStatus('Listening…', 'live');
       try {
+        await syncConversationForVoice();
+        if(ptt!==session||session.released)return;
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
         if (ptt !== session || session.released) { stream.getTracks().forEach(track => track.stop()); finishRecordingUI(); return; }
         session.stream = stream;
@@ -9420,7 +9612,11 @@
     const trustedAgentTurnInvocation = (session, invocation, timeout) => {
       const agents = trustedAgents(session.room);
       return live === session && session.agentReady && !session.ending
-        && document.visibilityState === 'visible'
+        // Chat and Avatar share a call whose original renderer can be hidden.
+        // The native lease still owns its microphone and pinned agent; window
+        // visibility must not reject either the request or its completed reply.
+        && (document.visibilityState === 'visible'
+          || (sharedLiveOwned && sharedLivePhase === 'connected'))
         && agents.length === 1 && agents[0].identity === invocation.callerIdentity
         && Number.isFinite(timeout) && timeout >= 30000 && timeout <= 310000;
     };
@@ -9723,7 +9919,12 @@
       if (!library || !library.Room) { notify('Live Talk is unavailable in this build.'); return; }
       liveStarting=true;
       liveCancelRequested=false;
+      let requestedAgentID='';
       try {
+        await syncConversationForVoice();
+        requestedAgentID=selectedOpenClawAgent();
+        if(!requestedAgentID){notify('Choose a connected OpenClaw agent in Chat/Talk before starting Live Talk.');return;}
+        if(liveCancelRequested)return;
         if(shell?.claimLiveTalk && !await shell.claimLiveTalk())return;
       } catch(error){notify('Could not start Live Talk. Try again.');return;}
       finally{liveStarting=false;}
@@ -10331,10 +10532,11 @@
         return;
       }
       if (gesture.talking) {
-        stopRecording(false);
+        stopRecording(!event || event.type==='pointercancel' || event.type==='lostpointercapture');
         return;
       }
       if (event && event.button === 0 && performance.now() - gesture.at < 420) {
+        if (avatar3d) return; // Short clicks must not fade a body being held for speech.
         if (root.classList.contains('chat-mode')) return;
         const action = avatarTapActionAt({ x: gesture.x, y: gesture.y });
         if (!action) return;
@@ -10348,7 +10550,7 @@
     };
 
     const beginCanvasGesture = event => {
-      const freshAvatarHit = avatarHit || paintedAvatarAt({
+      const freshAvatarHit = paintedAvatarAt({
         x: event.clientX, y: event.clientY, inside: true,
       });
       if (event.button !== 0 || !freshAvatarHit || canvasGesture) return;
@@ -10378,12 +10580,12 @@
         holdTimer: 0,
       };
       canvasGesture = gesture;
-      if (!gesture.rotating && pointOnHead({ x: event.clientX, y: event.clientY })) {
+      if (!gesture.rotating && !pointOnHead({ x: event.clientX, y: event.clientY })) {
         gesture.holdTimer = setTimeout(() => {
-          if (canvasGesture !== gesture || dragging || live) return;
+          if (canvasGesture !== gesture || dragging || live || sharedLivePhase!=='idle') return;
           gesture.talking = true;
           startRecording();
-        }, 230);
+        }, 350);
       }
     };
     canvas.addEventListener('pointerdown', beginCanvasGesture);
@@ -10432,6 +10634,22 @@
     });
     canvas.addEventListener('pointerup', endCanvasGesture);
     canvas.addEventListener('pointercancel', endCanvasGesture);
+    // The avatar's alpha hit surface can change while it is being moved.
+    // A release may then target the thread instead of the canvas, or native
+    // window focus can end pointer capture. Always release manual ownership;
+    // otherwise every frame keeps pausing and discarding conversation motions.
+    const finishCapturedAvatarGesture = event => {
+      if (canvasGesture && event.pointerId === canvasGesture.id) endCanvasGesture(event);
+    };
+    document.addEventListener('pointerup', finishCapturedAvatarGesture);
+    document.addEventListener('pointercancel', finishCapturedAvatarGesture);
+    canvas.addEventListener('lostpointercapture', finishCapturedAvatarGesture);
+    window.addEventListener('blur', () => {
+      if (canvasGesture) endCanvasGesture(null);
+      finishAvatarZoom();
+      clearTimeout(avatarOrbitTimer);
+      avatarOrbitGesture = false;
+    });
     canvas.addEventListener('wheel', handleAvatarPinch, { passive: false });
     canvas.addEventListener('wheel', handleAvatar3DWheel, { passive: false });
     document.addEventListener('wheel', event => {
@@ -10439,14 +10657,18 @@
       handleAvatarPinch(event);
       handleAvatar3DWheel(event);
     }, { passive: false });
-    canvas.addEventListener('dblclick', event => {
+    const handleAvatarDoubleClick = event => {
       clearTimeout(avatarTapTimer);
       avatarTapTimer = 0;
-      if (root.classList.contains('chat-mode') || !paintedAvatarAt({
-        x: event.clientX, y: event.clientY, inside: true,
-      })) return;
+      if(event.button!==0 || (event.target!==canvas&&!avatar3DGestureTarget(event)))return;
+      const point={x:event.clientX,y:event.clientY,inside:true};
+      if(!paintedAvatarAt(point)||!pointOnHead(point))return;
       event.preventDefault();
       toggleLiveTalk();
+    };
+    canvas.addEventListener('dblclick', handleAvatarDoubleClick);
+    document.addEventListener('dblclick', event => {
+      if(event.target!==canvas)handleAvatarDoubleClick(event);
     });
     const showAvatarContextMenu = event => {
       if (event.defaultPrevented || !event.target || !event.target.closest) return false;
@@ -10472,7 +10694,8 @@
 
     const toggleLiveTalk = () => {
       markActivity();
-      if (live) stopLiveTalk('ended');
+      if (liveStarting) liveCancelRequested=true;
+      else if (live) stopLiveTalk('ended');
       else if(sharedLivePhase!=='idle'&&shell?.endSharedLiveTalk)shell.endSharedLiveTalk();
       else startLiveTalk();
     };
@@ -10557,6 +10780,9 @@
     });
     workspaceInfoClose.addEventListener('click', () => applyWorkspaceInfoCollapsed(true));
     newChatButton.addEventListener('click', createNewChat);
+    document.getElementById('agentTasksButton').addEventListener('click', () => {
+      if (shell?.openTasks) shell.openTasks(); else location.href = '/tasks';
+    });
     chatHeaderNewButton.addEventListener('click', createNewChat);
     historySettingsButton.addEventListener('click', () => {
       dismissHistoryOverlay();
@@ -10743,6 +10969,8 @@
     });
 
     if (shell) {
+      shell.onPresentation?.(setPresentation);
+      shell.onAvatarEvent?.(receiveAvatarEvent);
       shell.getState().then(applyShellState).catch(() => {});
       if (typeof shell.onState === 'function') shell.onState(applyShellState);
       if (typeof shell.onPetPointer === 'function') shell.onPetPointer(handleGlobalPointer);
@@ -10783,6 +11011,25 @@
       });
       if (typeof shell.onPetChat === 'function') shell.onPetChat(() => openChat(true));
       if (typeof shell.onLiveToggle === 'function') shell.onLiveToggle(toggleLiveTalk);
+      shell.onCompanionCommand?.(async value => {
+        if(value?.action==='stop') {
+          if(live||liveStarting||sharedLivePhase!=='idle') {
+            liveCancelRequested=true;
+            if(live)void stopLiveTalk('ended');else shell.endSharedLiveTalk?.();
+          } else if(ptt)stopRecording(true);
+          else if(!requestOpenClawTurnStop()){turnController?.abort();stopSpeech();setStatus('Ready','good');}
+        } else if(value?.action==='followup') {
+          const text=String(value.text||'').trim().slice(0,8000);
+          if(!text)return;
+          if(turnController||live||liveStarting||sharedLivePhase!=='idle') {
+            notify('Finish or stop the current conversation before sending a follow-up.');return;
+          }
+          setStatus('Sending…','busy');
+          try {await syncConversationForVoice();await submitTurn(text,{keepAvatarMode:true});}
+          catch(error){notify(`Could not send your follow-up: ${String(error.message||error).slice(0,100)}`);}
+          finally {if(!turnController&&!live)setStatus('Ready','good');}
+        }
+      });
       shell.onLiveStop?.(() => {
         liveCancelRequested = true;
         void stopLiveTalk('ended');
@@ -10809,12 +11056,8 @@
     applyWorkspaceSidebarState({ closeOverlay: workspaceSidebarIsOverlay() });
     applyWorkspaceInfoCollapsed(workspaceInfoCollapsed, false);
     reportControlRects(true);
-    saveChatThreads();
-    void restoreChatThread(activeChatThread());
-    loadAvatar();
-    loadOpenClawAgents().then(() => {
-      agentModeSelect.dispatchEvent(new Event('change'));
-    });
+    conversationReady=loadOpenClawAgents().then(()=>restoreChatThread(activeChatThread()));
+    Promise.resolve(shell?.getPresentation?.()).then(value=>{if(value)setPresentation(value);return loadAvatar();}).catch(error=>setStatus(error.message,'bad'));
     setTimeout(healthPoll, 1600);
   })();
   </script>

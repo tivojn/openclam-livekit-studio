@@ -57,10 +57,43 @@
     #text th,#text td{padding:4px 7px;border:1px solid rgba(255,255,255,.08);
       text-align:left;vertical-align:top}
     #text th{color:#fff;font-weight:650}
+    body.companion{display:block;padding:12px;color:#f5f5f5}
+    body.companion .bubble{width:100%;padding:14px 16px;border-radius:25px;
+      box-shadow:0 5px 12px rgba(0,0,0,.18)}
+    body.companion .head,body.companion #text{display:none}
+    #companionHeader{display:flex;gap:7px;align-items:center;min-height:42px}
+    #companionHeader[hidden],#preview[hidden],#followup[hidden]{display:none}
+    .summary{flex:1;min-width:0}
+    #companionTitle{display:block;font-size:14px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    #companionStatus{display:block;margin-top:3px;font-size:12px;line-height:1.3;opacity:.65;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    button{border:0;cursor:pointer;color:inherit;background:rgba(128,128,128,.17);flex:none;
+      width:29px;height:29px;border-radius:50%;display:grid;place-items:center;font:inherit;font-size:18px;line-height:1;padding:6px}
+    button:hover{background:rgba(128,128,128,.3)}button:disabled{opacity:.3;cursor:default}
+    button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    button:focus-visible,input:focus-visible{outline:2px solid #7fb5ff;outline-offset:2px}
+    #dismiss{position:absolute;left:-7px;top:-7px;width:24px;height:24px;padding:3px;background:#555}
+    #preview{margin:9px 0 0;font-size:12px;line-height:1.45;opacity:.86;display:-webkit-box;
+      -webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+    #followup{display:flex;align-items:center;gap:6px;margin-top:12px}
+    #followup input{font:inherit;font-size:13px;line-height:1.4;color:inherit;min-width:0;flex:1;width:100%;
+      border:1px solid rgba(128,128,128,.2);border-radius:17px;padding:8px 11px;background:rgba(128,128,128,.1)}
+    #followup input::placeholder{color:inherit;opacity:.5}
+    body.companion[data-theme="light"]{color:#242424}
+    body.companion[data-theme="light"] .bubble{background:rgba(250,250,250,.97);border-color:rgba(0,0,0,.08)}
+    body.companion[data-theme="light"] #dismiss{background:#f7f7f7}
   </style>
 </head>
 <body>
   <section class="bubble" role="status" aria-live="polite">
+    <div id="companionHeader" hidden>
+      <div class="summary"><strong id="companionTitle">Tia</strong><span id="companionStatus"></span></div>
+      <button id="expand" title="Follow up" aria-label="Follow up" aria-expanded="false"><svg viewBox="0 0 20 20"><path d="m8 4-6 5 6 5V10c5 0 8 2 10 6 0-7-4-10-10-10z"/></svg></button>
+      <button id="stop" title="Stop" aria-label="Stop current activity"><svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button>
+      <button id="openChat" title="Open Chat/Talk" aria-label="Open Chat/Talk"><svg viewBox="0 0 20 20"><path d="M4 4h12v9H9l-5 4z"/></svg></button>
+      <button id="dismiss" title="Dismiss" aria-label="Dismiss status bubble">×</button>
+    </div>
+    <div id="preview" hidden></div>
+    <form id="followup" hidden><input id="followupText" aria-label="Follow up" placeholder="Follow up…" maxlength="8000" autocomplete="off"><button type="submit" id="sendFollowup" aria-label="Send follow-up">↑</button></form>
     <div class="head" aria-hidden="true"><span class="mark"></span><span class="name">OPENCLAM</span><span class="rule"></span></div>
     <div id="text"></div>
   </section>
@@ -73,6 +106,33 @@
       if (event.key === 'openclam-design') applyBubbleDesign(event.newValue);
     });
     const text = document.getElementById('text');
+    const api=window.openclamBubble;
+    let companionExpanded=false;
+    const input=document.getElementById('followupText');
+    const sizeBubble=()=>{if(document.body.classList.contains('companion'))api?.resize(Math.ceil(document.querySelector('.bubble').getBoundingClientRect().height+24));};
+    api?.onState(payload=>{
+      document.body.classList.add('companion');document.body.dataset.theme=payload.theme==='light'?'light':'dark';
+      document.getElementById('companionHeader').hidden=false;
+      document.getElementById('companionTitle').textContent=payload.title||'OpenClam';
+      document.getElementById('companionStatus').textContent=payload.activity||(payload.message?.role==='user'?'You said':payload.message?.role==='notice'?'Notice':'Reply');
+      const preview=document.getElementById('preview');preview.textContent=payload.message?.text||'';preview.hidden=!preview.textContent;
+      document.getElementById('stop').disabled=!payload.canStop;
+      document.getElementById('stop').title=payload.live?'End Live Talk':'Stop current activity';
+      document.getElementById('followup').hidden=!payload.expanded;
+      document.getElementById('expand').setAttribute('aria-expanded',String(Boolean(payload.expanded)));
+      input.disabled=!payload.canSend;document.getElementById('sendFollowup').disabled=!payload.canSend;
+      input.placeholder=payload.live?'End Live Talk to type':payload.busy?'Waiting for this reply…':'Follow up…';
+      if(payload.expanded&&!companionExpanded&&!input.disabled)input.focus();
+      companionExpanded=Boolean(payload.expanded);sizeBubble();
+    });
+    for(const [id,action] of [['expand','expand'],['stop','stop'],['openChat','chat'],['dismiss','dismiss']])
+      document.getElementById(id).addEventListener('click',()=>api?.action({action}));
+    document.getElementById('followup').addEventListener('submit',async event=>{
+      event.preventDefault();const value=input.value.trim();if(!value||input.disabled)return;
+      if(await api?.action({action:'followup',text:value}))input.value='';
+    });
+    document.addEventListener('keydown',event=>{if(event.key==='Escape')void api?.action({action:'dismiss'});});
+    new ResizeObserver(sizeBubble).observe(document.querySelector('.bubble'));
     /* The same DOM-built markdown renderer as the chat caption in
        index.html: every piece of text lands via textContent, so a reply can
        never inject markup - it can only be markdown. */
@@ -190,6 +250,9 @@
       }
     }
     window.openclamBubble?.onText((payload = {}) => {
+      document.body.classList.remove('companion');
+      document.getElementById('companionHeader').hidden=true;
+      document.getElementById('preview').hidden=true;document.getElementById('followup').hidden=true;
       const value = String(payload.text || '').trim();
       text.textContent = '';
       renderMarkdown(value, text);

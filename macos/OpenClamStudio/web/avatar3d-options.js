@@ -420,6 +420,7 @@ export class Avatar3DOptions {
       if (value[key] === false || value[key] === 'false') next[key] = 'false';
     }
     if(['walking-woman','walk','casual-walk','stage-walk'].includes(value.walkStyle)&&this.avatar.motion?.clips.has(value.walkStyle))next.walkStyle=value.walkStyle;
+    if(['balanced','eco','quality'].includes(value.performance))next.performance=value.performance;
     if(['studio','soft','classic'].includes(value.lighting))next.lighting=value.lighting;
     if(this.avatar.appearance?.choices().some(x=>x.id===value.expression))next.expression=value.expression;
     if(value.expressionStrength!==undefined&&Number.isFinite(Number(value.expressionStrength)))
@@ -438,7 +439,7 @@ export class Avatar3DOptions {
     }
     // Changing gaze alone must not restart a pose or the playback interval.
     const withoutGaze = value => JSON.stringify(Object.fromEntries(Object.entries(value).filter(([key])=>
-      !['followCursor','lighting','expression','expressionStrength','hair','clothes','walkStyle'].includes(key)&&!key.startsWith('texture:'))));
+      !['performance','followCursor','lighting','expression','expressionStrength','hair','clothes','walkStyle'].includes(key)&&!key.startsWith('texture:'))));
     if (withoutGaze(previous) !== withoutGaze(next)) {
       this.nextPlaybackAt = now + 4000;
       this.applyPose(next, now);
@@ -522,6 +523,7 @@ export function mountAvatar3DOptions(container, library, key, onBodyPose = () =>
   let strengthInput;
   const groups = [
     ['walkStyle','Walking style',catalogue.walkingStyles,(catalogue.walkingStyles.find(x=>x.id===library.defaultWalkingClip())?.label||'Walk')+' (default)'],
+    ['performance','Resource use',[{id:'eco',label:'Eco · lowest resource use'},{id:'quality',label:'Quality · original textures'}],'Balanced (default)'],
     ['lighting','Lighting',catalogue.lighting,'Avatar default'],
     ['expression','Expression',catalogue.expressions,'Automatic · conversation'],
     ['hair','Hair',catalogue.assets?.filter(x=>x.kind==='hair'),'Original hair'],

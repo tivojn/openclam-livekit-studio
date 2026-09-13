@@ -131,11 +131,11 @@ assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,360}mainWindow\.hide\(\);
   'reopening Chat\/Talk must repair any accidental desktop-avatar reveal');
 assert.match(main, /if \(next && chatMode\) \{[\s\S]{0,420}buddyWindow\.hide\(\);/,
   'reopening Chat\/Talk must also repair any second desktop-avatar reveal');
-assert.match(main, /mainWindow\.once\('ready-to-show',[\s\S]{0,260}if \(chatMode\) \{[\s\S]{0,100}mainWindow\.hide\(\);[\s\S]{0,80}return;/,
+assert.match(main, /mainWindow\.once\('ready-to-show',[\s\S]{0,260}if \(chatMode(?: \|\| performer\.active)?\) \{[\s\S]{0,100}mainWindow\.hide\(\);[\s\S]{0,80}return;/,
   'a late desktop-renderer ready event must never reveal a duplicate Chat\/Talk window');
-assert.match(main, /mainWindow\.on\('show',[\s\S]{0,160}if \(chatMode\) \{[\s\S]{0,80}mainWindow\.hide\(\);/,
+assert.match(main, /mainWindow\.on\('show',[\s\S]{0,160}if \(chatMode(?: \|\| performer\.active)?\) \{[\s\S]{0,80}mainWindow\.hide\(\);/,
   'Chat\/Talk mode must veto every stray desktop-avatar show event');
-assert.match(main, /function applyPetOpacity\(value, reveal = true\)[\s\S]{0,260}if \(chatMode\) \{[\s\S]{0,100}mainWindow\.hide\(\);/,
+assert.match(main, /function applyPetOpacity\(value, reveal = true\)[\s\S]{0,260}if \(chatMode(?: \|\| performer\.active)?\) \{[\s\S]{0,100}mainWindow\.hide\(\);/,
   'changing chat avatar opacity must keep the hidden desktop renderer hidden');
 assert.match(main, /function applyPetOpacity\(value, reveal = true\)[\s\S]{0,700}if \(chatMode \|\| opacity <= 0\.001\) buddyWindow\.hide\(\);/,
   'changing chat avatar opacity must not reveal a second desktop renderer');

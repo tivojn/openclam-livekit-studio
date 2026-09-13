@@ -1,6 +1,6 @@
 {
   "name": "openclam-livekit-studio",
-  "version": "1.0.27",
+  "version": "1.0.33",
   "author": "OpenClam contributors",
   "license": "MIT",
   "private": true,
@@ -15,17 +15,17 @@
   },
   "homepage": "https://github.com/tivojn/openclam-livekit-studio#readme",
   "scripts": {
-    "prestart": "npm run stage:livekit && npm run stage:three && npm run fetch:model && npm run build:native",
+    "prestart": "npm run stage:livekit && npm run stage:three && npm run stage:performer && npm run fetch:model && npm run build:native",
     "start": "electron .",
-    "predev": "npm run stage:livekit && npm run stage:three && npm run fetch:model && npm run build:native",
+    "predev": "npm run stage:livekit && npm run stage:three && npm run stage:performer && npm run fetch:model && npm run build:native",
     "dev": "electron .",
     "build:cutout": "scripts/build-person-cutout.sh",
     "build:native": "npm run build:cutout",
     "stage:livekit": "node scripts/stage-livekit-assets.mjs",
     "stage:three": "node scripts/stage-three-assets.mjs",
     "pretest": "npm run stage:livekit && npm run stage:three",
-    "test": ".venv/bin/python -m unittest discover -s tests -v && node qa/track_qa.js && node qa/pet_window_bounds_qa.js && node qa/pet_window_level_qa.js && node qa/avatar_store_qa.js && node qa/standalone_shell_qa.js && node qa/openclam_desktop_renderer_qa.js && node qa/avatar3d_qa.js && node qa/avatar3d_fidelity_qa.js && node qa/avatar3d_appearance_qa.js && node qa/avatar3d_options_qa.js && node qa/avatar3d_motion_qa.js && node qa/avatar3d_companion_qa.js && node qa/avatar3d_locomotion_qa.js && node qa/avatar3d_livetalk_qa.js && node qa/connected_openclaw_livetalk_qa.cjs && node qa/live_talk_owner_qa.js && node qa/avatar3d_interaction_qa.js && node qa/cursor_gaze_qa.js && node qa/openclam_settings_qa.js && node qa/codex_macos_theme_qa.js && node qa/menu_accessibility_qa.js && node qa/release_security_qa.js",
-    "check:syntax": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/avatar-display-controls.cjs && node --check electron/avatar-store.cjs && node --check electron/bubble-preload.cjs && node --check electron/appearance-preload.cjs && node --check electron/menu-preload.cjs && node --check electron/pet-window-bounds.cjs && node --check electron/pet-window-level.cjs && node --check qa/life_probe.js && node --check qa/track_qa.js && node --check qa/pet_window_bounds_qa.js && node --check qa/pet_window_level_qa.js && node --check qa/avatar_store_qa.js && node --check qa/standalone_shell_qa.js && node --check qa/openclam_desktop_renderer_qa.js && node --check qa/avatar3d_qa.js && node --check qa/avatar3d_fidelity_qa.js && node --check qa/avatar3d_interaction_qa.js && node --check qa/cursor_gaze_qa.js && node --check qa/openclam_settings_qa.js && node --check qa/codex_macos_theme_qa.js && node --check qa/menu_accessibility_qa.js && node --check qa/release_security_qa.js && /bin/bash -n scripts/release-macos.sh && /bin/bash -n scripts/stage-openclaw-plugin.sh && node scripts/check-inline-scripts.mjs && .venv/bin/python -m compileall -q server studio tests scripts qa",
+    "test": ".venv/bin/python -m unittest discover -s tests -v && node qa/track_qa.js && node qa/pet_window_bounds_qa.js && node qa/pet_window_level_qa.js && node qa/avatar_store_qa.js && node qa/standalone_shell_qa.js && node qa/openclam_desktop_renderer_qa.js && node qa/avatar_resources_qa.cjs && node qa/avatar_voice_route_qa.cjs && node qa/avatar3d_qa.js && node qa/avatar3d_fidelity_qa.js && node qa/avatar3d_appearance_qa.js && node qa/avatar3d_options_qa.js && node qa/avatar3d_motion_qa.js && node qa/avatar3d_greeting_framing_qa.js && node qa/avatar3d_companion_qa.js && node qa/avatar3d_locomotion_qa.js && node qa/avatar3d_livetalk_qa.js && node qa/connected_openclaw_livetalk_qa.cjs && node qa/live_talk_owner_qa.js && node qa/companion_bubble_qa.cjs && node qa/avatar3d_interaction_qa.js && node qa/cursor_gaze_qa.js && node qa/openclam_settings_qa.js && node qa/codex_macos_theme_qa.js && node qa/menu_accessibility_qa.js && node qa/release_security_qa.js && node qa/performer_qa.cjs && node qa/performer_render_qa.cjs && node qa/agent_workspace_qa.cjs",
+    "check:syntax": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/avatar-display-controls.cjs && node --check electron/avatar-store.cjs && node --check electron/bubble-preload.cjs && node --check electron/companion-bubble.cjs && node --check electron/appearance-preload.cjs && node --check electron/menu-preload.cjs && node --check electron/pet-window-bounds.cjs && node --check electron/pet-window-level.cjs && node --check qa/life_probe.js && node --check qa/track_qa.js && node --check qa/pet_window_bounds_qa.js && node --check qa/pet_window_level_qa.js && node --check qa/avatar_store_qa.js && node --check qa/standalone_shell_qa.js && node --check qa/openclam_desktop_renderer_qa.js && node --check qa/avatar3d_qa.js && node --check qa/avatar3d_fidelity_qa.js && node --check qa/avatar3d_interaction_qa.js && node --check qa/cursor_gaze_qa.js && node --check qa/openclam_settings_qa.js && node --check qa/codex_macos_theme_qa.js && node --check qa/menu_accessibility_qa.js && node --check qa/release_security_qa.js && /bin/bash -n scripts/release-macos.sh && /bin/bash -n scripts/stage-openclaw-plugin.sh && node scripts/check-inline-scripts.mjs && .venv/bin/python -m compileall -q server studio tests scripts qa && node --check electron/tasks.cjs && node --check electron/tasks-preload.cjs && node --check web/tasks.js && node --check qa/agent_workspace_qa.cjs",
     "check:native": "scripts/build-person-cutout.sh --check",
     "check:privacy": ".venv/bin/python scripts/public-release-audit.py .",
     "check:avatar": "node qa/life_probe.js . check && .venv/bin/python -W ignore qa/blink_lash_qa.py && .venv/bin/python -W ignore qa/mouth_motion_qa.py",
@@ -36,10 +36,12 @@
     "stage:ffmpeg": "scripts/stage-electron-ffmpeg.sh",
     "stage:openclaw": "scripts/stage-openclaw-plugin.sh",
     "stage:backend": "npm run stage:python && npm run stage:site-packages && npm run stage:ffmpeg && scripts/stage-electron-python.sh --scrub-only",
-    "pack": "npm run stage:livekit && npm run stage:three && npm run fetch:model && npm run build:native && npm run stage:backend && npm run stage:openclaw && electron-builder --mac dir",
-    "dist": "scripts/release-macos.sh"
+    "pack": "npm run stage:livekit && npm run stage:three && npm run stage:performer && npm run fetch:model && npm run build:native && npm run stage:backend && npm run stage:openclaw && electron-builder --mac dir",
+    "dist": "scripts/release-macos.sh",
+    "stage:performer": "node scripts/stage-performer.mjs"
   },
   "devDependencies": {
+    "@mediapipe/tasks-vision": "0.10.22-rc.20250304",
     "electron": "43.4.0",
     "electron-builder": "26.15.3",
     "three": "0.185.1"
@@ -159,7 +161,15 @@
           "assets/sf-symbols/*.png",
           "vendor/livekit-client.umd.js",
           "vendor/three/*.js",
-          "vendor/live-talk-connection.wav"
+          "vendor/live-talk-connection.wav",
+          "avatar3d-resources.js",
+          "vendor/three/*.wasm",
+          "performer.html",
+          "performer*.js",
+          "vendor/performer/*",
+          "tasks.html",
+          "tasks.js",
+          "tasks.css"
         ]
       },
       {
@@ -249,7 +259,7 @@
       "extendInfo": {
         "LSMinimumSystemVersion": "14.0",
         "NSMicrophoneUsageDescription": "OpenClam Studio uses the microphone only while you hold push-to-talk or place a Live Talk call; hanging up stops capture.",
-        "NSCameraUsageDescription": "OpenClam Studio uses the camera only when you choose Take a Photo in the chat composer."
+        "NSCameraUsageDescription": "OpenClam Studio uses the camera when you take a photo or start Performer to animate Tia with your face and movements. Performer camera tracking is processed on this Mac."
       }
     },
     "dmg": {

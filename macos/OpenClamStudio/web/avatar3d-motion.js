@@ -17,6 +17,7 @@ const smooth = t => {t=Math.max(0,Math.min(1,t));return t*t*(3-2*t);};
 // enter the runtime. Clips address the original exported rig by bone name.
 export class Avatar3DMotion {
   constructor(options,{cacheLimit=4}={}) { this.options=options;this.cacheLimit=Math.max(1,Math.min(4,cacheLimit));this.clips=new Map();this.active=null;this.generation=0;this.cacheClock=0; }
+  isPortraitGesture(id) { return this.clips.get(id)?.portraitGesture===true; }
   async load(url) {
     const origin=new URL(url,location.href);
     const page=new URL(location.href);
@@ -63,7 +64,14 @@ export class Avatar3DMotion {
       const speed=data.retargeting?.forwardSpeed;
       const requestedBlend=data.retargeting?.loopBlendSeconds;
       const loopBlendSeconds=Number.isFinite(requestedBlend)&&requestedBlend>=0&&requestedBlend<=.2?requestedBlend:.2;
-      clip.ready={frames,indices,fps:data.fps,loop:Boolean(data.loop),bounds,cache:new Map(),loopBlendSeconds,
+      let gesture=null;
+      if(clip.portraitGesture===true){
+        const g=data.gesture;
+        if(g?.version!==1||!['l','r'].includes(g.side)||!data.bones.includes(g.anchor)
+          ||![g.blendIn,g.blendOut].every(n=>Number.isFinite(n)&&n>=.1&&n<=2))throw Error('Invalid portrait gesture');
+        gesture={...g};
+      }
+      clip.ready={frames,indices,fps:data.fps,loop:Boolean(data.loop),bounds:gesture?null:bounds,gesture,cache:new Map(),loopBlendSeconds,
         forwardSpeed:Number.isFinite(speed)&&speed>.01&&speed<20?speed:0};
       const cached=[...this.clips.values()].filter(c=>c.ready).sort((a,b)=>(a.used||0)-(b.used||0));
       while(cached.length>this.cacheLimit){
@@ -109,11 +117,32 @@ export class Avatar3DMotion {
     }
     this.options.write(this.options.current);
     const avatar=this.options.avatar;
+    // Greetings animate a single arm in the current shoulder's coordinate
+    // frame. Tia's stretch rig has independent arm roots; treating every bone
+    // as a normal parented chain either detaches the hand or rotates it twice.
+    let gesture=null;
+    if(clip.gesture){
+      const side=clip.gesture.side, bones=this.options.bones;
+      const members=new Set(['upperArm','lowerArm','hand','finger'].flatMap(key=>avatar.boneGroups[key]?.[side]||[]));
+      const anchor=bones.find(b=>b.name===clip.gesture.anchor)?.node;
+      if(!anchor||!members.size)throw Error('Greeting does not match this avatar');
+      const anchorNow=anchor.matrixWorld.clone();
+      const corrections=bones.map(({node})=>{
+        if(!members.has(node)||members.has(node.parent))return null;
+        return node.parent.matrixWorld.clone().invert().multiply(anchorNow);
+      });
+      try {
+        this.options.write(this.frame(clip,0));
+        const inverseAnchor=anchor.matrixWorld.clone().invert();
+        corrections.forEach((m,i)=>{if(m)m.multiply(inverseAnchor).multiply(bones[i].node.parent.matrixWorld);});
+      } finally {this.options.write(this.options.current);}
+      gesture={mask:bones.map(({node})=>members.has(node)),corrections};
+    }
     const bounds=clip.bounds&&avatar.model?.matrixWorld
       ? clip.bounds.clone().applyMatrix4(avatar.model.matrixWorld).union(this.options.restBounds) : null;
     const started=now??performance.now();
     this.active={id,clip,loop:loop??clip.loop,reverse:Boolean(reverse),start:started,clockAt:started,seconds:0,rate:1,from:this.options.current.slice(),hands,
-      fromBounds:avatar.bounds?.clone(),bounds,authoredHands};
+      fromBounds:avatar.bounds?.clone(),bounds,authoredHands,gesture};
     return true;
     } finally {if(this.pending===generation)this.pending=null;}
   }
@@ -151,7 +180,13 @@ export class Avatar3DMotion {
     if(reduce){this.stop();return false;}
     const {clip}=action, duration=(clip.frames.length-1)/clip.fps;
     let seconds=this.elapsed(now);
-    if(!action.loop&&seconds>=duration){this.stop();return false;}
+    if(!action.loop&&seconds>=duration){
+      // A small conversational wave returns to the pose it interrupted,
+      // including an automatically selected standing or seated pose.
+      if(action.gesture){this.options.current=action.from;this.options.write(action.from);this.stop({immediate:true});}
+      else this.stop();
+      return false;
+    }
     if(action.loop)seconds%=duration;
     if(action.reverse)seconds=duration-seconds;
     const f=seconds*clip.fps, i=Math.min(clip.frames.length-1,Math.floor(f));
@@ -161,7 +196,12 @@ export class Avatar3DMotion {
     const seam=Math.min(clip.loopBlendSeconds??.2,duration*.25);
     if(action.loop&&seam>0&&seconds>duration-seam)pose=blend(pose,this.frame(clip,0),smooth((seconds-duration+seam)/seam));
     pose=pose.map((transform,i)=>action.authoredHands[i]||transform);
-    pose=blend(action.from,pose,smooth((now-action.start)/350));
+    if(action.gesture){
+      const {mask,corrections}=action.gesture;
+      pose=pose.map((transform,i)=>!mask[i]?action.from[i]:corrections[i]?parts(corrections[i].clone().multiply(transform.m)):transform);
+      const weight=smooth(seconds/clip.gesture.blendIn)*(action.loop?1:smooth((duration-seconds)/clip.gesture.blendOut));
+      pose=blend(action.from,pose,weight).map((transform,i)=>mask[i]?transform:action.from[i]);
+    } else pose=blend(action.from,pose,smooth((now-action.start)/350));
     pose=pose.map((transform,i)=>action.hands[i]||transform);
     this.options.current=pose;
     this.options.write(pose);

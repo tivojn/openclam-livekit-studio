@@ -775,7 +775,7 @@ class XaiOAuthRouteTests(unittest.TestCase):
 
     def test_routes_are_registered_and_safe_responses_are_no_store(self):
         application = self.application
-        paths = {route.path for route in application.app.routes}
+        paths = {route.path for route in application.app.routes if hasattr(route, "path")}
         self.assertTrue({
             "/api/xai/oauth/status",
             "/api/xai/oauth/device/start",

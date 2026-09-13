@@ -234,6 +234,7 @@ const near=(a,b,label)=>assert(Math.abs(a-b)<1e-7,`${label}: ${a} != ${b}`);
     document:{hidden:true},performance:{now:()=>5000},notify:assert.fail,
     avatar3d:{companion:{},motion:{clips:new Map([['wave',{}]]),play:async id=>peerClips.push(id),stop(){}}},
     performAvatarAction:async action=>commands.push(action)};
+  peer.avatarPresented=()=>!peer.document.hidden;
   vm.createContext(peer);vm.runInContext(receiver+'\nglobalThis.receive=receiveSharedLiveFrame;',peer);
   const packet={action:{key:'first',action:'run-around'},motion:{key:'walk:1',id:'walk'}};
   peer.receive(packet);assert.equal(commands.length,0,'hidden peer does not open or move another mode');

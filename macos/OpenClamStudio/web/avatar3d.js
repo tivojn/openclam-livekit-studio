@@ -187,6 +187,11 @@ class Avatar3D {
 
   async load(url, options = {}) {
     const loader = new GLTFLoader();
+    if(options.resources){
+      const { AvatarResources }=await import('/avatar3d-resources.js');
+      this.resources=new AvatarResources(this.renderer);
+      loader.register(parser=>this.resources.plugin(parser));
+    }
     const gltf = await loader.loadAsync(url);
     if (this.disposed) return this;
     this.model = gltf.scene;
@@ -221,6 +226,7 @@ class Avatar3D {
         this.morphMeshes.push(node);
       }
     });
+    this.resources?.bind(this.model);
     this.root.add(this.model);
     if (Number.isFinite(Number(options.yaw)) && Number(options.yaw)) {
       this.model.rotation.y = THREE.MathUtils.degToRad(Number(options.yaw));
@@ -240,6 +246,10 @@ class Avatar3D {
       try { this.options = new Avatar3DOptions(this, library); }
       catch (error) { console.warn('3D options:', error.message); }
     }
+    // Start at a medium texture size; the first fitted frame selects the
+    // actual display size. A small companion should not decode 4K maps only
+    // to discard them immediately. Quality still loads original textures.
+    await this.resources?.update(options.performance||'balanced',800,true);
     if(options.appearanceLibrary) {
       try {await this.appearance.loadPacks(options.appearanceLibrary);}
       catch(error){this.appearance.status=error.message;}
@@ -790,6 +800,9 @@ class Avatar3D {
   }
 
   keepMotionInViewport(fit, surface) {
+    // Portrait gestures preserve an intentional close-up, including the lower
+    // body being below the frame. A raised hand must not relocate the actor.
+    if(this.motion?.active?.gesture)return fit;
     if (!this.options || !(this.motion?.active || this.options.transition)) return fit;
     // Joint bounds are cheap and include the animated root translation. Keep
     // hands, head and feet inside the host surface without changing actor size.
@@ -815,6 +828,18 @@ class Avatar3D {
 
   render(now, state = {}, view = null) {
     if (this.disposed || !this.model) return this.canvas;
+    if(this.resources){
+      void this.resources.update(this.performerRenderBudget?.textures||this.options?.selection.performance||'balanced',
+        this.performerRenderBudget?.texturePixels||view?.projectedHeight||1200).catch(()=>{});
+      if(!this.resources.ready)return this.canvas;
+    }
+    // Performer owns the rig and facial coefficients exclusively. No AI pose
+    // playlist, automatic smile, visemes, breathing or cursor gaze may compete.
+    if(this.performerRig){
+      this.performerRig.update(now);
+      this.renderer.render(this.scene,this.camera);
+      return this.canvas;
+    }
     if(this.preparedMotionFrame?.now!==now||this.preparedMotionFrame.reduce!==Boolean(state.reduce))
       this.options?.update(now, Boolean(state.reduce));
     this.preparedMotionFrame=null;
@@ -1070,6 +1095,7 @@ class Avatar3D {
 
   dispose() {
     this.disposed = true;
+    this.resources?.dispose();
     this.motion?.dispose();
     this.appearance?.dispose();
     if (this.model) {
@@ -1079,7 +1105,7 @@ class Avatar3D {
         for (const material of materials) {
           if (!material) continue;
           for (const value of Object.values(material)) {
-            if (value && value.isTexture) value.dispose();
+            if (value && value.isTexture) {value.image?.close?.();value.dispose();}
           }
           material.dispose();
         }
@@ -1088,7 +1114,12 @@ class Avatar3D {
     if(this.roomEnvironmentTarget)this.roomEnvironmentTarget.dispose();
     else if(this.scene.environment)this.scene.environment.dispose();
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
+    this.canvas.width=this.canvas.height=1;
+    this.root.clear();this.scene.clear();
     this.model = null;
+    this.options=null;this.motion=null;this.appearance=null;this.resources=null;
+    this.bones={};this.baseQuaternions.clear();this.channels.clear();this.eyeForward.clear();
     this.morphMeshes = [];
     this.drivenMorphs.clear();
   }

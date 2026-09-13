@@ -25,10 +25,15 @@ function subscribe(channel, callback) {
 let liveTalkLease = null;
 const api = Object.freeze({
   isElectron: true,
+  getPresentation: () => ipcRenderer.invoke('openclam:get-presentation'),
+  onPresentation: callback => subscribe('openclam:presentation',callback),
+  relayAvatarEvent: value => ipcRenderer.invoke('openclam:avatar-event',value),
+  onAvatarEvent: callback => subscribe('openclam:avatar-event',callback),
   getState: () => ipcRenderer.invoke('openclam:get-state'),
   copySettingsText: (value) => ipcRenderer.invoke(
     'openclam:copy-settings-text', String(value || '')),
   openSettings: () => ipcRenderer.invoke('openclam:open-settings'),
+  openTasks: () => ipcRenderer.invoke('openclam:open-tasks'),
   openAppearance: () => ipcRenderer.invoke('openclam:open-appearance'),
   showAvatar: () => ipcRenderer.invoke('openclam:show-main'),
   showChat: () => ipcRenderer.invoke('openclam:show-chat'),
@@ -47,6 +52,9 @@ const api = Object.freeze({
     'openclam:set-display-mode', String(value || '')),
   setPetMotionReady: (value) => ipcRenderer.send('openclam:pet-motion-ready', value),
   showSpeechBubble: (value) => ipcRenderer.send('openclam:show-speech-bubble', String(value || '')),
+  setCompanionState: value => ipcRenderer.send('openclam:companion-state',value),
+  setCompanionAnchor: value => ipcRenderer.send('openclam:companion-anchor',value),
+  onCompanionCommand: callback => subscribe('openclam:companion-command',callback),
   dockPet: () => ipcRenderer.send('openclam:pet-dock'),
   undockPet: () => ipcRenderer.send('openclam:pet-undock'),
   exportAvatar: (payload) => ipcRenderer.invoke('openclam:export-avatar', payload),

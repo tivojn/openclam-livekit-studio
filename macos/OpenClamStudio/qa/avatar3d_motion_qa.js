@@ -82,5 +82,30 @@ let samples=[];cyclePlayer.frame=(_clip,seconds)=>{samples.push(seconds);return 
 cyclePlayer.update(950);assert.deepEqual(samples,[9,10]);
 cyclePlayer.active.clip.loopBlendSeconds=.1;samples=[];cyclePlayer.update(950);
 assert.deepEqual(samples,[9,10,0],'cropped cycles retain their explicit seam blend');
+// A portrait greeting overlays the original pose in shoulder space. Exercise
+// flattened limb roots and a parented finger, with the body translated/turned
+// as if seated, so an absolute-world overlay cannot accidentally pass.
+const rig=new THREE.Group(),shoulder=new THREE.Bone(),arm=new THREE.Bone(),wrist=new THREE.Bone(),fingerNode=new THREE.Bone(),still=new THREE.Bone();
+[shoulder,arm,wrist,still].forEach(b=>rig.add(b));wrist.add(fingerNode);
+const gestureNodes=[shoulder,arm,wrist,fingerNode,still];
+['shoulder.r','arm.r','hand.r','index.r','head'].forEach((name,i)=>gestureNodes[i].name=name);
+const reference=[0,1,2,0,4].map(x=>make(new THREE.Matrix4().makeTranslation(x,0,0)));
+const anchorNow=new THREE.Matrix4().makeRotationZ(.2).setPosition(0,-2,0);
+const base=reference.map((p,i)=>make(i===3?p.m.clone():anchorNow.clone().multiply(p.m)));
+let framed=0;
+const gestureOptions={bones:gestureNodes.map(node=>({node,name:node.name})),current:base,selection:{},
+ avatar:{bones:{},boneGroups:{upperArm:{r:[arm]},lowerArm:{r:[]},hand:{r:[wrist]},finger:{r:[fingerNode]}},bounds:new THREE.Box3(),frame(){framed++;}},
+ write(pose){gestureNodes.forEach((node,i)=>{node.matrix.copy(pose[i].m);node.matrixAutoUpdate=false;});rig.updateMatrixWorld(true);},applyPose(){throw Error('Greeting must restore the interrupted pose');}};
+const gesturePlayer=new s.Player(gestureOptions);
+const gestureDoc={version:1,id:'hello',fps:1,bones:gestureNodes.map(b=>b.name),frames:Array.from({length:4},(_,frame)=>reference.flatMap((p,i)=>rows(i===1||i===2?new THREE.Matrix4().makeTranslation(0,frame===1||frame===2?.3:0,0).multiply(p.m):p.m))),
+ gesture:{version:1,side:'r',anchor:'shoulder.r',blendIn:.5,blendOut:.5},bounds:[[-10,-10,-10],[10,10,10]]};
+s.fetch=async url=>({ok:true,json:async()=>String(url).endsWith('library.json')?{version:1,clips:[{id:'hello',file:'hello.json',portraitGesture:true}]}:gestureDoc});
+await gesturePlayer.load('/library.json');await gesturePlayer.play('hello',{now:0});gesturePlayer.update(1500);
+assert.equal(gestureOptions.current[0],base[0]);assert.equal(gestureOptions.current[4],base[4],'head never adopts the clip body pose');
+const expected=anchorNow.clone().multiply(new THREE.Matrix4().makeTranslation(2,.3,0));
+assert(Math.max(...expected.elements.map((v,i)=>Math.abs(v-wrist.matrix.elements[i])))<1e-6,'flattened hand follows the current shoulder frame');
+assert.equal(gesturePlayer.active.bounds,null,'ignores full-body bounds for a portrait gesture');
+assert.equal(framed,0);
+gesturePlayer.update(3001);assert(!gesturePlayer.active);assert.equal(gestureOptions.current[2],base[2]);
 console.log('3D motion: clip lifecycle, cancellation, original attachment, affine transforms, rig validation and local-only loading passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

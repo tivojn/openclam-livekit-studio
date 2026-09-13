@@ -60,6 +60,7 @@ const vm = require('node:vm');
   const drawSource = page.match(/const drawAvatar3D = \(now, presentation = ''\) => \{[\s\S]*?\n    \};/)[0];
   let fit, drawn;
   const drawSandbox = {
+    avatarPresented:()=>true,
     document: {hidden:false},
     avatar3d: avatar, clearStage() {}, reducedMotion: { matches: true },
     desiredViseme: () => 'sil', currentViseme: 'sil', previousViseme: 'sil', visemeChangedAt: 0,

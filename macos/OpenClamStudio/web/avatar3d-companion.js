@@ -195,7 +195,8 @@ export function conversationReaction(user, reply, suggestion) {
   if(/\b(?:love you|you mean (?:a lot|so much) to me|sending (?:you )?(?:a hug|love)|you're (?:so )?(?:sweet|kind)|you are (?:so )?(?:sweet|kind))\b|爱你|给你一个拥抱|你真贴心/.test(both))return 'affection';
   if(/\b(?:congratulations|congrats|we did it|you did it|happy birthday|let's celebrate|that's wonderful news|so proud of you|so happy for you|well done|you nailed it|that's (?:great|fantastic|amazing|wonderful)(?: news)?)\b|恭喜|生日快乐|太棒了|为你骄傲/.test(a))return 'celebration';
   if(/\b(?:hahaha|haha|hehe|hilarious|made me laugh)\b|哈哈|笑出声/.test(a))return 'amusement';
-  if(/^(?:hi|hello|hey|good morning|good evening|welcome back)\b|^(?:你好|早上好|欢迎回来)/.test(a))return 'greeting';
+  const greeting=a.replace(/^[\s\p{Extended_Pictographic}\uFE0F\u200D\u{1F3FB}-\u{1F3FF}]+/u,'');
+  if(/^(?:hi|hello|hey|good morning|good evening|welcome back)\b|^(?:你好|早上好|欢迎回来)/.test(greeting))return 'greeting';
   if(/\b(?:thank you so much|really appreciate (?:you|your help)|thanks for being)\b|非常感谢|谢谢你的/.test(a))return 'gratitude';
   if(/\b(?:you're right|you are right|i agree|exactly right)\b|你说得对|我同意/.test(a))return 'agreement';
   if(/\b(?:i'm not sure|i am not sure|i don't know|i do not know|i'm confused|i am confused|i wonder|let me think)\b|我不确定|我不知道|让我想想/.test(a))return 'confusion';

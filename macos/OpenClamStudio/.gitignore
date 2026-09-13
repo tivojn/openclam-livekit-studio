@@ -4,6 +4,7 @@ active.json
 config.json
 openai-account.json
 xai-account.json
+agent-workspace/
 .env
 .env.*
 !.env.example

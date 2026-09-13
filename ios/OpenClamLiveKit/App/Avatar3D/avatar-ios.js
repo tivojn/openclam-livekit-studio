@@ -130,9 +130,9 @@ window.avatarCommand = async (value, isText = false) => {
     motionStatus('Stopped'); return 'I’ll stay here.';
   }
   if (latest.state.reduce) return 'Turn off Reduce Motion in Accessibility to play body motions.';
-  report({event:'motion-framing'});
   const pose = {heart:'Ps001.heart',sit:'Ps004.sit',stand:''}[action];
   if (pose !== undefined) {
+    report({event:'motion-framing'});
     preference('playTransitions',false);
     report({event:'pose',id:pose});
     motionStatus(action === 'heart' ? 'Heart pose' : action === 'sit' ? 'Seated' : 'Standing');
@@ -146,6 +146,7 @@ window.avatarCommand = async (value, isText = false) => {
     id = pool[Math.floor(Math.random()*pool.length)]?.id;
   }
   if (!avatar.motion.clips.has(id)) return null;
+  if (!avatar.motion.isPortraitGesture(id)) report({event:'motion-framing'});
   const generation = actionGeneration;
   motionStatus('Loading motion…');
   try {

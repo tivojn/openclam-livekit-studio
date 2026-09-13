@@ -13,7 +13,7 @@ ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
 DENIED_PARTS = {
     ".electron-python-runtime", ".electron-models", ".electron-ffmpeg", ".learnings", ".venv",
     "avatars", "dist", "dist-electron", "models", "node_modules", "proof",
-    "__pycache__",
+    "__pycache__", "agent-workspace",
 }
 DENIED_NAMES = {
     "active.json", "config.json", ".DS_Store", "backend.log", ".env",
